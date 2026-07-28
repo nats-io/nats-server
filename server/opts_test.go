@@ -3248,6 +3248,95 @@ func TestQueuePermissions(t *testing.T) {
 	}
 }
 
+func TestQueueQualifierOnlyAllowedForSubscribePermissions(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		config    string
+		shouldErr bool
+	}{
+		{
+			name: "subscribe deny",
+			config: `
+				authorization {
+					users: [{
+						user: u
+						password: p
+						permissions: { subscribe: { deny: ["admin.secret workers"] } }
+					}]
+				}
+			`,
+		},
+		{
+			name: "publish deny",
+			config: `
+				authorization {
+					users: [{
+						user: u
+						password: p
+						permissions: { publish: { deny: ["admin.secret workers"] } }
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "leaf deny imports",
+			config: `
+				leafnodes {
+					remotes: [{
+						url: "nats://127.0.0.1:7422"
+						deny_imports: ["admin.secret workers"]
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "leaf deny exports",
+			config: `
+				leafnodes {
+					remotes: [{
+						url: "nats://127.0.0.1:7422"
+						deny_exports: ["admin.secret workers"]
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "cluster export deny",
+			config: `
+				cluster {
+					name: "C"
+					permissions {
+						export { deny: ["admin.secret workers"] }
+					}
+				}
+			`,
+			shouldErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(tc.config))
+			_, err := ProcessConfigFile(conf)
+			if tc.shouldErr && err == nil {
+				t.Fatal("Expected queue-qualified permission to be rejected")
+			}
+			if !tc.shouldErr && err != nil {
+				t.Fatalf("Expected queue-qualified subscribe permission to be accepted, got %v", err)
+			}
+		})
+	}
+
+	opts := DefaultOptions()
+	opts.Cluster.Permissions = &RoutePermissions{
+		Export: &SubjectPermission{Deny: []string{"admin.secret workers"}},
+	}
+	if _, err := NewServer(opts); err == nil {
+		t.Fatal("Expected programmatic queue-qualified cluster export permission to be rejected")
+	}
+}
+
 func TestResolverPinnedAccountsFail(t *testing.T) {
 	cfgFmt := `
 		operator: %s

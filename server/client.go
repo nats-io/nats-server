@@ -287,7 +287,7 @@ type client struct {
 	subs       map[string]*subscription
 	replies    map[string]*resp
 	mperms     *msgDeny
-	darray     []string
+	darray     []*subscription // Parsed subscribe deny entries used to build the delivery-time filter.
 	pcd        map[*client]struct{}
 	atmr       *time.Timer
 	expires    time.Time
@@ -450,15 +450,22 @@ type resp struct {
 // succeed but no message sent on foo should be delivered.
 type msgDeny struct {
 	deny   *Sublist
-	dcache map[string]bool
+	dcache map[msgDenyKey]bool
+}
+
+type msgDenyKey struct {
+	subject string
+	queue   string
 }
 
 // routeTarget collects information regarding routes and queue groups for
 // sending information to a remote.
 type routeTarget struct {
-	sub *subscription
-	qs  []byte
-	_qs [32]byte
+	sub    *subscription
+	qs     []byte
+	qsubs  []*subscription
+	_qs    [32]byte
+	_qsubs [4]*subscription
 }
 
 const (
@@ -1072,11 +1079,17 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 
 func splitSubjectQueue(sq string) ([]byte, []byte, error) {
 	vals := strings.Fields(strings.TrimSpace(sq))
+	if len(vals) == 0 {
+		return nil, nil, fmt.Errorf("invalid subject-queue %q", sq)
+	}
 	s := []byte(vals[0])
 	var q []byte
 	if len(vals) == 2 {
 		q = []byte(vals[1])
 	} else if len(vals) > 2 {
+		return nil, nil, fmt.Errorf("invalid subject-queue %q", sq)
+	}
+	if !IsValidSubject(vals[0]) || (len(q) > 0 && !IsValidSubject(vals[1])) {
 		return nil, nil, fmt.Errorf("invalid subject-queue %q", sq)
 	}
 	return s, q, nil
@@ -1099,15 +1112,35 @@ func (c *client) setPermissions(perms *Permissions) {
 			c.perms.pub.allow = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Allow {
+			if !IsValidSubject(pubSubject) {
+				c.Errorf("invalid publish subject %q", pubSubject)
+				continue
+			}
 			sub := &subscription{subject: []byte(pubSubject)}
-			c.perms.pub.allow.Insert(sub)
+			if err := c.perms.pub.allow.Insert(sub); err != nil {
+				c.Errorf("invalid publish subject %q", pubSubject)
+			}
 		}
 		if len(perms.Publish.Deny) > 0 {
 			c.perms.pub.deny = NewSublist(slcache)
 		}
 		for _, pubSubject := range perms.Publish.Deny {
-			sub := &subscription{subject: []byte(pubSubject)}
-			c.perms.pub.deny.Insert(sub)
+			subject := []byte(pubSubject)
+			if !IsValidSubject(pubSubject) {
+				var err error
+				subject, _, err = splitSubjectQueue(pubSubject)
+				if err != nil {
+					c.Errorf("invalid publish deny subject %q", pubSubject)
+					continue
+				}
+				// Queue qualifiers have no meaning for publish permissions. If
+				// one reaches this defensive path, retain the deny's subject
+				// scope instead of silently creating an unreachable trie node.
+				c.Errorf("queue qualifier is not valid for publish deny subject %q", pubSubject)
+			}
+			if err := c.perms.pub.deny.Insert(&subscription{subject: subject}); err != nil {
+				c.Errorf("invalid publish deny subject %q", pubSubject)
+			}
 		}
 	}
 
@@ -1131,12 +1164,12 @@ func (c *client) setPermissions(perms *Permissions) {
 				c.Errorf("%s", err.Error())
 				continue
 			}
-			c.perms.sub.allow.Insert(sub)
+			if err := c.perms.sub.allow.Insert(sub); err != nil {
+				c.Errorf("invalid subscribe allow subject %q", subSubject)
+			}
 		}
 		if len(perms.Subscribe.Deny) > 0 {
 			c.perms.sub.deny = NewSublistNoCache()
-			// Also hold onto this array for later.
-			c.darray = perms.Subscribe.Deny
 		}
 		for _, subSubject := range perms.Subscribe.Deny {
 			sub := &subscription{}
@@ -1145,7 +1178,12 @@ func (c *client) setPermissions(perms *Permissions) {
 				c.Errorf("%s", err.Error())
 				continue
 			}
-			c.perms.sub.deny.Insert(sub)
+			if err := c.perms.sub.deny.Insert(sub); err != nil {
+				c.Errorf("invalid subscribe deny subject %q", subSubject)
+				continue
+			}
+			// Retain the parsed representation for delivery-time filtering.
+			c.darray = append(c.darray, sub)
 		}
 	}
 
@@ -1195,14 +1233,14 @@ func (c *client) publicPermissions() *Permissions {
 		subs := _subs[:0]
 		c.perms.sub.allow.All(&subs)
 		for _, sub := range subs {
-			perms.Subscribe.Allow = append(perms.Subscribe.Allow, string(sub.subject))
+			perms.Subscribe.Allow = append(perms.Subscribe.Allow, subjectQueueString(sub))
 		}
 	}
 	if c.perms.sub.deny != nil {
 		subs := _subs[:0]
 		c.perms.sub.deny.All(&subs)
 		for _, sub := range subs {
-			perms.Subscribe.Deny = append(perms.Subscribe.Deny, string(sub.subject))
+			perms.Subscribe.Deny = append(perms.Subscribe.Deny, subjectQueueString(sub))
 		}
 	}
 	// Responses.
@@ -1212,6 +1250,13 @@ func (c *client) publicPermissions() *Permissions {
 	}
 
 	return perms
+}
+
+func subjectQueueString(sub *subscription) string {
+	if len(sub.queue) == 0 {
+		return string(sub.subject)
+	}
+	return string(sub.subject) + " " + string(sub.queue)
 }
 
 type denyType int
@@ -1235,37 +1280,48 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 		if c.perms.pub.deny == nil {
 			c.perms.pub.deny = NewSublistForServer(c.srv)
 		}
-		mergeDenyPerm(&c.perms.pub, denyPubs)
+		mergeDenyPerm(&c.perms.pub, denyPubs, false)
 	}
 	if what == sub || what == both {
 		if c.perms.sub.deny == nil {
 			// Avoid sublist cache contention in canSubscribe.
 			c.perms.sub.deny = NewSublistNoCache()
 		}
-		mergeDenyPerm(&c.perms.sub, denyPubs)
+		c.darray = append(c.darray, mergeDenyPerm(&c.perms.sub, denyPubs, true)...)
 	}
 }
 
 // mergeDenyPerm inserts new deny permissions, skipping subjects that already exist.
-func mergeDenyPerm(p *perm, denyPubs []string) {
+func mergeDenyPerm(p *perm, denyPubs []string, allowQueue bool) []*subscription {
+	var inserted []*subscription
 FOR_DENY:
-	for _, subj := range denyPubs {
-		r := p.deny.Match(subj)
+	for _, deny := range denyPubs {
+		subject, queue, err := splitSubjectQueue(deny)
+		if err != nil {
+			continue
+		}
+		if !allowQueue {
+			queue = nil
+		}
+		r := p.deny.Match(string(subject))
 		for _, v := range r.qsubs {
 			for _, s := range v {
-				if string(s.subject) == subj {
+				if bytes.Equal(s.subject, subject) && bytes.Equal(s.queue, queue) {
 					continue FOR_DENY
 				}
 			}
 		}
 		for _, s := range r.psubs {
-			if string(s.subject) == subj {
+			if bytes.Equal(s.subject, subject) && len(queue) == 0 {
 				continue FOR_DENY
 			}
 		}
-		sub := &subscription{subject: []byte(subj)}
-		p.deny.Insert(sub)
+		sub := &subscription{subject: subject, queue: queue}
+		if p.deny.Insert(sub) == nil {
+			inserted = append(inserted, sub)
+		}
 	}
+	return inserted
 }
 
 // Merge client.perms structure with additional pub deny permissions
@@ -1301,9 +1357,9 @@ func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 // messages based on a deny clause for subscriptions.
 // Lock should be held.
 func (c *client) loadMsgDenyFilter() {
-	c.mperms = &msgDeny{NewSublistWithCache(), make(map[string]bool)}
+	c.mperms = &msgDeny{NewSublistWithCache(), make(map[msgDenyKey]bool)}
 	for _, sub := range c.darray {
-		c.mperms.deny.Insert(&subscription{subject: []byte(sub)})
+		c.mperms.deny.Insert(&subscription{subject: sub.subject, queue: sub.queue})
 	}
 }
 
@@ -3339,21 +3395,28 @@ func (c *client) canSubscribe(subject string, optQueue ...string) bool {
 	if !c.canSubscribeInternal(subject, optQueue...) {
 		return false
 	}
+	c.loadMsgDenyFilterIfNeeded(subject, len(optQueue) > 0 && optQueue[0] != _EMPTY_)
+	return true
+}
+
+// Initializes the delivery-time deny filter when a wildcard subscription, or
+// an exact queue subscription, can overlap a deny entry. Assumes caller is
+// holding the write lock.
+func (c *client) loadMsgDenyFilterIfNeeded(subject string, hasQueue bool) {
 	// We use the actual subscription to signal us to spin up the deny mperms
 	// and cache. We check if the subject is a wildcard that intersects any of
 	// the deny clauses.
 	// FIXME(dlc) - We could be smarter and track when these go away and remove.
-	if c.mperms == nil && subjectHasWildcard(subject) {
+	if c.mperms == nil && (hasQueue || subjectHasWildcard(subject)) {
 		// Whip through the deny array and check if this wildcard subject can
 		// overlap with any denied deliveries.
 		for _, sub := range c.darray {
-			if SubjectsCollide(sub, subject) {
+			if SubjectsCollide(bytesToString(sub.subject), subject) {
 				c.loadMsgDenyFilter()
 				break
 			}
 		}
 	}
-	return true
 }
 
 func queueMatches(queue string, qsubs [][]*subscription) bool {
@@ -3496,19 +3559,21 @@ func (c *client) processUnsub(arg []byte) error {
 // presence of deny clauses for subscriptions. Deny clauses will not prevent
 // larger scoped wildcard subscriptions, so we need to check at delivery time.
 // Lock should be held.
-func (c *client) checkDenySub(subject string) bool {
-	if denied, ok := c.mperms.dcache[subject]; ok {
+func (c *client) checkDenySub(subject, queue string) bool {
+	key := msgDenyKey{subject, queue}
+	if denied, ok := c.mperms.dcache[key]; ok {
 		return denied
-	} else if np, _ := c.mperms.deny.NumInterest(subject); np != 0 {
-		c.mperms.dcache[subject] = true
-		return true
-	} else {
-		c.mperms.dcache[subject] = false
 	}
+	r := c.mperms.deny.Match(subject)
+	denied := len(r.psubs) != 0
+	if !denied && queue != _EMPTY_ && len(r.qsubs) != 0 {
+		denied = queueMatches(queue, r.qsubs)
+	}
+	c.mperms.dcache[key] = denied
 	if len(c.mperms.dcache) > maxDenyPermCacheSize {
 		c.pruneDenyCache()
 	}
-	return false
+	return denied
 }
 
 // Create a message header for routes or leafnodes. Header and origin cluster aware.
@@ -3691,7 +3756,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	client := sub.client
 	// Check sub client and check echo. Only do this if not a service import.
-	if client == nil || (c == client && !client.echo && !sub.si) {
+	if client == nil || (c == client && !client.echo && !sub.si && !sub.rsi) {
 		if client != nil && mt != nil {
 			client.mu.Lock()
 			mt.addEgressEvent(client, sub, errMsgTraceNoEcho)
@@ -3704,7 +3769,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we have a subscribe deny clause. This will trigger us to check the subject
 	// for a match against the denied subjects.
-	if client.mperms != nil && client.checkDenySub(string(subject)) {
+	if client.mperms != nil && client.checkDenySub(string(subject), bytesToString(sub.queue)) {
 		mt.addEgressEvent(client, sub, errMsgTraceSubDeny)
 		client.mu.Unlock()
 		return false
@@ -4067,8 +4132,8 @@ func (c *client) pruneReplyPerms() {
 // deliverMsg.
 func (c *client) pruneDenyCache() {
 	r := 0
-	for subject := range c.mperms.dcache {
-		delete(c.mperms.dcache, subject)
+	for key := range c.mperms.dcache {
+		delete(c.mperms.dcache, key)
 		if r++; r > pruneSize {
 			break
 		}
@@ -5083,6 +5148,7 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 			if sub.queue != nil {
 				rt.qs = append(rt.qs, sub.queue...)
 				rt.qs = append(rt.qs, ' ')
+				rt.qsubs = append(rt.qsubs, sub)
 			}
 			return
 		}
@@ -5101,10 +5167,49 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 	rt = &c.in.rts[lrts]
 	rt.sub = sub
 	rt.qs = rt._qs[:0]
+	rt.qsubs = rt._qsubs[:0]
 	if sub.queue != nil {
 		rt.qs = append(rt.qs, sub.queue...)
 		rt.qs = append(rt.qs, ' ')
+		rt.qsubs = append(rt.qsubs, sub)
 	}
+}
+
+// Filters queue groups in a coalesced route or leaf target against the
+// destination connection's delivery-time subscription denies.
+func filterRouteTargetDeny(subject []byte, rt *routeTarget) bool {
+	dc := rt.sub.client
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	if dc.mperms == nil {
+		return true
+	}
+
+	dsubject := string(subject)
+	if len(rt.sub.queue) == 0 {
+		if dc.checkDenySub(dsubject, _EMPTY_) {
+			return false
+		}
+	} else {
+		rt.sub = nil
+	}
+
+	qs := rt.qs[:0]
+	qsubs := rt.qsubs[:0]
+	for _, qsub := range rt.qsubs {
+		if dc.checkDenySub(dsubject, bytesToString(qsub.queue)) {
+			continue
+		}
+		if rt.sub == nil {
+			rt.sub = qsub
+		}
+		qs = append(qs, qsub.queue...)
+		qs = append(qs, ' ')
+		qsubs = append(qsubs, qsub)
+	}
+	rt.qs = qs
+	rt.qsubs = qsubs
+	return rt.sub != nil
 }
 
 // This processes the sublist results for a given message.
@@ -5553,9 +5658,6 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// We are here if we have selected a leaf or route as the destination,
 			// or if we tried to deliver to a local qsub but failed.
 			c.addSubToRouteTargets(rsub)
-			if flags&pmrCollectQueueNames != 0 {
-				queues = append(queues, rsub.queue)
-			}
 		}
 	}
 
@@ -5585,6 +5687,10 @@ sendToRoutesOrLeafs:
 	// We have inline structs for memory layout and cache coherency.
 	for i := range c.in.rts {
 		rt := &c.in.rts[i]
+		if (len(rt.qsubs) > 1 || (len(rt.sub.queue) == 0 && len(rt.qsubs) > 0)) &&
+			!filterRouteTargetDeny(subject, rt) {
+			continue
+		}
 		dc := rt.sub.client
 		dmsg, hset := msg, false
 
@@ -5617,6 +5723,11 @@ sendToRoutesOrLeafs:
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
+			if flags&pmrCollectQueueNames != 0 {
+				for _, qsub := range rt.qsubs {
+					queues = append(queues, qsub.queue)
+				}
+			}
 			if rt.sub.icb == nil {
 				dlvMsgs++
 				switch dc.kind {
@@ -5999,10 +6110,13 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	for _, sub := range c.subs {
 		// Just checking to rebuild mperms under the lock, will collect removed though here.
 		// Only collect under subs array of canSubscribe and checkAcc true.
-		canSub := c.canSubscribe(string(sub.subject))
-		canQSub := sub.queue != nil && c.canSubscribe(string(sub.subject), string(sub.queue))
-
-		if !canSub && !canQSub {
+		var allowed bool
+		if len(sub.queue) > 0 {
+			allowed = c.canSubscribe(string(sub.subject), string(sub.queue))
+		} else {
+			allowed = c.canSubscribe(string(sub.subject))
+		}
+		if !allowed {
 			removed = append(removed, sub)
 		} else if checkAcc {
 			subs = append(subs, sub)
@@ -6025,8 +6139,13 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	// Unsubscribe all that need to be removed and report back to client and logs.
 	for _, sub := range removed {
 		c.unsubscribe(acc, sub, true, true)
-		c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)", sub.subject, sub.sid))
-		srv.Noticef("Removed sub %q (sid %q) for %s - not authorized", sub.subject, sub.sid, c.getAuthUser())
+		if len(sub.queue) > 0 {
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q using queue %q (sid %q)", sub.subject, sub.queue, sub.sid))
+			srv.Noticef("Removed sub %q using queue %q (sid %q) for %s - not authorized", sub.subject, sub.queue, sub.sid, c.getAuthUser())
+		} else {
+			c.sendErr(fmt.Sprintf("Permissions Violation for Subscription to %q (sid %q)", sub.subject, sub.sid))
+			srv.Noticef("Removed sub %q (sid %q) for %s - not authorized", sub.subject, sub.sid, c.getAuthUser())
+		}
 	}
 }
 

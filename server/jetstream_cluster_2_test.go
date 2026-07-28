@@ -8204,7 +8204,7 @@ func TestJetStreamClusterConsumerRedeliveryAfterUnexpectedReplicatedAck(t *testi
 			n := 1
 			n += binary.PutUvarint(b[n:], dseq)
 			n += binary.PutUvarint(b[n:], sseq)
-			require_NoError(t, rn.Propose(b[:n]))
+			require_NoError(t, rn.Propose(rn.Term(), b[:n]))
 
 			// Wait for ack to be applied.
 			checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {

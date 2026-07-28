@@ -194,6 +194,53 @@ func (p *Permissions) clone() *Permissions {
 	return clone
 }
 
+// wsCanMapCerts returns true if the websocket listener collects client
+// certificates, which mqtt and leafnode connections over it need to be mapped.
+func (o *Options) wsCanMapCerts() bool {
+	return o.Websocket.Port != 0 && o.Websocket.TLSConfig != nil &&
+		o.Websocket.TLSConfig.ClientAuth >= tls.RequestClientCert
+}
+
+// canTLSMap returns true if verify_and_map on any listener that uses the users
+// table could select this user, which makes it a certificate identity. Cluster
+// and gateway map onto their own configured user, so they do not count.
+func (o *Options) canTLSMap(u *User) bool {
+	// The mapping lookup skips users not allowed on the connection type.
+	allowed := func(cts ...string) bool {
+		if len(u.AllowedConnectionTypes) == 0 {
+			return true
+		}
+		for _, ct := range cts {
+			if _, ok := u.AllowedConnectionTypes[ct]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	// Only a listener that is started can map, and in-process connections have
+	// no TLS state, so they never do.
+	if o.TLSMap && !o.DontListen && allowed(jwt.ConnectionTypeStandard) {
+		return true
+	}
+	if o.Websocket.TLSMap && o.Websocket.Port != 0 && allowed(jwt.ConnectionTypeWebsocket) {
+		return true
+	}
+	// Mqtt over websocket maps with the mqtt listener, not the websocket one,
+	// but takes its certificate from the websocket transport.
+	if o.MQTT.TLSMap && o.MQTT.Port != 0 &&
+		(allowed(jwt.ConnectionTypeMqtt) ||
+			o.wsCanMapCerts() && allowed(jwt.ConnectionTypeMqttWS)) {
+		return true
+	}
+	// Leafnodes only use the users table when the leafnode block sets no
+	// credentials of its own, see isLeafNodeAuthorized.
+	return o.LeafNode.TLSMap && o.LeafNode.Port != 0 &&
+		o.LeafNode.Username == _EMPTY_ && o.LeafNode.Nkey == _EMPTY_ &&
+		len(o.LeafNode.Users) == 0 &&
+		(allowed(jwt.ConnectionTypeLeafnode) ||
+			o.wsCanMapCerts() && allowed(jwt.ConnectionTypeLeafnodeWS))
+}
+
 // checkAuthforWarnings will look for insecure settings and log concerns.
 // Lock is assumed held.
 func (s *Server) checkAuthforWarnings() {
@@ -205,7 +252,7 @@ func (s *Server) checkAuthforWarnings() {
 	for _, u := range s.users {
 		// Skip warn if using TLS certs based auth
 		// unless a password has been left in the config.
-		if u.Password == _EMPTY_ && opts.TLSMap {
+		if u.Password == _EMPTY_ && opts.canTLSMap(u) {
 			continue
 		}
 		// Check if this is our internal sys client created on the fly.
@@ -1164,6 +1211,13 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		if proxyRequired = user.ProxyRequired; proxyRequired && !trustedProxy {
 			return setProxyAuthError(ErrAuthProxyRequired)
 		}
+		// A user with no password is a certificate only identity when mapping is
+		// enabled on another listener, so do not let comparePasswords match two
+		// empty passwords. The no_auth_user needs no credentials either way.
+		if !tlsMap && user.Password == _EMPTY_ && user.Username != noAuthUser && opts.canTLSMap(user) {
+			c.Debugf("User %q requires a client certificate", user.Username)
+			return false
+		}
 		ok = comparePasswords(user.Password, c.opts.Password)
 		// If we are authorized, register the user which will properly setup any permissions
 		// for pub/sub authorizations.
@@ -1657,13 +1711,42 @@ func validateAuth(o *Options) error {
 		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
 			return err
 		}
+		if err := validatePermissionSubjects(u.Permissions); err != nil {
+			return fmt.Errorf("invalid permissions for user %q: %w", u.Username, err)
+		}
 	}
 	for _, u := range o.Nkeys {
 		if err := validateAllowedConnectionTypes(u.AllowedConnectionTypes); err != nil {
 			return err
 		}
+		if err := validatePermissionSubjects(u.Permissions); err != nil {
+			return fmt.Errorf("invalid permissions for nkey %q: %w", u.Nkey, err)
+		}
 	}
 	return validateNoAuthUser(o, o.NoAuthUser)
+}
+
+func validatePermissionSubjects(p *Permissions) error {
+	if p == nil {
+		return nil
+	}
+	if p.Publish != nil {
+		if err := checkPermSubjectArray(p.Publish.Allow, false); err != nil {
+			return fmt.Errorf("publish allow: %w", err)
+		}
+		if err := checkPermSubjectArray(p.Publish.Deny, false); err != nil {
+			return fmt.Errorf("publish deny: %w", err)
+		}
+	}
+	if p.Subscribe != nil {
+		if err := checkPermSubjectArray(p.Subscribe.Allow, true); err != nil {
+			return fmt.Errorf("subscribe allow: %w", err)
+		}
+		if err := checkPermSubjectArray(p.Subscribe.Deny, true); err != nil {
+			return fmt.Errorf("subscribe deny: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateAllowedConnectionTypes(m map[string]struct{}) error {

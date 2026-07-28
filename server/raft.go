@@ -37,8 +37,8 @@ import (
 )
 
 type RaftNode interface {
-	Propose(entry []byte) error
-	ProposeMulti(entries []*Entry) error
+	Propose(term uint64, entry []byte) error
+	ProposeMulti(term uint64, entries []*Entry) error
 	ForwardProposal(entry []byte) error
 	InstallSnapshot(snap []byte, force bool) error
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
@@ -78,7 +78,7 @@ type RaftNode interface {
 	PauseApply() error
 	ResumeApply()
 	DrainAndReplaySnapshot() bool
-	LeadChangeC() <-chan bool
+	LeadChangeC() <-chan leadChange
 	QuitC() <-chan struct{}
 	Created() time.Time
 	Stop()
@@ -236,7 +236,7 @@ type raft struct {
 	apply *ipQueue[*CommittedEntry]      // Apply queue (committed entries to be passed to upper layer)
 	reqs  *ipQueue[*voteRequest]         // Vote requests
 	votes *ipQueue[*voteResponse]        // Vote responses
-	leadc chan bool                      // Leader changes
+	leadc chan leadChange                // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
 
 	lxfer        bool // Are we doing a leadership transfer?
@@ -466,7 +466,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
 		accName:  accName,
-		leadc:    make(chan bool, 32),
+		leadc:    make(chan leadChange, 1),
 		observer: cfg.Observer,
 	}
 
@@ -905,12 +905,16 @@ func (s *Server) transferRaftLeaders() bool {
 
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
-func (n *raft) Propose(data []byte) error {
+func (n *raft) Propose(term uint64, data []byte) error {
 	n.Lock()
 	defer n.Unlock()
+	return n.proposeLocked(term, data)
+}
+
+func (n *raft) proposeLocked(term uint64, data []byte) error {
 	// Check state under lock, we might not be leader anymore.
-	if state := n.State(); state != Leader {
-		n.debug("Proposal ignored, not leader (state: %v)", state)
+	if state := n.State(); state != Leader || term != n.term {
+		n.debug("Proposal ignored, not leader (state: %v, cterm: %d, term: %d)", state, term, n.term)
 		return errNotLeader
 	}
 
@@ -934,12 +938,12 @@ func (n *raft) Propose(data []byte) error {
 
 // ProposeMulti will propose multiple entries at once.
 // This should only be called on the leader.
-func (n *raft) ProposeMulti(entries []*Entry) error {
+func (n *raft) ProposeMulti(term uint64, entries []*Entry) error {
 	n.Lock()
 	defer n.Unlock()
 	// Check state under lock, we might not be leader anymore.
-	if state := n.State(); state != Leader {
-		n.debug("Multi proposal ignored, not leader (state: %v)", state)
+	if state := n.State(); state != Leader || term != n.term {
+		n.debug("Multi proposal ignored, not leader (state: %v, cterm: %d, term: %d)", state, term, n.term)
 		return errNotLeader
 	}
 
@@ -984,7 +988,12 @@ func (n *raft) isLeaderOverrun() bool {
 // If we are the leader this is the same as calling propose.
 func (n *raft) ForwardProposal(entry []byte) error {
 	if n.State() == Leader {
-		return n.Propose(entry)
+		n.Lock()
+		defer n.Unlock()
+		// We pass the node's term so the proposal goes through. This is unavoidable with forwarded
+		// proposals, normally the passed term MUST be that of the process triggering the proposals.
+		// So a stale process that is still running isn't allowed to make new proposals past its term.
+		return n.proposeLocked(n.term, entry)
 	}
 
 	// TODO: Currently we do not set a reply subject, even though we are
@@ -2203,7 +2212,7 @@ func (n *raft) ApplyQ() *ipQueue[*CommittedEntry] { return n.apply }
 
 // LeadChangeC returns the leader change channel, notifying when the Raft
 // leader role has moved.
-func (n *raft) LeadChangeC() <-chan bool { return n.leadc }
+func (n *raft) LeadChangeC() <-chan leadChange { return n.leadc }
 
 // QuitC returns the quit channel, notifying when the Raft group has shut down.
 func (n *raft) QuitC() <-chan struct{} { return n.quit }
@@ -5301,13 +5310,21 @@ func (n *raft) quorumNeeded() int {
 	return qn
 }
 
+// leadChange signals a leadership change to the upper layer. The term
+// identifies the leadership epoch the signal belongs to.
+type leadChange struct {
+	isLeader bool
+	term     uint64
+}
+
 // Lock should be held.
 func (n *raft) updateLeadChange(isLeader bool) {
+	lc := leadChange{isLeader: isLeader, term: n.term}
 	// We don't care about values that have not been consumed (transitory states),
 	// so we dequeue any state that is pending and push the new one.
 	for {
 		select {
-		case n.leadc <- isLeader:
+		case n.leadc <- lc:
 			return
 		default:
 			select {
@@ -5337,23 +5354,23 @@ retry:
 	// Reset the election timer.
 	n.resetElectionTimeout()
 
-	var leadChange bool
+	var leadChanged bool
 	if pstate == Leader && state != Leader {
-		leadChange = true
+		leadChanged = true
 		n.updateLeadChange(false)
 		// Drain the append entry response and proposal queues.
 		n.resp.drain()
 		n.prop.drain()
 	} else if state == Leader && pstate != Leader {
 		// Don't updateLeadChange here, it will be done in switchToLeader or after initial messages are applied.
-		leadChange = true
+		leadChanged = true
 		if len(n.pae) > 0 {
 			n.pae = make(map[uint64]*appendEntry)
 		}
 	}
 
 	n.writeTermVote()
-	return leadChange
+	return leadChanged
 }
 
 const (

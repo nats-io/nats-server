@@ -2578,7 +2578,7 @@ func TestJetStreamClusterStreamLeaderChangeDedupeCleanupRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sjs.processStreamLeaderChange(mset, true)
+		sjs.processStreamLeaderChange(mset, true, 0)
 	}()
 
 	// Give the goroutine time to reach the clMu acquisition.
@@ -4580,7 +4580,7 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	require_NoError(t, err)
 
 	// Simulate leader change, we do this so we can check what happens in the upper layer logic.
-	rn.leadc <- true
+	rn.leadc <- leadChange{isLeader: true, term: rn.Term()}
 	rn.SetObserver(false)
 
 	// Since upper layer is async, we don't know whether it will or will not act on the leader change.
@@ -7613,7 +7613,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				// Kicking the leader change channel is the easiest way to
 				// trick monitorCluster() into calling doSnapshot().
 				entries, _ := cc.meta.Size()
-				cc.meta.(*raft).leadc <- true
+				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
 
 				// Should we have compacted on this iteration?
 				if entries > thresh {
@@ -7673,7 +7673,7 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				// Kicking the leader change channel is the easiest way to
 				// trick monitorCluster() into calling doSnapshot().
 				_, size := cc.meta.Size()
-				cc.meta.(*raft).leadc <- true
+				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
 
 				// Should we have compacted on this iteration?
 				if size > thresh {
@@ -7936,7 +7936,7 @@ func TestJetStreamClusterConsumerSetStoreStateOldUpdateRestart(t *testing.T) {
 	}
 	consumerAdd := encodeAddConsumerAssignment(cca)
 	mljs.mu.RUnlock()
-	require_NoError(t, cc.meta.Propose(consumerAdd))
+	require_NoError(t, cc.meta.Propose(cc.meta.Term(), consumerAdd))
 
 	// Wait for the meta leader to apply the entry.
 	time.Sleep(500 * time.Millisecond)
@@ -8692,4 +8692,40 @@ func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {
 		t.Fatalf("expected errBadEntryOp from applyConsumerEntries, got %v", err)
 	}
+}
+
+func TestJetStreamClusterCreateGroupForConsumerNoPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	sjs, cc := c.leader().getJetStreamCluster()
+	sjs.mu.Lock()
+	defer sjs.mu.Unlock()
+
+	sa := cc.streams[globalAccountName]["TEST"]
+	require_True(t, sa != nil)
+
+	// Asking for more replicas than the parent stream has peers can't be placed.
+	rg, cerr := cc.createGroupForConsumer(&ConsumerConfig{Replicas: len(sa.Group.Peers) + 1}, sa)
+	require_True(t, rg == nil)
+	require_True(t, cerr != nil)
+
+	// A stream group with no peers at all can't be placed either.
+	empty := &streamAssignment{Config: sa.Config, Group: &raftGroup{Name: "G"}}
+	rg, cerr = cc.createGroupForConsumer(&ConsumerConfig{Replicas: 1}, empty)
+	require_True(t, rg == nil)
+	require_True(t, cerr != nil)
+
+	// A placeable consumer still gets a group, with no error.
+	rg, cerr = cc.createGroupForConsumer(&ConsumerConfig{Replicas: 3}, sa)
+	require_True(t, cerr == nil)
+	require_True(t, rg != nil)
+	require_Len(t, len(rg.Peers), 3)
 }

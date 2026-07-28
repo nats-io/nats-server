@@ -1098,6 +1098,12 @@ func validateCluster(o *Options) error {
 	if o.Cluster.Name != _EMPTY_ && strings.Contains(o.Cluster.Name, " ") {
 		return ErrClusterNameHasSpaces
 	}
+	if p := o.Cluster.Permissions; p != nil {
+		perms := &Permissions{Publish: p.Import, Subscribe: p.Export}
+		if err := checkClusterPermissionSubjects(perms); err != nil {
+			return err
+		}
+	}
 	if o.Cluster.Compression.Mode != _EMPTY_ {
 		if err := validateAndNormalizeCompressionOption(&o.Cluster.Compression, CompressionS2Fast); err != nil {
 			return err
@@ -2793,8 +2799,15 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// Alert of TLS enabled.
 	if opts.TLSConfig != nil {
-		s.Noticef("TLS required for client connections")
-		if opts.TLSHandshakeFirst && opts.TLSHandshakeFirstFallback == 0 {
+		// "TLS Handshake First" without a fallback delay always requires the
+		// handshake, which overrides "allow_non_tls".
+		tlsHandshakeFirstOnly := opts.TLSHandshakeFirst && opts.TLSHandshakeFirstFallback == 0
+		if opts.AllowNonTLS && !tlsHandshakeFirstOnly {
+			s.Noticef("TLS available for client connections")
+		} else {
+			s.Noticef("TLS required for client connections")
+		}
+		if tlsHandshakeFirstOnly {
 			s.Warnf("Clients that are not using \"TLS Handshake First\" option will fail to connect")
 		}
 	}

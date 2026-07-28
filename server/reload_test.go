@@ -1433,6 +1433,59 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 }
 
+func TestConfigReloadRevokesQueueSubscriptionWithQueueScopedDeny(t *testing.T) {
+	config := func(deny string) []byte {
+		return fmt.Appendf(nil, `
+			listen: 127.0.0.1:-1
+			authorization {
+				users: [
+					{
+						user: attacker
+						password: pass
+						permissions: {
+							subscribe: {
+								allow: [">"]
+								%s
+							}
+						}
+					}
+				]
+			}
+		`, deny)
+	}
+
+	s, opts, configFile := runReloadServerWithContent(t, config(""))
+	defer s.Shutdown()
+
+	asyncErr := make(chan error, 1)
+	nc := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.UserInfo("attacker", "pass"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			asyncErr <- err
+		}))
+	defer nc.Close()
+
+	sub := natsQueueSubSync(t, nc, "admin.secret", "workers")
+	natsFlush(t, nc)
+
+	changeCurrentConfigContentWithNewContent(t, configFile, config(`deny: ["admin.secret workers"]`))
+	require_NoError(t, s.Reload())
+
+	select {
+	case err := <-asyncErr:
+		if !strings.Contains(strings.ToLower(err.Error()), `permissions violation for subscription to "admin.secret" using queue "workers"`) {
+			t.Fatalf("Expected queue subscription permission violation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Expected queue subscription to be revoked")
+	}
+	natsPub(t, nc, "admin.secret", []byte("blocked"))
+	natsFlush(t, nc)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected revoked queue subscription not to receive messages, got %v", err)
+	}
+}
+
 // Ensure Reload returns an error when attempting to change cluster address
 // host.
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {

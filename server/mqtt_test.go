@@ -2495,6 +2495,48 @@ func TestMQTTParsePub(t *testing.T) {
 	}
 }
 
+func TestMQTTNatsHeaderFlags(t *testing.T) {
+	// Round-trip every MQTT flags nibble through the header byte.
+	for flags := byte(0); flags <= mqttPubFlags; flags++ {
+		enc := mqttNatsHeaderEncodeFlags(flags)
+		if enc < '0' || (enc > '9' && enc < 'a') || enc > 'f' {
+			t.Fatalf("flags 0x%x encoded to non-hex byte %q", flags, enc)
+		}
+		// Decode reads value[1]; value[0] is the (irrelevant here) QoS char.
+		if got := mqttNatsHeaderDecodeFlags([]byte{'0', enc}); got != flags {
+			t.Fatalf("flags 0x%x: round-trip got 0x%x", flags, got)
+		}
+	}
+
+	// Bits above the nibble (e.g. a stray high bit) are not encoded.
+	if enc := mqttNatsHeaderEncodeFlags(0xf0 | mqttPubFlagRetain); enc != '1' {
+		t.Fatalf("high bits leaked into flags byte: %q", enc)
+	}
+
+	// Named examples, including the "25" from the header contract comment.
+	for _, test := range []struct {
+		flags byte
+		enc   byte
+	}{
+		{0, '0'},
+		{mqttPubFlagRetain, '1'},
+		{mqttPubQoS2 | mqttPubFlagRetain, '5'},
+		{mqttPubFlags, 'f'},
+	} {
+		if enc := mqttNatsHeaderEncodeFlags(test.flags); enc != test.enc {
+			t.Fatalf("flags 0x%x encoded to %q, want %q", test.flags, enc, test.enc)
+		}
+	}
+
+	// Cross-version contract: a value with no flags byte (older sender) reads
+	// as no flags set, never a panic.
+	for _, value := range [][]byte{nil, {}, {'2'}} {
+		if got := mqttNatsHeaderDecodeFlags(value); got != 0 {
+			t.Fatalf("value %q: want no flags, got 0x%x", value, got)
+		}
+	}
+}
+
 func TestMQTTParsePIMsg(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -5090,6 +5132,46 @@ func TestMQTTPermissionsViolation(t *testing.T) {
 	// we deny permission to subscribe on "$MQTT.sub.>", so the server won't be
 	// able to create the internal NATS subscription for the JS consumer.
 	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "foo/baz", qos: 1}}, []byte{mqttSubAckFailure})
+}
+
+func TestMQTTSubscribeDenyInternalMessageSubject(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.Users = []*User{
+		{
+			Username: "victim",
+			Password: "pass",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{Allow: []string{"secret.>"}},
+			},
+		},
+		{
+			Username: "attacker",
+			Password: "pass",
+			Permissions: &Permissions{
+				Subscribe: &SubjectPermission{Deny: []string{"secret.>"}},
+			},
+		},
+	}
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	attacker := &mqttConnInfo{clientID: "attacker", user: "attacker", pass: "pass", cleanSess: true}
+	ac, ar := testMQTTConnect(t, attacker, o.MQTT.Host, o.MQTT.Port)
+	defer ac.Close()
+	testMQTTCheckConnAck(t, ar, mqttConnAckRCConnectionAccepted, false)
+
+	// The deny permission rejects the user topic directly. Neither the internal
+	// namespace nor the "msgs" stream subject may be used to bypass it.
+	testMQTTSub(t, 1, ac, ar, []*mqttFilter{{filter: "secret/#", qos: 0}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 2, ac, ar, []*mqttFilter{{filter: "$MQTT/#", qos: 0}}, []byte{mqttSubAckFailure})
+	testMQTTSub(t, 3, ac, ar, []*mqttFilter{{filter: "$MQTT/msgs/secret/#", qos: 0}}, []byte{mqttSubAckFailure})
+
+	victim := &mqttConnInfo{clientID: "victim", user: "victim", pass: "pass", cleanSess: true}
+	vc, vr := testMQTTConnect(t, victim, o.MQTT.Host, o.MQTT.Port)
+	defer vc.Close()
+	testMQTTCheckConnAck(t, vr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, vc, vr, 1, false, false, "secret/x", 1, []byte("secret payload"))
+	testMQTTExpectNothing(t, ar)
 }
 
 func TestMQTTSubscribeDenyRetainedAndQoSReplay(t *testing.T) {
@@ -8991,6 +9073,12 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 		_, err = mqttDecodeRetainedMessage("$MQTT.rmsgs.foo.x", nil, msg)
 		require_Error(t, err, errMQTTInvalidRetainFlags)
 	})
+	t.Run("decode retained message as JSON null", func(t *testing.T) {
+		// A JSON `null` decodes into a nil pointer without an error, which
+		// used to be dereferenced when checking the flags.
+		_, err := mqttDecodeRetainedMessage("$MQTT.rmsgs.foo.x", nil, []byte("null"))
+		require_Error(t, err, errMQTTInvalidRetainedMessage)
+	})
 	t.Run("decode retained message as JSON subject transform", func(t *testing.T) {
 		rmo := &mqttRetainedMsg{
 			Topic:  "foo/x",
@@ -9010,6 +9098,204 @@ func TestMQTTSliceHeadersAndDecodeRetainedMessage(t *testing.T) {
 		require_Equal(t, rm.Flags, 1)
 		require_Equal(t, string(rm.Msg), "hello")
 	})
+}
+
+func TestMQTTPoisonedJSONRecordsDoNotCrashServer(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// A first connection creates the account session manager, which is what
+	// installs the internal subscriptions that process the records below.
+	mc, mr := testMQTTConnect(t, &mqttConnInfo{clientID: "first", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, mr, mqttConnAckRCConnectionAccepted, false)
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	// A retained message stored as the JSON literal `null` decodes into a nil
+	// *mqttRetainedMsg with no error. Processed on the stream's internal loop.
+	if _, err := nc.Request(mqttRetainedMsgsStreamSubject+"x", []byte("null"), time.Second); err != nil {
+		t.Fatalf("Error storing retained message: %v", err)
+	}
+
+	// A session persist reply that carries none of the PubAck fields leaves the
+	// embedded *PubAck nil. The JS id token has to differ from this server's for
+	// the record not to be ignored as our own.
+	natsPub(t, nc, mqttJSARepliesPrefix+nuid.Next()+"."+mqttJSASessPersist+"."+getHash("first")+"."+nuid.Next(), []byte("{}"))
+	natsFlush(t, nc)
+
+	// A session record with a `null` consumer decodes into a present key with a
+	// nil *ConsumerConfig, which is dereferenced when the session is cleared.
+	poisonCID := "poison"
+	sessSubj := mqttSessStreamSubjectPrefix + getHash(poisonCID)
+	sessRec := fmt.Appendf(nil, `{"id":%q,"cons":{"sub1":null}}`, poisonCID)
+	if _, err := nc.Request(sessSubj, sessRec, time.Second); err != nil {
+		t.Fatalf("Error storing session record: %v", err)
+	}
+
+	// Connecting with a clean session recovers that record and then clears it.
+	pc, pr := testMQTTConnect(t, &mqttConnInfo{clientID: poisonCID, cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer pc.Close()
+	testMQTTCheckConnAck(t, pr, mqttConnAckRCConnectionAccepted, false)
+
+	// The server must still be running, and the retained message machinery
+	// still functional, which means the internal loop did not go away.
+	testMQTTPublish(t, mc, mr, 0, false, true, "foo/bar", 0, []byte("msg"))
+
+	sc, sr := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer sc.Close()
+	testMQTTCheckConnAck(t, sr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, sc, sr, []*mqttFilter{{filter: "foo/bar", qos: 0}}, []byte{0})
+	testMQTTCheckPubMsg(t, sc, sr, "foo/bar", mqttPubFlagRetain, []byte("msg"))
+}
+
+// mqttNewPoisonASM returns an isolated account session manager whose JS API send
+// queue is never drained, so no real JetStream ever answers a request made
+// through it. Requests block until a forged reply is injected.
+func mqttNewPoisonASM(s *Server) *mqttAccountSessionManager {
+	id := "POISONID"
+	return &mqttAccountSessionManager{
+		sessions:   make(map[string]*mqttSession),
+		sessByHash: make(map[string]*mqttSession),
+		sessLocked: make(map[string]struct{}),
+		flappers:   make(map[string]time.Time),
+		jsa: mqttJSA{
+			id:      id,
+			rplyr:   mqttJSARepliesPrefix + id + ".",
+			sendq:   newIPQueue[*mqttJSPubMsg](s, "test-poison-send-"+nuid.Next()),
+			nuid:    nuid.New(),
+			quitCh:  make(chan struct{}),
+			timeout: 10 * time.Second,
+		},
+		rmsCache: &sync.Map{},
+	}
+}
+
+// mqttRunWithPoisonedReply runs fn, which must issue a JS API request through
+// as.jsa and block waiting for the reply. Once the request is in flight, `reply`
+// is injected as the forged reply body on the exact subject the request
+// registered. Fails the test if fn panics (the pre-fix crash) or never returns.
+// Any value fn assigns is safe to read after this returns.
+func mqttRunWithPoisonedReply(t *testing.T, as *mqttAccountSessionManager, reply []byte, fn func()) {
+	t.Helper()
+	donec := make(chan any, 1)
+	go func() {
+		defer func() { donec <- recover() }()
+		fn()
+	}()
+
+	// Wait for the request to register its reply channel, then inject the
+	// forged reply on that exact subject.
+	var replySubj string
+	for i := 0; i < 400 && replySubj == _EMPTY_; i++ {
+		as.jsa.replies.Range(func(k, _ any) bool {
+			replySubj = k.(string)
+			return false
+		})
+		if replySubj == _EMPTY_ {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	require_True(t, replySubj != _EMPTY_)
+	as.processJSAPIReplies(nil, nil, nil, replySubj, _EMPTY_, reply)
+
+	select {
+	case p := <-donec:
+		if p != nil {
+			t.Fatalf("panicked on poisoned reply %q: %v", reply, p)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("did not return after injecting poisoned reply %q", reply)
+	}
+}
+
+func TestMQTTJSAPIPoisonedRepliesDoNotCrash(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, tc := range []struct {
+		name    string
+		reply   []byte
+		wantErr bool
+		fn      func(jsa *mqttJSA) error
+	}{
+		// `null` exercises the &resp double-pointer decode sites (findings F, J, C).
+		{"stream_lookup_null", []byte("null"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.lookupStream("foo")
+			return err
+		}},
+		{"stream_delete_null", []byte("null"), false, func(jsa *mqttJSA) error {
+			_, err := jsa.deleteStream("foo")
+			return err
+		}},
+		{"msg_load_null", []byte("null"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadMsg("foo", 1)
+			return err
+		}},
+		// `{}` exercises the inner nil-pointer sites that survive the decode
+		// (findings G, H1, I, D, H2).
+		{"stream_lookup_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.lookupStream("foo")
+			return err
+		}},
+		{"stream_create_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, _, err := jsa.createStream(&StreamConfig{Name: "foo", Storage: FileStorage})
+			return err
+		}},
+		{"stream_update_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.updateStream(&StreamConfig{Name: "foo", Storage: FileStorage})
+			return err
+		}},
+		{"msg_load_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadMsg("foo", 1)
+			return err
+		}},
+		// The same inner *StoredMsg guard is replicated in the other two message
+		// load accessors, so cover them too. A `null` case is not repeated here:
+		// all three accessors share the mqttJSAMsgLoad decode site, so
+		// msg_load_null above already covers that regression for them.
+		{"msg_load_last_for_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadLastMsgFor("foo", "bar")
+			return err
+		}},
+		{"msg_load_next_for_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			_, err := jsa.loadNextMsgFor("foo", "bar")
+			return err
+		}},
+		{"pub_ack_empty", []byte("{}"), true, func(jsa *mqttJSA) error {
+			sess := mqttSessionCreate(jsa, "cid", getHash("cid"), 0, o)
+			return sess.save()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			as := mqttNewPoisonASM(s)
+			var err error
+			mqttRunWithPoisonedReply(t, as, tc.reply, func() { err = tc.fn(&as.jsa) })
+			if tc.wantErr {
+				require_Error(t, err)
+			} else {
+				require_NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMQTTLoadRetainedMessagesPoisonedReplyDoesNotCrash(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	as := mqttNewPoisonASM(s)
+	var rms map[string]*mqttRetainedMsg
+	// A `{}` body decodes into a non-nil JSApiMsgGetResponse with a nil Message.
+	mqttRunWithPoisonedReply(t, as, []byte("{}"), func() {
+		rms = as.loadRetainedMessages(map[string]uint64{"foo": 1}, s)
+	})
+	// The poisoned message is skipped, so nothing is returned.
+	require_True(t, len(rms) == 0)
 }
 
 func TestMQTTRetainedMessageWithDelSubjectIsNotRestored(t *testing.T) {
@@ -9900,4 +10186,113 @@ func BenchmarkMQTT_QoS1_PubSub2_256b_Payload(b *testing.B) {
 
 func BenchmarkMQTT_QoS1_PubSub2___1K_Payload(b *testing.B) {
 	mqttBenchPubQoS1(b, mqttPubSubj, sizedString(1024), 2)
+}
+
+// A PUBREL arriving on a different connection than its PUBLISH (session
+// resumed after a reconnect) has no staged in-memory copy and must fall
+// back to loading the message from JetStream, still delivering it exactly
+// once and completing the exchange.
+func TestMQTTQoS2PubRelResumedSessionDelivery(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mcs, msr := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, msr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs, msr, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mcs, nil, msr)
+
+	// Publish QoS2 retained and PUBREC it, then drop before the PUBREL.
+	const pubPI = 7
+	ci := &mqttConnInfo{clientID: "pub", cleanSess: false}
+	mcp, mpr := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSendPublishPacket(t, mcp, 2, false, true, "foo", pubPI, []byte("m"))
+	testMQTTReadPIPacket(mqttPacketPubRec, t, mpr, pubPI)
+	testMQTTDisconnect(t, mcp, nil)
+	mcp.Close()
+	testMQTTExpectNothing(t, msr)
+
+	// Resume the session; the PUBREL now delivers the message, at the sub's QoS.
+	mcp2, mpr2 := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer mcp2.Close()
+	testMQTTCheckConnAck(t, mpr2, mqttConnAckRCConnectionAccepted, true)
+	testMQTTSendPIPacket(mqttPacketPubRel|0x2, t, mcp2, pubPI)
+	testMQTTReadPIPacket(mqttPacketPubComp, t, mpr2, pubPI)
+	testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("m"))
+	testMQTTExpectNothing(t, msr)
+
+	// A repeated PUBREL is acked without redelivering.
+	testMQTTSendPIPacket(mqttPacketPubRel|0x2, t, mcp2, pubPI)
+	testMQTTReadPIPacket(mqttPacketPubComp, t, mpr2, pubPI)
+	testMQTTExpectNothing(t, msr)
+
+	// The retain flag must survive the staging round-trip: a new
+	// subscriber gets the message as retained.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		acc, err := s.lookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		mset, err := acc.lookupStream(mqttRetainedMsgsStreamName)
+		if err != nil {
+			return err
+		}
+		if mset.state().Msgs != 1 {
+			return errors.New("retained message not stored")
+		}
+		return nil
+	})
+	mcs2, msr2 := testMQTTConnect(t, &mqttConnInfo{clientID: "sub2", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs2.Close()
+	testMQTTCheckConnAck(t, msr2, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs2, msr2, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTCheckPubMsgNoAck(t, mcs2, msr2, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("m"))
+}
+
+func TestMQTTCertMappedUserNotPasswordAuthenticatable(t *testing.T) {
+	const certUser = "CN=example.com,OU=NATS.io"
+
+	// The mqtt listener does not map, so a certificate identity must not be
+	// authenticatable by username there. The leafnode and websocket listeners
+	// are covered by TestAuthCertMappedUserNotPasswordAuthenticatable.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "S1"
+		jetstream { store_dir: %q }
+		tls {
+			cert_file: "../test/configs/certs/tlsauth/server.pem"
+			key_file:  "../test/configs/certs/tlsauth/server-key.pem"
+			ca_file:   "../test/configs/certs/tlsauth/ca.pem"
+			verify_and_map: true
+		}
+		mqtt { listen: "127.0.0.1:-1" }
+		authorization {
+			users [
+				{ user = "CN=other.example.com,OU=NATS.io" }
+				{ user = "%s" }
+			]
+		}
+	`, t.TempDir(), certUser)))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name string
+		user string
+		pass string
+	}{
+		{"empty password", certUser, _EMPTY_},
+		{"wrong password", certUser, "wrongpassword"},
+		{"unknown user", "CN=attacker.com,OU=NATS.io", _EMPTY_},
+		{"anonymous", _EMPTY_, _EMPTY_},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ci := &mqttConnInfo{clientID: "mqtt", cleanSess: true, user: test.user, pass: test.pass}
+			mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCNotAuthorized, false)
+		})
+	}
 }

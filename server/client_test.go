@@ -827,6 +827,14 @@ func TestSplitSubjectQueue(t *testing.T) {
 			sq: "foo  bar", wantSubject: []byte("foo"), wantQueue: []byte("bar")},
 		{name: "subject, queue, and extra token",
 			sq: "foo  bar fizz", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "empty",
+			sq: "", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "tab only",
+			sq: "\t", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "newline only",
+			sq: "\n", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
+		{name: "mixed whitespace",
+			sq: " \t\r\n", wantSubject: []byte(nil), wantQueue: []byte(nil), wantErr: true},
 	}
 
 	for _, c := range cases {
@@ -1106,6 +1114,73 @@ func TestClientSubscribeDenyWildcardOverlapBlocksDelivery(t *testing.T) {
 	}
 }
 
+func TestClientQueueScopedSubscribeDenyBlocksOnlyMatchingQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		deny      string
+		deniedQ   string
+		allowedQ  string
+		subject   string
+		subscribe string
+	}{
+		{
+			name:      "literal queue",
+			deny:      "admin.secret workers",
+			deniedQ:   "workers",
+			allowedQ:  "auditors",
+			subject:   "admin.secret",
+			subscribe: "admin.*",
+		},
+		{
+			name:      "wildcard queue",
+			deny:      "admin.secret work.*",
+			deniedQ:   "work.prod",
+			allowedQ:  "audit.prod",
+			subject:   "admin.secret",
+			subscribe: "admin.*",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := DefaultOptions()
+			opts.Users = []*User{
+				{
+					Username: "attacker",
+					Password: "pass",
+					Permissions: &Permissions{
+						Subscribe: &SubjectPermission{
+							Allow: []string{">"},
+							Deny:  []string{tc.deny},
+						},
+					},
+				},
+				{Username: "publisher", Password: "pass"},
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			attacker := natsConnect(t, s.ClientURL(), nats.UserInfo("attacker", "pass"))
+			defer attacker.Close()
+			publisher := natsConnect(t, s.ClientURL(), nats.UserInfo("publisher", "pass"))
+			defer publisher.Close()
+
+			denied := natsQueueSubSync(t, attacker, tc.subscribe, tc.deniedQ)
+			allowed := natsQueueSubSync(t, attacker, tc.subscribe, tc.allowedQ)
+			plain := natsSubSync(t, attacker, tc.subscribe)
+			natsFlush(t, attacker)
+
+			natsPub(t, publisher, tc.subject, []byte("secret"))
+			natsFlush(t, publisher)
+
+			if _, err := denied.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+				t.Fatalf("Expected matching queue subscription to be denied, got %v", err)
+			}
+			require_Equal(t, "secret", string(natsNexMsg(t, allowed, time.Second).Data))
+			require_Equal(t, "secret", string(natsNexMsg(t, plain, time.Second).Data))
+		})
+	}
+}
+
 func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
 	c := &client{}
 	c.setPermissions(&Permissions{
@@ -1121,6 +1196,28 @@ func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
 
 	require_True(t, c.canSubscribe("foo.*"))
 	require_True(t, c.mperms == nil)
+}
+
+func TestClientSetPermissionsPublishDenyQueueQualifierFailsClosed(t *testing.T) {
+	c := &client{srv: New(&Options{})}
+	c.setPermissions(&Permissions{
+		Publish: &SubjectPermission{Deny: []string{"admin.secret workers"}},
+	})
+	np, _ := c.perms.pub.deny.NumInterest("admin.secret")
+	require_Equal(t, 1, np)
+}
+
+func TestClientPublicPermissionsPreservesQueueQualifier(t *testing.T) {
+	c := &client{}
+	c.setPermissions(&Permissions{
+		Subscribe: &SubjectPermission{
+			Allow: []string{"events.* readers"},
+			Deny:  []string{"admin.secret workers"},
+		},
+	})
+	perms := c.publicPermissions()
+	require_Equal(t, "events.* readers", perms.Subscribe.Allow[0])
+	require_Equal(t, "admin.secret workers", perms.Subscribe.Deny[0])
 }
 
 func TestClientPubWithQueueSubNoEcho(t *testing.T) {
@@ -3332,6 +3429,67 @@ func TestTLSClientHandshakeFirstFallbackDelayAndAllowNonTLS(t *testing.T) {
 	require_NoError(t, err)
 	defer nc.Close()
 	checkConnInfo(false, false)
+}
+
+func TestTLSClientNoticeWithAllowNonTLS(t *testing.T) {
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/server-cert.pem",
+		KeyFile:  "../test/configs/certs/server-key.pem",
+		CaFile:   "../test/configs/certs/ca.pem",
+	}
+	tlsConfig, err := GenTLSConfig(tc)
+	require_NoError(t, err)
+
+	const (
+		tlsRequired  = "TLS required for client connections"
+		tlsAvailable = "TLS available for client connections"
+	)
+	for _, test := range []struct {
+		name        string
+		allowNonTLS bool
+		first       bool
+		fallback    time.Duration
+		expected    string
+	}{
+		{"tls only", false, false, 0, tlsRequired},
+		{"allow non tls", true, false, 0, tlsAvailable},
+		// With "TLS first" and no fallback delay, non TLS clients are rejected
+		// even with allow_non_tls, so TLS is really required.
+		{"allow non tls and tls first", true, true, 0, tlsRequired},
+		// But with a fallback delay, they are accepted once it has expired.
+		{"allow non tls and tls first with fallback", true, true, 25 * time.Millisecond, tlsAvailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := DefaultOptions()
+			o.TLSConfig = tlsConfig.Clone()
+			o.AllowNonTLS = test.allowNonTLS
+			o.TLSHandshakeFirst = test.first
+			o.TLSHandshakeFirstFallback = test.fallback
+
+			s, err := NewServer(o)
+			require_NoError(t, err)
+			defer s.Shutdown()
+
+			// Set the logger before starting the server so that the notices
+			// emitted by the client accept loop are captured.
+			l := &captureNoticeLogger{}
+			s.SetLogger(l, false, false)
+			go s.Start()
+			require_NoError(t, s.readyForConnections(time.Second))
+
+			var notices []string
+			l.Lock()
+			for _, n := range l.notices {
+				if strings.HasPrefix(n, "TLS ") && strings.HasSuffix(n, " for client connections") {
+					notices = append(notices, n)
+				}
+			}
+			l.Unlock()
+			if len(notices) != 1 || notices[0] != test.expected {
+				t.Fatalf("Expected notice %q, got %q", test.expected, notices)
+			}
+		})
+	}
 }
 
 func TestTLSClientHandshakeFirstAndInProcessConnection(t *testing.T) {

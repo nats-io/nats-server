@@ -695,7 +695,7 @@ func checkMsgHeadersPreClusteredProposal(
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok = sources[origStream]; !ok {
+			if sources[origStream] == nil {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]
@@ -1077,11 +1077,11 @@ func recalculateClusteredSeq(mset *stream, needStreamLock bool) (lseq uint64) {
 // mset.clMu lock must be held.
 func commitSingleMsg(
 	diff *batchStagedDiff, mset *stream, subject string, reply string, hdr []byte, msg []byte, name string,
-	jsa *jsAccount, mt *msgTrace, node RaftNode, replicas int, lseq uint64,
+	jsa *jsAccount, mt *msgTrace, node RaftNode, term uint64, replicas int, lseq uint64,
 ) error {
 	// Do proposal.
 	esm := encodeStreamMsgAllowCompress(subject, reply, hdr, msg, mset.clseq, time.Now().UnixNano(), false)
-	if err := node.Propose(esm); err != nil {
+	if err := node.Propose(term, esm); err != nil {
 		return err
 	}
 

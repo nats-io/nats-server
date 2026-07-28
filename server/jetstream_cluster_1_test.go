@@ -4246,6 +4246,324 @@ func TestJetStreamClusterConsumerScaleUp(t *testing.T) {
 	c.waitOnConsumerLeader("$G", "TEST", "DUR")
 }
 
+func TestJetStreamClusterStreamScaleFromAndToR1SkipsTeardown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	cfg := &nats.StreamConfig{
+		Name:     "S",
+		Sources:  []*nats.StreamSource{{Name: "ORIGIN"}},
+		Replicas: 1,
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sl := c.streamLeader(globalAccountName, "S")
+	mset, err := sl.GlobalAccount().lookupStream("S")
+	require_NoError(t, err)
+
+	// Wait for the source consumer to be running and capture its subscription as
+	// a canary. A setLeader teardown stops the source consumers and would have
+	// to recreate this subscription.
+	var canary *subscription
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		for _, si := range mset.sources {
+			if si.sub != nil {
+				canary = si.sub
+				return nil
+			}
+		}
+		return fmt.Errorf("source consumer not active yet")
+	})
+
+	// The R1 leader stores the coerced term 1.
+	mset.mu.RLock()
+	term := mset.term
+	mset.mu.RUnlock()
+	require_Equal(t, term, 1)
+
+	// Scale up. The same server is preferred to win the election, at term 1,
+	// which means setLeader skips the teardown.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "S")
+	require_True(t, c.streamLeader(globalAccountName, "S") == sl)
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.node == nil {
+			return fmt.Errorf("no raft node yet")
+		}
+		if mset.term != 1 {
+			return fmt.Errorf("expected mset.term 1, got %d", mset.term)
+		}
+		// Although the teardown was skipped, the leader must have subscribed to
+		// respond to sync requests now that it's clustered.
+		if mset.syncSub == nil {
+			return fmt.Errorf("expected sync subscription")
+		}
+		return nil
+	})
+
+	// The source consumer must not have been torn down and recreated.
+	mset.mu.RLock()
+	var sub *subscription
+	for _, si := range mset.sources {
+		sub = si.sub
+	}
+	mset.mu.RUnlock()
+	require_True(t, sub == canary)
+
+	// Messages flowing in through the source must replicate to the new followers.
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "S")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 20 {
+			return fmt.Errorf("expected 20 messages, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Move stream leadership away so the term moves past 1.
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "S"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "S")
+
+	// Re-capture the canary on the new leader, which was elected at term > 1.
+	nl := c.streamLeader(globalAccountName, "S")
+	mset, err = nl.globalAccount().lookupStream("S")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.term <= 1 {
+			return fmt.Errorf("expected mset.term > 1, got %d", mset.term)
+		}
+		canary = nil
+		for _, si := range mset.sources {
+			if si.sub != nil {
+				canary = si.sub
+			}
+		}
+		if canary == nil {
+			return fmt.Errorf("source consumer not active yet")
+		}
+		return nil
+	})
+
+	// Scale back down. The current leader is always retained, and although it was
+	// elected at term > 1 it remains the continuing leader, so setLeader skips the
+	// teardown and stores the coerced term 1.
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "S")
+	require_True(t, c.streamLeader(globalAccountName, "S") == nl)
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if mset.node != nil {
+			return fmt.Errorf("raft node not removed yet")
+		}
+		if mset.term != 1 {
+			return fmt.Errorf("expected mset.term 1, got %d", mset.term)
+		}
+		return nil
+	})
+
+	// The source consumer must still not have been torn down and recreated.
+	mset.mu.RLock()
+	sub = nil
+	for _, si := range mset.sources {
+		sub = si.sub
+	}
+	mset.mu.RUnlock()
+	require_True(t, sub == canary)
+
+	// Messages flowing in through the source must still be stored after the scale-down.
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "S")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 30 {
+			return fmt.Errorf("expected 30 messages, got %d", state.Msgs)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerScaleFromAndToR1SkipsTeardown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	cfg := &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy, Replicas: 1}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	for range 20 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "DUR")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "DUR")
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("DUR")
+	require_NotNil(t, o)
+
+	// Capture the ack subscription as a canary. A setLeader teardown would have
+	// to unsubscribe and recreate it. The R1 leader stores the coerced term 1.
+	o.mu.RLock()
+	canary, term := o.ackSub, o.term
+	o.mu.RUnlock()
+	require_NotNil(t, canary)
+	require_Equal(t, term, 1)
+
+	// Scale up. The same server is preferred to win the election, at term 1,
+	// which means setLeader skips the teardown.
+	cfg.Replicas = 3
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// The scale-up must have spun up the proposal loop, without tearing down
+	// the running consumer.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.node == nil {
+			return fmt.Errorf("no raft node yet")
+		}
+		if o.term != 1 {
+			return fmt.Errorf("expected o.term 1, got %d", o.term)
+		}
+		if o.pch == nil {
+			return fmt.Errorf("no proposal channel yet")
+		}
+		return nil
+	})
+	o.mu.RLock()
+	same := o.ackSub == canary
+	o.mu.RUnlock()
+	require_True(t, same)
+
+	// Acks after the scale-up must be replicated to the new followers.
+	msgs, err = sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	// Move consumer leadership away so the term moves past 1.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "DUR"), nil, 5*time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "DUR")
+
+	// The new leader must agree on the state that was proposed since the scale-up.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("TEST", "DUR")
+		if err != nil {
+			return err
+		}
+		if ci.AckFloor.Consumer != 20 {
+			return fmt.Errorf("ack floor %d, expected 20", ci.AckFloor.Consumer)
+		}
+		if ci.NumPending != 0 {
+			return fmt.Errorf("num pending %d, expected 0", ci.NumPending)
+		}
+		return nil
+	})
+
+	// Re-capture the canary on the new leader, which was elected at term > 1.
+	cl = c.consumerLeader(globalAccountName, "TEST", "DUR")
+	mset, err = cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o = mset.lookupConsumer("DUR")
+	require_NotNil(t, o)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.term <= 1 {
+			return fmt.Errorf("expected o.term > 1, got %d", o.term)
+		}
+		if o.ackSub == nil {
+			return fmt.Errorf("no ack subscription yet")
+		}
+		return nil
+	})
+	o.mu.RLock()
+	canary = o.ackSub
+	o.mu.RUnlock()
+
+	// Scale back down to R1. The current leader is always retained, and although
+	// it was elected at term > 1 it remains the continuing leader, so setLeader
+	// skips the teardown, clears the proposal channel/loop, and stores the
+	// coerced term 1.
+	cfg.Replicas = 1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.node != nil {
+			return fmt.Errorf("raft node not removed yet")
+		}
+		if o.pch != nil {
+			return fmt.Errorf("proposal channel not cleared yet")
+		}
+		if o.term != 1 {
+			return fmt.Errorf("expected o.term 1, got %d", o.term)
+		}
+		return nil
+	})
+	o.mu.RLock()
+	same = o.ackSub == canary
+	o.mu.RUnlock()
+	require_True(t, same)
+}
+
 func TestJetStreamClusterPeerOffline(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
@@ -8390,6 +8708,197 @@ func TestJetStreamClusterConsumerHealthCheckStreamMissingNoLockLeak(t *testing.T
 	}
 }
 
+func TestJetStreamClusterProcessStreamAssignmentResults(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// The result handler runs on the metadata leader.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Malformed payloads and unknown accounts are dropped silently.
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, []byte("{not-json"))
+	badAcc, err := json.Marshal(&streamAssignmentResult{Account: "DOES_NOT_EXIST", Stream: "TEST"})
+	require_NoError(t, err)
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, badAcc)
+
+	// Reset the assignment so it's treated as not-yet-responded, and ensure we're
+	// inside the canDelete window.
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_True(t, sa != nil)
+	sa.clearResponded()
+	sa.Created = time.Now()
+	mjs.mu.Unlock()
+
+	// Craft a rejection result, as a member sends after a failed local create.
+	result := &streamAssignmentResult{
+		Account: globalAccountName,
+		Stream:  "TEST",
+		Response: &JSApiStreamCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiStreamCreateResponseType,
+				Error: NewJSStreamLimitsError(errors.New("synthetic limits error")),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The handler forwards the response, so the assignment is now marked responded.
+	mjs.mu.Lock()
+	responded := sa.hasResponded()
+	mjs.mu.Unlock()
+	require_True(t, responded)
+
+	// The rejected assignment must be cleaned up from the meta layer.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.Lock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		mjs.mu.Unlock()
+		if sa != nil {
+			return fmt.Errorf("stream assignment still present")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterProcessStreamAssignmentResultsRetry(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ml := sc.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Determine the assigned cluster and an alternate to retry into.
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_True(t, sa != nil)
+	assignedCluster := sa.Client.Cluster
+	var alternate string
+	for _, cl := range sc.clusters {
+		if cl.name != assignedCluster {
+			alternate = cl.name
+			break
+		}
+	}
+	// Prepare the assignment so the retry branch is eligible: fresh, unresponded,
+	// no fixed placement, and with an alternate cluster to fall back to.
+	sa.clearResponded()
+	sa.Created = time.Now()
+	sa.Config.Placement = nil
+	sa.Client.Alternates = []string{alternate}
+	mjs.mu.Unlock()
+	require_NotEqual(t, alternate, _EMPTY_)
+
+	// Craft an insufficient-resources rejection.
+	result := &streamAssignmentResult{
+		Account: globalAccountName,
+		Stream:  "TEST",
+		Response: &JSApiStreamCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiStreamCreateResponseType,
+				Error: NewJSInsufficientResourcesError(),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+
+	mjs.processStreamAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The retry branch re-proposes the assignment and flags it as reassigning.
+	mjs.mu.Lock()
+	nsa := mjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+	responded := nsa.hasResponded()
+	reassigning := nsa.reassigning
+	mjs.mu.Unlock()
+	// Retry returns before responding, so the client is not told it failed.
+	require_False(t, responded)
+	require_True(t, reassigning)
+}
+
+func TestJetStreamClusterProcessConsumerAssignmentResults(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// Malformed payloads and unknown accounts are dropped silently.
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, []byte("{not-json"))
+	badAcc, err := json.Marshal(&consumerAssignmentResult{Account: "DOES_NOT_EXIST", Stream: "TEST", Consumer: "CONSUMER"})
+	require_NoError(t, err)
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, badAcc)
+
+	mjs.mu.Lock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_True(t, ca != nil)
+	ca.clearResponded()
+	ca.Created = time.Now()
+	mjs.mu.Unlock()
+
+	result := &consumerAssignmentResult{
+		Account:  globalAccountName,
+		Stream:   "TEST",
+		Consumer: "CONSUMER",
+		Response: &JSApiConsumerCreateResponse{
+			ApiResponse: ApiResponse{
+				Type:  JSApiConsumerCreateResponseType,
+				Error: NewJSConsumerStoreFailedError(errors.New("synthetic store error")),
+			},
+		},
+	}
+	b, err := json.Marshal(result)
+	require_NoError(t, err)
+	mjs.processConsumerAssignmentResults(nil, nil, nil, _EMPTY_, _EMPTY_, b)
+
+	// The handler is synchronous: the assignment must now be marked responded and
+	// carry the recorded assignment-level error.
+	mjs.mu.Lock()
+	responded := ca.hasResponded()
+	caErr := ca.err
+	mjs.mu.Unlock()
+	require_True(t, responded)
+	require_Error(t, caErr, NewJSClusterNotAssignedError())
+}
+
 func TestJetStreamClusterStreamHealthCheckRecoversAfterSuccessfulUpdate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8584,7 +9093,7 @@ func TestJetStreamClusterPeerRemoveStreamConsumerDesync(t *testing.T) {
 	mset.clseq++
 	mset.mu.Unlock()
 	// Propose both remove peer and a normal entry within the same append entry.
-	err = rn.ProposeMulti([]*Entry{
+	err = rn.ProposeMulti(rn.Term(), []*Entry{
 		newEntry(EntryRemovePeer, []byte(peer)),
 		newEntry(EntryNormal, esm),
 	})
@@ -8621,7 +9130,7 @@ func TestJetStreamClusterPeerRemoveStreamConsumerDesync(t *testing.T) {
 	peer = rs.Name()
 	rn = o.raftNode()
 	// Propose both remove peer and a normal entry within the same append entry.
-	err = rn.ProposeMulti([]*Entry{
+	err = rn.ProposeMulti(rn.Term(), []*Entry{
 		newEntry(EntryRemovePeer, []byte(peer)),
 		newEntry(EntryNormal, updateDeliveredBuffer()),
 	})
@@ -8942,7 +9451,7 @@ func TestJetStreamClusterUpgradeStreamVersioning(t *testing.T) {
 	rg, perr := sjs.createGroupForStream(ci, &cfg)
 	require_True(t, perr == nil)
 	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Client: ci, Created: time.Now().UTC()}
-	require_NoError(t, rn.Propose(encodeAddStreamAssignment(sa)))
+	require_NoError(t, rn.Propose(rn.Term(), encodeAddStreamAssignment(sa)))
 
 	// Wait for the stream assignment to have gone through.
 	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
@@ -9034,9 +9543,10 @@ func TestJetStreamClusterUpgradeConsumerVersioning(t *testing.T) {
 
 	// Create and propose consumer assignment.
 	ci := &ClientInfo{Cluster: "R3S", Account: globalAccountName}
-	rg := sjs.cluster.createGroupForConsumer(cfg, sa)
+	rg, cerr := sjs.cluster.createGroupForConsumer(cfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{Group: rg, Stream: "TEST", Name: "CONSUMER", Config: cfg, Client: ci, Created: time.Now().UTC()}
-	require_NoError(t, rn.Propose(encodeAddConsumerAssignment(ca)))
+	require_NoError(t, rn.Propose(rn.Term(), encodeAddConsumerAssignment(ca)))
 
 	// Wait for the consumer assignment to have gone through.
 	checkFor(t, 2*time.Second, 500*time.Millisecond, func() error {
@@ -9948,7 +10458,7 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	// Make the upper layer snapshot by sending leader change signal.
 	// It doesn't matter that we're already leader, it still gets handled.
 	// Previously this used the mqch, but that now only snapshots on shutdown.
-	n.leadc <- true
+	n.leadc <- leadChange{isLeader: true, term: n.Term()}
 
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 		n.Lock()
@@ -10865,7 +11375,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		Created: time.Now().UTC(),
 		Client:  ci,
 	}
-	err := cc.meta.Propose(encodeAddStreamAssignment(sa))
+	err := cc.meta.Propose(cc.meta.Term(), encodeAddStreamAssignment(sa))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -10921,7 +11431,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 	// Update a stream that's unsupported.
 	sjs.mu.Lock()
 	scfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
-	err = cc.meta.Propose(encodeUpdateStreamAssignment(sa))
+	err = cc.meta.Propose(cc.meta.Term(), encodeUpdateStreamAssignment(sa))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -10961,7 +11471,8 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		Replicas: 3,
 		Metadata: map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt - 1)},
 	}
-	rg = cc.createGroupForConsumer(ccfg, sa)
+	rg, cerr := cc.createGroupForConsumer(ccfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{
 		Config:  ccfg,
 		Group:   rg,
@@ -10970,7 +11481,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 		Created: time.Now().UTC(),
 		Client:  ci,
 	}
-	err = cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(ca))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -11042,7 +11553,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterAssetCreateOrUpdate(t *tes
 	// Update a consumer (with compressed data) that's unsupported.
 	ccfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
 	sjs.mu.Lock()
-	err = cc.meta.Propose(encodeAddConsumerAssignmentCompressed(ca))
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignmentCompressed(ca))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -11170,7 +11681,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		Created: time.Now().UTC(),
 		Client:  ci,
 	}
-	err := cc.meta.Propose(encodeAddStreamAssignment(sa))
+	err := cc.meta.Propose(cc.meta.Term(), encodeAddStreamAssignment(sa))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnStreamLeader(globalAccountName, "DowngradeStreamTest")
@@ -11222,7 +11733,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	// Update a stream to be unsupported.
 	sjs.mu.Lock()
 	scfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
-	err = cc.meta.Propose(encodeUpdateStreamAssignment(sa))
+	err = cc.meta.Propose(cc.meta.Term(), encodeUpdateStreamAssignment(sa))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -11256,7 +11767,8 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		Replicas:   3,
 		MaxWaiting: JSWaitQueueDefaultMax,
 	}
-	rg = cc.createGroupForConsumer(ccfg, sa)
+	rg, cerr := cc.createGroupForConsumer(ccfg, sa)
+	require_True(t, cerr == nil)
 	ca := &consumerAssignment{
 		Config:  ccfg,
 		Group:   rg,
@@ -11265,7 +11777,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 		Created: time.Now().UTC(),
 		Client:  ci,
 	}
-	err = cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(ca))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnConsumerLeader(globalAccountName, "DowngradeConsumerTest", "DowngradeConsumerTest")
@@ -11306,7 +11818,7 @@ func TestJetStreamClusterOfflineStreamAndConsumerAfterDowngrade(t *testing.T) {
 	// Update a consumer to be unsupported.
 	ccfg.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
 	sjs.mu.Lock()
-	err = cc.meta.Propose(encodeAddConsumerAssignment(ca))
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(ca))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
@@ -11390,14 +11902,15 @@ func TestJetStreamClusterOfflineStreamAndConsumerUpdate(t *testing.T) {
 	// Update a consumer to be unsupported.
 	sjs.mu.Lock()
 	ca.Config.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
-	err = sjs.cluster.meta.Propose(encodeAddConsumerAssignment(ca))
+	meta := sjs.cluster.meta
+	err = meta.Propose(meta.Term(), encodeAddConsumerAssignment(ca))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 
 	// Update the stream to be unsupported.
 	sjs.mu.Lock()
 	sa.Config.Metadata = map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)}
-	err = sjs.cluster.meta.Propose(encodeUpdateStreamAssignment(sa))
+	err = meta.Propose(meta.Term(), encodeUpdateStreamAssignment(sa))
 	sjs.mu.Unlock()
 	require_NoError(t, err)
 	c.waitOnAllCurrent()
