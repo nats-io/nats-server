@@ -2802,6 +2802,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
+	// FIXME(mvv): scaffolded desired state into the move API for now, this endpoint needs to be refactored
 	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
@@ -2821,6 +2822,8 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
+				// Keep only the new peers.
+				peers = peers[len(peers)-cfg.Replicas:]
 				break
 			}
 			errs.accumulate(e)
@@ -2830,6 +2833,9 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
+	} else {
+		// Keep only the new peers.
+		peers = peers[len(peers)-cfg.Replicas:]
 	}
 
 	cfg.Placement = origPlacement
@@ -2892,20 +2898,56 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	streamFound := false
 	cfg := StreamConfig{}
 	currPeers := []string{}
-	js.mu.RLock()
+	js.mu.Lock()
 	sa := js.streamAssignmentOrInflight(accName, streamName)
 	if sa != nil {
 		cfg = *sa.Config.clone()
 		streamFound = true
 		currPeers = copyStrings(sa.Group.Peers)
 	}
-	js.mu.RUnlock()
 
 	if !streamFound {
+		js.mu.Unlock()
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
+
+	// FIXME(mvv): scaffolded desired state into the cancel move API for now, this endpoint needs to be refactored
+	if sa.Group.Desired != nil {
+		origin := sa.Group.Desired.Origin
+		if origin == nil {
+			js.mu.Unlock()
+			resp.Error = NewJSStreamMoveNotInProgressError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
+
+		csa := sa.copyGroup()
+		// Need to respond to the client that cancels.
+		csa.Reply = reply
+		// Revert replicas and placement in the config immediately.
+		cfg.Replicas = origin.Replicas
+		cfg.Placement = origin.Placement
+		csa.Config = &cfg
+		// Move back to the initial peer set via desired state.
+		csa.Group.Peers = copyStrings(origin.Peers)
+		csa.Group.Cluster = origin.Cluster
+		csa.Group = sa.Group.withDesired(csa.Group)
+		// FIXME(mvv): does origin need to be cleared now?
+
+		s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
+			origin.Replicas, accName, streamName, s.peerSetToNames(currPeers), s.peerSetToNames(origin.Peers))
+
+		if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
+			js.mu.Unlock()
+			return
+		}
+		cc.trackInflightStreamProposal(accName, csa, false)
+		js.mu.Unlock()
+		return
+	}
+	js.mu.Unlock()
 
 	if len(currPeers) <= cfg.Replicas {
 		resp.Error = NewJSStreamMoveNotInProgressError()

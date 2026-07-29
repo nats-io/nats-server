@@ -66,8 +66,7 @@ type RaftNode interface {
 	ID() string
 	Group() string
 	Peers() []*Peer
-	ProposeKnownPeers(knownPeers []string)
-	UpdateKnownPeers(knownPeers []string)
+	PeerNames() []string
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	MembershipChangeInProgress() bool
@@ -213,8 +212,9 @@ type raft struct {
 
 	extSt extensionState // Extension state
 
-	track bool // Whether out of resources checking is enabled.
-	dflag bool // Debug flag
+	track   bool // Whether out of resources checking is enabled.
+	dflag   bool // Debug flag
+	managed bool // Peers managed by reconciliation loop, not automatic peer addition.
 
 	psubj  string // Proposals subject
 	rpsubj string // Remove peers subject
@@ -317,6 +317,7 @@ type RaftConfig struct {
 	Store    string
 	Log      WAL
 	Track    bool
+	Managed  bool
 	Observer bool
 
 	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
@@ -463,6 +464,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		wtype:    cfg.Log.Type(),
 		dios:     s.diskIOSemaphore(),
 		track:    cfg.Track,
+		managed:  cfg.Managed,
 		peers:    make(map[string]*lps),
 		acks:     make(map[uint64]map[string]struct{}),
 		pae:      make(map[uint64]*appendEntry),
@@ -2276,31 +2278,6 @@ func (n *raft) Peers() []*Peer {
 	return peers
 }
 
-// Update and propose our known set of peers.
-func (n *raft) ProposeKnownPeers(knownPeers []string) {
-	n.Lock()
-	defer n.Unlock()
-	// If we are the leader update and send this update out.
-	if n.State() != Leader {
-		return
-	}
-	n.updateKnownPeersLocked(knownPeers)
-	n.sendPeerState()
-}
-
-// Update our known set of peers.
-func (n *raft) UpdateKnownPeers(knownPeers []string) {
-	n.Lock()
-	n.updateKnownPeersLocked(knownPeers)
-	n.Unlock()
-}
-
-func (n *raft) updateKnownPeersLocked(knownPeers []string) {
-	// Process like peer state update.
-	ps := &peerState{knownPeers, len(knownPeers), n.extSt}
-	n.processPeerState(ps)
-}
-
 // ApplyQ returns the apply queue that new commits will be sent to for the
 // upper layer to apply.
 func (n *raft) ApplyQ() *ipQueue[*CommittedEntry] { return n.apply }
@@ -3887,7 +3864,7 @@ func (n *raft) trackPeer(peer string) error {
 			isRemoved = false
 		}
 	}
-	if n.State() == Leader {
+	if !n.managed && n.State() == Leader {
 		if _, ok := n.peers[peer]; !ok {
 			// Check if this peer had been removed previously.
 			needPeerAdd = !isRemoved
@@ -3896,6 +3873,9 @@ func (n *raft) trackPeer(peer string) error {
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now()
 	}
+	// FIXME(mvv): if managed, could track meta assigned but not tracked peers here
+	//  that could help in preserving quorum if the meta assignment was updated but
+	//  it's not coming up on the new peer
 	n.Unlock()
 
 	if needPeerAdd {
@@ -4959,6 +4939,12 @@ func decodePeerState(buf []byte) (*peerState, error) {
 		ps.domainExt = extensionState(le.Uint16(buf[ri:]))
 	}
 	return ps, nil
+}
+
+func (n *raft) PeerNames() []string {
+	n.RLock()
+	defer n.RUnlock()
+	return n.peerNames()
 }
 
 // Lock should be held.

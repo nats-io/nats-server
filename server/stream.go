@@ -1170,7 +1170,6 @@ func (mset *stream) streamAssignment() *streamAssignment {
 
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	var node RaftNode
-	var peers []string
 
 	mset.mu.RLock()
 	js := mset.js
@@ -1180,7 +1179,6 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		js.mu.RLock()
 		if sa.Group != nil {
 			node = sa.Group.node
-			peers = sa.Group.Peers
 		}
 		js.mu.RUnlock()
 	}
@@ -1195,9 +1193,6 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 
 	// Set our node.
 	mset.node = node
-	if mset.node != nil {
-		mset.node.UpdateKnownPeers(peers)
-	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {

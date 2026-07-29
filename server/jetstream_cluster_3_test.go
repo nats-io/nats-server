@@ -7492,6 +7492,9 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	cfg.Replicas = 1
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+	// Wait for scale down to finish, since the group is NOT changed if scaling
+	// too fast since it would remain replicated throughout.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 	// Publish a couple more messages while it's R1.
 	for range 2 {
 		_, err = js.Publish("foo", []byte("B"))
@@ -7600,6 +7603,9 @@ func TestJetStreamClusterStreamRescaleCatchup(t *testing.T) {
 		cfg.Replicas = 1
 		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
+		// Wait for scale down to finish, since the group is NOT changed if scaling
+		// too fast since it would remain replicated throughout.
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		cfg.Replicas = 3
 		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
@@ -7745,10 +7751,13 @@ func TestJetStreamClusterConsumerScaleDownChangesRaftGroup(t *testing.T) {
 	n := mset.lookupConsumer("CONSUMER").raftNode()
 	old := n.Group()
 
-	// Scale stream down and back up.
+	// Scale consumer down and back up.
 	cfg.Replicas = 1
 	_, err = js.UpdateConsumer("TEST", cfg)
 	require_NoError(t, err)
+	// Wait for scale down to finish, since the group is NOT changed if scaling
+	// too fast since it would remain replicated throughout.
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 	cfg.Replicas = 3
 	_, err = js.UpdateConsumer("TEST", cfg)
 	require_NoError(t, err)
@@ -7830,10 +7839,13 @@ func TestJetStreamClusterConsumerRescaleCatchup(t *testing.T) {
 		rs.Shutdown()
 		rs.WaitForShutdown()
 
-		// Scale stream down and back up.
+		// Scale consumer down and back up.
 		cfg.Replicas = 1
 		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
+		// Wait for scale down to finish, since the group is NOT changed if scaling
+		// too fast since it would remain replicated throughout.
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 		cfg.Replicas = 3
 		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
@@ -11024,18 +11036,20 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 	mjs.mu.RUnlock()
 	require_Len(t, len(streamPeers), 5)
 
-	// Shut down three of the stream's peers. Only two of the five stream peers remain online.
+	// Shut down three of the stream's peers. Only two of the five stream peers
+	// remain online, so the stream's group has lost quorum.
 	sl := c.streamLeader(globalAccountName, "TEST")
 	var offline []*Server
+	var online []string
 	for _, p := range streamPeers {
-		if len(offline) == 3 {
-			break
-		}
-		if s := peerSrv[p]; s != sl && s != ml {
+		if s := peerSrv[p]; s != sl && s != ml && len(offline) < 3 {
 			offline = append(offline, s)
+		} else {
+			online = append(online, p)
 		}
 	}
 	require_Len(t, len(offline), 3)
+	require_Len(t, len(online), 2)
 	for _, s := range offline {
 		s.Shutdown()
 	}
@@ -11050,8 +11064,11 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 		return nil
 	})
 
-	// Scale the stream down to R3. Only two of the five peers are online, but
-	// the stream must still end up with the requested number of replicas.
+	// Scale the stream down to R3. The update is accepted and recorded as
+	// desired state, but with a majority of the peers offline the group can
+	// not commit membership changes. The scale down must stay pending rather
+	// than override quorum, which could select peers that miss acknowledged
+	// writes or split the group.
 	_, err = js.UpdateStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
@@ -11059,8 +11076,7 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 	})
 	require_NoError(t, err)
 
-	// Wait for the scale down to be applied in the meta layer.
-	var newPeers []string
+	// Wait for the desired scale down to be registered in the meta layer.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		mjs.mu.RLock()
 		defer mjs.mu.RUnlock()
@@ -11068,24 +11084,65 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 		if sa == nil {
 			return fmt.Errorf("stream assignment not found")
 		}
-		if len(sa.Group.Peers) == len(streamPeers) {
-			return fmt.Errorf("scale down not applied yet, still %d peers", len(sa.Group.Peers))
+		if sa.Group.Desired == nil {
+			return fmt.Errorf("desired state not registered yet")
+		}
+		return nil
+	})
+
+	// While the group has no quorum the scale down must remain pending and
+	// the assigned peer set must remain unchanged.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mjs.mu.RLock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		var peers int
+		var pending bool
+		if sa != nil {
+			peers = len(sa.Group.Peers)
+			pending = sa.Group.Desired != nil
+		}
+		mjs.mu.RUnlock()
+		require_True(t, sa != nil)
+		require_Len(t, peers, 5)
+		require_True(t, pending)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Restart one of the offline peers. Three of the five peers are online
+	// again, restoring quorum, so the scale down can now proceed safely by
+	// committing membership changes through the group.
+	c.restartServer(offline[0])
+
+	// Wait for the scale down to complete in the meta layer.
+	var newPeers []string
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("scale down still pending")
+		}
+		if len(sa.Group.Peers) != 3 {
+			return fmt.Errorf("expected 3 peers, got %d", len(sa.Group.Peers))
 		}
 		newPeers = copyStrings(sa.Group.Peers)
 		return nil
 	})
 
-	// The stream peer set must reflect the requested replica count.
-	require_Len(t, len(newPeers), 3)
-
-	// The online peers must be preferred and part of the new peer set.
-	for _, p := range streamPeers {
-		if slices.Contains(offline, peerSrv[p]) {
-			continue
-		}
+	// The peers that stayed online must be preferred and part of the new peer set.
+	for _, p := range online {
 		if !slices.Contains(newPeers, p) {
 			t.Fatalf("Online peer %q not selected by the scale down", peerSrv[p].Name())
 		}
+	}
+
+	// The new peer set must be a subset of the original peer set.
+	for _, p := range newPeers {
+		require_True(t, slices.Contains(streamPeers, p))
 	}
 }
 

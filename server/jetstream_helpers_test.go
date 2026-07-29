@@ -102,10 +102,23 @@ func (sc *supercluster) waitOnStreamLeader(account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
-			if leader := c.streamLeader(account, stream); leader != nil {
-				time.Sleep(200 * time.Millisecond)
-				return
+			leader := c.streamLeader(account, stream)
+			if leader == nil {
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
+			// Also wait for the stream leader to finish any scales/moves.
+			js := leader.getJetStream()
+			js.mu.RLock()
+			sa := js.streamAssignment(account, stream)
+			wait := sa == nil || (sa.Group != nil && sa.Group.Desired != nil)
+			js.mu.RUnlock()
+			if wait {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			time.Sleep(200 * time.Millisecond)
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -1439,11 +1452,23 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(200 * time.Millisecond)
-			return
+		leader := c.consumerLeader(account, stream, consumer)
+		if leader == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Also wait for the consumer leader to finish any scales/moves.
+		js := leader.getJetStream()
+		js.mu.RLock()
+		ca := js.consumerAssignment(account, stream, consumer)
+		wait := ca == nil || (ca.Group != nil && ca.Group.Desired != nil)
+		js.mu.RUnlock()
+		if wait {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		time.Sleep(200 * time.Millisecond)
+		return
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnConsumerLeader", map[string]any{
 		"cluster":  c.name,
@@ -1478,11 +1503,23 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(200 * time.Millisecond)
-			return
+		leader := c.streamLeader(account, stream)
+		if leader == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Also wait for the stream leader to finish any scales/moves.
+		js := leader.getJetStream()
+		js.mu.RLock()
+		sa := js.streamAssignment(account, stream)
+		wait := sa == nil || (sa.Group != nil && sa.Group.Desired != nil)
+		js.mu.RUnlock()
+		if wait {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		time.Sleep(200 * time.Millisecond)
+		return
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnStreamLeader", map[string]any{
 		"cluster": c.name,

@@ -2430,14 +2430,6 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 				m.AckSync()
 			}
 
-			// First make sure we disallow move and replica changes in same update.
-			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "MOVE",
-				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
-				Replicas:  replicas + 1,
-			})
-			require_Error(t, err, NewJSStreamMoveAndScaleError())
-
 			// Now move to new cluster.
 			si, err = js.UpdateStream(&nats.StreamConfig{
 				Name:      "MOVE",
@@ -2445,21 +2437,7 @@ func TestJetStreamSuperClusterMovingStreamsAndConsumers(t *testing.T) {
 				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
 			})
 			require_NoError(t, err)
-
-			checkFor(t, 10*time.Second, 500*time.Millisecond, func() error {
-				if si.Cluster.Name != "C1" {
-					return fmt.Errorf("Expected cluster of %q but got %q", "C1", si.Cluster.Name)
-				}
-				return nil
-			})
-
-			// Make sure we can not move an inflight stream and consumers, should error.
-			_, err = js.UpdateStream(&nats.StreamConfig{
-				Name:      "MOVE",
-				Replicas:  replicas,
-				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
-			})
-			require_Contains(t, err.Error(), "stream move already in progress")
+			require_Equal(t, si.Cluster.Name, "C1")
 
 			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 				si, err := js.StreamInfo("MOVE", nats.MaxWait(500*time.Millisecond))
@@ -3382,17 +3360,13 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
 		return nil
 	})
-	if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
-		t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
-		return
-	}
 	require_True(t, cancelResp.Error == nil)
 
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
-		if si.Config.Placement != nil {
-			return fmt.Errorf("expected placement to be cleared got: %+v", si.Config.Placement)
+		if !reflect.DeepEqual(si.Config.Placement, &nats.Placement{Tags: []string{"C1"}}) {
+			return fmt.Errorf("expected placement to be back to initial state got: %+v", si.Config.Placement)
 		}
 		return nil
 	})
@@ -3530,10 +3504,6 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 		require_NoError(t, err)
 		var cancelResp JSApiStreamUpdateResponse
 		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
-		if cancelResp.Error != nil && ErrorIdentifier(cancelResp.Error.ErrCode) == JSStreamMoveNotInProgress {
-			t.Skip("This can happen with delays, when Move completed before Cancel", cancelResp.Error)
-			return
-		}
 		require_True(t, cancelResp.Error == nil)
 
 		for _, sExpected := range streamPeerSrv {
