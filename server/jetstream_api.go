@@ -2745,7 +2745,11 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	if sa != nil {
 		cfg = *sa.Config.clone()
 		streamFound = true
-		currPeers = copyStrings(sa.Group.Peers)
+		if sa.Group.Desired != nil {
+			currPeers = copyStrings(sa.Group.Desired.Peers)
+		} else {
+			currPeers = copyStrings(sa.Group.Peers)
+		}
 		currCluster = sa.Group.Cluster
 	}
 	js.mu.RUnlock()
