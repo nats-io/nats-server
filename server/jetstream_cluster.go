@@ -169,8 +169,40 @@ type raftGroup struct {
 	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
 	ScaleUp   bool        `json:"scale_up,omitempty"`
+	// Desired holds the target placement while this group is being moved or
+	// scaled; it is nil when the group is stable.
+	Desired *desiredRaftGroup `json:"desired,omitempty"`
 	// Internal
 	node RaftNode
+}
+
+// desiredGroupPlacement specifies the desired peer set.
+// A stream or consumer raftGroup can be scaled or moved safely based on this desired state.
+type desiredRaftGroup struct {
+	ID string `json:"id"`
+	// Term is the raft term of the group leader driving this desired state. It acts as a
+	// fencing token; reconcile requests from older leadership terms are rejected.
+	Term      uint64   `json:"term,omitempty"`
+	Peers     []string `json:"peers"`
+	Cluster   string   `json:"cluster,omitempty"`
+	Preferred string   `json:"preferred,omitempty"`
+
+	ScaleUp   bool `json:"scale_up,omitempty"`
+	ScaleDown bool `json:"scale_down,omitempty"`
+
+	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
+}
+
+// desiredRaftGroupOrigin specifies the original properties of the asset before any desired state changes were made.
+// Multiple desired state changes MUST NOT update these values, only the initial values must be set, allowing to
+// revert to before any changes were made.
+type desiredRaftGroupOrigin struct {
+	Peers     []string   `json:"peers"`
+	Cluster   string     `json:"cluster,omitempty"`
+	Replicas  int        `json:"replicas"`
+	Placement *Placement `json:"placement,omitempty"`
+	// When changing between retention policies, this retention remains active until unset.
+	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
 // streamAssignment is what the meta controller uses to assign streams to peers.
@@ -2512,19 +2544,38 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 // Just copies over and changes out the group so it can be encoded.
 // Lock should be held.
 func (sa *streamAssignment) copyGroup() *streamAssignment {
-	csa, cg := sa.clone(), *sa.Group
-	csa.Group = &cg
-	csa.Group.Peers = copyStrings(sa.Group.Peers)
+	csa := sa.clone()
+	csa.Group = sa.Group.copyGroup()
 	return csa
 }
 
 // Just copies over and changes out the group so it can be encoded.
 // Lock should be held.
 func (ca *consumerAssignment) copyGroup() *consumerAssignment {
-	cca, cg := ca.clone(), *ca.Group
-	cca.Group = &cg
-	cca.Group.Peers = copyStrings(ca.Group.Peers)
+	cca := ca.clone()
+	cca.Group = ca.Group.copyGroup()
 	return cca
+}
+
+// copyGroup returns a copy of rg whose Peers slice and nested Desired placement
+// are independent of the original, so it can be mutated and encoded.
+// Lock should be held.
+func (rg *raftGroup) copyGroup() *raftGroup {
+	if rg == nil {
+		return nil
+	}
+	cg := *rg
+	cg.Peers = copyStrings(rg.Peers)
+	if rg.Desired != nil {
+		cd := *rg.Desired
+		cd.Peers = copyStrings(rg.Desired.Peers)
+		if rg.Desired.Origin != nil {
+			cr := *rg.Desired.Origin
+			cd.Origin = &cr
+		}
+		cg.Desired = &cd
+	}
+	return &cg
 }
 
 // Lock should be held.
@@ -11046,72 +11097,130 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	}
 	js.mu.RLock()
 	s := js.srv
-	if rg == nil || rg.node == nil {
+	if rg == nil || (rg.node == nil && rg.Desired == nil) {
 		js.mu.RUnlock()
 		return &ClusterInfo{
 			Name:   s.cachedClusterName(),
 			Leader: s.Name(),
 		}
 	}
-
 	// Capture what we need and let go of the lock to ensure that
 	// contention on Raft locks can't happen while holding JS lock.
 	n := rg.node
 	rgName := rg.Name
-	rgPeers := slices.Clone(rg.Peers)
+	rgPeers := copyStrings(rg.Peers)
+	var (
+		desired      *DesiredClusterInfo
+		desiredPeers []string
+	)
+	if d := rg.Desired; d != nil {
+		desired = &DesiredClusterInfo{
+			Name: d.Cluster,
+		}
+		// If desired state can be rolled back, include what can be rolled back to.
+		if d.Origin != nil {
+			desired.Origin = &DesiredClusterInfoOrigin{
+				Replicas:  d.Origin.Replicas,
+				Placement: d.Origin.Placement,
+				Retention: d.Origin.Retention,
+			}
+		}
+		// Don't populate peers if scaling down, since the peers aren't the desired set, it's
+		// the set that the group leader selects the peers to scale down to from.
+		if !d.ScaleDown {
+			desiredPeers = copyStrings(d.Peers)
+		}
+	}
 	js.mu.RUnlock()
 
 	ci := &ClusterInfo{
-		Name:        s.cachedClusterName(),
-		Leader:      s.serverNameForNode(n.GroupLeader()),
-		LeaderSince: n.LeaderSince(),
-		SystemAcc:   n.IsSystemAccount(),
-		TrafficAcc:  n.GetTrafficAccountName(),
-		RaftGroup:   rgName,
+		Name:      s.cachedClusterName(),
+		RaftGroup: rgName,
 	}
 
-	now := time.Now()
-	id, peers := n.ID(), n.Peers()
+	id := s.Node()
+	if n != nil {
+		ci.Leader = s.serverNameForNode(n.GroupLeader())
+		ci.LeaderSince = n.LeaderSince()
+		ci.SystemAcc = n.IsSystemAccount()
+		ci.TrafficAcc = n.GetTrafficAccountName()
 
-	// If we are leaderless, do not suppress putting us in the peer list.
-	if ci.Leader == _EMPTY_ {
-		id = _EMPTY_
-	}
-
-	for _, rp := range peers {
-		if rp.ID != id && slices.Contains(rgPeers, rp.ID) {
-			var lastSeen time.Duration
-			if now.After(rp.Last) && !rp.Last.IsZero() {
-				lastSeen = now.Sub(rp.Last)
-			}
-			current := rp.Current
-			if current && lastSeen > lostQuorumInterval {
-				current = false
-			}
-			// Create a peer info with common settings if the peer has not been seen
-			// yet (which can happen after the whole cluster is stopped and only some
-			// of the nodes are restarted).
-			pi := &PeerInfo{
-				Current: current,
-				Offline: true,
-				Active:  lastSeen,
-				Lag:     rp.Lag,
-				Peer:    rp.ID,
-			}
-			// If node is found, complete/update the settings.
-			if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
-				si := sir.(nodeInfo)
-				pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
-			} else {
-				// If not, then add a name that indicates that the server name
-				// is unknown at this time, and clear the lag since it is misleading
-				// (the node may not have that much lag).
-				// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
-				// would technically not be required, but keeping it for now.
-				pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
-			}
-			ci.Replicas = append(ci.Replicas, pi)
+		// If we are leaderless, do not suppress putting us in the peer list.
+		if ci.Leader == _EMPTY_ {
+			id = _EMPTY_
 		}
+
+		now := time.Now()
+		for _, rp := range n.Peers() {
+			// The peer is either in the actual or desired peer set.
+			if rp.ID != id && (slices.Contains(rgPeers, rp.ID) || slices.Contains(desiredPeers, rp.ID)) {
+				var lastSeen time.Duration
+				if now.After(rp.Last) && !rp.Last.IsZero() {
+					lastSeen = now.Sub(rp.Last)
+				}
+				current := rp.Current
+				if current && lastSeen > lostQuorumInterval {
+					current = false
+				}
+				// Create a peer info with common settings if the peer has not been seen
+				// yet (which can happen after the whole cluster is stopped and only some
+				// of the nodes are restarted).
+				pi := &PeerInfo{
+					Current: current,
+					Offline: true,
+					Active:  lastSeen,
+					Lag:     rp.Lag,
+					Peer:    rp.ID,
+				}
+				// If node is found, complete/update the settings.
+				if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
+					si := sir.(nodeInfo)
+					pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+				} else {
+					// If not, then add a name that indicates that the server name
+					// is unknown at this time, and clear the lag since it is misleading
+					// (the node may not have that much lag).
+					// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+					// would technically not be required, but keeping it for now.
+					pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
+				}
+				ci.Replicas = append(ci.Replicas, pi)
+			}
+		}
+	}
+
+	generatePeer := func(peer string) *PeerInfo {
+		pi := &PeerInfo{
+			Current: false,
+			Offline: true,
+			Peer:    peer,
+		}
+		// If node is found, complete/update the settings.
+		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
+			si := sir.(nodeInfo)
+			pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+		} else {
+			// If not, then add a name that indicates that the server name
+			// is unknown at this time, and clear the lag since it is misleading
+			// (the node may not have that much lag).
+			// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+			// would technically not be required, but keeping it for now.
+			pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
+		}
+		return pi
+	}
+	if desired != nil {
+		ci.Desired = desired
+		for _, peer := range desiredPeers {
+			ci.Desired.Replicas = append(ci.Desired.Replicas, generatePeer(peer))
+		}
+	}
+	for _, peer := range rgPeers {
+		// Skip if the peer is already present.
+		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+			continue
+		}
+		ci.Replicas = append(ci.Replicas, generatePeer(peer))
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...
