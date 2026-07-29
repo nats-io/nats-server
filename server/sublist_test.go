@@ -2114,6 +2114,39 @@ func multiRead(b *testing.B, num int) {
 	fwg.Wait()
 }
 
+// Matching subjects that are only ever seen once, request inboxes being the
+// common case, always misses the cache and has to go to the tree.
+func multiReadUnique(b *testing.B, num int) {
+	sl := NewSublistWithCache()
+	sl.Insert(newSub("_INBOX.abcdefghijklmnop.*"))
+
+	var swg, fwg sync.WaitGroup
+	swg.Add(num)
+	fwg.Add(num)
+	for i := 0; i < num; i++ {
+		go func(i int) {
+			swg.Done()
+			swg.Wait()
+			n := b.N / num
+			for j := 0; j < n; j++ {
+				sl.Match(fmt.Sprintf("_INBOX.abcdefghijklmnop.%d.%d", i, j))
+			}
+			fwg.Done()
+		}(i)
+	}
+	swg.Wait()
+	b.ResetTimer()
+	fwg.Wait()
+}
+
+func Benchmark______Sublist10XUniqueSubjectReads(b *testing.B) {
+	multiReadUnique(b, 10)
+}
+
+func Benchmark_____Sublist100XUniqueSubjectReads(b *testing.B) {
+	multiReadUnique(b, 100)
+}
+
 func Benchmark____________Sublist10XMultipleReads(b *testing.B) {
 	multiRead(b, 10)
 }

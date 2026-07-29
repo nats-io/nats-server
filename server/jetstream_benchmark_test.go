@@ -2304,6 +2304,58 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 	})
 }
 
+// Benchmarks the server side of a KV style direct get, i.e. the last message for
+// a subject, without a client in the loop. This is the hot path for KV reads.
+func BenchmarkJetStreamDirectGetLastFor(b *testing.B) {
+	const numKeys = 5000
+
+	for _, valueSize := range []int{1024, 5 * 1024} {
+		for _, withHeaders := range []bool{false, true} {
+			name := fmt.Sprintf("value=%db/headers=%v", valueSize, withHeaders)
+			b.Run(name, func(b *testing.B) {
+				s := RunBasicJetStreamServer(b)
+				defer s.Shutdown()
+
+				nc, js := jsClientConnect(b, s)
+				defer nc.Close()
+
+				_, err := js.AddStream(&nats.StreamConfig{
+					Name:              "BENCH",
+					Subjects:          []string{"kv.>"},
+					Storage:           nats.FileStorage,
+					MaxMsgsPerSubject: 1,
+					AllowDirect:       true,
+				})
+				require_NoError(b, err)
+
+				value := make([]byte, valueSize)
+				keys := make([]string, numKeys)
+				for i := 0; i < numKeys; i++ {
+					keys[i] = fmt.Sprintf("kv.key.%d", i)
+					m := nats.NewMsg(keys[i])
+					m.Data = value
+					if withHeaders {
+						m.Header.Set("My-Header", "my-value")
+					}
+					_, err := js.PublishMsg(m)
+					require_NoError(b, err)
+				}
+
+				mset, err := s.GlobalAccount().lookupStream("BENCH")
+				require_NoError(b, err)
+
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					req := JSApiMsgGetRequest{LastFor: keys[i%numKeys]}
+					mset.getDirectRequest(&req, "_INBOX.benchmark")
+				}
+				b.StopTimer()
+			})
+		}
+	}
+}
+
 // Helper function to stand up a JS-enabled single server or cluster
 func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js nats.JetStreamContext) {
 	b.Helper()

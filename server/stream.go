@@ -5842,11 +5842,82 @@ func (mset *stream) processDirectGetLastBySubjectRequest(_ *subscription, c *cli
 
 // For direct get batch and multi requests.
 const (
-	dg   = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\n\r\n"
-	dgb  = "NATS/1.0\r\nNats-Stream: %s\r\nNats-Subject: %s\r\nNats-Sequence: %d\r\nNats-Time-Stamp: %s\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
 	eob  = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\n\r\n"
 	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
 )
+
+// Scratch space for servicing a direct get request. These are on a very hot path
+// for KV lookups, so we pool them and hold on to the message and header buffers
+// instead of allocating both of them for every single request.
+type directGetScratch struct {
+	sm  StoreMsg
+	hdr []byte
+}
+
+// Don't hold on to unusually large buffers, they would be pinned by the pool.
+const maxDirectGetScratchBuf = 1024 * 1024
+
+var dgScratchPool = sync.Pool{
+	New: func() any {
+		return &directGetScratch{}
+	},
+}
+
+func getDirectGetScratch() *directGetScratch {
+	return dgScratchPool.Get().(*directGetScratch)
+}
+
+func (dgs *directGetScratch) returnToPool() {
+	if cap(dgs.sm.buf) > maxDirectGetScratchBuf {
+		dgs.sm.buf = nil
+	}
+	dgs.sm.clear()
+	if cap(dgs.hdr) > maxDirectGetScratchBuf {
+		dgs.hdr = nil
+	}
+	dgs.hdr = dgs.hdr[:0]
+	dgScratchPool.Put(dgs)
+}
+
+// Appends a "Key: Value" header line. The key is expected to already be in canonical form.
+func appendHeaderLine(buf []byte, key, value string) []byte {
+	buf = append(buf, key...)
+	buf = append(buf, ':', ' ')
+	buf = append(buf, value...)
+	return append(buf, _CRLF_...)
+}
+
+// Appends a "Key: Value" header line where the value is a number.
+func appendHeaderLineUint(buf []byte, key string, value uint64) []byte {
+	buf = append(buf, key...)
+	buf = append(buf, ':', ' ')
+	buf = strconv.AppendUint(buf, value, 10)
+	return append(buf, _CRLF_...)
+}
+
+// Builds the response headers for a direct get into buf, which is reused across
+// requests. If the stored message carries its own headers we preserve them, which
+// mirrors what genHeader does but without any of its intermediate allocations.
+func appendDirectGetHeaders(buf, hdr []byte, name string, sm *StoreMsg, batch bool, np, lseq uint64) []byte {
+	buf = buf[:0]
+	if len(hdr) > LEN_CR_LF {
+		buf = append(buf, hdr[:len(hdr)-LEN_CR_LF]...)
+	} else {
+		buf = append(buf, hdrLine...)
+	}
+	buf = appendHeaderLine(buf, JSStream, name)
+	buf = appendHeaderLine(buf, JSSubject, sm.subj)
+	buf = appendHeaderLineUint(buf, JSSequence, sm.seq)
+	buf = append(buf, JSTimeStamp...)
+	buf = append(buf, ':', ' ')
+	buf = time.Unix(0, sm.ts).UTC().AppendFormat(buf, time.RFC3339Nano)
+	buf = append(buf, _CRLF_...)
+	if batch {
+		buf = appendHeaderLineUint(buf, JSNumPending, np)
+		buf = appendHeaderLineUint(buf, JSLastSequence, lseq)
+	}
+	return append(buf, _CRLF_...)
+}
 
 // Handle a multi request.
 func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
@@ -5906,6 +5977,11 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
+	// Pooled scratch space so that we don't allocate the message and header
+	// buffers for every message we send back.
+	dgs := getDirectGetScratch()
+	defer dgs.returnToPool()
+
 	np, lseq, sentBytes, sent := uint64(len(seqs)), uint64(0), 0, 0
 	for _, seq := range seqs {
 		if seq < req.Seq {
@@ -5914,32 +5990,19 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			}
 			continue
 		}
-		var svp StoreMsg
-		sm, err := store.LoadMsg(seq, &svp)
+		sm, err := store.LoadMsg(seq, &dgs.sm)
 		if err != nil {
 			hdr := []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
 			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			return
 		}
 
-		hdr := sm.hdr
-		ts := time.Unix(0, sm.ts).UTC()
-
 		// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
 		if np > 0 {
 			np--
 		}
-		if len(hdr) == 0 {
-			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
-		} else {
-			hdr = copyBytes(hdr)
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, sm.subj)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-		}
+		dgs.hdr = appendDirectGetHeaders(dgs.hdr, sm.hdr, name, sm, true, np, lseq)
+		hdr := dgs.hdr
 		// Track our lseq
 		lseq = sm.seq
 		// Send out our message.
@@ -6008,29 +6071,34 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	// Track what we have sent.
 	var sentBytes int
 
+	// Pooled scratch space so that we don't allocate the message and header
+	// buffers for every request. Both are copied by newJSPubMsg below, so they
+	// are ours to reuse once the response has been queued.
+	dgs := getDirectGetScratch()
+	defer dgs.returnToPool()
+
 	// Loop over batch, which defaults to 1.
 	for i := 0; i < batch; i++ {
 		var (
-			svp StoreMsg
 			sm  *StoreMsg
 			err error
 		)
 		if seq > 0 && req.NextFor == _EMPTY_ {
 			// Only do direct lookup for a non batch.
 			if i == 0 && !isBatchRequest {
-				sm, err = store.LoadMsg(seq, &svp)
+				sm, err = store.LoadMsg(seq, &dgs.sm)
 			} else {
 				// We want to use load next with fwcs to step over deleted msgs.
-				sm, seq, err = store.LoadNextMsg(fwcs, true, seq, &svp)
+				sm, seq, err = store.LoadNextMsg(fwcs, true, seq, &dgs.sm)
 			}
 			// Bump for next loop if applicable.
 			seq++
 		} else if req.NextFor != _EMPTY_ {
-			sm, seq, err = store.LoadNextMsg(req.NextFor, wc, seq, &svp)
+			sm, seq, err = store.LoadNextMsg(req.NextFor, wc, seq, &dgs.sm)
 			seq++
 		} else {
 			// Batch is not applicable here, this is checked before we get here.
-			sm, err = store.LoadLastMsg(req.LastFor, &svp)
+			sm, err = store.LoadLastMsg(req.LastFor, &dgs.sm)
 		}
 		if err != nil {
 			// For batches, if we stop early we want to do EOB logic below.
@@ -6042,37 +6110,14 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 			return
 		}
 
-		ts := time.Unix(0, sm.ts).UTC()
 		var hdr []byte
 		if !req.NoHeaders {
-			hdr = sm.hdr
-			if isBatchRequest {
+			if isBatchRequest && np > 0 {
 				// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
-				if np > 0 {
-					np--
-				}
-				if len(hdr) == 0 {
-					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
-				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-				}
-			} else {
-				if len(hdr) == 0 {
-					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
-				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-				}
+				np--
 			}
+			dgs.hdr = appendDirectGetHeaders(dgs.hdr, sm.hdr, name, sm, isBatchRequest, np, lseq)
+			hdr = dgs.hdr
 		}
 		// Track our lseq
 		lseq = sm.seq
@@ -8001,8 +8046,10 @@ var jsPubMsgPool = sync.Pool{
 
 func newJSPubMsg(dsubj, subj, reply string, hdr, msg []byte, o *consumer, seq uint64) *jsPubMsg {
 	m := getJSPubMsgFromPool()
-	if m.buf == nil {
-		m.buf = make([]byte, 0, len(hdr)+len(msg))
+	// Leave room for the trailing CRLF that the internal send loop appends,
+	// otherwise the first use of every pooled buffer re-allocates.
+	if need := len(hdr) + len(msg) + LEN_CR_LF; cap(m.buf) < need {
+		m.buf = make([]byte, 0, need)
 	}
 	buf := append(m.buf[:0], hdr...)
 	buf = append(buf, msg...)
@@ -8155,7 +8202,7 @@ func (mset *stream) internalLoop() {
 				c.pa.subject = append(dsubj[:0], pm.dsubj...)
 				c.pa.deliver = append(subj[:0], pm.subj...)
 				c.pa.size = len(pm.msg) + len(pm.hdr)
-				c.pa.szb = append(szb[:0], strconv.Itoa(c.pa.size)...)
+				c.pa.szb = strconv.AppendInt(szb[:0], int64(c.pa.size), 10)
 				if len(pm.reply) > 0 {
 					c.pa.reply = append(rply[:0], pm.reply...)
 				} else {
@@ -8163,8 +8210,12 @@ func (mset *stream) internalLoop() {
 				}
 
 				// If we have an underlying buf that is the wire contents for hdr + msg, else construct on the fly.
+				// The protocol requires a trailing CRLF, so append it in place where we can. For the pooled
+				// buffer we append through pm.buf itself, that way any growth is retained when the message
+				// is returned to the pool and we stop re-allocating the whole payload on every message.
 				var msg []byte
 				if len(pm.buf) > 0 {
+					pm.buf = append(pm.buf, _CRLF_...)
 					msg = pm.buf
 				} else {
 					if len(pm.hdr) > 0 {
@@ -8178,18 +8229,16 @@ func (mset *stream) internalLoop() {
 						// We own this now from a low level buffer perspective so can use directly here.
 						msg = pm.msg
 					}
+					msg = append(msg, _CRLF_...)
 				}
 
 				if len(pm.hdr) > 0 {
 					c.pa.hdr = len(pm.hdr)
-					c.pa.hdb = []byte(strconv.Itoa(c.pa.hdr))
-					c.pa.hdb = append(hdb[:0], strconv.Itoa(c.pa.hdr)...)
+					c.pa.hdb = strconv.AppendInt(hdb[:0], int64(c.pa.hdr), 10)
 				} else {
 					c.pa.hdr = -1
 					c.pa.hdb = nil
 				}
-
-				msg = append(msg, _CRLF_...)
 
 				didDeliver, _ := c.processInboundClientMsg(msg)
 				c.pa.szb, c.pa.subject, c.pa.deliver = nil, nil, nil

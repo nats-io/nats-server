@@ -13951,6 +13951,82 @@ func TestJetStreamDirectMsgGet(t *testing.T) {
 	require_True(t, m.Header.Get("Description") == "Message Not Found")
 }
 
+// Messages that carry their own headers need to keep them, with the direct get
+// headers added on top, for both single and batched responses.
+func TestJetStreamDirectMsgGetKeepsMsgHeaders(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:        "DSMG",
+		Storage:     FileStorage,
+		Subjects:    []string{"foo.>"},
+		AllowDirect: true,
+	}
+	addStream(t, nc, cfg)
+
+	for i := 1; i <= 3; i++ {
+		m := nats.NewMsg(fmt.Sprintf("foo.%d", i))
+		m.Header.Set("My-Header", fmt.Sprintf("value-%d", i))
+		m.Data = []byte(fmt.Sprintf("msg-%d", i))
+		_, err := nc.RequestMsg(m, time.Second)
+		require_NoError(t, err)
+	}
+
+	getSubj := fmt.Sprintf(JSDirectMsgGetT, "DSMG")
+	getMsg := func(req *JSApiMsgGetRequest) *nats.Msg {
+		b, err := json.Marshal(req)
+		require_NoError(t, err)
+		m, err := nc.Request(getSubj, b, time.Second)
+		require_NoError(t, err)
+		return m
+	}
+
+	checkMsg := func(t *testing.T, m *nats.Msg, i int, batched bool) {
+		t.Helper()
+		require_Equal(t, string(m.Data), fmt.Sprintf("msg-%d", i))
+		require_Equal(t, m.Header.Get("My-Header"), fmt.Sprintf("value-%d", i))
+		require_Equal(t, m.Header.Get(JSStream), "DSMG")
+		require_Equal(t, m.Header.Get(JSSubject), fmt.Sprintf("foo.%d", i))
+		require_Equal(t, m.Header.Get(JSSequence), strconv.Itoa(i))
+		require_True(t, m.Header.Get(JSTimeStamp) != _EMPTY_)
+		if batched {
+			require_Equal(t, m.Header.Get(JSNumPending), strconv.Itoa(3-i))
+			require_Equal(t, m.Header.Get(JSLastSequence), strconv.Itoa(i-1))
+		} else {
+			require_Equal(t, m.Header.Get(JSNumPending), _EMPTY_)
+			require_Equal(t, m.Header.Get(JSLastSequence), _EMPTY_)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		checkMsg(t, getMsg(&JSApiMsgGetRequest{Seq: uint64(i)}), i, false)
+		checkMsg(t, getMsg(&JSApiMsgGetRequest{LastFor: fmt.Sprintf("foo.%d", i)}), i, false)
+	}
+
+	// Now the same over a batch, which the scratch buffer is reused across.
+	sub, err := nc.SubscribeSync(nats.NewInbox())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	b, err := json.Marshal(&JSApiMsgGetRequest{Seq: 1, Batch: 3})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(getSubj, sub.Subject, b))
+
+	for i := 1; i <= 3; i++ {
+		m, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		checkMsg(t, m, i, true)
+	}
+	// EOB.
+	m, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, m.Header.Get("Status"), "204")
+}
+
 // This allows support for a get next given a sequence as a starting.
 // This allows these to be chained together if needed for sparse streams.
 func TestJetStreamDirectMsgGetNext(t *testing.T) {
