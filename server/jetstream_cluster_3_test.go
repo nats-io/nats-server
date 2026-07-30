@@ -5291,13 +5291,20 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	require_NoError(t, err)
 
 	// Now scale back up.
-	_, err = js.UpdateStream(&nats.StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:     "TEST1",
 		Subjects: []string{"foo"},
 		MaxBytes: 1 * 1024 * 1024 * 1024,
 		MaxMsgs:  1000,
 		Replicas: 3,
-	})
+	}
+	_, err = js.UpdateStream(cfg)
+	if err != nil {
+		// If still in progress, wait for it to complete before retrying.
+		require_Error(t, err, NewJSStreamMoveInProgressError())
+		c.waitOnStreamLeader(aExpPub, "TEST1")
+		_, err = js.UpdateStream(cfg)
+	}
 	require_NoError(t, err)
 	c.waitOnStreamLeader(aExpPub, "TEST1")
 
@@ -5601,11 +5608,18 @@ func TestJetStreamClusterOrphanConsumerSubjects(t *testing.T) {
 	require_NoError(t, err)
 
 	for _, replicas := range []int{3, 1, 3} {
-		_, err = js.UpdateStream(&nats.StreamConfig{
+		cfg := &nats.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"bar.>"},
 			Replicas: replicas,
-		})
+		}
+		_, err = js.UpdateStream(cfg)
+		if err != nil {
+			// If still in progress, wait for it to complete before retrying.
+			require_Error(t, err, NewJSStreamMoveInProgressError())
+			c.waitOnStreamLeader("$G", "TEST")
+			_, err = js.UpdateStream(cfg)
+		}
 		require_NoError(t, err)
 		c.waitOnAllCurrent()
 	}

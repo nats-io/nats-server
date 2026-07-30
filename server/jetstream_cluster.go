@@ -9234,9 +9234,6 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 		}
 	}
 
-	// Make copy so to not change original.
-	rg := osa.copyGroup().Group
-
 	// Check for a move request.
 	var isMoveRequest bool
 	if lPeerSet := len(peerSet); lPeerSet > 0 {
@@ -9250,20 +9247,18 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 	// A retention change might result in consumer replica changes.
 	isRetentionChange := newCfg.Retention != osa.Config.Retention
 
-	// FIXME(mvv): should move be prevented if already ongoing? maybe accept but with group size limits?
-	//// Check if this is a move request, but no cancellation, and we are already moving this stream.
-	//if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
-	//	resp.Error = NewJSStreamMoveInProgressError()
-	//	s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-	//	return
-	//}
-	//
-	//// Can not move and scale at same time.
-	//if isMoveRequest && isReplicaChange {
-	//	resp.Error = NewJSStreamMoveAndScaleError()
-	//	s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-	//	return
-	//}
+	// A move or scale retargets the desired peer set, so only one can be inflight at a time.
+	// Otherwise, peers of the abandoned target could accumulate in the assignment unbounded.
+	// A legacy move counts as well, it is inflight but not expressed as desired state yet.
+	// A retention change is allowed, it does not adjust the peer set.
+	if (isMoveRequest || isReplicaChange) && (osa.Group.Desired != nil || osa.legacyMoveOrigin() != nil) {
+		resp.Error = NewJSStreamMoveInProgressError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	// Make copy so to not change original.
+	rg := osa.copyGroup().Group
 
 	// Reset notion of scaling up, if this was done in a previous update.
 	rg.ScaleUp = false
@@ -9347,6 +9342,10 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 		// rolled back to as the new origin.
 		if d := osa.Group.Desired; d != nil {
 			currPeers, currCluster = copyStrings(d.Peers), d.Cluster
+		} else if legacy := osa.legacyMoveOrigin(); legacy != nil {
+			// A legacy move is only encoded as an over-replicated peer set. Capture the peer
+			// set it started from, or a rollback would restore the enlarged set instead.
+			currPeers, currCluster = legacy.Peers, legacy.Cluster
 		}
 		rg.Desired.Origin = &desiredRaftGroupOrigin{
 			Peers:     currPeers,

@@ -7818,27 +7818,28 @@ func TestJetStreamClusterStreamUpscalePeersAfterDownscale(t *testing.T) {
 		})
 	}
 
-	_, err := js.AddStream(&nats.StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
 		Replicas: 5,
-	})
+	}
+	_, err := js.AddStream(cfg)
 	require_NoError(t, err)
 
 	checkPeerSet()
 
-	_, err = js.UpdateStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	_, err = js.UpdateStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 5,
-	})
+	cfg.Replicas = 5
+	_, err = js.UpdateStream(cfg)
+	if err != nil {
+		// If still in progress, wait for it to complete before retrying.
+		require_Error(t, err, NewJSStreamMoveInProgressError())
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		_, err = js.UpdateStream(cfg)
+	}
 	require_NoError(t, err)
 
 	checkPeerSet()
@@ -13709,14 +13710,18 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	// While that is still converging, scale the stream. This re-registers the desired state and
-	// MUST NOT drop the pending retention origin, otherwise interest retention applies right away.
+	// While that is still converging the stream has desired state, so a scale must be rejected
+	// instead of retargeting the peer set and dropping the pending retention origin.
 	cfg.Replicas = 5
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamMoveInProgressError())
+	c.waitOnStreamLeader("$G", "TEST")
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	// The scale must land on top of the applied retention change, not roll it back to the
+	// origin's limits retention, and the consumer must follow the stream to the new peer set.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
 		interest := 0
 		for _, s := range c.servers {
 			mset, err := s.GlobalAccount().lookupStream("TEST")
@@ -13724,26 +13729,14 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 				continue
 			}
 			interest++
-			// Every stream peer must host a consumer replica before interest retention applies.
-			// Re-read here, the consumer could have converged in the meantime.
-			speers, cpeers := assignedPeers()
-			for _, p := range speers {
-				if !slices.Contains(cpeers, p) {
-					t.Fatalf("Server %q applied interest retention, but stream peer %q hosts no consumer replica (stream peers %v, consumer peers %v)",
-						s.Name(), p, speers, cpeers)
-				}
-			}
 		}
-		speers, cpeers = assignedPeers()
-		if interest == len(c.servers) && len(speers) == 5 && len(cpeers) == 5 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Timed out with %d/%d servers on interest retention, stream peers %v, consumer peers %v",
+		speers, cpeers := assignedPeers()
+		if interest != len(c.servers) || len(speers) != 5 || len(cpeers) != 5 {
+			return fmt.Errorf("have %d/%d servers on interest retention, stream peers %v, consumer peers %v",
 				interest, len(c.servers), speers, cpeers)
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return nil
+	})
 }
 
 func TestJetStreamClusterStreamPeerRemoveConsumerRemap(t *testing.T) {

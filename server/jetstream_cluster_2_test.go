@@ -7878,10 +7878,17 @@ func TestJetStreamClusterReplicasChangeStreamInfo(t *testing.T) {
 	// Back up to 3
 	for i := 0; i < numStreams; i++ {
 		sname := fmt.Sprintf("TEST_%v", i)
-		_, err := js.UpdateStream(&nats.StreamConfig{
+		cfg := &nats.StreamConfig{
 			Name:     sname,
 			Replicas: 3,
-		})
+		}
+		_, err := js.UpdateStream(cfg)
+		if err != nil {
+			// If still in progress, wait for it to complete before retrying.
+			require_Error(t, err, NewJSStreamMoveInProgressError())
+			c.waitOnStreamLeader(globalAccountName, sname)
+			_, err = js.UpdateStream(cfg)
+		}
 		require_NoError(t, err)
 		c.waitOnStreamLeader(globalAccountName, sname)
 		for _, s := range c.servers {
