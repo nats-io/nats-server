@@ -13704,6 +13704,17 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	require_Equal(t, len(speers), 3)
 	require_Equal(t, len(cpeers), 1)
 
+	// Block the consumer from finishing its scale-up by stopping the meta leader from
+	// reconciling consumer assignments.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	consumerReconcile := mjs.cluster.consumerReconcile
+	mjs.cluster.consumerReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, consumerReconcile)
+	ml.sysUnsubscribe(consumerReconcile)
+
 	// Switch to interest retention. The consumer needs to reach peer parity before it can apply,
 	// so the old retention is held in the desired state's origin while the consumer scales up.
 	cfg.Retention = nats.InterestPolicy
@@ -13715,6 +13726,13 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	cfg.Replicas = 5
 	_, err = js.UpdateStream(cfg)
 	require_Error(t, err, NewJSStreamMoveInProgressError())
+
+	// Unblock the consumer scale-up so the stream can converge and the scale is accepted.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
 	c.waitOnStreamLeader("$G", "TEST")
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)

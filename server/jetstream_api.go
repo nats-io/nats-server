@@ -2053,7 +2053,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		return
 	}
 
-	config := mset.config()
+	// Report the config as requested, the stream can still be running at its origin.
+	config := js.targetStreamConfig(mset, mset.config())
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
 		State:      mset.stateWithDetail(details),
@@ -2919,7 +2920,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 	// Revert replicas and placement in the config immediately.
 	csa.Config = osa.Config.clone()
 	csa.Config.Replicas = origin.Replicas
-	csa.Config.Placement = origin.Placement
+	csa.Config.Placement = origin.Placement.clone()
 	if origin.Retention != nil {
 		csa.Config.Retention = *origin.Retention
 	}

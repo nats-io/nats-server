@@ -11594,6 +11594,920 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterDesiredOriginRetention(t *testing.T) {
+	// Builds the assignment as it exists prior to the update, optionally already
+	// having desired state with a recorded origin retention.
+	newAssignment := func(retention RetentionPolicy, origin *RetentionPolicy, peers ...string) *streamAssignment {
+		if len(peers) == 0 {
+			peers = []string{"S1", "S2", "S3"}
+		}
+		osa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Retention: retention, Replicas: len(peers)},
+			Group:  &raftGroup{Name: "G", Peers: peers, Cluster: "C1"},
+		}
+		if origin != nil {
+			osa.Group.Desired = &desiredRaftGroup{
+				ID:    "ID",
+				Peers: osa.Group.Peers,
+				Origin: &desiredRaftGroupOrigin{
+					Peers:    osa.Group.Peers,
+					Cluster:  osa.Group.Cluster,
+					Replicas: osa.Config.Replicas,
+					// The stream was already moving toward its config retention, the origin
+					// retention is what remains active until the desired state is reached.
+					Retention: origin,
+				},
+			}
+		}
+		return osa
+	}
+
+	// Note that changing retention to/from WorkQueue is currently rejected by config
+	// validation, but the origin retention logic itself is retention agnostic.
+	limits, interest, workQueue := LimitsPolicy, InterestPolicy, WorkQueuePolicy
+	for _, test := range []struct {
+		name string
+		// Retention of the stream config prior to the update.
+		retention RetentionPolicy
+		// Origin retention that's already recorded (if any).
+		origin *RetentionPolicy
+		// Retention the user wants to move to.
+		newRetention RetentionPolicy
+		// Origin retention that must be recorded after the update.
+		expected *RetentionPolicy
+	}{
+		{
+			// Consumers must be scaled up to have parity with the stream before the
+			// stream can truly become Interest, so remain on Limits until then.
+			name: "LimitsToInterest", retention: limits, newRetention: interest, expected: &limits,
+		},
+		{
+			name: "LimitsToWorkQueue", retention: limits, newRetention: workQueue, expected: &limits,
+		},
+		{
+			// Interest already requires consumer parity, but the origin must still be
+			// recorded so a cancel can revert to it.
+			name: "InterestToWorkQueue", retention: interest, newRetention: workQueue, expected: &interest,
+		},
+		{
+			// The origin must be the retention from before any desired state changes
+			// were made, so it can't be overwritten by a subsequent change.
+			name: "LimitsToInterestToWorkQueue", retention: interest, origin: &limits,
+			newRetention: workQueue, expected: &limits,
+		},
+		{
+			// Moving to Limits is not restrictive, it can be applied immediately and
+			// must not be held back by the recorded origin.
+			name: "InterestToLimits", retention: interest, newRetention: limits, expected: nil,
+		},
+		{
+			// Same, but now the origin was recorded by a previous change and MUST be
+			// removed, otherwise the stream would remain Interest.
+			name: "InterestToWorkQueueToLimits", retention: workQueue, origin: &interest,
+			newRetention: limits, expected: nil,
+		},
+		{
+			// Moving back to where we came from must not leave the origin behind.
+			name: "LimitsToInterestToLimits", retention: interest, origin: &limits,
+			newRetention: limits, expected: nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			osa := newAssignment(test.retention, test.origin)
+			rg := osa.copyGroup().Group.withRetentionChange(osa, test.newRetention)
+
+			newCfg := osa.Config.clone()
+			newCfg.Retention = test.newRetention
+
+			// A retention change must always register desired state, and it must always
+			// have an origin recorded, or it can't be rolled back or canceled.
+			require_NotNil(t, rg.Desired)
+			require_NotNil(t, rg.Desired.Origin)
+			if test.expected == nil {
+				require_True(t, rg.Desired.Origin.Retention == nil)
+				// Without an origin retention the config's retention is used as-is.
+				require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, test.newRetention)
+				return
+			}
+			require_NotNil(t, rg.Desired.Origin.Retention)
+			require_Equal(t, *rg.Desired.Origin.Retention, *test.expected)
+			// The origin retention remains active until the desired state is reached.
+			require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, *test.expected)
+		})
+	}
+
+	// An unchanged retention must be left alone entirely.
+	t.Run("NoRetentionChange", func(t *testing.T) {
+		osa := newAssignment(interest, nil)
+		rg := osa.copyGroup().Group.withRetentionChange(osa, interest)
+		require_True(t, rg.Desired == nil)
+	})
+
+	// A singleton has no consumers to scale up first, so it can be applied immediately.
+	t.Run("Singleton", func(t *testing.T) {
+		osa := newAssignment(limits, nil, "S1")
+		rg := osa.copyGroup().Group.withRetentionChange(osa, interest)
+		require_True(t, rg.Desired == nil)
+
+		newCfg := osa.Config.clone()
+		newCfg.Retention = interest
+		require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, interest)
+	})
+
+	// But a singleton that's already moving or scaling must still go through desired state.
+	t.Run("SingletonWithDesiredState", func(t *testing.T) {
+		osa := newAssignment(limits, nil, "S1")
+		rg := osa.Group.withDesired(osa.copyGroup().Group)
+		rg = rg.withRetentionChange(osa, interest)
+		require_NotNil(t, rg.Desired)
+		require_NotNil(t, rg.Desired.Origin)
+		require_NotNil(t, rg.Desired.Origin.Retention)
+		require_Equal(t, *rg.Desired.Origin.Retention, limits)
+	})
+}
+
+// Moving into a more restrictive retention must keep the previous retention active
+// until all consumers have been scaled up to have parity with the stream.
+func TestJetStreamClusterDesiredOriginRetentionScaleUpFirst(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up to R3 before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	// While the desired state is pending the stream must remain on Limits, and only
+	// flip to Interest once the desired state is reached.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		// The config always contains the retention the user wants to move to.
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("expected config retention to be Interest, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			// Not converged yet, must still be on Limits.
+			if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != LimitsPolicy {
+				return fmt.Errorf("expected effective retention to remain Limits, got %v", r)
+			}
+			return fmt.Errorf("desired state still pending")
+		}
+		// Converged, the consumer must have parity with the stream.
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "C")
+		if ca == nil {
+			return fmt.Errorf("consumer assignment not found")
+		}
+		if len(ca.Group.Peers) != 3 {
+			return fmt.Errorf("expected consumer to be scaled up to 3 peers, got %d", len(ca.Group.Peers))
+		}
+		return nil
+	})
+
+	// And all replicas must now be on Interest. The assignment is replicated, so the
+	// members don't all apply it at the same time.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != InterestPolicy {
+				return fmt.Errorf("expected Interest on all members, got %v", r)
+			}
+		}
+		return nil
+	})
+}
+
+// Moving into Limits is not restrictive and must be applied immediately, even if a
+// previous change had recorded an origin retention.
+func TestJetStreamClusterDesiredOriginRetentionRemovedForLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Move to Interest first, this records Limits as the origin retention.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	// Snapshot the state, we must not assert while holding the lock.
+	snapshot := func() (retention, effective RetentionPolicy, origin *RetentionPolicy, pending bool) {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		require_NotNil(t, sa)
+		if d := sa.Group.Desired; d != nil {
+			pending = true
+			// Pending desired state must always have an origin, or it can't be canceled.
+			require_NotNil(t, d.Origin)
+			if d.Origin.Retention != nil {
+				r := *d.Origin.Retention
+				origin = &r
+			}
+		}
+		return sa.Config.Retention, sa.Config.atDesiredOrigin(sa.Group).Retention, origin, pending
+	}
+
+	// Either we're still moving toward Interest, in which case the origin must hold
+	// Limits, or we've already converged and the origin is gone entirely.
+	retention, _, origin, pending := snapshot()
+	require_Equal(t, retention, InterestPolicy)
+	if pending {
+		require_NotNil(t, origin)
+		require_Equal(t, *origin, LimitsPolicy)
+	}
+
+	// And then move back to Limits, which must be applied immediately.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// The origin retention must be gone right away, the effective retention must be
+	// Limits regardless of the desired state still being pending.
+	retention, effective, origin, _ := snapshot()
+	require_Equal(t, retention, LimitsPolicy)
+	require_Equal(t, effective, LimitsPolicy)
+	require_True(t, origin == nil)
+
+	// Must fully converge without the origin retention ever coming back.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != LimitsPolicy {
+			return fmt.Errorf("expected effective retention to be Limits, got %v", r)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != LimitsPolicy {
+				return fmt.Errorf("expected Limits on all members, got %v", r)
+			}
+		}
+		return nil
+	})
+}
+
+// A singleton without desired state applies retention changes immediately.
+func TestJetStreamClusterDesiredOriginRetentionSingleton(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("expected config retention to be Interest, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("unexpected desired state for singleton")
+		}
+		if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != InterestPolicy {
+			return fmt.Errorf("expected effective retention to be Interest, got %v", r)
+		}
+		return nil
+	})
+}
+
+// An ephemeral consumer that auto-scales (Replicas:0) must follow the stream's
+// retention: R1 while the stream is Limits, and scaled up to have parity while
+// the stream is Interest.
+func TestJetStreamClusterDesiredOriginRetentionEphemeralAutoScale(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An old-school ephemeral, it auto-scales with the stream's retention.
+	sub, err := js.SubscribeSync("foo")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+	name := ci.Name
+
+	mjs := ml.getJetStream()
+	consumerPeers := func() int {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", name)
+		if ca == nil {
+			return -1
+		}
+		return len(ca.Group.Peers)
+	}
+	requirePeers := func(t *testing.T, expected int) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			mjs.mu.RLock()
+			sa := mjs.streamAssignment(globalAccountName, "TEST")
+			pending := sa == nil || sa.Group.Desired != nil
+			mjs.mu.RUnlock()
+			if pending {
+				return fmt.Errorf("desired state still pending")
+			}
+			if p := consumerPeers(); p != expected {
+				return fmt.Errorf("expected consumer to have %d peers, got %d", expected, p)
+			}
+			return nil
+		})
+	}
+
+	// Ephemerals are R1 while the stream is Limits.
+	requirePeers(t, 1)
+
+	// Interest requires parity with the stream, so it must be scaled up.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+	requirePeers(t, 3)
+
+	// And scaled back down once the stream is Limits again.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+	requirePeers(t, 1)
+}
+
+// A read-modify-write of an unrelated config field must not cancel a pending retention
+// change, since clients are reported the requested config they then send back.
+func TestJetStreamClusterDesiredOriginRetentionSurvivesConfigEdit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Block the consumer from finishing its scale-up by stopping the meta leader from
+	// reconciling consumer assignments.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	consumerReconcile := mjs.cluster.consumerReconcile
+	mjs.cluster.consumerReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, consumerReconcile)
+	ml.sysUnsubscribe(consumerReconcile)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	require_True(t, ml == c.leader())
+	mjs.mu.RLock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	wasPending := sa != nil && sa.Group.Desired != nil
+	mjs.mu.RUnlock()
+	require_True(t, wasPending)
+
+	// Now edit an unrelated field, the way a client would: fetch, modify, update.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	cfg := si.Config
+	cfg.Description = "edited"
+	_, err = js.UpdateStream(&cfg)
+	require_NoError(t, err)
+
+	// Unblock the consumer scale-up so the stream can converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	// The retention change must not have been canceled by the edit.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("retention change was canceled, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			cfg := mset.config()
+			if cfg.Retention != InterestPolicy || cfg.Description != "edited" {
+				return fmt.Errorf("members not caught up: %v/%q", cfg.Retention, cfg.Description)
+			}
+		}
+		return nil
+	})
+}
+
+// The running config is at its origin, while the config as requested is the target.
+// Both placement and retention must be reverted independently of one another.
+func TestJetStreamClusterDesiredOriginTarget(t *testing.T) {
+	origin := &Placement{Cluster: "C1"}
+	target := &Placement{Cluster: "C2"}
+	limits, interest := LimitsPolicy, InterestPolicy
+
+	for _, test := range []struct {
+		name string
+		// The origin recorded when the desired state was registered.
+		origin *desiredRaftGroupOrigin
+		// Placement/retention as requested by the user.
+		targetPlacement *Placement
+		targetRetention RetentionPolicy
+		// What the stream must run at while the desired state is pending.
+		runPlacement *Placement
+		runRetention RetentionPolicy
+	}{
+		{
+			name:            "NoOrigin",
+			origin:          &desiredRaftGroupOrigin{},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: target, runRetention: interest,
+		},
+		{
+			// Only placement is held back, the retention was not changed.
+			name:            "PlacementOnly",
+			origin:          &desiredRaftGroupOrigin{Placement: origin},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: origin, runRetention: interest,
+		},
+		{
+			// And only retention is held back, the placement was not changed.
+			name:            "RetentionOnly",
+			origin:          &desiredRaftGroupOrigin{Retention: &limits},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: target, runRetention: limits,
+		},
+		{
+			// Moving and changing retention at the same time holds back both.
+			name:            "PlacementAndRetention",
+			origin:          &desiredRaftGroupOrigin{Placement: origin, Retention: &limits},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: origin, runRetention: limits,
+		},
+		{
+			// Removing placement must be held back as well.
+			name:            "PlacementRemoved",
+			origin:          &desiredRaftGroupOrigin{Placement: origin},
+			targetPlacement: nil, targetRetention: limits,
+			runPlacement: origin, runRetention: limits,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			targetCfg := &StreamConfig{Name: "TEST", Placement: test.targetPlacement, Retention: test.targetRetention}
+			rg := &raftGroup{Name: "G", Desired: &desiredRaftGroup{ID: "ID", Origin: test.origin}}
+
+			// What the stream runs at while the desired state is pending.
+			runCfg := targetCfg.atDesiredOrigin(rg)
+			require_Equal(t, runCfg.Retention, test.runRetention)
+			if test.runPlacement == nil {
+				require_True(t, runCfg.Placement == nil)
+			} else {
+				require_NotNil(t, runCfg.Placement)
+				require_Equal(t, runCfg.Placement.Cluster, test.runPlacement.Cluster)
+			}
+
+			// Must be reported as requested, i.e. reverting back to the target.
+			reported := runCfg.atDesiredTarget(targetCfg)
+			require_Equal(t, reported.Retention, test.targetRetention)
+			if test.targetPlacement == nil {
+				require_True(t, reported.Placement == nil)
+			} else {
+				require_NotNil(t, reported.Placement)
+				require_Equal(t, reported.Placement.Cluster, test.targetPlacement.Cluster)
+			}
+		})
+	}
+
+	// Without desired state there's nothing to revert.
+	t.Run("NoDesiredState", func(t *testing.T) {
+		cfg := &StreamConfig{Name: "TEST", Placement: target, Retention: interest}
+		runCfg := cfg.atDesiredOrigin(&raftGroup{Name: "G"})
+		require_Equal(t, runCfg.Placement.Cluster, target.Cluster)
+		reported := runCfg.atDesiredTarget(cfg)
+		require_Equal(t, reported.Placement.Cluster, target.Cluster)
+		require_Equal(t, reported.Retention, interest)
+	})
+}
+
+// The origin must capture the state from before any desired state changes were made,
+// which for a legacy move is only encoded as an over-replicated peer set.
+func TestJetStreamClusterDesiredOriginPopulate(t *testing.T) {
+	newAssignment := func(peers []string, replicas int, desired *desiredRaftGroup) *streamAssignment {
+		return &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Retention: LimitsPolicy, Replicas: replicas},
+			Group:  &raftGroup{Name: "G", Peers: peers, Cluster: "C1", Desired: desired},
+		}
+	}
+
+	// A legacy move only appended the destination peers, the first Replicas peers
+	// are the peer set it started from.
+	t.Run("LegacyMove", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3", "S4", "S5", "S6"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.Desired = &desiredRaftGroup{ID: "ID", Peers: rg.Peers}
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_Equal(t, len(rg.Desired.Origin.Peers), 3)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C1")
+		require_Equal(t, rg.Desired.Origin.Replicas, 3)
+	})
+
+	// Same, but now reached through a retention change registering the desired state.
+	t.Run("LegacyMoveWithRetentionChange", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3", "S4", "S5", "S6"}, 3, nil)
+		rg := osa.copyGroup().Group.withRetentionChange(osa, InterestPolicy)
+
+		require_NotNil(t, rg.Desired)
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+		require_NotNil(t, rg.Desired.Origin.Retention)
+		require_Equal(t, *rg.Desired.Origin.Retention, LimitsPolicy)
+	})
+
+	// Without a legacy move the current peer set is the origin.
+	t.Run("NoLegacyMove", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.Desired = &desiredRaftGroup{ID: "ID", Peers: rg.Peers}
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+	})
+
+	// Desired state without an origin means we rolled back, capture what we rolled back to.
+	t.Run("DesiredWithoutOrigin", func(t *testing.T) {
+		desired := &desiredRaftGroup{ID: "ID", Peers: []string{"S4", "S5", "S6"}, Cluster: "C2"}
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, desired)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S4", "S5", "S6"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C2")
+	})
+
+	// An already recorded origin MUST NOT be overwritten, it's from before any changes.
+	t.Run("OriginNotOverwritten", func(t *testing.T) {
+		origin := &desiredRaftGroupOrigin{Peers: []string{"S7", "S8", "S9"}, Cluster: "C3", Replicas: 3}
+		desired := &desiredRaftGroup{ID: "ID", Peers: []string{"S4", "S5", "S6"}, Origin: origin}
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, desired)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S7", "S8", "S9"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C3")
+	})
+
+	// And without desired state there's nothing to record onto.
+	t.Run("NoDesiredState", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+		require_True(t, rg.Desired == nil)
+	})
+}
+
+// While the desired state is pending the stream keeps running at its origin, but every
+// endpoint that reports the config must report it as the user requested it. Both placement
+// and retention are changed at once, so all of them are checked against both.
+func TestJetStreamClusterDesiredOriginReportsTarget(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Start out with placement, so the origin has something to hold back.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Placement: &nats.Placement{Cluster: "R3S"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	pending := func() bool {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		return sa != nil && sa.Group.Desired != nil
+	}
+	memberConfigs := func(t *testing.T) []StreamConfig {
+		t.Helper()
+		var cfgs []StreamConfig
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			cfgs = append(cfgs, mset.config())
+		}
+		return cfgs
+	}
+	// Whether any member's running config is held back at its origin.
+	atOrigin := func(t *testing.T) bool {
+		t.Helper()
+		var atOrigin bool
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			atOrigin = atOrigin || (sa != nil && sa.Group.Desired != nil && sa.Group.Desired.Origin != nil)
+			sjs.mu.RUnlock()
+		}
+		return atOrigin
+	}
+	// Reports the stream as jsz sees it, on every server.
+	jszDetails := func(t *testing.T) []StreamDetail {
+		t.Helper()
+		var details []StreamDetail
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(&JSzOptions{Accounts: true, Streams: true, Config: true})
+			require_NoError(t, err)
+			for _, ad := range jsz.AccountDetails {
+				if ad.Name != globalAccountName {
+					continue
+				}
+				for _, sd := range ad.Streams {
+					if sd.Name == "TEST" {
+						details = append(details, sd)
+					}
+				}
+			}
+		}
+		require_Len(t, len(details), len(c.servers))
+		return details
+	}
+
+	// Without any desired state the running config is never at its origin.
+	require_False(t, atOrigin(t))
+
+	// Block the consumer from finishing its scale-up by stopping the meta leader from
+	// reconciling consumer assignments.
+	mjs.mu.Lock()
+	consumerReconcile := mjs.cluster.consumerReconcile
+	mjs.cluster.consumerReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, consumerReconcile)
+	ml.sysUnsubscribe(consumerReconcile)
+
+	// Remove the placement and change retention, the desired state holds back both. The
+	// description is not held back, so it marks the update as having been applied.
+	si, err := js.UpdateStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Description: "applied",
+		Retention:   nats.InterestPolicy,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	// The update response must report the config as requested.
+	require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+	require_True(t, si.Config.Placement == nil)
+
+	// The assignment is replicated, so wait for all members to have applied the update
+	// before asserting on it. Must not wait on the desired state itself, since that would
+	// wait out the very window where the running config and the target differ.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		for _, cfg := range memberConfigs(t) {
+			if cfg.Description != "applied" {
+				return fmt.Errorf("update not applied on all members yet")
+			}
+		}
+		return nil
+	})
+
+	// All members applied it, so they must know they're running at their origin and the
+	// desired state must not have been reached yet.
+	require_True(t, ml == c.leader())
+	require_True(t, pending())
+	require_True(t, atOrigin(t))
+
+	// The members must still be running at their origin, so consumers keep their parity
+	// guarantee until they've all been scaled up.
+	for _, cfg := range memberConfigs(t) {
+		require_Equal(t, cfg.Retention, LimitsPolicy)
+		require_NotNil(t, cfg.Placement)
+		require_Equal(t, cfg.Placement.Cluster, "R3S")
+	}
+
+	// But stream info, stream list and jsz must all report the config as requested.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+	require_True(t, si.Config.Placement == nil)
+
+	var listed bool
+	for si := range js.StreamsInfo() {
+		if si.Config.Name == "TEST" {
+			listed = true
+			require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+			require_True(t, si.Config.Placement == nil)
+		}
+	}
+	require_True(t, listed)
+
+	for _, sd := range jszDetails(t) {
+		require_NotNil(t, sd.Config)
+		require_Equal(t, sd.Config.Retention, InterestPolicy)
+		require_True(t, sd.Config.Placement == nil)
+	}
+
+	// Unblock the consumer scale-up so the stream can converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	// Wait for the desired state to be reached.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if pending() {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	// Once converged the running config must have caught up with the target, and the
+	// members must go back to the fast path.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, cfg := range memberConfigs(t) {
+			if cfg.Retention != InterestPolicy || cfg.Placement != nil {
+				return fmt.Errorf("running config not caught up: %v/%v", cfg.Retention, cfg.Placement)
+			}
+		}
+		if atOrigin(t) {
+			return fmt.Errorf("still marked as running at origin")
+		}
+		return nil
+	})
+
+	// And jsz must no longer report any desired state alongside it.
+	for _, sd := range jszDetails(t) {
+		require_NotNil(t, sd.Config)
+		require_Equal(t, sd.Config.Retention, InterestPolicy)
+		require_True(t, sd.Config.Placement == nil)
+		if sd.Cluster != nil {
+			require_True(t, sd.Cluster.Desired == nil)
+		}
+	}
+}
+
 func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

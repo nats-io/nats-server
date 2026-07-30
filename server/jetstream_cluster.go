@@ -126,6 +126,15 @@ type Placement struct {
 	Preferred string   `json:"preferred,omitempty"`
 }
 
+func (p *Placement) clone() *Placement {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Tags = copyStrings(p.Tags)
+	return &cp
+}
+
 // Define types of the entry.
 type entryOp uint8
 
@@ -270,12 +279,107 @@ func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
 	}
 	newCfg := cfg.clone()
 	if rg.Desired.Origin.Placement != nil {
-		newCfg.Placement = rg.Desired.Origin.Placement
+		newCfg.Placement = rg.Desired.Origin.Placement.clone()
 	}
 	if rg.Desired.Origin.Retention != nil {
 		newCfg.Retention = *rg.Desired.Origin.Retention
 	}
 	return newCfg
+}
+
+// atDesiredTarget returns a copy of the running config with the fields that atDesiredOrigin can
+// hold back restored from target, which is the config as the user requested it. While the desired
+// state is pending the stream runs at its origin, but clients MUST be reported the config they
+// requested. Restoring unconditionally is safe, target always holds the requested values, whether
+// the desired state is still pending or was already reached.
+func (cfg StreamConfig) atDesiredTarget(target *StreamConfig) StreamConfig {
+	if target == nil {
+		return cfg
+	}
+	// Must copy, the target can be owned by the meta layer and outlive its lock here.
+	cfg.Placement = target.Placement.clone()
+	cfg.Retention = target.Retention
+	return cfg
+}
+
+// targetStreamConfig returns the stream's cfg as the user requested it, looking up the requested config
+// from the meta layer. Can differ from the running config while the desired state is still pending,
+// or while an update was committed but not applied onto the stream yet.
+func (js *jetStream) targetStreamConfig(mset *stream, cfg StreamConfig) StreamConfig {
+	// Only a clustered stream can differ from what was requested.
+	if js == nil || js.cluster == nil || mset == nil {
+		return cfg
+	}
+	accName := mset.accName()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	sa := js.streamAssignment(accName, cfg.Name)
+	if sa == nil {
+		return cfg
+	}
+	return cfg.atDesiredTarget(sa.Config)
+}
+
+// populateOrigin populates the desired origin for the raft group, capturing the state from
+// before any desired state changes were made. Skipped if there's no desired state to record
+// it onto, or if the origin was already recorded, since it MUST NOT be overwritten.
+func (rg *raftGroup) populateOrigin(osa *streamAssignment) {
+	if rg.Desired == nil || rg.Desired.Origin != nil {
+		return
+	}
+	currPeers, currCluster := copyStrings(osa.Group.Peers), osa.Group.Cluster
+	// If we had desired state without origin, need to capture what was
+	// rolled back to as the new origin.
+	if d := osa.Group.Desired; d != nil {
+		currPeers, currCluster = copyStrings(d.Peers), d.Cluster
+	} else if legacy := osa.legacyMoveOrigin(); legacy != nil {
+		// A legacy move is only encoded as an over-replicated peer set. Capture the peer
+		// set it started from, or a rollback would restore the enlarged set instead.
+		currPeers, currCluster = legacy.Peers, legacy.Cluster
+	}
+	rg.Desired.Origin = &desiredRaftGroupOrigin{
+		Peers:     currPeers,
+		Cluster:   currCluster,
+		Replicas:  osa.Config.Replicas,
+		Placement: osa.Config.Placement.clone(),
+	}
+}
+
+// withRetentionChange returns rg with the desired state registering a change from osa's retention
+// into newRetention. Returned as-is if the retention is unchanged, or for a singleton without
+// desired state, since then it can be applied immediately.
+//
+// The config always holds the retention to move to. Moving into Interest or WorkQueue needs
+// consumers to have parity with the stream first, so the origin retention stays active until the
+// desired state is reached. Moving into Limits has no such restriction and applies immediately,
+// clearing the origin retention, but still needs desired state to remap consumers back down.
+func (rg *raftGroup) withRetentionChange(osa *streamAssignment, newRetention RetentionPolicy) *raftGroup {
+	if newRetention == osa.Config.Retention {
+		return rg
+	}
+	// A retention change should go through desired state, unless it is a singleton without it.
+	if rg.Desired == nil {
+		if len(rg.Peers) == 1 {
+			return rg
+		}
+		// Must always register desired state.
+		rg = osa.Group.withDesired(rg)
+	}
+	// Desired state MUST always have an origin recorded, or it can't be rolled back or canceled.
+	rg.populateOrigin(osa)
+	if newRetention == LimitsPolicy {
+		rg.Desired.Origin.Retention = nil
+		return rg
+	}
+	// Only record the retention if we hadn't already recorded it, the origin must remain
+	// the retention from before any desired state changes were made. Must check osa, since
+	// populateOrigin above could have just recorded a fresh origin onto rg without a retention.
+	if d := osa.Group.Desired; d != nil && d.Origin != nil && d.Origin.Retention != nil {
+		return rg
+	}
+	retention := osa.Config.Retention
+	rg.Desired.Origin.Retention = &retention
+	return rg
 }
 
 // streamAssignment is what the meta controller uses to assign streams to peers.
@@ -2644,6 +2748,7 @@ func (rg *raftGroup) copyGroup() *raftGroup {
 		cd.Peers = copyStrings(rg.Desired.Peers)
 		if rg.Desired.Origin != nil {
 			cr := *rg.Desired.Origin
+			cr.Placement = rg.Desired.Origin.Placement.clone()
 			cd.Origin = &cr
 		}
 		cg.Desired = &cd
@@ -4991,7 +5096,8 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term
 		resp.Error = NewJSStreamCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		msetCfg := mset.config()
+		// Report the config as requested, the stream can still be running at its origin.
+		msetCfg := js.targetStreamConfig(mset, mset.config())
 		resp.StreamInfo = &StreamInfo{
 			Created:   mset.createdTime(),
 			State:     mset.state(),
@@ -5596,7 +5702,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
-	msetCfg := mset.config()
+	// Report the config as requested, the stream can still be running at its origin.
+	// Reading cfg without js.mu is safe, an assignment's config is never changed in place.
+	msetCfg := mset.config().atDesiredTarget(cfg)
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
@@ -5668,7 +5776,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 						if !recovering {
 							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-							msetCfg := mset.config()
+							// Report the config as requested, the stream can still be running at its origin.
+							msetCfg := js.targetStreamConfig(mset, mset.config())
 							resp.StreamInfo = &StreamInfo{
 								Created:   mset.createdTime(),
 								State:     mset.state(),
@@ -9244,8 +9353,6 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 
 	// Check for replica changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
-	// A retention change might result in consumer replica changes.
-	isRetentionChange := newCfg.Retention != osa.Config.Retention
 
 	// A move or scale retargets the desired peer set, so only one can be inflight at a time.
 	// Otherwise, peers of the abandoned target could accumulate in the assignment unbounded.
@@ -9336,47 +9443,11 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 		rg.Preferred = _EMPTY_
 	}
 
-	populateOrigin := func() {
-		currPeers, currCluster := copyStrings(osa.Group.Peers), osa.Group.Cluster
-		// If we had desired state without origin, need to capture what was
-		// rolled back to as the new origin.
-		if d := osa.Group.Desired; d != nil {
-			currPeers, currCluster = copyStrings(d.Peers), d.Cluster
-		} else if legacy := osa.legacyMoveOrigin(); legacy != nil {
-			// A legacy move is only encoded as an over-replicated peer set. Capture the peer
-			// set it started from, or a rollback would restore the enlarged set instead.
-			currPeers, currCluster = legacy.Peers, legacy.Cluster
-		}
-		rg.Desired.Origin = &desiredRaftGroupOrigin{
-			Peers:     currPeers,
-			Cluster:   currCluster,
-			Replicas:  osa.Config.Replicas,
-			Placement: osa.Config.Placement,
-		}
-	}
-	// If we're the first to specify an origin, capture it.
-	if rg.Desired != nil && rg.Desired.Origin == nil {
-		populateOrigin()
-	}
+	// If we're the first to specify an origin for desired state, capture it.
+	rg.populateOrigin(osa)
 
-	// A retention change should go through desired state, unless it is a singleton without desired state.
-	if isRetentionChange && !(rg.Desired == nil && len(rg.Peers) == 1) {
-		// Must always register desired state.
-		if rg.Desired == nil {
-			rg = osa.Group.withDesired(rg)
-		}
-		// But moving to Limits MUST be applied immediately, since there are no consumer parity restrictions there.
-		// FIXME(mvv): should previous origin retention be removed?
-		if newCfg.Retention != LimitsPolicy {
-			// Only record the retention if we hadn't already recorded it.
-			if d := osa.Group.Desired; d == nil || d.Origin == nil || d.Origin.Retention == nil {
-				if rg.Desired.Origin == nil {
-					populateOrigin()
-				}
-				rg.Desired.Origin.Retention = &osa.Config.Retention
-			}
-		}
-	}
+	// A retention change must go through desired state, so consumers can be scaled first.
+	rg = rg.withRetentionChange(osa, newCfg.Retention)
 
 	syncSubject := osa.Sync
 	if syncSubject == _EMPTY_ {
@@ -11654,11 +11725,15 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			Name: d.Cluster,
 		}
 		// If desired state can be rolled back, include what can be rolled back to.
+		// Must copy, the origin is owned by the meta layer but reported without its lock.
 		if d.Origin != nil {
 			desired.Origin = &DesiredClusterInfoOrigin{
 				Replicas:  d.Origin.Replicas,
-				Placement: d.Origin.Placement,
-				Retention: d.Origin.Retention,
+				Placement: d.Origin.Placement.clone(),
+			}
+			if r := d.Origin.Retention; r != nil {
+				retention := *r
+				desired.Origin.Retention = &retention
 			}
 		}
 		// Don't populate peers if scaling down, since the peers aren't the desired set, it's
@@ -11850,6 +11925,9 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	if !isLeader {
 		time.Sleep(500 * time.Millisecond)
 	}
+
+	// Report the config as requested, the stream can still be running at its origin.
+	config = js.targetStreamConfig(mset, config)
 
 	si := &StreamInfo{
 		Created:   mset.createdTime(),

@@ -3169,7 +3169,9 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 			ci := js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
-				c := stream.config()
+				// Report the config as requested, the stream can still be running at its origin.
+				// Must be consistent with the desired state reported as part of the cluster info.
+				c := js.targetStreamConfig(stream, stream.config())
 				cfg = &c
 			}
 			// Skip if we are only looking for stream leaders.
