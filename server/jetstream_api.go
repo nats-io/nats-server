@@ -1589,7 +1589,7 @@ func (s *Server) jsStreamUpdateRequest(sub *subscription, c *client, _ *Account,
 
 	// Handle clustered version here.
 	if s.JetStreamIsClustered() {
-		s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, copyBytes(rmsg), &cfg, nil, ncfg.Pedantic)
+		s.jsClusteredStreamUpdateRequest(ci, acc, subject, reply, copyBytes(rmsg), &cfg, ncfg.Pedantic)
 		return
 	}
 
@@ -2736,28 +2736,20 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		return
 	}
 
-	var streamFound bool
-	cfg := StreamConfig{}
-	currPeers := []string{}
-	currCluster := _EMPTY_
-	js.mu.RLock()
-	sa := js.streamAssignmentOrInflight(accName, streamName)
-	if sa != nil {
-		cfg = *sa.Config.clone()
-		streamFound = true
-		if sa.Group.Desired != nil {
-			currPeers = copyStrings(sa.Group.Desired.Peers)
-		} else {
-			currPeers = copyStrings(sa.Group.Peers)
-		}
-		currCluster = sa.Group.Cluster
-	}
-	js.mu.RUnlock()
+	js.mu.Lock()
+	defer js.mu.Unlock()
 
-	if !streamFound {
+	osa := js.streamAssignmentOrInflight(accName, streamName)
+	if osa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
+	}
+
+	cfg := *osa.Config.clone()
+	currPeers, currCluster := copyStrings(osa.Group.Peers), osa.Group.Cluster
+	if d := osa.Group.Desired; d != nil {
+		currPeers, currCluster = copyStrings(d.Peers), d.Cluster
 	}
 
 	// if server was picked, make sure src peer exists and move it to first position.
@@ -2802,7 +2794,10 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		cfg.Placement.Tags = append(cfg.Placement.Tags, req.Tags...)
 	}
 
-	// FIXME(mvv): scaffolded desired state into the move API for now, this endpoint needs to be refactored
+	// The cluster the new peer set is placed in, we stay in the current cluster unless
+	// we need to expand into another one below.
+	newCluster := currCluster
+
 	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
@@ -2824,6 +2819,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 				peers = append(peers, newPeers[:cfg.Replicas]...)
 				// Keep only the new peers.
 				peers = peers[len(peers)-cfg.Replicas:]
+				newCluster = cluster
 				break
 			}
 			errs.accumulate(e)
@@ -2843,9 +2839,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	s.Noticef("Requested move for stream '%s > %s' R=%d from %+v to %+v",
 		accName, streamName, cfg.Replicas, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
 
-	// We will always have peers and therefore never do a callout, therefore it is safe to call inline
-	// We should be fine ignoring pedantic mode here. as we do not touch configuration.
-	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, false)
+	s.jsClusteredStreamUpdateRequestLocked(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, newCluster, false)
 }
 
 // Request to have the metaleader move a stream on a peer to another
@@ -2888,112 +2882,64 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 		return
 	}
 
-	targetAcc, ok := s.accounts.Load(accName)
+	_, ok := s.accounts.Load(accName)
 	if !ok {
 		resp.Error = NewJSNoAccountError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	streamFound := false
-	cfg := StreamConfig{}
-	currPeers := []string{}
 	js.mu.Lock()
-	sa := js.streamAssignmentOrInflight(accName, streamName)
-	if sa != nil {
-		cfg = *sa.Config.clone()
-		streamFound = true
-		currPeers = copyStrings(sa.Group.Peers)
-	}
+	defer js.mu.Unlock()
 
-	if !streamFound {
-		js.mu.Unlock()
+	osa := js.streamAssignmentOrInflight(accName, streamName)
+	if osa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
-	// FIXME(mvv): scaffolded desired state into the cancel move API for now, this endpoint needs to be refactored
-	if sa.Group.Desired != nil {
-		origin := sa.Group.Desired.Origin
-		if origin == nil {
-			js.mu.Unlock()
-			resp.Error = NewJSStreamMoveNotInProgressError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-			return
-		}
-
-		csa := sa.copyGroup()
-		// Need to respond to the client that cancels.
-		csa.Reply = reply
-		// Revert replicas and placement in the config immediately.
-		cfg.Replicas = origin.Replicas
-		cfg.Placement = origin.Placement
-		csa.Config = &cfg
-		// Move back to the initial peer set via desired state.
-		csa.Group.Peers = copyStrings(origin.Peers)
-		csa.Group.Cluster = origin.Cluster
-		csa.Group = sa.Group.withDesired(csa.Group)
-		// FIXME(mvv): does origin need to be cleared now?
-
-		s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
-			origin.Replicas, accName, streamName, s.peerSetToNames(currPeers), s.peerSetToNames(origin.Peers))
-
-		if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
-			js.mu.Unlock()
-			return
-		}
-		cc.trackInflightStreamProposal(accName, csa, false)
-		js.mu.Unlock()
-		return
+	var origin *desiredRaftGroupOrigin
+	if osa.Group.Desired != nil {
+		origin = osa.Group.Desired.Origin
+	} else {
+		// A move started before the upgrade to desired state must stay cancellable,
+		// reconstruct the origin if it's a legacy move.
+		origin = osa.legacyMoveOrigin()
 	}
-	js.mu.Unlock()
-
-	if len(currPeers) <= cfg.Replicas {
+	// A group that has no desired state or origin, so no move in progress.
+	if origin == nil {
 		resp.Error = NewJSStreamMoveNotInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
-	// make sure client is scoped to requested account
-	ciNew := *(ci)
-	ciNew.Account = accName
-
-	peers := currPeers[:cfg.Replicas]
-
-	// Remove placement in case tags don't match
-	// This can happen if the move was initiated by modifying the tags.
-	// This is an account operation.
-	// This can NOT happen when the move was initiated by the system account.
-	// There move honors the original tag list.
-	if cfg.Placement != nil && len(cfg.Placement.Tags) != 0 {
-	FOR_TAGCHECK:
-		for _, peer := range peers {
-			si, ok := s.nodeToInfo.Load(peer)
-			if !ok {
-				// can't verify tags, do the safe thing and error
-				resp.Error = NewJSStreamGeneralError(
-					fmt.Errorf("peer %s not present for tag validation", peer))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
-				return
-			}
-			nodeTags := si.(nodeInfo).tags
-			for _, tag := range cfg.Placement.Tags {
-				if !nodeTags.Contains(tag) {
-					// clear placement as tags don't match
-					cfg.Placement = nil
-					break FOR_TAGCHECK
-				}
-			}
-
-		}
+	csa := osa.copyGroup()
+	// Need to respond to the client that cancels.
+	csa.Reply = reply
+	// Revert replicas and placement in the config immediately.
+	csa.Config = osa.Config.clone()
+	csa.Config.Replicas = origin.Replicas
+	csa.Config.Placement = origin.Placement
+	if origin.Retention != nil {
+		csa.Config.Retention = *origin.Retention
+	}
+	// Move back to the initial peer set via desired state.
+	csa.Group.Peers = copyStrings(origin.Peers)
+	csa.Group.Cluster = origin.Cluster
+	csa.Group = osa.Group.withDesired(csa.Group)
+	// withDesired only carries over a prior origin, a legacy move has none yet.
+	// Record it, so the rollback reports the same target while it converges.
+	if csa.Group.Desired.Origin == nil {
+		csa.Group.Desired.Origin = origin
 	}
 
-	s.Noticef("Requested cancel of move: R=%d '%s > %s' to peer set %+v and restore previous peer set %+v",
-		cfg.Replicas, accName, streamName, s.peerSetToNames(currPeers), s.peerSetToNames(peers))
+	s.Noticef("Requested cancel of move: R=%d '%s > %s' and restore previous peer set %+v",
+		origin.Replicas, accName, streamName, s.peerSetToNames(origin.Peers))
 
-	// We will always have peers and therefore never do a callout, therefore it is safe to call inline
-	s.jsClusteredStreamUpdateRequest(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, false)
+	if err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(csa)); err != nil {
+		return
+	}
+	cc.trackInflightStreamProposal(accName, csa, false)
 }
 
 // Request to have an account purged

@@ -208,6 +208,30 @@ type desiredRaftGroupOrigin struct {
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
+// legacyMoveOrigin returns the origin of a move that was started before the upgrade to
+// desired state, or nil if there is no such move. Recognized by the group having more
+// peers than configured replicas.
+func (sa *streamAssignment) legacyMoveOrigin() *desiredRaftGroupOrigin {
+	// Only a group that has not been reconciled into desired state yet can hold a legacy move.
+	if sa == nil || sa.Config == nil || sa.Group == nil || sa.Group.Desired != nil {
+		return nil
+	}
+	replicas := sa.Config.Replicas
+	if replicas < 1 || len(sa.Group.Peers) <= replicas {
+		return nil
+	}
+	return &desiredRaftGroupOrigin{
+		Peers: copyStrings(sa.Group.Peers[:replicas]),
+		// Group.Cluster was only updated once a legacy move completed, so it still
+		// holds the origin cluster.
+		Cluster:  sa.Group.Cluster,
+		Replicas: replicas,
+		// NOTE: a legacy move did not record the placement it started with. We can't
+		// restore what's already lost, so we just preserve the final placement as before.
+		Placement: sa.Config.Placement,
+	}
+}
+
 // withDesired returns a copy of rg with target expressed as the desired state.
 // target MUST already be a copy or fresh group, as it's directly referenced.
 func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
@@ -5635,7 +5659,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			// If we already have a stream assignment and they are the same exact config, short circuit here.
 			if osa != nil {
 				if reflect.DeepEqual(osa.Config, sa.Config) {
-					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) {
+					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) &&
+						reflect.DeepEqual(sa.Group.Desired, osa.Group.Desired) {
 						// Since this already exists we know it succeeded, just respond to this caller.
 						js.mu.RLock()
 						client, subject, reply, recovering := sa.Client, sa.Subject, sa.Reply, sa.recovering
@@ -5656,11 +5681,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						}
 						return
-					} else {
+					} else if sa.Group.Name != osa.Group.Name {
 						// We had a bug where we could have multiple assignments for the same
 						// stream but with different group assignments, including multiple raft
 						// groups. So check for that here. We can only bet on the last one being
 						// consistent in the long run, so let it continue if we see this condition.
+						// Only a differing group name means a duplicate group; a differing peer
+						// set or desired state is a normal peer change and must fall through.
 						s.Warnf("JetStream cluster detected duplicate assignment for stream %q for account %q", sa.Config.Name, acc.Name)
 						if osa.Group.node != nil && osa.Group.node != sa.Group.node {
 							osa.Group.node.Delete()
@@ -7959,15 +7986,18 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 	// If any consumers need to be remapped, we can't mark the stream's desired state done yet.
 	var done bool
 
-	// A legacy in-progress move/scale (no desired state, more peers than replicas)
-	// first needs desired state initialized below. Remapping consumers now would
-	// propose direct peer swaps without migrating them, so postpone until the next
-	// cycle when they can move through desired state.
-	legacyMove := osa.Group.Desired == nil && len(osa.Group.Peers) > osa.Config.Replicas
+	// Without desired state there's nothing to remap consumers onto yet. Remapping now
+	// would propose direct peer swaps without migrating them, so postpone until the next
+	// cycle, once desired state is initialized below and they can move through it.
+	noDesired := osa.Group.Desired == nil
+
+	// A legacy in-progress move, started before the upgrade to desired state, needs
+	// its origin synthesized below to stay cancellable.
+	legacyOrigin := osa.legacyMoveOrigin()
 
 	// If the stream is scaling down and hasn't selected its final peer set yet,
 	// we need to wait before we remap.
-	if !legacyMove && (osa.Group.Desired == nil || !osa.Group.Desired.ScaleDown) {
+	if !noDesired && !osa.Group.Desired.ScaleDown {
 		// Need to remap any consumers.
 		consumers, _, done = js.remapConsumerAssignments(reconcile.Account, osa, false)
 	}
@@ -7976,6 +8006,17 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 	if ng != nil {
 		sa := osa.copyGroup()
 		sa.Group = ng
+		// If it was a legacy move, we need to initialize the desired state origin.
+		if legacyOrigin != nil && sa.Group.Desired != nil {
+			// Must derive the desired cluster from the destination peers, or the origin
+			// cluster (still held by Group.Cluster) would be committed on convergence.
+			if dp := sa.Group.Desired.Peers; len(dp) > 0 {
+				if cluster := js.srv.clusterNameForNode(dp[0]); cluster != _EMPTY_ {
+					sa.Group.Desired.Cluster = cluster
+				}
+			}
+			sa.Group.Desired.Origin = legacyOrigin
+		}
 		// Single nodes are not recorded by the NRG layer so we can rename.
 		// MUST do this, otherwise a scaleup afterward could potentially lead to inconsistencies.
 		if sa.Group.Desired == nil && len(sa.Group.Peers) == 1 {
@@ -8059,7 +8100,6 @@ func (rg *raftGroup) reconcileDesiredState(reconcile desiredAssignmentUpdate, re
 	}
 
 	// Initialize desired state if not set.
-	// FIXME(mvv): test with pre-existing move state without desired.
 	if rg.Desired == nil {
 		// Request is about state that we don't have.
 		if reconcile.ID != _EMPTY_ {
@@ -9098,15 +9138,23 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	cc.trackInflightStreamProposal(acc.Name, sa, false)
 }
 
-func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, peerSet []string, pedantic bool) {
+func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, pedantic bool) {
+	js := s.getJetStream()
+	if js == nil {
+		return
+	}
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	s.jsClusteredStreamUpdateRequestLocked(ci, acc, subject, reply, rmsg, cfg, nil, _EMPTY_, pedantic)
+}
+
+// peerSetCluster is the cluster peerSet is placed in, it MUST be provided if peerSet is.
+// Lock should be held.
+func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, peerSet []string, peerSetCluster string, pedantic bool) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
 	}
-
-	// Now process the request and proposal.
-	js.mu.Lock()
-	defer js.mu.Unlock()
 	meta := cc.meta
 	if meta == nil {
 		return
@@ -9133,9 +9181,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 
 	var newCfg *StreamConfig
 	if jsa := js.accounts[acc.Name]; jsa != nil {
-		js.mu.Unlock()
-		ncfg, err := jsa.configUpdateCheck(osa.Config, cfg, s, pedantic)
-		js.mu.Lock()
+		ncfg, err := jsa.configUpdateCheckLocked(osa.Config, cfg, s, pedantic)
 		if err != nil {
 			resp.Error = NewJSStreamUpdateError(err, Unless(err))
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -9192,20 +9238,9 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	rg := osa.copyGroup().Group
 
 	// Check for a move request.
-	var isMoveRequest, isMoveCancel bool
+	var isMoveRequest bool
 	if lPeerSet := len(peerSet); lPeerSet > 0 {
 		isMoveRequest = true
-		// check if this is a cancellation
-		if lPeerSet == osa.Config.Replicas && lPeerSet <= len(rg.Peers) {
-			isMoveCancel = true
-			// can only be a cancellation if the peer sets overlap as expected
-			for i := 0; i < lPeerSet; i++ {
-				if peerSet[i] != rg.Peers[i] {
-					isMoveCancel = false
-					break
-				}
-			}
-		}
 	} else {
 		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 	}
@@ -9216,7 +9251,6 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	isRetentionChange := newCfg.Retention != osa.Config.Retention
 
 	// FIXME(mvv): should move be prevented if already ongoing? maybe accept but with group size limits?
-	_ = isMoveCancel
 	//// Check if this is a move request, but no cancellation, and we are already moving this stream.
 	//if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
 	//	resp.Error = NewJSStreamMoveInProgressError()
@@ -9250,6 +9284,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				rg.Preferred = peerSet[0]
 			}
 			rg.Peers = peerSet
+			rg.Cluster = peerSetCluster
 		}
 		rg = osa.Group.withDesired(rg)
 	} else if isReplicaChange {
@@ -9306,14 +9341,23 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 		rg.Preferred = _EMPTY_
 	}
 
-	// If we're the first to specify an origin, capture it.
-	if rg.Desired != nil && rg.Desired.Origin == nil {
+	populateOrigin := func() {
+		currPeers, currCluster := copyStrings(osa.Group.Peers), osa.Group.Cluster
+		// If we had desired state without origin, need to capture what was
+		// rolled back to as the new origin.
+		if d := osa.Group.Desired; d != nil {
+			currPeers, currCluster = copyStrings(d.Peers), d.Cluster
+		}
 		rg.Desired.Origin = &desiredRaftGroupOrigin{
-			Peers:     osa.Group.Peers,
-			Cluster:   osa.Group.Cluster,
+			Peers:     currPeers,
+			Cluster:   currCluster,
 			Replicas:  osa.Config.Replicas,
 			Placement: osa.Config.Placement,
 		}
+	}
+	// If we're the first to specify an origin, capture it.
+	if rg.Desired != nil && rg.Desired.Origin == nil {
+		populateOrigin()
 	}
 
 	// A retention change should go through desired state, unless it is a singleton without desired state.
@@ -9328,12 +9372,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			// Only record the retention if we hadn't already recorded it.
 			if d := osa.Group.Desired; d == nil || d.Origin == nil || d.Origin.Retention == nil {
 				if rg.Desired.Origin == nil {
-					rg.Desired.Origin = &desiredRaftGroupOrigin{
-						Peers:     osa.Group.Peers,
-						Cluster:   osa.Group.Cluster,
-						Replicas:  osa.Config.Replicas,
-						Placement: osa.Config.Placement,
-					}
+					populateOrigin()
 				}
 				rg.Desired.Origin.Retention = &osa.Config.Retention
 			}
