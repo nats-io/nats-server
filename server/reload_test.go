@@ -1375,6 +1375,59 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 }
 
+func TestConfigReloadRevokesQueueSubscriptionWithQueueScopedDeny(t *testing.T) {
+	config := func(deny string) []byte {
+		return fmt.Appendf(nil, `
+			listen: 127.0.0.1:-1
+			authorization {
+				users: [
+					{
+						user: attacker
+						password: pass
+						permissions: {
+							subscribe: {
+								allow: [">"]
+								%s
+							}
+						}
+					}
+				]
+			}
+		`, deny)
+	}
+
+	s, opts, configFile := runReloadServerWithContent(t, config(""))
+	defer s.Shutdown()
+
+	asyncErr := make(chan error, 1)
+	nc := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.UserInfo("attacker", "pass"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			asyncErr <- err
+		}))
+	defer nc.Close()
+
+	sub := natsQueueSubSync(t, nc, "admin.secret", "workers")
+	natsFlush(t, nc)
+
+	changeCurrentConfigContentWithNewContent(t, configFile, config(`deny: ["admin.secret workers"]`))
+	require_NoError(t, s.Reload())
+
+	select {
+	case err := <-asyncErr:
+		if !strings.Contains(strings.ToLower(err.Error()), `permissions violation for subscription to "admin.secret" using queue "workers"`) {
+			t.Fatalf("Expected queue subscription permission violation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Expected queue subscription to be revoked")
+	}
+	natsPub(t, nc, "admin.secret", []byte("blocked"))
+	natsFlush(t, nc)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected revoked queue subscription not to receive messages, got %v", err)
+	}
+}
+
 // Ensure Reload returns an error when attempting to change cluster address
 // host.
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {
@@ -6471,10 +6524,60 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamReloadPreservesMaxConcurrentIOOnDisable(t *testing.T) {
+	storeDir := t.TempDir()
+	initialLimit := 128
+	disabledConfig := `listen: 127.0.0.1:-1`
+	jsConfig := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			max_mem_store: 2MB
+			max_file_store: 8MB
+			store_dir: '%s'
+			max_concurrent_io: %d
+		}
+	`, storeDir, initialLimit)
+	conf := createConfFile(t, []byte(jsConfig))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.ReadyForConnections(5*time.Second))
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS repeatedly is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// renabling with the same values is OK
+	reloadUpdateConfig(t, s, conf, jsConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// changing value not OK
+	jsConfig = strings.Replace(jsConfig,
+		fmt.Sprintf("max_concurrent_io: %d", initialLimit),
+		"max_concurrent_io: 256", 1)
+	require_NoError(t, os.WriteFile(conf, []byte(jsConfig), 0666))
+	err := s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "JetStreamConcurrentIOs")
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+}
+
 func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	tdir := t.TempDir()
 	template := `
 		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
 		jetstream {
 			max_mem_store: %s
 			max_file_store: %s
@@ -6486,8 +6589,14 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	s, _ := RunServerWithConfig(conf)
 	defer s.Shutdown()
 
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
 	// Verify initial config.
 	cfg := s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
+	require_Equal(t, cfg.MaxStore, 128*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
 	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
 	require_Equal(t, cfg.MaxStore, 128*1024*1024)
 
@@ -6523,6 +6632,10 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
 
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
 	// We should now be able to create the stream.
 	for _, st := range storageTypes {
 		scfg.Name = fmt.Sprintf("TEST2-%s", st)
@@ -6541,4 +6654,9 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	cfg = s.JetStreamConfig()
 	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
 }

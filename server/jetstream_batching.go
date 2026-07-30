@@ -72,8 +72,8 @@ func getBatchStoreDir(storeDir, streamName, batchId string) (string, string) {
 func newBatchStore(mset *stream, batchId string, replicas int, storage StorageType, storeDir, streamName string) (StreamStore, error) {
 	if replicas == 1 && storage == FileStorage {
 		bname, storeDir := getBatchStoreDir(storeDir, streamName, batchId)
-		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir}
 		s := mset.srv
+		fcfg := FileStoreConfig{AsyncFlush: true, BlockSize: defaultLargeBlockSize, StoreDir: storeDir, srv: s}
 		prf := s.jsKeyGen(s.getOpts().JetStreamKey, mset.acc.Name)
 		if prf != nil {
 			// We are encrypted here, fill in correct cipher selection.
@@ -256,6 +256,12 @@ func checkMsgHeadersPreClusteredProposal(
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
 
+	// Do this before staging any proposal state. All clustered publish paths,
+	// including atomic and fast batches, use this helper.
+	if mset.store.Type() == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		return hdr, msg, 0, NewJSStreamStoreFailedError(ErrMsgTooLarge), ErrMsgTooLarge
+	}
+
 	// Some header checks must be checked pre proposal.
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
@@ -399,7 +405,7 @@ func checkMsgHeadersPreClusteredProposal(
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok = sources[origStream]; !ok {
+			if sources[origStream] == nil {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]
@@ -468,7 +474,7 @@ func checkMsgHeadersPreClusteredProposal(
 			// Allow override of the subject used for the check.
 			seqSubj := subject
 			if optSubj := getExpectedLastSeqPerSubjectForSubject(hdr); optSubj != _EMPTY_ {
-				seqSubj = optSubj
+				seqSubj = copyString(optSubj)
 			}
 
 			// The subject is already written to in this batch, we can't allow

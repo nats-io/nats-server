@@ -3031,7 +3031,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 
 	var err error
 	if node != nil {
-		if js.limitsExceeded(stype) {
+		if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
+			err = ErrMsgTooLarge
+		} else if js.limitsExceeded(stype) {
 			s.resourcesExceededError(stype)
 			err = ApiErrors[JSInsufficientResourcesErr]
 		} else {
@@ -3397,9 +3399,13 @@ func (mset *stream) setupMirrorConsumer() error {
 			ready := sync.WaitGroup{}
 			mirror := mset.mirror
 			mirror.err = nil
-			if ccr.Error != nil || ccr.ConsumerInfo == nil {
-				mset.srv.Warnf("JetStream error response for create mirror consumer: %+v", ccr.Error)
-				mirror.err = ccr.Error
+			if ccr.Error != nil || ccr.ConsumerInfo == nil || ccr.ConsumerInfo.Config == nil {
+				cerr := ccr.Error
+				if cerr == nil {
+					cerr = NewJSMirrorConsumerSetupFailedError(errors.New("invalid consumer create response"))
+				}
+				mset.srv.Warnf("JetStream error response for create mirror consumer: %+v", cerr)
+				mirror.err = cerr
 				// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 				retry = true
 				mset.mu.Unlock()
@@ -3760,12 +3766,16 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 			// Check that it has not been removed or canceled (si.sub would be nil)
 			if si := mset.sources[iname]; si != nil {
 				si.err = nil
-				if ccr.Error != nil || ccr.ConsumerInfo == nil {
+				if ccr.Error != nil || ccr.ConsumerInfo == nil || ccr.ConsumerInfo.Config == nil {
 					// Note: this warning can happen a few times when starting up the server when sourcing streams are
 					// defined, this is normal as the streams are re-created in no particular order and it is possible
 					// that a stream sourcing another could come up before all of its sources have been recreated.
-					mset.srv.Warnf("JetStream error response for stream %s create source consumer %s: %+v", mset.cfg.Name, si.name, ccr.Error)
-					si.err = ccr.Error
+					cerr := ccr.Error
+					if cerr == nil {
+						cerr = NewJSSourceConsumerSetupFailedError(errors.New("invalid consumer create response"))
+					}
+					mset.srv.Warnf("JetStream error response for stream %s create source consumer %s: %+v", mset.cfg.Name, si.name, cerr)
+					si.err = cerr
 					// Let's retry as soon as possible, but we are gated by sourceConsumerRetryThreshold
 					retry = true
 					mset.mu.Unlock()
@@ -5569,6 +5579,16 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 
 	var resp = &JSPubAckResponse{}
 
+	if canConsistencyCheck && stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamStoreFailedError(ErrMsgTooLarge)
+			response, _ := json.Marshal(resp)
+			outq.sendMsg(reply, response)
+		}
+		return ErrMsgTooLarge
+	}
+
 	var batchId string
 	var batchSeq uint64
 	if len(hdr) > 0 {
@@ -6023,7 +6043,7 @@ func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, 
 			if sources == nil {
 				sources = map[string]map[string]string{}
 			}
-			if _, ok := sources[origStream]; !ok {
+			if sources[origStream] == nil {
 				sources[origStream] = map[string]string{}
 			}
 			prevVal := sources[origStream][origSubj]

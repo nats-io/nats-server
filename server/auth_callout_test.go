@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/x509"
 	"encoding/json"
@@ -664,6 +665,142 @@ func TestAuthCalloutAllowedAccounts(t *testing.T) {
 			check(at, test.user, test.password, test.account)
 		})
 	}
+}
+
+// A credential-less client that sends a non-CONNECT protocol op first (e.g.
+// PING) must be run through the same auth callout as a CONNECT client. Prior to
+// the fix, the pre-CONNECT no_auth_user fast path in the parser registered the
+// user directly and never invoked the callout, letting a client the callout
+// would have denied become fully authorized.
+func TestAuthCalloutNoAuthUserPreConnectInvokesCallout(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO { users [ {user: "foo", password: "pwd"} ] }
+			SYS { users [ {user: "sys", password: "pwd"} ] }
+		}
+		system_account: SYS
+		no_auth_user: foo
+		authorization {
+			timeout: 1s
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+				# allowed_accounts absent => every account (including FOO, the
+				# no_auth_user's account) is in scope, so the callout is the gate.
+			}
+		}
+	`
+	var calloutInvoked atomic.Int32
+	handler := func(m *nats.Msg) {
+		calloutInvoked.Add(1)
+		// Deny everyone: a nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// Raw TCP connection so we control the first protocol op. Send PING before
+	// any CONNECT, which is what triggers the pre-CONNECT fast path.
+	c, err := net.Dial("tcp", at.srv.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	// Read and discard the initial INFO line.
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	_, err = c.Write([]byte("PING\r\n"))
+	require_NoError(t, err)
+
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	line, err := br.ReadString('\n')
+	require_NoError(t, err)
+
+	// The callout denied the client, so we must get an authorization violation,
+	// never a PONG.
+	require_False(t, strings.HasPrefix(line, "PONG"))
+	require_Contains(t, line, "Authorization Violation")
+
+	// The callout must actually have been consulted on this path.
+	require_True(t, calloutInvoked.Load() > 0)
+}
+
+// A PING-first no_auth_user admitted by an auth callout with an expiring JWT
+// must still be disconnected at expiry. The pre-CONNECT fast path installs the
+// JWT expiration timer and the auth-timeout timer in the same c.atmr slot, so
+// it must clear the auth timer before authenticating (mirroring processConnect)
+// rather than after, or it would drop the expiration timer and leave the client
+// connected past expiry.
+func TestAuthCalloutNoAuthUserPreConnectHonorsExpiration(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO { users [ {user: "foo", password: "pwd"} ] }
+			SYS { users [ {user: "sys", password: "pwd"} ] }
+		}
+		system_account: SYS
+		no_auth_user: foo
+		authorization {
+			timeout: 1s
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		// Grant, mapping to FOO with a short JWT expiry so the server must
+		// install and honor an expiration timer.
+		ujwt := createAuthUser(t, user, "foo", "FOO", "", nil, time.Second, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	c, err := net.Dial("tcp", at.srv.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	// Read and discard the initial INFO line.
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	_, err = c.Write([]byte("PING\r\n"))
+	require_NoError(t, err)
+
+	// The callout granted the connection, so the first reply is a PONG.
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	line, err := br.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(line, "PONG"))
+
+	// The JWT expires ~1s out. The expiration timer must survive and fire,
+	// disconnecting us with an auth-expired error.
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	var expired bool
+	for {
+		line, err = br.ReadString('\n')
+		if err != nil {
+			// Server closed the connection after signaling expiry.
+			break
+		}
+		if strings.Contains(line, "User Authentication Expired") {
+			expired = true
+		}
+	}
+	require_True(t, expired)
 }
 
 func TestAuthCalloutClientTLSCerts(t *testing.T) {

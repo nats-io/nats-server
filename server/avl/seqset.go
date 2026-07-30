@@ -42,6 +42,22 @@ type SequenceSet struct {
 // Insert will insert the sequence into the set.
 // The tree will be balanced inline.
 func (ss *SequenceSet) Insert(seq uint64) {
+	// If a node covering seq already exists, setting a bit can not change the
+	// tree shape, so skip the recursive descent and rebalance checks.
+	for n := ss.root; n != nil; {
+		if seq < n.base {
+			n = n.l
+		} else if seq >= n.base+numEntries {
+			n = n.r
+		} else {
+			n.set(seq, &ss.changed)
+			if ss.changed {
+				ss.changed = false
+				ss.size++
+			}
+			return
+		}
+	}
 	if ss.root = ss.root.insert(seq, &ss.changed, &ss.nodes); ss.changed {
 		ss.changed = false
 		ss.size++
@@ -192,12 +208,10 @@ func (ss *SequenceSet) Union(ssa ...*SequenceSet) {
 	for _, sa := range ssa {
 		sa.root.nodeIter(func(n *node) {
 			for nb, b := range n.bits {
-				for pos := uint64(0); b != 0; pos++ {
-					if b&1 == 1 {
-						seq := n.base + (uint64(nb) * uint64(bitsPerBucket)) + pos
-						ss.Insert(seq)
-					}
-					b >>= 1
+				base := n.base + uint64(nb)*bitsPerBucket
+				for b != 0 {
+					ss.Insert(base + uint64(bits.TrailingZeros64(b)))
+					b &= b - 1
 				}
 			}
 		})
@@ -302,8 +316,11 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 	sz := int(le.Uint32(buf[index+4:]))
 	index += 8
 
-	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// nn is decoded as a uint32 but held in an int. On 32-bit builds a value
+	// above MaxInt32 turns negative and nn*perNode below overflows, so the
+	// length check would pass for a short buffer and the following make/reads
+	// run off the end. Compare with division so the bound holds on every arch.
+	if nn < 0 || nn > (len(buf)-minLen)/((numBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -335,8 +352,9 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 
 	const v1NumBuckets = 64
 
-	expectedLen := minLen + (nn * ((v1NumBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// See decodev2: guard the node count without overflowing the multiply so
+	// the bound stays correct on 32-bit builds too.
+	if nn < 0 || nn > (len(buf)-minLen)/((v1NumBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -347,12 +365,9 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 		for nb := uint64(0); nb < v1NumBuckets; nb++ {
 			n := le.Uint64(buf[index:])
 			// Walk all set bits and insert sequences manually for this decode from v1.
-			for pos := uint64(0); n != 0; pos++ {
-				if n&1 == 1 {
-					seq := base + (nb * uint64(bitsPerBucket)) + pos
-					ss.Insert(seq)
-				}
-				n >>= 1
+			for n != 0 {
+				ss.Insert(base + (nb * uint64(bitsPerBucket)) + uint64(bits.TrailingZeros64(n)))
+				n &= n - 1
 			}
 			index += 8
 		}
@@ -527,10 +542,13 @@ func (n *node) clear(seq uint64, deleted *bool) bool {
 	seq -= n.base
 	i := seq / bitsPerBucket
 	mask := uint64(1) << (seq % bitsPerBucket)
-	if (n.bits[i] & mask) != 0 {
-		n.bits[i] &^= mask
-		*deleted = true
+	if (n.bits[i] & mask) == 0 {
+		// Nothing cleared, and nodes in the tree are never empty,
+		// so no need to scan the buckets.
+		return false
 	}
+	n.bits[i] &^= mask
+	*deleted = true
 	for _, b := range n.bits {
 		if b != 0 {
 			return false
@@ -663,11 +681,13 @@ func (n *node) iter(f func(uint64) bool) bool {
 	if ok := n.l.iter(f); !ok {
 		return false
 	}
-	for num := n.base; num < n.base+numEntries; num++ {
-		if n.exists(num) {
-			if ok := f(num); !ok {
+	for i, b := range n.bits {
+		base := n.base + uint64(i)*bitsPerBucket
+		for b != 0 {
+			if ok := f(base + uint64(bits.TrailingZeros64(b))); !ok {
 				return false
 			}
+			b &= b - 1
 		}
 	}
 	if ok := n.r.iter(f); !ok {

@@ -181,14 +181,24 @@ func (c *client) parse(buf []byte) error {
 							s.mu.Lock()
 							user, exists := s.users[noAuthUser]
 							s.mu.Unlock()
-							// Enforce the same connection restrictions as CONNECT before allowing.
+							// Run the same authentication pipeline as CONNECT. In addition to
+							// the connection restrictions checked here, this delegates the
+							// decision to auth callouts or custom authenticators.
 							if exists && !user.ProxyRequired && c.connectionTypeAllowed(user.AllowedConnectionTypes) {
-								c.RegisterUser(user)
+								// Mirror processConnect: clear the auth-timeout timer and
+								// mark CONNECT received *before* authenticating. Auth may
+								// install a JWT/callout expiration timer into the same c.atmr
+								// slot, so clearing it afterwards would drop the expiration
+								// and leave the client connected past expiry. Setting
+								// connectReceived first also lets the expiration deadline be
+								// recorded on c.expires.
 								c.mu.Lock()
 								c.clearAuthTimer()
 								c.flags.set(connectReceived)
 								c.mu.Unlock()
-								authSet, ok = false, true
+								if s.checkAuthentication(c) {
+									authSet, ok = false, true
+								}
 							}
 						}
 					case LEAF:

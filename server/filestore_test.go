@@ -1680,6 +1680,153 @@ func TestFileStoreReadCache(t *testing.T) {
 	})
 }
 
+func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
+	newTestStore := func(t *testing.T) (*fileStore, *msgBlock, *cache) {
+		t.Helper()
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192},
+			StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{"foo", "bar"}},
+		)
+		require_NoError(t, err)
+		t.Cleanup(func() { fs.Stop() })
+
+		for i := 0; i < 4; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+			require_NoError(t, err)
+		}
+		_, _, err = fs.StoreMsg("bar", nil, []byte("hello"), 0)
+		require_NoError(t, err)
+		fs.FlushAllPending()
+
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+
+		mb := fs.lmb
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+
+		require_NoError(t, mb.loadMsgsWithLock())
+		require_NotNil(t, mb.cache)
+		c := mb.cache
+		mb.ecache.Set(c)
+		mb.ecache.Weaken()
+		mb.cache = nil
+		mb.fss = nil
+		if info, ok := fs.psim.Find(stringToBytes("foo")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		if info, ok := fs.psim.Find(stringToBytes("bar")); ok {
+			info.fblk, info.lblk = mb.index, mb.index
+		}
+		require_NotNil(t, mb.ecache.Value())
+
+		return fs, mb, c
+	}
+
+	require_NoStrongCache := func(t *testing.T, mb *msgBlock, c *cache) {
+		t.Helper()
+		require_True(t, mb.cache == nil)
+		require_True(t, mb.ecache.Value() == c)
+		runtime.KeepAlive(c)
+	}
+
+	t.Run("removeMsgFromBlock", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		removed, err := fs.removeMsg(2, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("generatePerSubjectInfo", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoError(t, mb.generatePerSubjectInfo())
+		require_NotNil(t, mb.fss)
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("filteredPending", func(t *testing.T) {
+		_, mb, c := newTestStore(t)
+		total, first, last := mb.filteredPending("foo", false, 1)
+		require_Equal(t, total, uint64(4))
+		require_Equal(t, first, uint64(1))
+		require_Equal(t, last, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("loadLast", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		sm, err := fs.loadLast("foo", nil)
+		require_NoError(t, err)
+		require_NotNil(t, sm)
+		require_Equal(t, sm.seq, uint64(4))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("recalculateForSubj", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		// Removing the first msg for "foo" marks its SimpleState as needing
+		// a lazy first sequence recalculation.
+		removed, err := fs.removeMsg(1, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		ss, ok := mb.fss.Find(stringToBytes("foo"))
+		require_True(t, ok)
+		require_True(t, ss.firstNeedsUpdate)
+		// The cache is only weakly referenced, so recalculateForSubj will
+		// promote it and must release the strong reference again.
+		require_True(t, mb.cache == nil)
+		mb.recalculateForSubj("foo", ss)
+		require_Equal(t, ss.First, uint64(2))
+		require_NoStrongCache(t, mb, c)
+	})
+
+	t.Run("firstSeqForSubj", func(t *testing.T) {
+		fs, mb, _ := newTestStore(t)
+		// Clear the weak reference too, forcing firstSeqForSubj to reload
+		// the block from disk to get fss, taking a strong cache reference.
+		mb.mu.Lock()
+		mb.ecache.Set(nil)
+		mb.mu.Unlock()
+		fs.mu.Lock()
+		seq, err := fs.firstSeqForSubj("foo")
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		require_Equal(t, seq, uint64(1))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_True(t, mb.cache == nil)
+		require_NotNil(t, mb.ecache.Value())
+	})
+
+	t.Run("firstSeqForSubjRecalculate", func(t *testing.T) {
+		fs, mb, c := newTestStore(t)
+		// Removing the first msg for "foo" marks its SimpleState as needing
+		// a lazy first sequence recalculation, done inside firstSeqForSubj.
+		removed, err := fs.removeMsg(1, false, true, true)
+		require_NoError(t, err)
+		require_True(t, removed)
+		fs.mu.Lock()
+		seq, err := fs.firstSeqForSubj("foo")
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		require_Equal(t, seq, uint64(2))
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		require_NoStrongCache(t, mb, c)
+	})
+}
+
 func TestFileStorePartialCacheExpiration(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cexp := 10 * time.Millisecond
@@ -7908,21 +8055,20 @@ func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
 	}
 	fs.mu.Unlock()
 
-	// Let sync run.
-	time.Sleep(300 * time.Millisecond)
-
 	// We want to make sure the last block, which is filled with tombstones and is not compactable, returns false now.
-	fs.mu.Lock()
-	for _, mb := range fs.blks {
-		mb.mu.Lock()
-		shouldCompact := mb.shouldCompactSync()
-		mb.mu.Unlock()
-		if shouldCompact {
-			fs.mu.Unlock()
-			t.Fatalf("Expected should compact to be false for %d, got true", mb.getIndex())
+	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			index, shouldCompact := mb.index, mb.shouldCompactSync()
+			mb.mu.Unlock()
+			if shouldCompact {
+				return fmt.Errorf("Expected should compact to be false for %d, got true", index)
+			}
 		}
-	}
-	fs.mu.Unlock()
+		return nil
+	})
 
 	// Now remove some from block 3 and verify that compact is not suppressed.
 	_, err = fs.RemoveMsg(13)
@@ -8629,6 +8775,77 @@ func Benchmark_FileStoreSubjectStateConsistencyOptimizationPerf(b *testing.B) {
 			_, _, err = fs.StoreMsg(subject, nil, nil, 0)
 			require_NoError(b, err)
 		}
+	}
+}
+
+// Based on TestNoRaceJetStreamConsumerFileStoreConcurrentDiskIO, a test that
+// was introduced together with the disk IO semaphore "dios".
+func BenchmarkFileStoreConsumerStoreConcurrentDiskIO(b *testing.B) {
+	const consumersPerIteration = 10000
+
+	// This compares the same operations of that using a filestore configure with
+	// default "dios", against a filestore with an unbounded "dios" (make it as
+	// (large as the number of consumer stores created by the test).
+	for _, test := range []struct {
+		name string
+		dios *diskIOSemaphore
+	}{
+		{name: "default_dios", dios: defaultDiskIOSemaphore()},
+		{name: "unbounded_dios", dios: newDiskIOSemaphore(consumersPerIteration)},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			storeRoot := b.TempDir()
+			var dioLimit int
+
+			b.StopTimer()
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				storeDir := filepath.Join(storeRoot, fmt.Sprintf("%d", i))
+				fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir}, StreamConfig{Name: "MT", Storage: FileStorage})
+				require_NoError(b, err)
+				fs.dios = test.dios
+				dioLimit = fs.dios.cap()
+
+				var wg sync.WaitGroup
+				ts := time.Now().UnixNano()
+
+				b.StartTimer()
+				for j := 1; j <= consumersPerIteration; j++ {
+					name := fmt.Sprintf("o%d", j)
+					o, err := fs.ConsumerStore(name, time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
+					require_NoError(b, err)
+					wg.Add(1)
+
+					go func(o ConsumerStore) {
+						defer wg.Done()
+						if err := o.UpdateDelivered(22, 22, 1, ts); err != nil {
+							panic(err)
+						}
+						cfs := o.(*consumerFileStore)
+						buf, err := cfs.encodeState()
+						if err != nil {
+							panic(err)
+						}
+						if err := cfs.writeState(buf); err != nil {
+							panic(err)
+						}
+						if err := o.Delete(); err != nil {
+							panic(err)
+						}
+					}(o)
+				}
+
+				wg.Wait()
+				b.StopTimer()
+
+				require_NoError(b, fs.Stop())
+			}
+
+			b.ReportMetric(0, "ns/op")
+			b.ReportMetric(float64(dioLimit), "dios_limit")
+			b.ReportMetric(float64(b.N*consumersPerIteration)/b.Elapsed().Seconds(), "consumer_ops/s")
+		})
 	}
 }
 
@@ -12908,9 +13125,9 @@ func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
 	rbek, err := genBlockEncryptionKey(fcfg.Cipher, mb.seed, mb.nonce)
 	require_NoError(t, err)
 	rbek.XORKeyStream(encBuf, encBuf)
-	<-dios
+	fs.dios.acquire()
 	err = os.WriteFile(mb.mfn, encBuf, defaultFilePerms)
-	dios <- struct{}{}
+	fs.dios.release()
 	require_NoError(t, err)
 	recycleMsgBlockBuf(encBuf)
 
@@ -13213,4 +13430,50 @@ func TestFileStoreStoreRawMsgTTLsRace(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	stop.Store(true)
 	wg.Wait()
+}
+
+func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S1", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	// The key file is written without a sync, so it should be marked for one.
+	fs.mu.RLock()
+	lmb := fs.lmb
+	fs.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync, kfn := lmb.needKeySync, lmb.kfn
+	lmb.mu.RUnlock()
+	require_True(t, needKeySync)
+	require_True(t, kfn != _EMPTY_)
+
+	// A sync pass should sync the key file and clear the flag.
+	fs.syncBlocks()
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
+
+	// With SyncAlways the key file write is already synced, so the flag should not be set.
+	fcfg = FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncAlways: true}
+	fs2, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "S2", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs2.Stop()
+
+	_, _, err = fs2.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	fs2.mu.RLock()
+	lmb = fs2.lmb
+	fs2.mu.RUnlock()
+	require_NotNil(t, lmb)
+	lmb.mu.RLock()
+	needKeySync = lmb.needKeySync
+	lmb.mu.RUnlock()
+	require_False(t, needKeySync)
 }

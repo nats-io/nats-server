@@ -16,6 +16,7 @@ package stree
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"unsafe"
 
 	"github.com/nats-io/nats-server/v2/server/gsl"
@@ -87,7 +88,7 @@ func (t *SubjectTree[T]) Find(subject []byte) (*T, bool) {
 		// We are a node type here, grab meta portion.
 		if bn := n.base(); len(bn.prefix) > 0 {
 			end := min(si+len(bn.prefix), len(subject))
-			if !bytes.Equal(subject[si:end], bn.prefix) {
+			if string(subject[si:end]) != bn.prefix {
 				return nil, false
 			}
 			// Increment our subject index.
@@ -181,12 +182,12 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 			return &old, true
 		}
 		// Here we need to split this leaf.
-		cpi := commonPrefixLen(ln.suffix, subject[si:])
+		cpi := commonPrefixLen(stringToBytes(ln.suffix), subject[si:])
 		nn := newNode4(subject[si : si+cpi])
-		ln.setSuffix(ln.suffix[cpi:])
+		ln.setSuffix(stringToBytes(ln.suffix[cpi:]))
 		si += cpi
 		// Make sure we have different pivot, normally this will be the case unless we have overflowing prefixes.
-		if p := pivot(ln.suffix, 0); cpi > 0 && si < len(subject) && p == subject[si] {
+		if p := pivot(stringToBytes(ln.suffix), 0); cpi > 0 && si < len(subject) && p == subject[si] {
 			// We need to split the original leaf. Recursively call into insert.
 			t.insert(np, subject, value, si)
 			// Now add the update version of *np as a child to the new node4.
@@ -194,9 +195,9 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 		} else {
 			// Can just add this new leaf as a sibling.
 			nl := newLeaf(subject[si:], value)
-			nn.addChild(pivot(nl.suffix, 0), nl)
+			nn.addChild(pivot(stringToBytes(nl.suffix), 0), nl)
 			// Add back original.
-			nn.addChild(pivot(ln.suffix, 0), ln)
+			nn.addChild(pivot(stringToBytes(ln.suffix), 0), ln)
 		}
 		*np = nn
 		return nil, false
@@ -205,7 +206,7 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 	// Non-leaf nodes.
 	bn := n.base()
 	if len(bn.prefix) > 0 {
-		cpi := commonPrefixLen(bn.prefix, subject[si:])
+		cpi := commonPrefixLen(stringToBytes(bn.prefix), subject[si:])
 		if pli := len(bn.prefix); cpi >= pli {
 			// Move past this node. We look for an existing child node to recurse into.
 			// If one does not exist we can create a new leaf node.
@@ -227,8 +228,8 @@ func (t *SubjectTree[T]) insert(np *node, subject []byte, value T, si int) (*T, 
 			// We will insert a new node4 and attach our current node below after adjusting prefix.
 			nn := newNode4(prefix)
 			// Shift the prefix for our original node.
-			n.setPrefix(bn.prefix[cpi:])
-			nn.addChild(pivot(bn.prefix[:], 0), n)
+			n.setPrefix(stringToBytes(bn.prefix[cpi:]))
+			nn.addChild(pivot(stringToBytes(bn.prefix), 0), n)
 			// Add in our new leaf.
 			nn.addChild(pivot(subject[si:], 0), newLeaf(subject[si:], value))
 			// Update our node reference.
@@ -269,7 +270,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 		if len(subject) < si+len(bn.prefix) {
 			return nil, false
 		}
-		if !bytes.Equal(subject[si:si+len(bn.prefix)], bn.prefix) {
+		if string(subject[si:si+len(bn.prefix)]) != bn.prefix {
 			return nil, false
 		}
 		// Increment our subject index.
@@ -288,18 +289,16 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 
 			if sn := n.shrink(); sn != nil {
 				bn := n.base()
-				// Make sure to set cap so we force an append to copy below.
-				pre := bn.prefix[:len(bn.prefix):len(bn.prefix)]
+				pre := bn.prefix
 				// Need to fix up prefixes/suffixes.
 				if sn.isLeaf() {
 					ln := sn.(*leaf[T])
-					// Make sure to set cap so we force an append to copy.
-					ln.suffix = append(pre, ln.suffix...)
+					ln.suffix = pre + ln.suffix
 				} else {
 					// We are a node here, we need to add in the old prefix.
 					if len(pre) > 0 {
 						bsn := sn.base()
-						sn.setPrefix(append(pre, bsn.prefix...))
+						bsn.prefix = pre + bsn.prefix
 					}
 				}
 				*np = sn
@@ -367,7 +366,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 						if !cb(append(pre, ln.suffix...), &ln.value) {
 							return false
 						}
-					} else if hasTermPWC && bytes.IndexByte(ln.suffix, tsep) < 0 {
+					} else if hasTermPWC && strings.IndexByte(ln.suffix, tsep) < 0 {
 						if !cb(append(pre, ln.suffix...), &ln.value) {
 							return false
 						}
@@ -446,7 +445,7 @@ func (t *SubjectTree[T]) iter(n node, pre []byte, ordered bool, cb func(subject 
 		}
 	}
 	// Now sort.
-	slices.SortStableFunc(nodes, func(a, b node) int { return bytes.Compare(a.path(), b.path()) })
+	slices.SortStableFunc(nodes, func(a, b node) int { return strings.Compare(a.path(), b.path()) })
 	// Now walk the nodes in order and call into next iter.
 	for i := range nodes {
 		if !t.iter(nodes[i], pre, true, cb) {
@@ -540,4 +539,14 @@ func bytesToString(b []byte) string {
 	}
 	p := unsafe.SliceData(b)
 	return unsafe.String(p, len(b))
+}
+
+// Note this will avoid a copy of the string data, but the returned slice must
+// only be used for reading since strings are immutable.
+func stringToBytes(s string) []byte {
+	if len(s) == 0 {
+		return nil
+	}
+	p := unsafe.StringData(s)
+	return unsafe.Slice(p, len(s))
 }

@@ -1433,6 +1433,98 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 	}
 }
 
+func TestJetStreamCounterNullSourcesHeaderDoesNotPanic(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Origin counter stream that will be sourced in below.
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "O1",
+		Subjects:        []string{"foo.*"},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	m := nats.NewMsg("foo.1")
+	m.Header.Set(JSMessageIncr, "5")
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:            "M",
+		Subjects:        []string{"foo"},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	// A sources header holding a JSON `null` for the origin stream is stored
+	// verbatim, and decodes back into a present key with a nil inner map.
+	m = nats.NewMsg("foo")
+	m.Header.Set(JSMessageIncr, "1")
+	m.Header.Set(JSMessageCounterSources, `{"O1":null}`)
+	_, err = js.PublishMsg(m)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+	var smv StoreMsg
+	sm, err := mset.store.LoadLastMsg("foo", &smv)
+	require_NoError(t, err)
+	require_Equal(t, string(sliceHeader(JSMessageCounterSources, sm.hdr)), `{"O1":null}`)
+
+	// That stored record reached through the pre-clustered proposal path. The
+	// sourced message has to record its count, which used to be a write into
+	// the nil inner map.
+	hdr := genHeader(nil, JSMessageIncr, "5")
+	hdr = genHeader(hdr, JSStreamSource, "O1 1 > > foo.1")
+	diff := &batchStagedDiff{}
+	mset.clMu.Lock()
+	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, []byte(`{"val":"5"}`), true, "M", nil, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
+	mset.clMu.Unlock()
+	require_NoError(t, err)
+	require_Equal(t, diff.counter["foo"].sources["O1"]["foo.1"], "5")
+
+	// And now the same through the regular sourcing path.
+	_, err = jsStreamUpdate(t, nc, &StreamConfig{
+		Name:     "M",
+		Subjects: []string{"foo"},
+		Sources: []*StreamSource{{
+			Name:              "O1",
+			SubjectTransforms: []SubjectTransformConfig{{Source: "foo.*", Destination: "foo"}},
+		}},
+		Storage:         MemoryStorage,
+		AllowMsgCounter: true,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// The counter aggregated the sourced increment, and the sources header was
+	// rewritten with a usable inner map.
+	rsm, err := js.GetMsg("M", 2)
+	require_NoError(t, err)
+	var count CounterValue
+	require_NoError(t, json.Unmarshal(rsm.Data, &count))
+	require_Equal(t, count.Value, "6")
+	var sources CounterSources
+	require_NoError(t, json.Unmarshal([]byte(rsm.Header.Get(JSMessageCounterSources)), &sources))
+	require_Equal(t, sources["O1"]["foo.1"], "5")
+}
+
 func TestJetStreamCounterStagingDoesNotCorruptCommittedTotal(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -2949,6 +3041,67 @@ func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequence(t *testing.T) {
 	require_Equal(t, resp.PubAck.Sequence, 4)
 	require_Equal(t, resp.PubAck.BatchId, "uuid")
 	require_Equal(t, resp.PubAck.BatchSize, 2)
+}
+
+func TestJetStreamAtomicBatchPublishExpectedLastSubjectSequenceOwnership(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "EVENTS",
+		Subjects:           []string{"events.>"},
+		Storage:            MemoryStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	entry := "diary.entry_BBBBBBBBBBBBBBBBBBBBBBBB"
+	oldDay := "diary-day.day_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	targetDay := "diary-day.day_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	mutation := "mutation.mut_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+	entities := make([]string, 19)
+	for i := range entities {
+		entities[i] = fmt.Sprintf("seed.entity_%02d", i+1)
+	}
+	entities[10], entities[17], entities[18] = targetDay, entry, oldDay
+	for i, entity := range entities {
+		ack, err := js.Publish("events."+entity+".balance", nil)
+		require_NoError(t, err)
+		require_Equal(t, ack.Sequence, uint64(i+1))
+	}
+
+	batchEntities := []string{entry, oldDay, targetDay, mutation}
+	expected := []uint64{18, 19, 11, 0}
+	for i, entity := range batchEntities {
+		m := nats.NewMsg("events." + entity + ".balance")
+		m.Header.Set(JSExpectedLastSubjSeqSubj, "events."+entity+".*")
+		m.Header.Set(JSExpectedLastSubjSeq, strconv.FormatUint(expected[i], 10))
+		m.Header.Set(JSBatchId, "uuid")
+		m.Header.Set(JSBatchSeq, strconv.Itoa(i+1))
+		if i == len(batchEntities)-1 {
+			m.Header.Set(JSBatchCommit, "1")
+			msg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			var resp JSPubAckResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			if resp.Error != nil {
+				t.Fatalf("commit error: %v", resp.Error)
+			}
+			require_Equal(t, resp.PubAck.Sequence, uint64(23))
+			require_Equal(t, resp.PubAck.BatchId, "uuid")
+			require_Equal(t, resp.PubAck.BatchSize, 4)
+		} else if i == 0 {
+			msg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			require_Len(t, len(msg.Data), 0)
+		} else {
+			require_NoError(t, nc.PublishMsg(m))
+		}
+	}
 }
 
 func TestJetStreamAtomicBatchPublishCommitUnsupported(t *testing.T) {

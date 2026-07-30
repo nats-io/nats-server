@@ -21,6 +21,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
 	"maps"
@@ -1289,6 +1290,7 @@ type Varz struct {
 	OCSPResponseCache     *OCSPResponseCacheVarz `json:"ocsp_peer_cache,omitempty"`         // OCSPResponseCache is the state of the OCSP cache
 	SlowConsumersStats    *SlowConsumersStats    `json:"slow_consumer_stats"`               // SlowConsumersStats are statistics about all detected Slow Consumer
 	StaleConnectionStats  *StaleConnectionStats  `json:"stale_connection_stats,omitempty"`  // StaleConnectionStats are statistics about all detected Stale Connections
+	DiskIOWaitStats       *DiskIOWaitStats       `json:"disk_io_wait_stats"`                // DiskIOWaitStats are statistics about disk I/O semaphore contention
 	Proxies               *ProxiesOptsVarz       `json:"proxies,omitempty"`                 // Proxies hold information about network proxy devices
 	TLSCertNotAfter       time.Time              `json:"tls_cert_not_after,omitzero"`       // TLSCertNotAfter is the expiration date of the TLS certificate of this server
 }
@@ -1446,6 +1448,14 @@ type StaleConnectionStats struct {
 	Routes   uint64 `json:"routes"`   // Routes is how many Route connections became stale connections
 	Gateways uint64 `json:"gateways"` // Gateways is how many Gateway connections became stale connections
 	Leafs    uint64 `json:"leafs"`    // Leafs is how many Leafnode connections became stale connections
+}
+
+// DiskIOWaitStats contains information about disk I/O semaphore contention.
+type DiskIOWaitStats struct {
+	Waiters     int64  `json:"waiters"`       // Waiters is the number of goroutines waiting on the dios
+	Waits       uint64 `json:"waits"`         // Waits is the number of dios acquires that had to wait
+	WaitTime    uint64 `json:"wait_time"`     // WaitTime is the cumulative time spent waiting for dios
+	MaxWaitTime uint64 `json:"max_wait_time"` // MaxWaitTime is the longest observed wait
 }
 
 func myUptime(d time.Duration) string {
@@ -1831,6 +1841,15 @@ func (s *Server) updateVarzConfigReloadableFields(v *Varz) {
 	} else {
 		v.Proxies = nil
 	}
+
+	if cfg := v.JetStream.Config; cfg != nil {
+		if opts.JetStreamMaxMemory > 0 {
+			cfg.MaxMemory = opts.JetStreamMaxMemory
+		}
+		if opts.JetStreamMaxStore > 0 {
+			cfg.MaxStore = opts.JetStreamMaxStore
+		}
+	}
 }
 
 func getPinnedCertsAsSlice(certs PinnedCertSet) []string {
@@ -1954,6 +1973,19 @@ func (s *Server) updateVarzRuntimeFields(v *Varz, forceUpdate bool, pcpu float64
 				stats.Unknowns,
 			}
 		}
+	}
+	v.DiskIOWaitStats = diskIOWaitStats(s.dios)
+}
+
+func diskIOWaitStats(d *diskIOSemaphore) *DiskIOWaitStats {
+	if d == nil {
+		return &DiskIOWaitStats{}
+	}
+	return &DiskIOWaitStats{
+		Waiters:     d.waiters.Load(),
+		Waits:       d.waits.Load(),
+		WaitTime:    d.waitNanos.Load(),
+		MaxWaitTime: d.maxWaitNanos.Load(),
 	}
 }
 
@@ -3663,6 +3695,29 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 				accFound = true
 			}
 			acc, err := s.LookupAccount(fi.Name())
+			// Expired accounts are not a JetStream health problem; skip them when
+			// scanning all accounts. Still surface an error if this account was
+			// explicitly requested — including the err==nil + IsExpired() case.
+			expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+			if expired {
+				if opts.Account == _EMPTY_ {
+					continue
+				}
+				msg := fmt.Sprintf("JetStream account '%s' is expired", fi.Name())
+				if !details {
+					health.Status = na
+					health.Error = msg
+					return health
+				}
+				health.Errors = append(health.Errors, HealthzError{
+					Type:    HealthzErrorAccount,
+					Account: fi.Name(),
+					Error:   msg,
+				})
+				// Return so later stream/consumer not-found checks do not
+				// replace this with a misleading 404 for assets we skipped.
+				return health
+			}
 			if err != nil {
 				if !details {
 					health.Status = na
@@ -3956,6 +4011,28 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 	// Use our copy to traverse so we do not need to hold the js lock.
 	for accName, asa := range streams {
 		acc, err := s.LookupAccount(accName)
+		// Expired accounts are not a JetStream health problem; skip them when
+		// scanning all accounts. Still surface an error if this account was
+		// explicitly requested — including the err==nil + IsExpired() case.
+		expired := (err != nil && errors.Is(err, ErrAccountExpired)) || (err == nil && acc.IsExpired())
+		if expired {
+			if opts.Account == _EMPTY_ {
+				continue
+			}
+			msg := fmt.Sprintf("JetStream account %q is expired", accName)
+			if !details {
+				health.Status = na
+				health.Error = msg
+				return health
+			}
+			health.Errors = append(health.Errors, HealthzError{
+				Type:    HealthzErrorAccount,
+				Account: accName,
+				Error:   msg,
+			})
+			// Return so later health checks do not obscure the expired account.
+			return health
+		}
 		if err != nil && len(asa) > 0 {
 			if !details {
 				health.Status = na
@@ -4211,7 +4288,7 @@ func (s *Server) Raftz(opts *RaftzOptions) *RaftzStatus {
 			PTerm:         n.pterm,
 			PIndex:        n.pindex,
 			SystemAcc:     n.IsSystemAccount(),
-			TrafficAcc:    n.acc.GetName(),
+			TrafficAcc:    n.t.Account().GetName(),
 			IPQPropLen:    n.prop.len(),
 			IPQEntryLen:   n.entry.len(),
 			IPQRespLen:    n.resp.len(),
