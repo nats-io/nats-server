@@ -10402,11 +10402,12 @@ func TestMQTTQoS1PubAckPipelineConnClose(t *testing.T) {
 	testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("msg2"))
 }
 
-// A pipeline stopped while the readLoop is still admitting entries must
-// not leak JSA reply registrations: shutdown() runs after the last push.
+// A pipeline shut down while the readLoop is still admitting entries must
+// not leak JSA reply registrations, even when the close-time drain runs
+// concurrently with (or before) a racing push.
 func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 	for i := 0; i < 100; i++ {
-		jsa := &mqttJSA{}
+		jsa := &mqttJSA{timeout: time.Second}
 		pipe := &mqttAckPipeline{
 			jsa:    jsa,
 			q:      make(chan *mqttPipelinedAck, 4),
@@ -10415,28 +10416,25 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			// The readLoop side: register, admit, clean up on stop.
+			// The readLoop side: register, admit until rejected.
 			defer close(done)
-			defer pipe.shutdown()
 			for n := 0; ; n++ {
 				ack := &mqttPipelinedAck{pi: uint16(n%0xFFFF + 1), reply: fmt.Sprintf("reply.%d", n), done: make(chan error, 1)}
 				jsa.replies.Store(ack.reply, func(any) {})
-				select {
-				case pipe.q <- ack:
-				case <-pipe.quitCh:
-					// As mqttPipelinePush does when stopped.
-					jsa.replies.Delete(ack.reply)
+				if err := pipe.push(ack); err != nil {
 					return
 				}
 			}
 		}()
 
-		// The consumer side: take a few entries, then stop mid-stream.
+		// The consumer side: take a few entries, then stop and drain
+		// concurrently with the pushes, as the connection-close handler
+		// does.
 		for j := 0; j < i%4; j++ {
 			ack := <-pipe.q
 			jsa.replies.Delete(ack.reply)
 		}
-		pipe.stop()
+		pipe.shutdown()
 		<-done
 
 		leaked := 0
@@ -10444,5 +10442,26 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 		if leaked > 0 {
 			t.Fatalf("iteration %d: %v reply registration(s) leaked after shutdown", i, leaked)
 		}
+	}
+
+	// A push after the pipeline has stopped must be rejected outright,
+	// with its registration cleaned up and nothing left in the queue.
+	jsa := &mqttJSA{timeout: time.Second}
+	pipe := &mqttAckPipeline{
+		jsa:    jsa,
+		q:      make(chan *mqttPipelinedAck, 4),
+		quitCh: make(chan struct{}),
+	}
+	pipe.shutdown()
+	ack := &mqttPipelinedAck{pi: 1, reply: "reply.stopped", done: make(chan error, 1)}
+	jsa.replies.Store(ack.reply, func(any) {})
+	if err := pipe.push(ack); err != errMQTTAckPipelineStopped {
+		t.Fatalf("Expected errMQTTAckPipelineStopped, got %v", err)
+	}
+	if _, ok := jsa.replies.Load(ack.reply); ok {
+		t.Fatal("reply registration not cleaned up on rejected push")
+	}
+	if n := len(pipe.q); n != 0 {
+		t.Fatalf("%v entry(ies) admitted into a stopped pipeline", n)
 	}
 }

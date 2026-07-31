@@ -246,6 +246,9 @@ var (
 	errMQTTInvalidRetainedMessage     = errors.New("invalid retained message")
 	errMQTTSessionCollision           = errors.New("stored session does not match client ID")
 	errMQTTInvalidPublishLength       = errors.New("invalid publish message, variable header exceeds remaining length")
+	errMQTTAckPipelineStopped         = errors.New("QoS1 PUBACK pipeline has shut down while admitting a message, " +
+		"abandoning the wait for its JetStream ack; failing the connection, " +
+		"the client will re-send unacknowledged PUBLISH packets on reconnect")
 )
 
 type srvMQTT struct {
@@ -4693,33 +4696,58 @@ func (s *Server) mqttPipelinePush(c *client, jsa *mqttJSA, ack *mqttPipelinedAck
 		c.mqtt.acks = pipe
 	}
 
-	// A just-stopped pipeline may admit an unconsumed entry; the
-	// connection-close handler (mqttHandleClosedClient) drains the queue
-	// via pipe.shutdown().
+	return pipe.push(ack)
+}
+
+// Admits an entry into the pipeline. Rejects it once the pipeline is
+// stopped: an entry admitted after the connection-close drain
+// (mqttHandleClosedClient -> pipe.shutdown) would strand its reply
+// registration in the account-scoped jsa.replies. readLoop only.
+func (pipe *mqttAckPipeline) push(ack *mqttPipelinedAck) error {
+	jsa := pipe.jsa
 	select {
-	case pipe.q <- ack:
-		return nil
+	case <-pipe.quitCh:
+		jsa.replies.Delete(ack.reply)
+		return errMQTTAckPipelineStopped
 	default:
 	}
 
-	// Window full: wait for an available slot in the pipeline.
-	t := time.NewTimer(jsa.timeout)
-	defer t.Stop()
+	enqueued := false
 	select {
 	case pipe.q <- ack:
-		return nil
-	case <-pipe.quitCh:
-		jsa.replies.Delete(ack.reply)
-		return errors.New("QoS1 PUBACK pipeline has shut down while admitting a message, " +
-			"abandoning the wait for its JetStream ack; failing the connection, " +
-			"the client will re-send unacknowledged PUBLISH packets on reconnect")
-	case <-t.C:
-		jsa.replies.Delete(ack.reply)
-		return fmt.Errorf("QoS1 in-flight window is full (%d messages) and JetStream has not acknowledged "+
-			"the oldest message within %v; failing the connection, "+
-			"the client will re-send unacknowledged PUBLISH packets on reconnect",
-			mqttMaxAcksInFlight, jsa.timeout)
+		enqueued = true
+	default:
+		// Window full: wait for an available slot in the pipeline.
+		t := time.NewTimer(jsa.timeout)
+		defer t.Stop()
+		select {
+		case pipe.q <- ack:
+			enqueued = true
+		case <-pipe.quitCh:
+		case <-t.C:
+			jsa.replies.Delete(ack.reply)
+			return fmt.Errorf("QoS1 in-flight window is full (%d messages) and JetStream has not acknowledged "+
+				"the oldest message within %v; failing the connection, "+
+				"the client will re-send unacknowledged PUBLISH packets on reconnect",
+				mqttMaxAcksInFlight, jsa.timeout)
+		}
 	}
+	if !enqueued {
+		// Stopped while waiting for a slot, never admitted.
+		jsa.replies.Delete(ack.reply)
+		return errMQTTAckPipelineStopped
+	}
+
+	// A stop may have raced the enqueue: the close-time drain could run
+	// before the entry landed and miss it. Drain again; both drains only
+	// dequeue and delete, so overlapping is harmless.
+	select {
+	case <-pipe.quitCh:
+		pipe.shutdown()
+		return errMQTTAckPipelineStopped
+	default:
+	}
+	return nil
 }
 
 func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
