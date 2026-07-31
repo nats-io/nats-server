@@ -4614,6 +4614,9 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
 				return
 
 			case <-s.quitCh:
+				stopTimer()
+				// Already dequeued, invisible to the exit-path drain.
+				jsa.replies.Delete(ack.reply)
 				return
 			}
 
@@ -4690,8 +4693,9 @@ func (s *Server) mqttPipelinePush(c *client, jsa *mqttJSA, ack *mqttPipelinedAck
 		c.mqtt.acks = pipe
 	}
 
-	// A just-stopped pipeline may admit an unconsumed entry; the readLoop's
-	// exit path drains the queue.
+	// A just-stopped pipeline may admit an unconsumed entry; the
+	// connection-close handler (mqttHandleClosedClient) drains the queue
+	// via pipe.shutdown().
 	select {
 	case pipe.q <- ack:
 		return nil
