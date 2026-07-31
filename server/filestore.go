@@ -13961,11 +13961,15 @@ const canFsyncDirectories = runtime.GOOS != "windows"
 func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
 	tmp := name + ".tmp"
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	if sync {
-		flags = flags | os.O_SYNC
-	}
 	dios.acquire()
-	defer dios.release()
+	released := false
+	release := func() {
+		if !released {
+			dios.release()
+			released = true
+		}
+	}
+	defer release()
 	f, err := os.OpenFile(tmp, flags, perm)
 	if err != nil {
 		return err
@@ -13976,10 +13980,20 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 		_ = os.Remove(tmp)
 		return err
 	}
+	if sync {
+		release()
+		if err := f.Sync(); err != nil {
+			// Close fd, but ignore its error since sync takes precedence.
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
+	release()
 	if err := os.Rename(tmp, name); err != nil {
 		_ = os.Remove(tmp)
 		return err
