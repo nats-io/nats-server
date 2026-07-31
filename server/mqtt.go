@@ -430,7 +430,8 @@ type mqtt struct {
 	// PUBCOMP instead [MQTT-4.3.3-1]. A new PUBLISH always replaces a released
 	// entry (a new publication per the spec, kept or not); otherwise released
 	// entries last the connection - the discard is fire-and-forget, there is no
-	// safe moment to drop them.
+	// safe moment to drop them. Worst case is one nil entry per packet
+	// identifier, 65535 map entries per connection.
 	qos2Exchanges map[uint16]*mqttPublish
 
 	// Not all entries in qos2Exchanges represent pending PUBLISH, so a separate
@@ -4905,6 +4906,8 @@ func (c *client) mqttRecordQoS2Publish(pp *mqttPublish) {
 		return
 	}
 
+	// Defense in depth: in practice the pipeline window (same size) fills
+	// and blocks the readLoop before the count can get here.
 	if c.mqtt.qos2PendingCount >= mqttMaxAcksInFlight {
 		return
 	}
