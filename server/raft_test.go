@@ -490,7 +490,7 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
 
-	n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
+	n.prop.push(&proposedEntry{Entry: &Entry{}, reply: _EMPTY_})
 	n.resp.push(&appendEntryResponse{})
 	require_Equal(t, n.prop.len(), 1)
 	require_Equal(t, n.resp.len(), 1)
@@ -498,6 +498,57 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	n.switchState(Follower)
 	require_Equal(t, n.prop.len(), 0)
 	require_Equal(t, n.resp.len(), 0)
+}
+
+func TestNRGProposalFastPath(t *testing.T) {
+	s := &Server{}
+
+	n := &raft{
+		prop: newIPQueue[*proposedEntry](s, "prop"),
+		term: 1,
+	}
+
+	// Closed fast path
+	n.state.Store(int32(Leader))
+	require_False(t, n.tryFastPathPropose(0, []byte("closed zero term")))
+	require_False(t, n.tryFastPathPropose(1, []byte("closed")))
+
+	// Simulate the leader opening the fast path for the current term.
+	n.fastPathTerm.Store(n.term)
+	require_Equal(t, n.fastPathTerm.Load(), uint64(1))
+	require_False(t, n.tryFastPathPropose(2, []byte("wrong term")))
+
+	// The term may still match after stepping down, so the state check must
+	// prevent fast-path proposals too.
+	n.state.Store(int32(Follower))
+	require_False(t, n.tryFastPathPropose(1, []byte("not leader")))
+
+	// Single and multi-entry proposals are queued in proposal order, with the
+	// leader term attached to every entry.
+	n.state.Store(int32(Leader))
+	require_True(t, n.tryFastPathPropose(1, []byte("single")))
+	multi := []*Entry{
+		newEntry(EntryNormal, []byte("multi 1")),
+		newEntry(EntryNormal, []byte("multi 2")),
+	}
+	require_True(t, n.tryFastPathProposeMulti(1, multi))
+	multi[0] = nil // The queued proposals do not retain the caller's slice.
+
+	proposals := n.prop.pop()
+	require_Len(t, len(proposals), 3)
+	require_Equal(t, string(proposals[0].Data), "single")
+	require_Equal(t, string(proposals[1].Data), "multi 1")
+	require_Equal(t, string(proposals[2].Data), "multi 2")
+	for _, pe := range proposals {
+		require_Equal(t, pe.term, uint64(1))
+		pe.returnToPool()
+	}
+	n.prop.recycle(&proposals)
+
+	// Closing the fast path clears its term and prevents further proposals.
+	n.fastPathTerm.Store(0)
+	require_Equal(t, n.fastPathTerm.Load(), uint64(0))
+	require_False(t, n.tryFastPathPropose(1, []byte("closed again")))
 }
 
 func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
@@ -7337,7 +7388,7 @@ func TestNRGReset(t *testing.T) {
 	n.snapfile = sfile
 
 	// Push something onto each queue so we can verify they are drained.
-	_, err := n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
+	_, err := n.prop.push(&proposedEntry{Entry: &Entry{}, reply: _EMPTY_})
 	require_NoError(t, err)
 	_, err = n.entry.push(&appendEntry{})
 	require_NoError(t, err)
