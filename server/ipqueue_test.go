@@ -114,6 +114,54 @@ func TestIPQueuePush(t *testing.T) {
 	}
 }
 
+func TestIPQueuePushMany(t *testing.T) {
+	s := &Server{}
+	q := newIPQueue[int](s, "test")
+
+	l, err := q.pushMany(func(push func(int)) {
+		for i := 1; i <= 3; i++ {
+			push(i)
+		}
+	})
+	require_NoError(t, err)
+	require_Equal(t, l, 3)
+	select {
+	case <-q.ch:
+	default:
+		t.Fatal("Should have been notified of additions")
+	}
+	values := q.pop()
+	require_Len(t, len(values), 3)
+	for i, value := range values {
+		require_Equal(t, value, i+1)
+	}
+	q.recycle(&values)
+
+	l, err = q.pushMany(func(func(int)) {})
+	require_NoError(t, err)
+	require_Equal(t, l, 0)
+	select {
+	case <-q.ch:
+		t.Fatal("Should not have been notified of additions")
+	default:
+	}
+
+	limited := newIPQueue[int](s, "limited", ipqLimitByLen[int](2))
+	l, err = limited.pushMany(func(push func(int)) {
+		for i := 1; i <= 3; i++ {
+			push(i)
+		}
+	})
+	require_Error(t, err, errIPQLenLimitReached)
+	require_Equal(t, l, 0)
+	require_Equal(t, limited.len(), 0)
+	select {
+	case <-limited.ch:
+		t.Fatal("Should not have been notified of rejected additions")
+	default:
+	}
+}
+
 func TestIPQueuePop(t *testing.T) {
 	s := &Server{}
 	q := newIPQueue[int](s, "test")

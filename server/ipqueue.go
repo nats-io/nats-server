@@ -140,6 +140,57 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 	return l + 1, nil
 }
 
+// Add all elements pushed by generate to the queue while holding the queue
+// lock, preventing other producers from pushing interleaving elements.
+// On success, it returns the queue length after adding all pushed elements.
+// If a queue limit is reached, no pushed elements are retained, and it
+// returns the unchanged queue length and the first limit error.
+func (q *ipQueue[T]) pushMany(generate func(push func(T))) (int, error) {
+	q.Lock()
+	l, added, start := len(q.elts)-q.pos, 0, len(q.elts)
+	initialSize := q.sz
+	var err error
+	defer func() {
+		q.Unlock()
+		if l == 0 && added > 0 {
+			select {
+			case q.ch <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	generate(func(e T) {
+		if err != nil {
+			return
+		}
+		if q.mlen > 0 && l+added == q.mlen {
+			err = errIPQLenLimitReached
+			return
+		}
+		if q.calc != nil {
+			sz := q.calc(e)
+			if q.msz > 0 && q.sz+sz > q.msz {
+				err = errIPQSizeLimitReached
+				return
+			}
+			q.sz += sz
+		}
+		if q.elts == nil {
+			// What comes out of the pool is already of size 0, so no need for [:0].
+			q.elts = *(q.pool.Get().(*[]T))
+		}
+		q.elts = append(q.elts, e)
+		added++
+	})
+	if err != nil {
+		clear(q.elts[start:])
+		q.elts = q.elts[:start]
+		q.sz, added = initialSize, 0
+	}
+	return l + added, err
+}
+
 // Returns the whole list of elements currently present in the queue,
 // emptying the queue. This should be called after receiving a notification
 // from the queue's `ch` notification channel that indicates that there
