@@ -151,6 +151,12 @@ func (state RaftState) String() string {
 	return "UNKNOWN"
 }
 
+type proposalFastPath struct {
+	sync.Mutex
+	open bool
+	term uint64
+}
+
 type raft struct {
 	sync.RWMutex
 
@@ -240,6 +246,8 @@ type raft struct {
 	votes *ipQueue[*voteResponse]        // Vote responses
 	leadc chan leadChange                // Leader changes
 	quit  chan struct{}                  // Raft group shutdown
+
+	fp proposalFastPath
 
 	lxfer        bool // Are we doing a leadership transfer?
 	hcbehind     bool // Were we falling behind at the last health check? (see: isCurrent)
@@ -910,11 +918,64 @@ func (s *Server) transferRaftLeaders() bool {
 	return didTransfer
 }
 
+// openProposalFastPath allows Propose and ProposeMulti to enqueue
+// proposal for the current term without acquiring the raft lock.
+// Lock should be held.
+func (n *raft) openProposalFastPath() {
+	n.fp.Lock()
+	defer n.fp.Unlock()
+	n.fp.open, n.fp.term = true, n.term
+}
+
+// closeProposalFastPath closes the fast path proposal path and
+// waits for any proposals in progresse to complete.
+// Lock should be held.
+func (n *raft) closeProposalFastPath() {
+	n.fp.Lock()
+	defer n.fp.Unlock()
+	n.fp.open, n.fp.term = false, 0
+}
+
+// tryFastPathPropose enqueues the given data buffer to the
+// proposal queue, provided that the fast path is open, and that
+// the given term matches the current raft term.
+// Returns true if the was successfully enqueued. False if the
+// caller should fall back to the locking proposal path.
+func (n *raft) tryFastPathPropose(term uint64, data []byte) bool {
+	n.fp.Lock()
+	defer n.fp.Unlock()
+	if !n.fp.open || term != n.fp.term || n.State() != Leader {
+		return false
+	}
+	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
+	return true
+}
+
+// tryFastPathProposeMulti enqueues the given array of entries to
+// the proposal queue, provided that the fast path is open, and that
+// the given term matches the current raft term.
+// Returns true if the buffer was successfully enqueued. False if the
+// caller should fall back to the locking proposal path.
+func (n *raft) tryFastPathProposeMulti(term uint64, entries []*Entry) bool {
+	n.fp.Lock()
+	defer n.fp.Unlock()
+	if !n.fp.open || term != n.fp.term || n.State() != Leader {
+		return false
+	}
+	for _, e := range entries {
+		n.prop.push(newProposedEntry(e, _EMPTY_))
+	}
+	return true
+}
+
 // Formal API
 
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(term uint64, data []byte) error {
+	if n.tryFastPathPropose(term, data) {
+		return nil
+	}
 	n.Lock()
 	defer n.Unlock()
 	return n.proposeLocked(term, data)
@@ -948,6 +1009,9 @@ func (n *raft) proposeLocked(term uint64, data []byte) error {
 // ProposeMulti will propose multiple entries at once.
 // This should only be called on the leader.
 func (n *raft) ProposeMulti(term uint64, entries []*Entry) error {
+	if n.tryFastPathProposeMulti(term, entries) {
+		return nil
+	}
 	n.Lock()
 	defer n.Unlock()
 	// Check state under lock, we might not be leader anymore.
@@ -4788,6 +4852,17 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 		n.debug("Not sending append entry, not leader")
 		return errNotLeader
 	}
+
+	// The raft mutex remains held while entries are stored
+	// and sent to followers. If the leader is ready to take
+	// more proposals (no errors, not overrun), enable
+	// proposals for the current term to be enqueued without
+	// the need to acquire the raft mutex.
+	if checkLeader && n.werr == nil && !n.isLeaderOverrun() {
+		n.openProposalFastPath()
+		defer n.closeProposalFastPath()
+	}
+
 	ae := n.buildAppendEntry(entries)
 
 	var err error
