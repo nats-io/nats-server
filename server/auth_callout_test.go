@@ -3256,3 +3256,89 @@ func TestAuthCalloutOperatorModeMQTTOpaquePasswordUsesDefaultSentinel(t *testing
 	require_Equal(t, got.password, opaquePassword)
 	require_Equal(t, rc, mqttConnAckRCConnectionAccepted)
 }
+
+func TestAuthCalloutOperatorModeRejectionNotReportedAsAccountConnLimit(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account, the account the callout would bind users to.
+	_, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	upub, svcCreds := createAuthServiceUser(t, akp)
+	defer removeFile(t, svcCreds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+			%s: %s
+		}
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	// The callout service rejects every connection.
+	handler := func(m *nats.Msg) {
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(svcCreds))
+	defer ac.Cleanup()
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	ac.srv.SetLogger(l, false, false)
+
+	creds := createBasicAccountUser(t, akp)
+	defer removeFile(t, creds)
+
+	ac.RequireConnectError(nats.UserCredentials(creds))
+
+	// The callout rejected the user, so the server must report an
+	// authentication error and not the account connection limit.
+	var errs []string
+	for done := false; !done; {
+		select {
+		case e := <-l.errCh:
+			errs = append(errs, e)
+		case <-time.After(500 * time.Millisecond):
+			done = true
+		}
+	}
+	require_True(t, len(errs) > 0)
+	for _, e := range errs {
+		if strings.Contains(e, ErrTooManyAccountConnections.Error()) {
+			t.Fatalf("Auth callout rejection was reported as an account connection limit: %q", e)
+		}
+	}
+	var sawAuthErr bool
+	for _, e := range errs {
+		if strings.Contains(e, ErrAuthentication.Error()) {
+			sawAuthErr = true
+		}
+	}
+	if !sawAuthErr {
+		t.Fatalf("Expected an authentication error to be logged, got %q", errs)
+	}
+}
