@@ -1513,7 +1513,7 @@ func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
 	if n.State() == Closed {
 		return nil, errNodeClosed
 	}
-	if n.snapshotting {
+	if !force && n.snapshotting {
 		return nil, errSnapInProgress
 	}
 
@@ -1729,7 +1729,7 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 func (n *raft) NeedSnapshot() bool {
 	n.RLock()
 	defer n.RUnlock()
-	return n.snapfile == _EMPTY_ && n.applied > 1
+	return n.snapfile == _EMPTY_ && n.applied > 0
 }
 
 const (

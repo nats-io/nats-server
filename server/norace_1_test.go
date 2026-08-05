@@ -6237,6 +6237,8 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	node := mset.raftNode()
 	require_True(t, node != nil)
 
+	_, err = js.Publish("foo", []byte("bar"))
+	require_NoError(t, err)
 	err = node.InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 

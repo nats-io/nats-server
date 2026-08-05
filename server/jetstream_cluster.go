@@ -78,6 +78,8 @@ type jetStreamCluster struct {
 	stepdown *subscription
 	// System level requests to remove a peer.
 	peerRemove *subscription
+	// System level requests to evacuate a peer.
+	peerEvacuate *subscription
 	// System level request to move a stream
 	peerStreamMove *subscription
 	// System level request to cancel a stream move
@@ -2803,7 +2805,7 @@ func (js *jetStream) processAddPeer(peer string) {
 				d.Preferred = _EMPTY_
 			}
 			// Send our proposal for this csa. Also use same group definition for all the consumers as well.
-			consumers, _, _ := js.remapConsumerAssignments(accName, csa, false)
+			consumers, deleted, _ := js.remapConsumerAssignments(accName, csa)
 			if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
 				return
 			}
@@ -2813,6 +2815,12 @@ func (js *jetStream) processAddPeer(peer string) {
 					return
 				}
 				cc.trackInflightConsumerProposal(accName, csa.Config.Name, cca, false)
+			}
+			for _, ca := range deleted {
+				if err := cc.meta.Propose(cc.term, encodeDeleteConsumerAssignment(ca)); err != nil {
+					return
+				}
+				cc.trackInflightConsumerProposal(accName, csa.Config.Name, ca, true)
 			}
 		}
 	}
@@ -2865,37 +2873,38 @@ func (js *jetStream) processRemovePeer(peer string) {
 		if sa.unsupported != nil {
 			continue
 		}
-		if rg := sa.Group; rg.isMember(peer) {
-			js.removePeerFromStreamLocked(sa, peer)
+		if sa.Group.isMember(peer) || (sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Peers, peer)) {
+			js.removePeerFromStreamLocked(sa, peer, true)
 		}
 	}
 }
 
-// Assumes all checks have already been done.
-func (js *jetStream) removePeerFromStream(sa *streamAssignment, peer string) bool {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	return js.removePeerFromStreamLocked(sa, peer)
-}
-
 // Lock should be held.
-func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer string) bool {
-	if rg := sa.Group; !rg.isMember(peer) {
-		return false
-	}
-
-	s, cc, csa := js.srv, js.cluster, sa.copyGroup()
+func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer string, remove bool) bool {
+	cc := js.cluster
 	if cc == nil || cc.meta == nil {
 		return false
 	}
-	replaced := cc.remapStreamAssignment(csa, peer)
+	csa, replaced := cc.remapStreamAssignment(sa, peer, remove)
+	if csa == nil {
+		return false
+	}
 	accName := sa.Client.serviceAccount()
 	if !replaced {
-		s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", accName, sa.Config.Name)
+		cc.s.Warnf("JetStream cluster could not replace peer for stream '%s > %s'", accName, sa.Config.Name)
+	}
+
+	// If we're evacuating a peer, consumer remapping can happen lazily.
+	if !remove {
+		if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
+			return false
+		}
+		cc.trackInflightStreamProposal(accName, csa, false)
+		return replaced
 	}
 
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
-	consumers, deleted, _ := js.remapConsumerAssignments(accName, csa, true)
+	consumers, deleted, _ := js.remapConsumerAssignments(accName, csa)
 	if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
 		return false
 	}
@@ -4026,6 +4035,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 // Migrate a stream from peer set A to peer set B. Returns true when migration is done.
 func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64) {
+	if leaderTerm == 0 {
+		return
+	}
 	ourPeerId, cc, s := n.ID(), js.cluster, js.srv
 
 	// FIXME(mvv): a move should make sure that peers are also upper-layer current
@@ -4044,6 +4056,11 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return
 	}
 	if sa == nil || sa.Group == nil {
+		js.mu.RUnlock()
+		return
+	}
+	// Sanity-check: we're still the leader.
+	if !n.Leader() {
 		js.mu.RUnlock()
 		return
 	}
@@ -4068,6 +4085,14 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return
 	}
 
+	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
+	if n.NeedSnapshot() {
+		js.mu.RUnlock()
+		if err := mset.flushAllPending(); err == nil {
+			n.InstallSnapshot(mset.stateSnapshot(), true)
+		}
+		return
+	}
 	// If a membership change is in progress, we just wait for it to clear.
 	if n.MembershipChangeInProgress() {
 		js.mu.RUnlock()
@@ -7193,7 +7218,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
-			js.runConsumerMigration(ca, n, leaderTerm)
+			js.runConsumerMigration(o, ca, n, leaderTerm)
 
 		case <-t.C:
 			// Start forcing snapshots if they failed previously.
@@ -7204,12 +7229,24 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 }
 
 // Migrate a consumer from peer set A to peer set B. Returns true when migration is done.
-func (js *jetStream) runConsumerMigration(ca *consumerAssignment, n RaftNode, leaderTerm uint64) {
+func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n RaftNode, leaderTerm uint64) {
+	if leaderTerm == 0 {
+		return
+	}
 	ourPeerId, cc, s := n.ID(), js.cluster, js.srv
 
 	js.mu.RLock()
 	// We are shutting down.
 	if cc == nil || cc.meta == nil {
+		js.mu.RUnlock()
+		return
+	}
+	if ca == nil || ca.Group == nil {
+		js.mu.RUnlock()
+		return
+	}
+	// Sanity-check: we're still the leader.
+	if !n.Leader() {
 		js.mu.RUnlock()
 		return
 	}
@@ -7242,6 +7279,14 @@ func (js *jetStream) runConsumerMigration(ca *consumerAssignment, n RaftNode, le
 		return
 	}
 
+	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
+	if n.NeedSnapshot() {
+		js.mu.RUnlock()
+		if snap, err := o.store.EncodedState(); err == nil {
+			n.InstallSnapshot(snap, true)
+		}
+		return
+	}
 	// If a membership change is in progress, we just wait for it to clear.
 	if n.MembershipChangeInProgress() {
 		js.mu.RUnlock()
@@ -8091,6 +8136,7 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 
 	// We stage consumer updates and do them after the stream update.
 	var consumers []*consumerAssignment
+	var deleted []*consumerAssignment
 
 	// If any consumers need to be remapped, we can't mark the stream's desired state done yet.
 	var done bool
@@ -8108,7 +8154,7 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 	// we need to wait before we remap.
 	if !noDesired && !osa.Group.Desired.ScaleDown {
 		// Need to remap any consumers.
-		consumers, _, done = js.remapConsumerAssignments(reconcile.Account, osa, false)
+		consumers, deleted, done = js.remapConsumerAssignments(reconcile.Account, osa)
 	}
 
 	ng := osa.Group.reconcileDesiredState(reconcile.desiredAssignmentUpdate, osa.Config.Replicas, done)
@@ -8143,6 +8189,12 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 			return
 		}
 		cc.trackInflightConsumerProposal(reconcile.Account, reconcile.Stream, ca, false)
+	}
+	for _, ca := range deleted {
+		if err := cc.meta.Propose(cc.term, encodeDeleteConsumerAssignment(ca)); err != nil {
+			return
+		}
+		cc.trackInflightConsumerProposal(reconcile.Account, reconcile.Stream, ca, true)
 	}
 }
 
@@ -8329,6 +8381,9 @@ func (js *jetStream) startUpdatesSub() {
 	if cc.peerRemove == nil {
 		cc.peerRemove, _ = s.systemSubscribe(JSApiRemoveServer, _EMPTY_, false, c, s.jsLeaderServerRemoveRequest)
 	}
+	if cc.peerEvacuate == nil {
+		cc.peerEvacuate, _ = s.systemSubscribe(JSApiEvacuateServer, _EMPTY_, false, c, s.jsLeaderServerEvacuateRequest)
+	}
 	if cc.peerStreamMove == nil {
 		cc.peerStreamMove, _ = s.systemSubscribe(JSApiServerStreamMove, _EMPTY_, false, c, s.jsLeaderServerStreamMoveRequest)
 	}
@@ -8366,6 +8421,10 @@ func (js *jetStream) stopUpdatesSub() {
 	if cc.peerRemove != nil {
 		cc.s.sysUnsubscribe(cc.peerRemove)
 		cc.peerRemove = nil
+	}
+	if cc.peerEvacuate != nil {
+		cc.s.sysUnsubscribe(cc.peerEvacuate)
+		cc.peerEvacuate = nil
 	}
 	if cc.peerStreamMove != nil {
 		cc.s.sysUnsubscribe(cc.peerStreamMove)
@@ -8490,7 +8549,11 @@ func (js *jetStream) processLeaderChange(isLeader bool, term uint64) {
 }
 
 // Lock should be held.
-func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
+func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, peer string, remove bool) (csa *streamAssignment, replaced bool) {
+	if !sa.Group.isMember(peer) && (sa.Group.Desired == nil || !slices.Contains(sa.Group.Desired.Peers, peer)) {
+		return nil, false
+	}
+
 	// If the group is already converging toward a desired peer set, that set is what
 	// actually drives membership, so base the replacement on it. Otherwise we'd hand back
 	// a peer set that the in-flight migration reconciles right back over.
@@ -8500,56 +8563,70 @@ func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePe
 	}
 
 	// Invoke placement algo passing RG peers that stay (existing) and the peer that is being removed (ignore)
-	retain, ignore := make([]string, 0, len(basePeers)), []string{removePeer}
+	retain, ignore := make([]string, 0, len(basePeers)), []string{peer}
 	for _, v := range basePeers {
-		if v != removePeer {
+		if v != peer {
 			retain = append(retain, v)
 		}
 	}
 
-	newPeers, placementError := cc.selectPeerGroup(len(basePeers), baseCluster, sa.Config, retain, 0, ignore)
-
-	if placementError == nil {
-		sa.Group.Peers = newPeers
-		// Don't influence preferred leader.
-		sa.Group.Preferred = _EMPTY_
-		// Keep the desired peer set in sync, it must not retain the removed peer.
-		if d := sa.Group.Desired; d != nil {
-			d.ID = nuid.Next()
-			d.Peers = newPeers
-			d.Preferred = _EMPTY_
-		}
-		return true
-	}
-
-	// If R1 just return to avoid bricking the stream.
-	if sa.Group.node == nil || len(sa.Group.Peers) == 1 {
-		return false
-	}
-
-	// If we are here let's remove the peer at least, as long as we are R>1
 	removeFrom := func(peers []string) []string {
-		for i, peer := range peers {
-			if peer == removePeer {
+		for i, p := range peers {
+			if p == peer {
 				peers[i] = peers[len(peers)-1]
 				return peers[:len(peers)-1]
 			}
 		}
 		return peers
 	}
-	sa.Group.Peers = removeFrom(sa.Group.Peers)
-	if d := sa.Group.Desired; d != nil {
-		d.ID = nuid.Next()
-		d.Peers = removeFrom(d.Peers)
+
+	newPeers, placementError := cc.selectPeerGroup(len(basePeers), baseCluster, sa.Config, retain, 0, ignore)
+
+	csa = sa.copyGroup()
+	csa.Group.Cluster = baseCluster
+	if placementError == nil {
+		csa.Group.Peers = newPeers
+		replaced = true
+	} else {
+		csa.Group.Peers = removeFrom(copyStrings(basePeers))
 	}
-	return false
+	csa.Group = sa.Group.withDesired(csa.Group)
+	// Preserve how the group is meant to converge.
+	if d := sa.Group.Desired; d != nil {
+		csa.Group.Desired.ScaleDown = d.ScaleDown
+		csa.Group.Desired.ScaleUp = d.ScaleUp
+	}
+	if remove {
+		csa.Group.Peers = removeFrom(csa.Group.Peers)
+		csa.Group.Desired.Peers = removeFrom(csa.Group.Desired.Peers)
+	}
+	// Don't carry a stale preferred into the remaining group.
+	isMember := func(peer string) bool {
+		return slices.Contains(csa.Group.Peers, peer) || slices.Contains(csa.Group.Desired.Peers, peer)
+	}
+	if csa.Group.Preferred != _EMPTY_ && !isMember(csa.Group.Preferred) {
+		csa.Group.Preferred = _EMPTY_
+	}
+	if csa.Group.Desired.Preferred != _EMPTY_ && !isMember(csa.Group.Desired.Preferred) {
+		csa.Group.Desired.Preferred = _EMPTY_
+	}
+	// Don't allow moving to an empty set.
+	if len(csa.Group.Desired.Peers) == 0 {
+		return nil, false
+	}
+	// If no peers remain, immediately jump to desired set.
+	if len(csa.Group.Peers) == 0 {
+		csa.Group.Peers = csa.Group.Desired.Peers
+		csa.Group.Cluster = csa.Group.Desired.Cluster
+	}
+	return csa, replaced
 }
 
 // Remaps the stream's consumers onto its target peer set. Also reports if all consumers have
 // converged, meaning none need to be remapped and none are still moving toward their desired
 // peer set.
 // Lock should be held.
-func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignment, remove bool) (consumers, deleted []*consumerAssignment, done bool) {
+func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignment) (consumers, deleted []*consumerAssignment, done bool) {
 	targetPeers := sa.Group.Peers
 	if sa.Group.Desired != nil {
 		targetPeers = sa.Group.Desired.Peers
@@ -8582,11 +8659,6 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 				kept++
 				newPeers = append(newPeers, p)
 			}
-		}
-		// If an ephemeral lost all of its peers to removal, we delete it rather than move it.
-		if kept == 0 && remove && !isDurableConsumer(ca.Config) {
-			deleted = append(deleted, ca)
-			continue
 		}
 		// Backfill from the shuffled target set until the consumer has its desired number of target peers.
 		if len(newPeers) < r {
@@ -8629,17 +8701,30 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			cca.Config = &cfg
 		}
 		// Only use desired state if the stream did as well.
-		// FIXME(mvv): improve peer-remove
 		if sa.Group.Desired != nil {
 			cca.Group = ca.Group.withDesired(cca.Group)
 			// Scaled down if we kept at least one peer, but removed others.
 			cca.Group.Desired.ScaleDown = kept > 0 && kept != len(consumerPeers)
 		}
+		// Drop any peers that are no longer part of the stream's peer set.
+		cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
+			return !slices.Contains(sa.Group.Peers, peer)
+		})
+		// If a consumer lost all of its peers to removal.
+		if len(cca.Group.Peers) == 0 {
+			// Delete it if ephemeral.
+			if !isDurableConsumer(ca.Config) {
+				deleted = append(deleted, ca)
+				continue
+			}
+			// Durable immediately jumps to the desired peers.
+			cca.Group.Peers = newPeers
+		}
 		// We can not propose here before the stream itself so we collect them.
 		consumers = append(consumers, cca)
 	}
 	// Any consumer we remap here still needs to move onto its new peer set.
-	done = done && len(consumers) == 0
+	done = done && len(consumers) == 0 && len(deleted) == 0
 	return consumers, deleted, done
 }
 

@@ -3806,6 +3806,368 @@ func TestJetStreamClusterPeerRemovalAndServerBroughtBack(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
+	const clusterSize = 3
+	for _, test := range []struct {
+		name        string
+		evacuate    bool
+		serverScope bool
+		replicas    int
+	}{
+		{"Remove/Stream/R1", false, false, 1},
+		{"Remove/Stream/R3", false, false, 3},
+		{"Remove/Server/R1", false, true, 1},
+		{"Remove/Server/R3", false, true, 3},
+		{"Evacuate/Stream/R1", true, false, 1},
+		{"Evacuate/Stream/R3", true, false, 3},
+		{"Evacuate/Server/R1", true, true, 1},
+		{"Evacuate/Server/R3", true, true, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// A peer can only be replaced if there is a server outside of the
+			// stream's peer set to hand it to.
+			replaceable := test.replicas < clusterSize
+
+			// The stream scoped endpoint reports that it could not remap the peer
+			// when there is nowhere to move the stream to. The server scoped
+			// endpoint only reports on the peer itself, so it always succeeds.
+			opSuccess := test.serverScope || replaceable
+
+			// Removing the only peer of an R1 stream hands it to an empty
+			// replacement, discarding the data. An evacuation migrates the data
+			// across first.
+			retainsData := test.evacuate || test.replicas > 1
+
+			// A server remove takes the peer out of the meta group as well, an
+			// evacuation leaves it in.
+			metaPeersAfterOp := clusterSize
+			if test.serverScope && !test.evacuate {
+				metaPeersAfterOp--
+			}
+
+			// Without a replacement the stream is left one peer short until a new
+			// server shows up to backfill it. Either way it ends back on its
+			// configured replica count once a new server is added.
+			peersAfterOp := test.replicas
+			if !replaceable {
+				peersAfterOp--
+			}
+
+			c := createJetStreamClusterExplicit(t, "R3S", clusterSize)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			// The meta stepdown and server scoped endpoints are system account only.
+			snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+			defer snc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: test.replicas,
+			})
+			require_NoError(t, err)
+
+			toSend := 10
+			for range toSend {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			// Target a stream peer that is not the meta leader, so the meta layer
+			// stays put for the duration of the operation.
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			if rs == nil {
+				rs = c.streamLeader(globalAccountName, "TEST")
+			}
+			require_NotNil(t, rs)
+			target := rs.Node()
+
+			ml := c.leader()
+			if ml == rs {
+				require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+				c.waitOnLeader()
+				ml = c.leader()
+			}
+			require_NotNil(t, ml)
+			require_NotEqual(t, ml, rs)
+
+			// Wait for the stream to settle on the expected number of peers, with the
+			// targeted peer no longer among them.
+			checkPeers := func(expected int) {
+				t.Helper()
+				checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+					sjs := ml.getJetStream()
+					sjs.mu.RLock()
+					defer sjs.mu.RUnlock()
+					sa := sjs.streamAssignment(globalAccountName, "TEST")
+					if sa == nil || sa.Group == nil {
+						return fmt.Errorf("stream not found")
+					}
+					if sa.Group.Desired != nil {
+						return fmt.Errorf("stream still converging")
+					}
+					if len(sa.Group.Peers) != expected {
+						return fmt.Errorf("expected %d peers, got %d", expected, len(sa.Group.Peers))
+					}
+					if slices.Contains(sa.Group.Peers, target) {
+						return fmt.Errorf("peer %q still in peer set %v", target, sa.Group.Peers)
+					}
+					return nil
+				})
+			}
+
+			if test.serverScope {
+				subj := JSApiRemoveServer
+				if test.evacuate {
+					subj = JSApiEvacuateServer
+				}
+				b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: target})
+				require_NoError(t, err)
+				msg, err := snc.Request(subj, b, 10*time.Second)
+				require_NoError(t, err)
+				var resp JSApiMetaServerRemoveResponse
+				require_NoError(t, json.Unmarshal(msg.Data, &resp))
+				require_Equal(t, resp.Success, opSuccess)
+			} else {
+				subjT := JSApiStreamRemovePeerT
+				if test.evacuate {
+					subjT = JSApiStreamEvacuatePeerT
+				}
+				b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: target})
+				require_NoError(t, err)
+				msg, err := nc.Request(fmt.Sprintf(subjT, "TEST"), b, 10*time.Second)
+				require_NoError(t, err)
+				var resp JSApiStreamRemovePeerResponse
+				require_NoError(t, json.Unmarshal(msg.Data, &resp))
+				require_Equal(t, resp.Success, opSuccess)
+				if !opSuccess {
+					// There was nowhere to move the peer to, but it is still taken
+					// out of the stream.
+					require_Error(t, resp.Error, NewJSPeerRemapError())
+				}
+			}
+
+			// A server remove also takes the peer out of the meta group.
+			c.waitOnPeerCount(metaPeersAfterOp)
+			checkPeers(peersAfterOp)
+
+			// A peer remove hands an R1 stream to an empty replacement, an evacuation
+			// migrates its data across first.
+			expectedMsgs := uint64(toSend)
+			if !retainsData {
+				expectedMsgs = 0
+			}
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, expectedMsgs)
+
+			// Whatever happened, the stream must still be writable.
+			_, err = js.Publish("foo", []byte("HELLO"))
+			require_NoError(t, err)
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, expectedMsgs+1)
+
+			// Now add capacity back. A stream that is short of its replica count must
+			// take the new server on, one that is already at its replica count must be
+			// left alone.
+			ns := c.addInNewServer()
+			c.waitOnPeerCount(metaPeersAfterOp + 1)
+			checkPeers(test.replicas)
+
+			// The new server must have been taken on by a stream that was short of its
+			// replica count, and must have been left alone by one that was not.
+			checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				sa := sjs.streamAssignment(globalAccountName, "TEST")
+				if sa == nil || sa.Group == nil {
+					return fmt.Errorf("stream not found")
+				}
+				got, want := slices.Contains(sa.Group.Peers, ns.Node()), test.replicas > 1
+				if got != want {
+					return fmt.Errorf("new server in peer set = %v, want %v (peers %v)", got, want, sa.Group.Peers)
+				}
+				return nil
+			})
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, expectedMsgs+1)
+		})
+	}
+}
+
+func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
+	const clusterSize = 3
+	c := createJetStreamClusterExplicit(t, "R3S", clusterSize)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i, test := range []struct {
+		name             string
+		evacuate         bool
+		streamReplicas   int
+		consumerReplicas int
+		ephemeral        bool
+	}{
+		{"Remove/StreamR1/DurableR1", false, 1, 1, false},
+		{"Remove/StreamR1/EphemeralR1", false, 1, 1, true},
+		{"Remove/StreamR3/DurableR1", false, 3, 1, false},
+		{"Remove/StreamR3/EphemeralR1", false, 3, 1, true},
+		{"Remove/StreamR3/DurableR3", false, 3, 3, false},
+		{"Remove/StreamR3/EphemeralR3", false, 3, 3, true},
+		{"Evacuate/StreamR1/DurableR1", true, 1, 1, false},
+		{"Evacuate/StreamR1/EphemeralR1", true, 1, 1, true},
+		{"Evacuate/StreamR3/DurableR1", true, 3, 1, false},
+		{"Evacuate/StreamR3/EphemeralR1", true, 3, 1, true},
+		{"Evacuate/StreamR3/DurableR3", true, 3, 3, false},
+		{"Evacuate/StreamR3/EphemeralR3", true, 3, 3, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// A peer can only be replaced if there is a server outside of the
+			// stream's peer set to hand it to.
+			replaceable := test.streamReplicas < clusterSize
+
+			// Without a replacement the stream is left one peer short.
+			peersAfterOp := test.streamReplicas
+			if !replaceable {
+				peersAfterOp--
+			}
+
+			// A peer remove drops an ephemeral that loses its only peer, an
+			// evacuation migrates it across instead. Durables are always remapped.
+			consumerDeleted := !test.evacuate && test.ephemeral && test.consumerReplicas == 1
+
+			// Each case gets its own stream so that the cases stay independent.
+			stream := fmt.Sprintf("TEST_%d", i)
+			subject := fmt.Sprintf("foo.%d", i)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     stream,
+				Subjects: []string{subject},
+				Replicas: test.streamReplicas,
+			})
+			require_NoError(t, err)
+
+			ccfg := &nats.ConsumerConfig{
+				AckPolicy:         nats.AckExplicitPolicy,
+				Replicas:          test.consumerReplicas,
+				InactiveThreshold: time.Hour,
+			}
+			if !test.ephemeral {
+				ccfg.Durable = "CONSUMER"
+			}
+			cinfo, err := js.AddConsumer(stream, ccfg)
+			require_NoError(t, err)
+			consumer := cinfo.Name
+
+			// Target a peer that hosts the consumer, so that every case actually
+			// exercises the consumer being taken off of the targeted peer. A
+			// replicated consumer sits on every stream peer, so any of them will do.
+			var rs *Server
+			if test.consumerReplicas == 1 {
+				rs = c.consumerLeader(globalAccountName, stream, consumer)
+			} else {
+				rs = c.randomNonStreamLeader(globalAccountName, stream)
+				if rs == nil {
+					rs = c.streamLeader(globalAccountName, stream)
+				}
+			}
+			require_NotNil(t, rs)
+			target := rs.Node()
+
+			subjT := JSApiStreamRemovePeerT
+			if test.evacuate {
+				subjT = JSApiStreamEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: target})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, stream), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_Equal(t, resp.Success, replaceable)
+			if !replaceable {
+				// There was nowhere to move the peer to, but it is still taken out
+				// of the stream.
+				require_Error(t, resp.Error, NewJSPeerRemapError())
+			}
+
+			ml := c.leader()
+			require_NotNil(t, ml)
+
+			// The stream must settle without the targeted peer.
+			checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				sa := sjs.streamAssignment(globalAccountName, stream)
+				if sa == nil || sa.Group == nil {
+					return fmt.Errorf("stream not found")
+				}
+				if sa.Group.Desired != nil {
+					return fmt.Errorf("stream still converging")
+				}
+				if len(sa.Group.Peers) != peersAfterOp {
+					return fmt.Errorf("expected %d peers, got %d", peersAfterOp, len(sa.Group.Peers))
+				}
+				if slices.Contains(sa.Group.Peers, target) {
+					return fmt.Errorf("peer %q still in peer set %v", target, sa.Group.Peers)
+				}
+				return nil
+			})
+
+			// The consumer either got dropped, or it moved off of the targeted peer
+			// onto as much of the stream's peer set as its own replica count asks for.
+			expectedConsumerPeers := min(test.consumerReplicas, peersAfterOp)
+			checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				ca := sjs.consumerAssignment(globalAccountName, stream, consumer)
+				if consumerDeleted {
+					if ca != nil {
+						return fmt.Errorf("consumer still assigned to %v", ca.Group.Peers)
+					}
+					return nil
+				}
+				if ca == nil || ca.Group == nil {
+					return fmt.Errorf("consumer not found")
+				}
+				if ca.Group.Desired != nil {
+					return fmt.Errorf("consumer still converging")
+				}
+				if len(ca.Group.Peers) != expectedConsumerPeers {
+					return fmt.Errorf("expected %d consumer peers, got %v", expectedConsumerPeers, ca.Group.Peers)
+				}
+				if slices.Contains(ca.Group.Peers, target) {
+					return fmt.Errorf("peer %q still in consumer peer set %v", target, ca.Group.Peers)
+				}
+				return nil
+			})
+
+			// A surviving consumer must still be usable.
+			if !consumerDeleted {
+				_, err = js.Publish(subject, []byte("HELLO"))
+				require_NoError(t, err)
+				// Bind by name, an ephemeral has no durable name to pass here.
+				sub, err := js.PullSubscribe(subject, _EMPTY_, nats.Bind(stream, consumer))
+				require_NoError(t, err)
+				defer sub.Unsubscribe()
+				msgs, err := sub.Fetch(1, nats.MaxWait(10*time.Second))
+				require_NoError(t, err)
+				require_Len(t, len(msgs), 1)
+			}
+		})
+	}
+}
+
 func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
 		func(serverName, clusterName, storeDir, conf string) string {
@@ -10449,6 +10811,19 @@ func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	n := mset.raftNode().(*raft)
 	_, _, previousApplied := n.Progress()
 
+	// An initial snapshot is installed shortly after the stream is created. Wait for it
+	// and remove it again, since the leader change below only snapshots if one is needed.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		n.Lock()
+		defer n.Unlock()
+		if n.snapfile == _EMPTY_ {
+			return errors.New("no initial snapshot yet")
+		}
+		os.Remove(n.snapfile)
+		n.snapfile = _EMPTY_
+		return nil
+	})
+
 	// Confirm no pending writes.
 	require_Equal(t, lmb.pendingWriteSize(), 0)
 
@@ -12693,7 +13068,7 @@ func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 			mset, err := rs.globalAccount().lookupStream("TEST")
 			require_NoError(t, err)
 			streamNode := mset.raftNode()
-			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot(), false))
+			require_NoError(t, streamNode.InstallSnapshot(mset.stateSnapshot(), true))
 		}
 
 		// Although the meta node is paused, we add one more meta entry to move the commit up one more.
