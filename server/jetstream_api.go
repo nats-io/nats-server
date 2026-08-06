@@ -2485,7 +2485,7 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 	}
 
 	// If we are here we have a valid peer member set for removal.
-	if !js.removePeerFromStreamLocked(sa, nodeName, remove) {
+	if !js.removePeerFromStreamLocked(sa, nodeName, peerRemoval{remove: remove, requireReplicas: true}) {
 		resp.Error = NewJSPeerRemapError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
@@ -2676,7 +2676,7 @@ func (s *Server) jsLeaderServerEvacuateRequest(sub *subscription, c *client, _ *
 			continue
 		}
 		if sa.Group.isMember(found) || (sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Peers, found)) {
-			js.removePeerFromStreamLocked(sa, found, false)
+			js.removePeerFromStreamLocked(sa, found, peerRemoval{exclude: true})
 		}
 	}
 

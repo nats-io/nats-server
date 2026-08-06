@@ -127,6 +127,15 @@ type jetStream struct {
 	// System level request to purge a stream move
 	accountPurge *subscription
 
+	// Debounced reconcile of assignments for peers that became selectable.
+	// Has its own lock so signaling is cheap and never contends on the JS lock.
+	prMu    sync.Mutex
+	prPeers map[string]struct{}
+	// Meta peers that were just added but that we can't place on yet, because
+	// we have no STATSZ for them. Their first STATSZ moves them into prPeers.
+	prNewPeers map[string]struct{}
+	prRunning  bool
+
 	// Some bools regarding general state.
 	metaRecovering bool
 	standAlone     bool

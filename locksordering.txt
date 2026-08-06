@@ -6,6 +6,12 @@ jetStream -> jsAccount -> Server -> client -> Account
 
 jetStream -> jsAccount -> stream -> consumer
 
+The "prMu" lock protects the peer reconcile signaling state on jetStream, so
+signaling is cheap and never contends on the JS lock. It must not be held while
+acquiring the JetStream lock.
+
+  jetStream -> prMu
+
 A lock to protect jetstream account's usage has been introduced: jsAccount.usageMu.
 This lock is independent and can be invoked under any other lock: jsAccount -> jsa.usageMu, stream -> jsa.usageMu, etc...
 

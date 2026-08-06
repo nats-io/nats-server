@@ -3723,6 +3723,492 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentWithoutSpace(t *testing
 	streamCurrent(2)
 }
 
+// Helpers for the meta leader peer reconciliation tests below.
+func metaStreamPeers(s *Server, account, stream string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	sa := js.streamAssignmentOrInflight(account, stream)
+	if sa == nil {
+		return nil
+	}
+	peers := copyStrings(sa.Group.Peers)
+	slices.Sort(peers)
+	return peers
+}
+
+func metaConsumerPeers(s *Server, account, stream, consumer string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	ca := js.consumerAssignmentOrInflight(account, stream, consumer)
+	if ca == nil {
+		return nil
+	}
+	peers := copyStrings(ca.Group.Peers)
+	slices.Sort(peers)
+	return peers
+}
+
+// Evacuating a server out of an R3 stream can leave it with two peers, needing a new one
+// admitted. That's only done by whoever is meta leader at the time, so if there's none then
+// (or it can't see the peer yet) the stream stays under-replicated. Becoming meta leader
+// must reconcile it, without handing the stream back to the evacuated server.
+func TestJetStreamClusterPeerRemovalAndStreamReassignmentOnMetaLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	// The server scoped endpoint is system account only.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	peers := metaStreamPeers(ml, globalAccountName, "TEST")
+	require_Len(t, len(peers), 3)
+
+	// The one server not hosting the stream, the only peer that can be admitted once the
+	// stream is left with missing peers. And a stream member we can peer-remove, must not
+	// be the meta leader so it stays able to propose.
+	var spare, member *Server
+	for _, s := range c.servers {
+		if !slices.Contains(peers, s.Node()) {
+			spare = s
+		} else if s != ml {
+			member = s
+		}
+	}
+	require_NotNil(t, spare)
+	require_NotNil(t, member)
+
+	// The spare must stay invisible to the meta leader until we say otherwise, so stop its
+	// statsz. Receiving one would both make it visible again and reconcile.
+	spare.mu.Lock()
+	if spare.sys != nil {
+		clearTimer(&spare.sys.stmr)
+	}
+	spare.mu.Unlock()
+
+	// Make the meta leader unaware of the spare server, as happens for real when a server
+	// just joined the meta group but its statsz hasn't arrived yet. Peer selection can't
+	// pick it then, and nothing retries.
+	sir, ok := ml.nodeToInfo.Load(spare.Node())
+	require_True(t, ok)
+	si := sir.(nodeInfo)
+	ml.nodeToInfo.Delete(spare.Node())
+
+	// Evacuate one of the stream's peers, no replacement can be selected for it. The
+	// server is going away, so this is applied even though the stream is left short.
+	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Peer: member.Node()})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiEvacuateServer, jsreq, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// The stream, and its consumer, are now left with just two peers.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if sp := metaStreamPeers(ml, globalAccountName, "TEST"); len(sp) != 2 {
+			return fmt.Errorf("expected 2 stream peers, got: %v", sp)
+		}
+		if cp := metaConsumerPeers(ml, globalAccountName, "TEST", "dur"); len(cp) != 2 {
+			return fmt.Errorf("expected 2 consumer peers, got: %v", cp)
+		}
+		return nil
+	})
+
+	// The spare server becomes visible to the meta leader again.
+	ml.nodeToInfo.Store(spare.Node(), si)
+
+	// Becoming meta leader must reconcile the assignments and admit a new peer.
+	require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		nml := c.leader()
+		if nml == nil {
+			return errors.New("no meta leader")
+		}
+		sp := metaStreamPeers(nml, globalAccountName, "TEST")
+		if len(sp) != 3 {
+			return fmt.Errorf("expected 3 stream peers, got: %v", sp)
+		}
+		// The spare must have been admitted, not the peer we just evacuated.
+		if slices.Contains(sp, member.Node()) {
+			return fmt.Errorf("evacuated peer %q back in stream peers: %v", member.Node(), sp)
+		}
+		if !slices.Contains(sp, spare.Node()) {
+			return fmt.Errorf("spare peer %q not in stream peers: %v", spare.Node(), sp)
+		}
+		cp := metaConsumerPeers(nml, globalAccountName, "TEST", "dur")
+		if len(cp) != 3 {
+			return fmt.Errorf("expected 3 consumer peers, got: %v", cp)
+		}
+		if slices.Contains(cp, member.Node()) {
+			return fmt.Errorf("evacuated peer %q back in consumer peers: %v", member.Node(), cp)
+		}
+		for _, p := range cp {
+			if !slices.Contains(sp, p) {
+				return fmt.Errorf("consumer peers %v not hosted by stream peers %v", cp, sp)
+			}
+		}
+		return nil
+	})
+}
+
+// A stream left with missing peers, because there was nowhere to place a replacement, must
+// be reconciled once a server that can host one joins, without needing a meta leader change.
+// The peer that was deliberately evacuated must stay out of it.
+func TestJetStreamClusterPeerRemovalAndStreamReassignmentOnNewServer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	// The server scoped endpoint is system account only.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// Evacuate one of the stream's peers, must not be the meta leader so it stays able to
+	// propose. Every server hosts the stream, so no replacement can be selected. The server
+	// is going away, so this is applied even though the stream is left short.
+	ml := c.leader()
+	var member *Server
+	for _, s := range c.servers {
+		if s != ml {
+			member = s
+			break
+		}
+	}
+	require_NotNil(t, member)
+
+	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Peer: member.Node()})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiEvacuateServer, jsreq, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// The stream, and its consumer, are now left with just two peers.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if sp := metaStreamPeers(ml, globalAccountName, "TEST"); len(sp) != 2 {
+			return fmt.Errorf("expected 2 stream peers, got: %v", sp)
+		}
+		if cp := metaConsumerPeers(ml, globalAccountName, "TEST", "dur"); len(cp) != 2 {
+			return fmt.Errorf("expected 2 consumer peers, got: %v", cp)
+		}
+		return nil
+	})
+
+	// Adding a server must reconcile the assignments and admit it as the new peer. The peer
+	// we removed is eligible again for placement, but was taken out deliberately so it must
+	// not be handed the stream back.
+	ns := c.addInNewServer()
+	c.waitOnPeerCount(4)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		sp := metaStreamPeers(ml, globalAccountName, "TEST")
+		if len(sp) != 3 {
+			return fmt.Errorf("expected 3 stream peers, got: %v", sp)
+		}
+		if !slices.Contains(sp, ns.Node()) {
+			return fmt.Errorf("expected new server in stream peers, got: %v", sp)
+		}
+		if slices.Contains(sp, member.Node()) {
+			return fmt.Errorf("removed peer back in stream peers: %v", sp)
+		}
+		cp := metaConsumerPeers(ml, globalAccountName, "TEST", "dur")
+		if len(cp) != 3 {
+			return fmt.Errorf("expected 3 consumer peers, got: %v", cp)
+		}
+		for _, p := range cp {
+			if !slices.Contains(sp, p) {
+				return fmt.Errorf("consumer peers %v not hosted by stream peers %v", cp, sp)
+			}
+		}
+		return nil
+	})
+
+	// All without the meta leader having changed.
+	require_True(t, c.leader() == ml)
+
+	// The exclusion only exists to keep placement off the evacuated peer while the group
+	// is short. Now that it's healed it must be gone, the peer is not fenced off forever.
+	sjs := ml.getJetStream()
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	require_Len(t, len(sa.Group.Excluded), 0)
+}
+
+// The meta leader can change halfway through proposing the stream and consumer updates that
+// follow a peer removal. The stream update lands, the consumer updates don't, leaving the
+// consumer pointing at a peer that's gone. Becoming meta leader must reconcile it.
+func TestJetStreamClusterPeerRemovalAndConsumerReassignmentOnMetaLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomNonLeader())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "dur",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	peers := metaStreamPeers(ml, globalAccountName, "TEST")
+	require_Len(t, len(peers), 3)
+
+	// Pick a server that neither hosts the stream nor is the meta leader, and remove it from
+	// the meta group. The stream and its consumer are unaffected by that removal.
+	var gone *Server
+	for _, s := range c.servers {
+		if s != ml && !slices.Contains(peers, s.Node()) {
+			gone = s
+			break
+		}
+	}
+	require_NotNil(t, gone)
+	goneID := gone.Node()
+
+	snc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer snc.Close()
+
+	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: gone.Name()})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiRemoveServer, jsreq, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	c.waitOnPeerCount(4)
+
+	// Simulate the meta leader having proposed the stream update but losing leadership before
+	// the consumer updates: the consumer is left referencing the removed peer.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	cc := mjs.cluster
+	oca := mjs.consumerAssignmentOrInflight(globalAccountName, "TEST", "dur")
+	cca := oca.copyGroup()
+	cca.Group.Peers = append(copyStrings(peers[:2]), goneID)
+	err = cc.meta.Propose(cc.term, encodeAddConsumerAssignment(cca))
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Nothing re-triggers reconciling the consumer, it stays pointing at the removed peer.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if cp := metaConsumerPeers(ml, globalAccountName, "TEST", "dur"); !slices.Contains(cp, goneID) {
+			return fmt.Errorf("consumer peers %v no longer contain %q", cp, goneID)
+		}
+		return nil
+	})
+
+	// Becoming meta leader must reconcile the consumer back onto the stream's peer set.
+	require_NoError(t, mjs.getMetaGroup().StepDown())
+
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		nml := c.leader()
+		if nml == nil {
+			return errors.New("no meta leader")
+		}
+		sp := metaStreamPeers(nml, globalAccountName, "TEST")
+		if len(sp) != 3 {
+			return fmt.Errorf("expected 3 stream peers, got: %v", sp)
+		}
+		cp := metaConsumerPeers(nml, globalAccountName, "TEST", "dur")
+		if len(cp) != 3 {
+			return fmt.Errorf("expected 3 consumer peers, got: %v", cp)
+		}
+		if slices.Contains(cp, goneID) {
+			return fmt.Errorf("consumer peers %v still contain removed peer %q", cp, goneID)
+		}
+		for _, p := range cp {
+			if !slices.Contains(sp, p) {
+				return fmt.Errorf("consumer peers %v not hosted by stream peers %v", cp, sp)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterReconcileOnlyForNewMetaPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	js := ml.getJetStream()
+	require_NotNil(t, js)
+
+	// Grab a peer we've already got STATSZ for, so it's selectable for placement.
+	var selectable string
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		js.mu.RLock()
+		cc := js.cluster
+		js.mu.RUnlock()
+		if cc == nil || cc.meta == nil {
+			return errors.New("no meta group yet")
+		}
+		for _, p := range cc.meta.Peers() {
+			if ml.peerSelectable(p.ID) {
+				selectable = p.ID
+				return nil
+			}
+		}
+		return errors.New("no selectable peer yet")
+	})
+
+	reset := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			js.prMu.Lock()
+			defer js.prMu.Unlock()
+			if js.prRunning {
+				return errors.New("peer reconcile still in flight")
+			}
+			js.prPeers, js.prNewPeers = nil, nil
+			return nil
+		})
+	}
+	signaled := func() bool {
+		js.prMu.Lock()
+		defer js.prMu.Unlock()
+		return js.prRunning || len(js.prPeers) > 0
+	}
+	tracked := func(peer string) bool {
+		js.prMu.Lock()
+		defer js.prMu.Unlock()
+		_, ok := js.prNewPeers[peer]
+		return ok
+	}
+	// Holds the JS lock, so a signaled sweep parks before doing any work, which keeps
+	// the signal itself observable.
+	locked := func(f func()) {
+		js.mu.Lock()
+		defer js.mu.Unlock()
+		f()
+	}
+
+	// Leaving the meta group before ever reporting in drops the tracking.
+	reset()
+	js.processAddPeer("PEER-GONE")
+	require_True(t, tracked("PEER-GONE"))
+	js.processRemovePeer("PEER-GONE")
+	require_False(t, tracked("PEER-GONE"))
+
+	// STATSZ for a node that was not just added to the meta group must not reconcile.
+	reset()
+	locked(func() {
+		js.processPeerStatsz("PEER-NOT-ADDED")
+		require_False(t, signaled())
+		// Not even for one we already know all about.
+		js.processPeerStatsz(selectable)
+		require_False(t, signaled())
+	})
+
+	// A new peer we can't place on yet is held until its first STATSZ.
+	reset()
+	locked(func() {
+		js.processAddPeer("PEER-NEW")
+		require_True(t, tracked("PEER-NEW"))
+		require_False(t, signaled())
+
+		// Which is what reconciles it.
+		js.processPeerStatsz("PEER-NEW")
+		require_False(t, tracked("PEER-NEW"))
+		require_True(t, signaled())
+	})
+
+	// Only that first one, it's not a newly added peer anymore.
+	reset()
+	locked(func() {
+		js.processPeerStatsz("PEER-NEW")
+		require_False(t, signaled())
+	})
+
+	// A peer we already have STATSZ for reconciles as soon as it joins, there is no
+	// transition to selectable left to wait for. Also covers STATSZ racing ahead of
+	// the peer being added to the meta group.
+	reset()
+	locked(func() {
+		js.processAddPeer(selectable)
+		require_False(t, tracked(selectable))
+		require_True(t, signaled())
+	})
+
+	// Every peer has reported in, so becoming leader leaves nothing to wait on.
+	reset()
+	locked(func() { js.seedNewPeers(true) })
+	require_False(t, tracked(selectable))
+
+	// A peer we have no STATSZ for, as if it had joined the meta group while we were
+	// still a follower and never got tracked. Seeding on leader change is what lets
+	// its first STATSZ reconcile the assignments the sweep could not place on it. A
+	// live peer keeps reporting in, so retry until we seed while it's unselectable.
+	si, ok := ml.nodeToInfo.Load(selectable)
+	require_True(t, ok)
+	defer ml.nodeToInfo.Store(selectable, si)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		ml.nodeToInfo.Store(selectable, nodeInfo{})
+		locked(func() { js.seedNewPeers(true) })
+		if !tracked(selectable) {
+			return fmt.Errorf("unselectable peer %q not tracked", selectable)
+		}
+		return nil
+	})
+	locked(func() {
+		js.processPeerStatsz(selectable)
+		require_False(t, tracked(selectable))
+		require_True(t, signaled())
+	})
+
+	// Losing leadership drops what we were waiting on, it's not ours to reconcile.
+	reset()
+	locked(func() {
+		js.processAddPeer("PEER-NEW")
+		require_True(t, tracked("PEER-NEW"))
+		js.seedNewPeers(false)
+		require_False(t, tracked("PEER-NEW"))
+	})
+}
+
 func TestJetStreamClusterPeerRemovalAndServerBroughtBack(t *testing.T) {
 	// Speed up for this test
 	peerRemoveTimeout = 2 * time.Second
@@ -3828,9 +4314,10 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 			// stream's peer set to hand it to.
 			replaceable := test.replicas < clusterSize
 
-			// The stream scoped endpoint reports that it could not remap the peer
-			// when there is nowhere to move the stream to. The server scoped
-			// endpoint only reports on the peer itself, so it always succeeds.
+			// The stream scoped endpoint rejects the request when there is nowhere to
+			// move the stream to, leaving the peer set untouched. The server scoped
+			// endpoint is best effort and only reports on the peer itself, so it
+			// always succeeds.
 			opSuccess := test.serverScope || replaceable
 
 			// Removing the only peer of an R1 stream hands it to an empty
@@ -3845,11 +4332,12 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 				metaPeersAfterOp--
 			}
 
-			// Without a replacement the stream is left one peer short until a new
-			// server shows up to backfill it. Either way it ends back on its
+			// A server scoped op without a replacement leaves the stream one peer short
+			// until a new server shows up to backfill it. A rejected stream scoped op
+			// leaves the peer set exactly as it was. Either way the stream ends on its
 			// configured replica count once a new server is added.
 			peersAfterOp := test.replicas
-			if !replaceable {
+			if opSuccess && !replaceable {
 				peersAfterOp--
 			}
 
@@ -3894,9 +4382,9 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 			require_NotNil(t, ml)
 			require_NotEqual(t, ml, rs)
 
-			// Wait for the stream to settle on the expected number of peers, with the
-			// targeted peer no longer among them.
-			checkPeers := func(expected int) {
+			// Wait for the stream to settle on the expected number of peers. The targeted
+			// peer must be gone if the op was applied, and still there if it was rejected.
+			checkPeers := func(expected int, containsTarget bool) {
 				t.Helper()
 				checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
 					sjs := ml.getJetStream()
@@ -3912,8 +4400,8 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 					if len(sa.Group.Peers) != expected {
 						return fmt.Errorf("expected %d peers, got %d", expected, len(sa.Group.Peers))
 					}
-					if slices.Contains(sa.Group.Peers, target) {
-						return fmt.Errorf("peer %q still in peer set %v", target, sa.Group.Peers)
+					if got := slices.Contains(sa.Group.Peers, target); got != containsTarget {
+						return fmt.Errorf("peer %q in peer set = %v, want %v (peers %v)", target, got, containsTarget, sa.Group.Peers)
 					}
 					return nil
 				})
@@ -3944,15 +4432,15 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 				require_NoError(t, json.Unmarshal(msg.Data, &resp))
 				require_Equal(t, resp.Success, opSuccess)
 				if !opSuccess {
-					// There was nowhere to move the peer to, but it is still taken
-					// out of the stream.
+					// There was nowhere to move the peer to, so the request is rejected
+					// and the stream is left alone.
 					require_Error(t, resp.Error, NewJSPeerRemapError())
 				}
 			}
 
 			// A server remove also takes the peer out of the meta group.
 			c.waitOnPeerCount(metaPeersAfterOp)
-			checkPeers(peersAfterOp)
+			checkPeers(peersAfterOp, !opSuccess)
 
 			// A peer remove hands an R1 stream to an empty replacement, an evacuation
 			// migrates its data across first.
@@ -3976,7 +4464,7 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 			// left alone.
 			ns := c.addInNewServer()
 			c.waitOnPeerCount(metaPeersAfterOp + 1)
-			checkPeers(test.replicas)
+			checkPeers(test.replicas, !opSuccess)
 
 			// The new server must have been taken on by a stream that was short of its
 			// replica count, and must have been left alone by one that was not.
@@ -3988,7 +4476,7 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 				if sa == nil || sa.Group == nil {
 					return fmt.Errorf("stream not found")
 				}
-				got, want := slices.Contains(sa.Group.Peers, ns.Node()), test.replicas > 1
+				got, want := slices.Contains(sa.Group.Peers, ns.Node()), peersAfterOp < test.replicas
 				if got != want {
 					return fmt.Errorf("new server in peer set = %v, want %v (peers %v)", got, want, sa.Group.Peers)
 				}
@@ -4000,6 +4488,429 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 			require_Equal(t, si.State.Msgs, expectedMsgs+1)
 		})
 	}
+}
+
+func TestJetStreamClusterStreamPeerRemoveNoReplacementIsRejected(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evacuate bool
+	}{
+		{"Remove", false},
+		{"Evacuate", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// An R3 stream on a 3 node cluster has nowhere to hand a peer to.
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			ml := c.leader()
+			require_NotNil(t, ml)
+
+			sjs := ml.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			peers := append([]string(nil), sa.Group.Peers...)
+			sjs.mu.RUnlock()
+			require_Len(t, len(peers), 3)
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			require_NotNil(t, rs)
+			target := rs.Node()
+
+			subjT := JSApiStreamRemovePeerT
+			if test.evacuate {
+				subjT = JSApiStreamEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: target})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, "TEST"), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+
+			// The request must be rejected up front, rather than shortening the group
+			// and having a later reconcile add the peer straight back.
+			require_False(t, resp.Success)
+			require_Error(t, resp.Error, NewJSPeerRemapError())
+
+			checkPeers := func() {
+				t.Helper()
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				sa := sjs.streamAssignment(globalAccountName, "TEST")
+				require_NotNil(t, sa)
+				require_True(t, sa.Group.Desired == nil)
+				require_True(t, slices.Equal(sa.Group.Peers, peers))
+			}
+			checkPeers()
+
+			// A meta leader change runs reconcilePeerAssignments, which must find
+			// nothing to heal.
+			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+			c.waitOnLeader()
+			ml = c.leader()
+			require_NotNil(t, ml)
+
+			time.Sleep(500 * time.Millisecond)
+			checkPeers()
+
+			// The stream is untouched and still fully usable.
+			_, err = js.Publish("foo", []byte("HELLO"))
+			require_NoError(t, err)
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 1)
+			require_Len(t, len(si.Cluster.Replicas), 2)
+		})
+	}
+}
+
+// A stream peer remove that would leave the group short is rejected even when the peer is
+// offline. Scaling the stream down is the way out, that drops offline peers first.
+func TestJetStreamClusterStreamPeerRemoveOfflinePeerIsRejected(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evacuate bool
+	}{
+		{"Remove", false},
+		{"Evacuate", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// An R3 stream on a 3 node cluster has nowhere to hand a peer to.
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			// Connect to the meta leader, it is the one server we know stays up below.
+			ml := c.leader()
+			require_NotNil(t, ml)
+			nc, js := jsClientConnect(t, ml)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Take down a stream peer that is neither the meta nor the stream leader, so
+			// both layers stay able to make progress.
+			sl := c.streamLeader(globalAccountName, "TEST")
+			var member *Server
+			for _, s := range c.servers {
+				if s != ml && s != sl {
+					member = s
+					break
+				}
+			}
+			require_NotNil(t, member)
+			target := member.Node()
+			member.Shutdown()
+
+			// Wait for the meta leader to consider it offline, that's the state under test.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				si, ok := ml.nodeToInfo.Load(target)
+				if !ok || si == nil || !si.(nodeInfo).offline {
+					return fmt.Errorf("peer %q not offline yet", target)
+				}
+				return nil
+			})
+
+			subjT := JSApiStreamRemovePeerT
+			if test.evacuate {
+				subjT = JSApiStreamEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: target})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, "TEST"), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_False(t, resp.Success)
+			require_Error(t, resp.Error, NewJSPeerRemapError())
+
+			// The peer set is untouched, offline peer and all.
+			sjs := ml.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+			require_NotNil(t, sa)
+			require_Len(t, len(sa.Group.Peers), 3)
+			require_True(t, slices.Contains(sa.Group.Peers, target))
+			require_Len(t, len(sa.Group.Excluded), 0)
+			sjs.mu.RUnlock()
+
+			// Scaling down is the documented way out, and it takes the offline peer.
+			_, err = js.UpdateStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 2,
+			})
+			require_NoError(t, err)
+
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				sa := sjs.streamAssignment(globalAccountName, "TEST")
+				if sa == nil || sa.Group == nil {
+					return fmt.Errorf("stream not found")
+				}
+				if sa.Group.Desired != nil {
+					return fmt.Errorf("stream still converging")
+				}
+				if len(sa.Group.Peers) != 2 {
+					return fmt.Errorf("expected 2 peers, got %v", sa.Group.Peers)
+				}
+				if slices.Contains(sa.Group.Peers, target) {
+					return fmt.Errorf("offline peer %q still in peer set %v", target, sa.Group.Peers)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+// An exclusion is not a reason to migrate on its own, so a stale one is left alone until
+// the group has some other reason to move, and is gone once the group is healed.
+func TestJetStreamClusterEvacuateExclusionNotClearedByNoOpMigration(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Connect to the meta leader, it is the one server we know stays put below.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// The server scoped endpoints are system account only.
+	snc, _ := jsClientConnect(t, ml, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Evacuate a server other than the meta leader. With only three servers there is no
+	// replacement, so the stream is left short and the peer is excluded.
+	var member *Server
+	for _, s := range c.servers {
+		if s != ml {
+			member = s
+			break
+		}
+	}
+	require_NotNil(t, member)
+	target := member.Node()
+
+	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: target})
+	require_NoError(t, err)
+	msg, err := snc.Request(JSApiEvacuateServer, b, 10*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Success)
+
+	excluded := func() []string {
+		t.Helper()
+		l := c.leader()
+		require_NotNil(t, l)
+		sjs := l.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		require_NotNil(t, sa)
+		return copyStrings(sa.Group.Excluded)
+	}
+
+	// Wait for the evacuation to settle, so what follows can't race its migration.
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		l := c.leader()
+		if l == nil {
+			return errors.New("no meta leader")
+		}
+		sjs := l.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return fmt.Errorf("stream not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("stream still converging")
+		}
+		if len(sa.Group.Peers) != 2 || slices.Contains(sa.Group.Peers, target) {
+			return fmt.Errorf("expected 2 peers without %q, got %v", target, sa.Group.Peers)
+		}
+		if !slices.Contains(sa.Group.Excluded, target) {
+			return fmt.Errorf("expected %q to be excluded, got %v", target, sa.Group.Excluded)
+		}
+		return nil
+	})
+
+	// Now take the same server out of the meta group, so the exclusion is dead weight,
+	// placement only ever draws from the meta peer set.
+	msg, err = snc.Request(JSApiRemoveServer, b, 10*time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Success)
+	c.waitOnPeerCount(2)
+
+	// Reconcile every assignment. Dropping the stale exclusion is not worth a migration
+	// of its own, so the group must be left exactly as it is.
+	require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
+	c.waitOnLeader()
+	time.Sleep(500 * time.Millisecond)
+	require_True(t, slices.Contains(excluded(), target))
+
+	// Adding a server gives the group a real reason to move. Now it heals to its replica
+	// count, and the exclusions go with it.
+	ns := c.addInNewServer()
+	c.waitOnPeerCount(3)
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		l := c.leader()
+		if l == nil {
+			return errors.New("no meta leader")
+		}
+		sjs := l.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return fmt.Errorf("stream not found")
+		}
+		if len(sa.Group.Peers) != 3 {
+			return fmt.Errorf("expected 3 peers, got %v", sa.Group.Peers)
+		}
+		if !slices.Contains(sa.Group.Peers, ns.Node()) {
+			return fmt.Errorf("expected new server in peers, got %v", sa.Group.Peers)
+		}
+		if len(sa.Group.Excluded) != 0 {
+			return fmt.Errorf("expected exclusions cleared, got %v", sa.Group.Excluded)
+		}
+		return nil
+	})
+}
+
+// Lowering the replica count to match a short group heals it just as well as adding a peer
+// back, so the exclusions must not survive that convergence either. Otherwise the evacuated
+// peer stays ineligible and a later loss can fail to heal against available capacity.
+func TestJetStreamClusterEvacuateExclusionClearedByReplicaDecrease(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Connect to the meta leader, it is the one server we know stays put below.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// The server scoped endpoints are system account only.
+	snc, _ := jsClientConnect(t, ml, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Evacuate a server other than the meta leader. With only three servers there is no
+	// replacement, so the stream is left short and the peer is excluded.
+	var member *Server
+	for _, s := range c.servers {
+		if s != ml {
+			member = s
+			break
+		}
+	}
+	require_NotNil(t, member)
+	target := member.Node()
+
+	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: target})
+	require_NoError(t, err)
+	msg, err := snc.Request(JSApiEvacuateServer, b, 10*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// Wait for the evacuation to settle, so the update below can't race its migration.
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		l := c.leader()
+		if l == nil {
+			return errors.New("no meta leader")
+		}
+		sjs := l.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return fmt.Errorf("stream not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("stream still converging")
+		}
+		if len(sa.Group.Peers) != 2 || slices.Contains(sa.Group.Peers, target) {
+			return fmt.Errorf("expected 2 peers without %q, got %v", target, sa.Group.Peers)
+		}
+		if !slices.Contains(sa.Group.Excluded, target) {
+			return fmt.Errorf("expected %q to be excluded, got %v", target, sa.Group.Excluded)
+		}
+		return nil
+	})
+
+	// The evacuated peer is still in the meta group, so it remains a placement candidate
+	// for as long as the exclusion is kept around.
+	c.waitOnPeerCount(3)
+
+	// Accept the group as it stands by lowering the replica count to the surviving peers.
+	// The group is no longer short, so the evacuation is fully accounted for.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		l := c.leader()
+		if l == nil {
+			return errors.New("no meta leader")
+		}
+		sjs := l.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return fmt.Errorf("stream not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("stream still converging")
+		}
+		if len(sa.Group.Peers) != 2 || slices.Contains(sa.Group.Peers, target) {
+			return fmt.Errorf("expected 2 peers without %q, got %v", target, sa.Group.Peers)
+		}
+		if len(sa.Group.Excluded) != 0 {
+			return fmt.Errorf("expected exclusions cleared, got %v", sa.Group.Excluded)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
@@ -4035,15 +4946,14 @@ func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
 			// stream's peer set to hand it to.
 			replaceable := test.streamReplicas < clusterSize
 
-			// Without a replacement the stream is left one peer short.
+			// Without a replacement the request is rejected and nothing moves, so
+			// either way the stream keeps its replica count.
 			peersAfterOp := test.streamReplicas
-			if !replaceable {
-				peersAfterOp--
-			}
 
 			// A peer remove drops an ephemeral that loses its only peer, an
 			// evacuation migrates it across instead. Durables are always remapped.
-			consumerDeleted := !test.evacuate && test.ephemeral && test.consumerReplicas == 1
+			// A rejected request leaves the consumer alone.
+			consumerDeleted := replaceable && !test.evacuate && test.ephemeral && test.consumerReplicas == 1
 
 			// Each case gets its own stream so that the cases stay independent.
 			stream := fmt.Sprintf("TEST_%d", i)
@@ -4094,15 +5004,16 @@ func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
 			require_NoError(t, json.Unmarshal(msg.Data, &resp))
 			require_Equal(t, resp.Success, replaceable)
 			if !replaceable {
-				// There was nowhere to move the peer to, but it is still taken out
-				// of the stream.
+				// There was nowhere to move the peer to, so the request is rejected
+				// and the stream is left alone.
 				require_Error(t, resp.Error, NewJSPeerRemapError())
 			}
 
 			ml := c.leader()
 			require_NotNil(t, ml)
 
-			// The stream must settle without the targeted peer.
+			// The stream must settle without the targeted peer, unless the request
+			// was rejected, in which case the peer set must be untouched.
 			checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 				sjs := ml.getJetStream()
 				sjs.mu.RLock()
@@ -4117,14 +5028,15 @@ func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
 				if len(sa.Group.Peers) != peersAfterOp {
 					return fmt.Errorf("expected %d peers, got %d", peersAfterOp, len(sa.Group.Peers))
 				}
-				if slices.Contains(sa.Group.Peers, target) {
-					return fmt.Errorf("peer %q still in peer set %v", target, sa.Group.Peers)
+				if got := slices.Contains(sa.Group.Peers, target); got != !replaceable {
+					return fmt.Errorf("peer %q in peer set = %v, want %v (peers %v)", target, got, !replaceable, sa.Group.Peers)
 				}
 				return nil
 			})
 
 			// The consumer either got dropped, or it moved off of the targeted peer
 			// onto as much of the stream's peer set as its own replica count asks for.
+			// A rejected request leaves it where it was.
 			expectedConsumerPeers := min(test.consumerReplicas, peersAfterOp)
 			checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
 				sjs := ml.getJetStream()
@@ -4146,8 +5058,8 @@ func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
 				if len(ca.Group.Peers) != expectedConsumerPeers {
 					return fmt.Errorf("expected %d consumer peers, got %v", expectedConsumerPeers, ca.Group.Peers)
 				}
-				if slices.Contains(ca.Group.Peers, target) {
-					return fmt.Errorf("peer %q still in consumer peer set %v", target, ca.Group.Peers)
+				if got := slices.Contains(ca.Group.Peers, target); got != !replaceable {
+					return fmt.Errorf("peer %q in consumer peer set = %v, want %v (peers %v)", target, got, !replaceable, ca.Group.Peers)
 				}
 				return nil
 			})
@@ -14339,8 +15251,8 @@ func TestJetStreamClusterStreamAddPeerConsumerRemap(t *testing.T) {
 	require_Len(t, len(ci.Cluster.Replicas), 0)
 	r1Peer := ci.Cluster.Leader
 
-	// Remove a stream peer that hosts neither the R1 durable nor the ephemeral. With only
-	// three servers there is no replacement, which leaves the stream with a missing peer.
+	// Evacuate a server hosting neither the R1 durable nor the ephemeral. With only three
+	// servers there is no replacement, which leaves the stream with a missing peer.
 	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
 	peers := []string{si.Cluster.Leader}
@@ -14356,15 +15268,19 @@ func TestJetStreamClusterStreamAddPeerConsumerRemap(t *testing.T) {
 	}
 	require_NotEqual(t, toRemove, _EMPTY_)
 
-	b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: toRemove})
+	// The server scoped endpoint is system account only.
+	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+
+	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Server: toRemove})
 	require_NoError(t, err)
-	msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, time.Second)
+	msg, err := snc.Request(JSApiEvacuateServer, b, 5*time.Second)
 	require_NoError(t, err)
-	var resp JSApiStreamRemovePeerResponse
+	var resp JSApiMetaServerRemoveResponse
 	require_NoError(t, json.Unmarshal(msg.Data, &resp))
-	// The peer could not be replaced, but it is still removed from the stream.
-	require_False(t, resp.Success)
-	require_Error(t, resp.Error, NewJSPeerRemapError())
+	// The peer could not be replaced, but the server is going away so it is still
+	// taken out of the stream.
+	require_True(t, resp.Success)
 
 	checkStreamPeers := func(replicas int) {
 		t.Helper()

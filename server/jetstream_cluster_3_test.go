@@ -2114,14 +2114,23 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 		}
 	}
 
-	// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
-	_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
+	// Evacuate 1 peer replica (this will be random cloud region as initial placement was
+	// randomized ordering). A stream scoped peer remove would be rejected here, there is no
+	// eligible replacement, so go through the server scoped endpoint which is best effort.
+	snc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	ereq, err := json.Marshal(JSApiMetaServerRemoveRequest{Server: osi.Cluster.Replicas[0].Name})
 	require_NoError(t, err)
+	emsg, err := snc.Request(JSApiEvacuateServer, ereq, time.Second*10)
+	require_NoError(t, err)
+	var eresp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(emsg.Data, &eresp))
+	require_True(t, eresp.Success)
 
 	sc.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Verify R2 since no eligible peer can replace the removed peer without braking unique constraint
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		osi, err = jsc.StreamInfo("TEST")
 		require_NoError(t, err)
 		if len(osi.Cluster.Replicas) != 1 {
