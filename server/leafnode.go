@@ -2091,13 +2091,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 	}
 	// If we have a specified JetStream domain we will want to add a mapping to
-	// allow access cross domain for each non-system account.
-	if opts.JetStreamDomain != _EMPTY_ && opts.JetStream && acc != nil && acc != sysAcc {
-		for src, dest := range generateJSMappingTable(opts.JetStreamDomain) {
-			if err := acc.AddMapping(src, dest); err != nil {
-				c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
-			} else {
-				c.Debugf("Adding JetStream Domain Mapping %q -> %s to account %q", src, dest, accName)
+	// allow access cross domain for each non-system account. The system account
+	// is mapped in setupJetStreamExports, it only needs the outgoing block here.
+	if opts.JetStreamDomain != _EMPTY_ && opts.JetStream && acc != nil {
+		if acc != sysAcc {
+			for src, dest := range generateJSMappingTable(opts.JetStreamDomain) {
+				if err := acc.AddMapping(src, dest); err != nil {
+					c.Debugf("Error adding JetStream domain mapping: %s", err.Error())
+				} else {
+					c.Debugf("Adding JetStream Domain Mapping %q -> %s to account %q", src, dest, accName)
+				}
 			}
 		}
 		if blockMappingOutgoing {

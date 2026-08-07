@@ -595,8 +595,19 @@ func (s *Server) checkJetStreamExports() {
 
 func (s *Server) setupJetStreamExports() {
 	// Setup our internal system export.
-	if err := s.SystemAccount().AddServiceExport(jsAllAPI, nil); err != nil {
+	sacc := s.SystemAccount()
+	if err := sacc.AddServiceExport(jsAllAPI, nil); err != nil {
 		s.Warnf("Error setting up jetstream service exports: %v", err)
+	}
+	// Map the domain prefixed API too, so an isolated JetStream is addressable by
+	// domain like an account is. Unprefixed always means this server's own JetStream.
+	if domain := s.getOpts().JetStreamDomain; domain != _EMPTY_ {
+		src, dest := fmt.Sprintf(jsDomainAPI, domain), jsAllAPI
+		if err := sacc.AddMapping(src, dest); err != nil {
+			s.Errorf("Error adding JetStream domain mapping to system account: %v", err)
+		} else {
+			s.Debugf("Adding JetStream Domain Mapping %q -> %s to system account", src, dest)
+		}
 	}
 }
 
