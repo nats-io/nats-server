@@ -1028,7 +1028,7 @@ func (js *jetStream) setupMetaGroup() error {
 	syncInterval := js.srv.opts.SyncInterval
 	js.srv.optsMu.RUnlock()
 	fs, err := newFileStoreWithCreated(
-		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s},
+		FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMetaFSBlkSize, AsyncFlush: false, SyncAlways: syncAlways, SyncInterval: syncInterval, srv: s, accName: sysAcc.Name},
 		StreamConfig{Name: defaultMetaGroupName, Storage: FileStorage},
 		time.Now().UTC(),
 		s.jsKeyGen(s.getOpts().JetStreamKey, defaultMetaGroupName),
@@ -3008,7 +3008,7 @@ retry:
 	// Snapshot rg fields; we drop js.mu below and rg is shared.
 	rgName, rgScaleUp := rg.Name, rg.ScaleUp
 	rgPeers := copyStrings(rg.Peers)
-	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
+	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rgName)
 	js.mu.Unlock()
 
 	n, err := func() (RaftNode, error) {
@@ -3016,7 +3016,7 @@ retry:
 		if storage == FileStorage {
 			opts := s.getOpts()
 			fs, err := newFileStoreWithCreated(
-				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s},
+				FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncAlways: opts.SyncAlways, SyncInterval: opts.SyncInterval, srv: s, accName: accName},
 				StreamConfig{Name: rgName, Storage: FileStorage, Metadata: labels},
 				time.Now().UTC(),
 				s.jsKeyGen(opts.JetStreamKey, rgName),
@@ -3171,6 +3171,42 @@ func (mset *stream) waitOnConsumerAssignments() {
 	}
 }
 
+func prepareStreamRecovery(s *Server, mset *stream, n RaftNode) error {
+	if n == nil || mset == nil || !mset.shouldReplayFromWAL() {
+		return nil
+	}
+
+	index, _, _ := n.Progress()
+	if index == 0 {
+		return nil
+	}
+
+	var snapIndex uint64
+	var snap *StreamReplicatedState
+	snapIndex, snapData, err := n.LoadLastSnapshot()
+	if err != nil && err != errNoSnapAvailable {
+		return err
+	}
+
+	// In case of clean shutdown, no need to replay from WAL
+	if snapIndex == index {
+		return nil
+	}
+
+	switch err {
+	case nil:
+		snap, err = DecodeStreamState(snapData)
+		if err != nil {
+			return err
+		}
+		return mset.prepareForWALReplay(snap)
+	case errNoSnapAvailable:
+		return mset.prepareForWALReplay(nil)
+	}
+
+	return err
+}
+
 // Monitor our stream node for this stream.
 func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnapshot bool) {
 	s, cc := js.server(), js.cluster
@@ -3248,6 +3284,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// Don't allow the upper layer to install snapshots until we have
 	// fully recovered from disk.
 	isRecovering := true
+	if err := prepareStreamRecovery(s, mset, n); err != nil {
+		s.Warnf("Error preparing WAL replay recovery for stream '%s > %s': %v", accName, sa.Config.Name, err)
+		return
+	}
 
 	var (
 		snapMu           sync.Mutex

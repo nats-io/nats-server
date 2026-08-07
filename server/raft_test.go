@@ -500,6 +500,75 @@ func TestNRGSwitchStateClearsQueues(t *testing.T) {
 	require_Equal(t, n.resp.len(), 0)
 }
 
+func TestNRGNextBatch(t *testing.T) {
+	pe := func(t EntryType, data string) *proposedEntry {
+		return &proposedEntry{Entry: &Entry{Type: t, Data: []byte(data)}}
+	}
+	check := func(t *testing.T, batch, expected []*proposedEntry) {
+		t.Helper()
+		require_Equal(t, len(batch), len(expected))
+		for i := range expected {
+			require_True(t, batch[i] == expected[i])
+		}
+	}
+
+	es := []*proposedEntry{
+		pe(EntryNormal, "aaaaaaaaaa"),
+		pe(EntryNormal, "bbbbbbbbbb"),
+		pe(EntryNormal, "cccccccccc"),
+		pe(EntryAddPeer, "peer-a"),
+		pe(EntryNormal, "x"),
+		pe(EntryNormal, "a"),
+		pe(EntryNormal, "b"),
+		pe(EntryNormal, "c"),
+		pe(EntryNormal, "d"),
+		pe(EntryRemovePeer, "peer-b"),
+		pe(EntryNormal, "e"),
+	}
+
+	const maxBatch = appendEntryBaseLen + 30
+	const maxEntries = 3
+
+	rem := es
+
+	// First batch flushes on the size threshold: two large entries fit, a third would exceed maxBatch.
+	batch := nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[:2])
+	rem = rem[len(batch):]
+
+	// A normal entry stops before the add-peer barrier.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[2:3])
+	rem = rem[len(batch):]
+
+	// Add-peer stays standalone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[3:4])
+	rem = rem[len(batch):]
+
+	// Next normal batch flushes on maxEntries: three small entries fit under maxBatch.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[4:7])
+	rem = rem[len(batch):]
+
+	// The remaining normal entries stop before the remove-peer barrier.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[7:9])
+	rem = rem[len(batch):]
+
+	// Remove-peer stays standalone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[9:10])
+	rem = rem[len(batch):]
+
+	// Final tail entry is returned alone.
+	batch = nextBatch(rem, maxBatch, maxEntries)
+	check(t, batch, es[10:11])
+	rem = rem[len(batch):]
+
+	require_Equal(t, len(rem), 0)
+}
+
 func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1154,7 +1223,12 @@ func TestNRGWALEntryWithoutQuorumMustTruncate(t *testing.T) {
 			ae := n.buildAppendEntry(entries)
 			ae.buf, err = ae.encode(scratch[:])
 			require_NoError(t, err)
-			err = n.storeToWAL(ae)
+			size, seq, err := n.storeToWAL(ae)
+			if err == nil {
+				n.bytes += size
+				n.pterm = ae.term
+				n.pindex = seq
+			}
 			n.Unlock()
 			require_NoError(t, err)
 
@@ -1996,7 +2070,13 @@ func TestNRGSnapshotAndTruncateToApplied(t *testing.T) {
 	require_Equal(t, n.wal.State().Msgs, 0)
 
 	// Store a third message, it stays uncommitted.
-	require_NoError(t, n.storeToWAL(aeMsg3))
+	size, seq, err := n.storeToWAL(aeMsg3)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg3.term
+	n.pindex = seq
+	n.Unlock()
 	require_Equal(t, n.commit, 3)
 	require_Equal(t, n.wal.State().Msgs, 1)
 	entry, err = n.loadEntry(4)
@@ -3555,13 +3635,25 @@ func TestNRGSizeAndApplied(t *testing.T) {
 	require_Equal(t, bytes, 0)
 
 	// Store the first append entry.
-	require_NoError(t, n.storeToWAL(aeMsg1))
+	size, seq, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg1.term
+	n.pindex = seq
+	n.Unlock()
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 1)
 	require_Equal(t, bytes, 105)
 
 	// Store the second append entry.
-	require_NoError(t, n.storeToWAL(aeMsg2))
+	size, seq, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
+	n.Lock()
+	n.bytes += size
+	n.pterm = aeMsg2.term
+	n.pindex = seq
+	n.Unlock()
 	entries, bytes = n.Size()
 	require_Equal(t, entries, 2)
 	require_Equal(t, bytes, 210)
@@ -4011,7 +4103,7 @@ func TestNRGSendAppendEntryNotLeader(t *testing.T) {
 	require_NoError(t, nc.Flush())
 
 	// sendAppendEntry acquires the lock by itself, so it must also protect against us not being leader anymore.
-	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)})
+	n.sendAppendEntry([]*Entry{newEntry(EntryNormal, nil)}, true)
 
 	// We're a follower, so we should not be able to send or store a message.
 	require_Equal(t, n.pindex, 0)
@@ -4308,7 +4400,7 @@ func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	require_NoError(t, n.applyCommit(1))
 	require_Equal(t, n.snapfile, _EMPTY_)
 
-	// On scaleup, we send a snapshot.
+	// On scaleup, we send a snapshot directly because the leader loop may not be running yet.
 	require_NoError(t, n.SendSnapshot([]byte("snapshot_data")))
 	require_Equal(t, n.pindex, 2)
 	require_Equal(t, n.snapfile, _EMPTY_)
@@ -6364,14 +6456,26 @@ func TestNRGOnlyCommitIfCurrentTerm(t *testing.T) {
 
 	// This server became leader twice and stored two entries.
 	aeMsg1 := encode(t, &appendEntry{leader: s1, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
-	require_NoError(t, n.storeToWAL(aeMsg1))
+	size, seq, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg1.term
+	n.pindex = seq
 	aeMsg2 := encode(t, &appendEntry{leader: s1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: entries})
-	require_NoError(t, n.storeToWAL(aeMsg2))
+	size, seq, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg2.term
+	n.pindex = seq
 
 	// Another server became leader for term 3 without us knowing and stored a different entry at index 2.
 	// We now become leader again and store a new entry at index 3, but unaware of the above term 3 entry.
 	aeMsg3 := encode(t, &appendEntry{leader: s1, term: 4, commit: 0, pterm: 2, pindex: 2, entries: entries})
-	require_NoError(t, n.storeToWAL(aeMsg3))
+	size, seq, err = n.storeToWAL(aeMsg3)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg3.term
+	n.pindex = seq
 
 	// Set up leader state for below response handling.
 	n.switchToLeader()
@@ -6779,8 +6883,16 @@ func TestNRGReset(t *testing.T) {
 	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{newEntry(EntryNormal, esm)}})
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: []*Entry{newEntry(EntryNormal, esm)}})
-	require_NoError(t, n.storeToWAL(aeMsg1))
-	require_NoError(t, n.storeToWAL(aeMsg2))
+	size, seq, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg1.term
+	n.pindex = seq
+	size, seq, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg2.term
+	n.pindex = seq
 	require_Equal(t, n.pindex, 2)
 
 	// Populate the cache, to check that it gets reset below.
@@ -6813,7 +6925,7 @@ func TestNRGReset(t *testing.T) {
 	n.snapfile = sfile
 
 	// Push something onto each queue so we can verify they are drained.
-	_, err := n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
+	_, err = n.prop.push(&proposedEntry{&Entry{}, _EMPTY_})
 	require_NoError(t, err)
 	_, err = n.entry.push(&appendEntry{})
 	require_NoError(t, err)
@@ -6983,9 +7095,21 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
 	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
 	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
-	require_NoError(t, n.storeToWAL(aeMsg1))
-	require_NoError(t, n.storeToWAL(aeMsg2))
-	require_NoError(t, n.storeToWAL(aeMsg3))
+	size, seq, err := n.storeToWAL(aeMsg1)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg1.term
+	n.pindex = seq
+	size, seq, err = n.storeToWAL(aeMsg2)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg2.term
+	n.pindex = seq
+	size, seq, err = n.storeToWAL(aeMsg3)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg3.term
+	n.pindex = seq
 
 	// Switching to leader stores a peer state entry at index 4.
 	n.term = 1
@@ -7014,7 +7138,11 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	// (n.pindex) exceeds the first run's view of the last index, making the
 	// first run return promptly instead of waiting for its stall timeout.
 	aeMsg4 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 4, entries: entries})
-	require_NoError(t, n.storeToWAL(aeMsg4))
+	size, seq, err = n.storeToWAL(aeMsg4)
+	require_NoError(t, err)
+	n.bytes += size
+	n.pterm = aeMsg4.term
+	n.pindex = seq
 
 	// Follower re-requests the catchup while the first run is still active.
 	// This cancels the first run and installs a fresh progress queue.
@@ -7057,7 +7185,12 @@ func TestNRGCatchupFollowerNoWaitGroupLeakWhenGoRoutineFails(t *testing.T) {
 	buf, err := ae.encode(scratch[:])
 	require_NoError(t, err)
 	ae.buf = buf
-	err = n.storeToWAL(ae)
+	size, seq, err := n.storeToWAL(ae)
+	if err == nil {
+		n.bytes += size
+		n.pterm = ae.term
+		n.pindex = seq
+	}
 	n.Unlock()
 	require_NoError(t, err)
 

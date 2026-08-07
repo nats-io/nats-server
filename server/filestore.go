@@ -48,6 +48,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/elastic"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/metric"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
 	"golang.org/x/crypto/chacha20"
@@ -67,6 +68,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush sync all writes before on FlushAllPending
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -76,6 +79,8 @@ type FileStoreConfig struct {
 
 	// Internal reference to our server.
 	srv *Server
+	// Internal account name for grouping metrics.
+	accName string
 }
 
 // FileStreamInfo allows us to remember created time.
@@ -216,6 +221,7 @@ type fileStore struct {
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
+	fsyncs      *metric.Counter
 }
 
 // Represents a message store block and its data.
@@ -449,6 +455,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		srv:    fcfg.srv,
 	}
 	fs.syncAlways.Store(fcfg.SyncAlways)
+	if fs.srv != nil && fs.srv.metrics != nil {
+		c := metric.NewCounter()
+		fs.fsyncs = &c
+		metricPath := fmt.Sprintf("%s.STORE.%s.FSYNCS", fs.fcfg.accName, cfg.Name)
+		fs.srv.metrics.Add(metricPath, fs.fsyncs)
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -665,6 +677,12 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 func (fs *fileStore) lockAllMsgBlocks() {
 	for _, mb := range fs.blks {
 		mb.mu.Lock()
+	}
+}
+
+func (fs *fileStore) countFsync() {
+	if fs != nil && fs.fsyncs != nil {
+		fs.fsyncs.Increment()
 	}
 }
 
@@ -5429,6 +5447,10 @@ func (fs *fileStore) FlushAllPending() error {
 	if fs.werr != nil {
 		return fs.werr
 	}
+	if fs.fcfg.SyncOnFlush {
+		fs.syncBlocksLocked()
+		return fs.werr
+	}
 	return fs.checkAndFlushLastBlock()
 }
 
@@ -7835,12 +7857,17 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.syncBlocksLocked()
+}
+
+// Lock should be held on entry and will be held on return.
+func (fs *fileStore) syncBlocksLocked() {
 	if fs.isClosed() {
 		return
 	}
-	fs.mu.Lock()
 	if err := fs.werr; err != nil {
-		fs.mu.Unlock()
 		return
 	}
 	blks := append([]*msgBlock(nil), fs.blks...)
@@ -7980,6 +8007,7 @@ func (fs *fileStore) syncBlocks() {
 			}
 			// If we have an fd.
 			if fd != nil {
+				fs.countFsync()
 				if err = fd.Sync(); err != nil {
 					// Close fd if we opened it, but ignore its error since sync takes precedence.
 					if didOpen {
@@ -8003,10 +8031,10 @@ func (fs *fileStore) syncBlocks() {
 	}
 
 	if fs.isClosed() {
+		fs.mu.Lock()
 		return
 	}
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	fs.setSyncTimer()
 	if markDirty {
 		fs.dirty++
@@ -8415,6 +8443,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 
 	// Check if we are in sync always mode.
 	if mb.syncAlways {
+		mb.fs.countFsync()
 		if err = mb.mfd.Sync(); err != nil {
 			mb.werr = err
 			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
@@ -13947,7 +13976,7 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load())
+	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load() || fs.fcfg.SyncOnFlush)
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
