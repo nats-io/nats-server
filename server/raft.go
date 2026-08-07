@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,8 +68,10 @@ type RaftNode interface {
 	Group() string
 	Peers() []*Peer
 	PeerNames() []string
+	VotingPeerNames() []string
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
+	EvictPeers(peers []string) ([]string, error)
 	MembershipChangeInProgress() bool
 	AdjustClusterSize(csz int) error
 	AdjustBootClusterSize(csz int) error
@@ -287,16 +290,17 @@ type membChange struct {
 }
 
 const (
-	minElectionTimeoutDefault      = 4 * time.Second
-	maxElectionTimeoutDefault      = 9 * time.Second
-	minCampaignTimeoutDefault      = 100 * time.Millisecond
-	maxCampaignTimeoutDefault      = 8 * minCampaignTimeoutDefault
-	hbIntervalDefault              = 1 * time.Second
-	lostQuorumIntervalDefault      = hbIntervalDefault * 10 // 10 seconds
-	lostQuorumCheckIntervalDefault = hbIntervalDefault * 10 // 10 seconds
-	observerModeIntervalDefault    = 48 * time.Hour
-	peerRemoveTimeoutDefault       = 5 * time.Minute
-	rescueQuorumTimeoutDefault     = 5 * time.Minute
+	minElectionTimeoutDefault       = 4 * time.Second
+	maxElectionTimeoutDefault       = 9 * time.Second
+	minCampaignTimeoutDefault       = 100 * time.Millisecond
+	maxCampaignTimeoutDefault       = 8 * minCampaignTimeoutDefault
+	hbIntervalDefault               = 1 * time.Second
+	lostQuorumIntervalDefault       = hbIntervalDefault * 10 // 10 seconds
+	lostQuorumCheckIntervalDefault  = hbIntervalDefault * 10 // 10 seconds
+	lostQuorumSignalIntervalDefault = 20 * time.Second
+	observerModeIntervalDefault     = 48 * time.Hour
+	peerRemoveTimeoutDefault        = 5 * time.Minute
+	rescueQuorumTimeoutDefault      = 5 * time.Minute
 )
 
 var (
@@ -307,6 +311,7 @@ var (
 	hbInterval           = hbIntervalDefault
 	lostQuorumInterval   = lostQuorumIntervalDefault
 	lostQuorumCheck      = lostQuorumCheckIntervalDefault
+	lostQuorumSignal     = lostQuorumSignalIntervalDefault
 	observerModeInterval = observerModeIntervalDefault
 	peerRemoveTimeout    = peerRemoveTimeoutDefault
 	rescueQuorumTimeout  = rescueQuorumTimeoutDefault
@@ -365,6 +370,9 @@ var (
 	errMembershipChange  = errors.New("raft: membership change in progress")
 	errRemoveLastNode    = errors.New("raft: cannot remove the last peer")
 	errPeerNotFound      = errors.New("raft: peer not found")
+	errNotManaged        = errors.New("raft: group membership is not managed")
+	errNotLeaderless     = errors.New("raft: group is not leaderless")
+	errQuorumPossible    = errors.New("raft: remaining peers could still reach quorum")
 )
 
 // This will bootstrap a raftNode by writing its config into the store directory.
@@ -1078,10 +1086,87 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 	return nil
 }
 
+// EvictPeers forcibly drops the given peers from our membership, without going
+// through the log. Returns the peers that were evicted.
+//
+// This is only valid for managed groups, where the meta layer owns membership.
+// A group that has lost quorum can not commit an EntryRemovePeer of its own, so
+// it would stay stuck for as long as the downed peers are part of it. The meta
+// layer has already committed their removal by quorum, so we can apply that
+// decision directly and recover the ability to elect a leader.
+//
+// Errors for an unmanaged group, one that still has a leader and can shrink
+// through its own log instead, or one where the peers left behind could still
+// reach quorum without us.
+func (n *raft) EvictPeers(peers []string) ([]string, error) {
+	n.Lock()
+	defer n.Unlock()
+
+	// Only the meta layer can authorize this, so refuse for unmanaged groups.
+	if !n.managed {
+		return nil, errNotManaged
+	}
+	// If we have a leader we can remove peers through the log, which is ordered
+	// and therefore always preferred over deciding membership unilaterally.
+	if !n.Leaderless() {
+		return nil, errNotLeaderless
+	}
+	// Only safe to evict if the peers we leave behind can not reach quorum without
+	// us, otherwise they could commit entries we'd never see and we would diverge.
+	// Must be judged on voting membership, since a peer whose removal we appended
+	// but never committed can still be a voter for everyone else.
+	voting := n.votingPeerNames()
+	var remaining int
+	for _, peer := range voting {
+		if peer != n.id && !slices.Contains(peers, peer) {
+			remaining++
+		}
+	}
+	if remaining >= len(voting)/2+1 {
+		return nil, errQuorumPossible
+	}
+	// Revert an uncommitted membership change if it's about a peer we're evicting,
+	// or about ourselves. The leader that appended our removal is gone, and the
+	// peers that could still commit it are the ones the meta layer peer-removed,
+	// so it can never become official. Reverting restores us as a member, without
+	// which we would stay unable to campaign even after evicting the others.
+	if n.membChange != nil &&
+		(slices.Contains(peers, n.membChange.peer) || n.pendingSelfRemoval()) {
+		n.revertMembershipChange()
+	}
+	var evicted []string
+	for _, peer := range peers {
+		// Never evict ourselves, and never empty out the group.
+		if peer == n.id || len(n.peers) <= 1 {
+			continue
+		}
+		if _, ok := n.peers[peer]; !ok {
+			continue
+		}
+		// Marks the peer as removed so it can not rejoin or be re-added
+		// automatically, adjusts cluster size and quorum, and persists.
+		n.removePeer(peer)
+		evicted = append(evicted, peer)
+	}
+	if len(evicted) > 0 {
+		n.warn("Evicted peers %+v, cluster size is now %d", evicted, n.csz)
+	}
+	return evicted, nil
+}
+
 func (n *raft) MembershipChangeInProgress() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.membChange != nil
+}
+
+// pendingSelfRemoval reports whether we have an uncommitted removal of ourselves.
+// We're speculatively dropped from our own peer set at append time, but the meta
+// layer can still consider us a member until the removal commits.
+// Lock should be held.
+func (n *raft) pendingSelfRemoval() bool {
+	// A removal tracks the previous membership state, an addition does not.
+	return n.membChange != nil && n.membChange.peer == n.id && n.membChange.prev != nil
 }
 
 // ClusterSize reports back the total cluster size.
@@ -3705,6 +3790,12 @@ func (n *raft) applyCommit(index uint64) error {
 			}
 		case EntryAddPeer:
 			newPeer := string(e.Data)
+			// Skip applying a membership change that was reverted by peer eviction, only valid
+			// if we won the election; a follower must always apply what the leader committed.
+			if n.membChange == nil && n.State() == Leader {
+				n.debug("Skipping reverted membership change adding peer %q", newPeer)
+				continue
+			}
 			n.debug("Added peer %q", newPeer)
 
 			// Store our peer in our global peer map for all peers.
@@ -3720,6 +3811,12 @@ func (n *raft) applyCommit(index uint64) error {
 
 		case EntryRemovePeer:
 			peer := string(e.Data)
+			// Skip applying a membership change that was reverted by peer eviction, only valid
+			// if we won the election; a follower must always apply what the leader committed.
+			if n.membChange == nil && n.State() == Leader {
+				n.debug("Skipping reverted membership change removing peer %q", peer)
+				continue
+			}
 			n.debug("Removing peer %q", peer)
 
 			n.removePeer(peer)
@@ -4130,25 +4227,32 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	// Check if we're truncating an uncommitted membership change.
 	if n.membChange != nil && n.membChange.index > index {
-		peer := n.membChange.peer
-		if ps := n.membChange.prev; ps != nil {
-			// This was a removal, add it back.
-			n.peers[peer] = ps
-			// If we were on the removed list, reverse that here.
-			if n.removed != nil {
-				delete(n.removed, peer)
-				if len(n.removed) == 0 {
-					n.removed = nil
-				}
-			}
-		} else {
-			// This was an addition, remove it.
-			delete(n.peers, peer)
-		}
-		n.adjustClusterSizeAndQuorum()
-		n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
-		n.membChange = nil
+		n.revertMembershipChange()
 	}
+}
+
+// Revert an uncommitted membership change that was speculatively applied to
+// our peer map at append time, restoring the committed membership.
+// Lock should be held.
+func (n *raft) revertMembershipChange() {
+	peer := n.membChange.peer
+	if ps := n.membChange.prev; ps != nil {
+		// This was a removal, add it back.
+		n.peers[peer] = ps
+		// If we were on the removed list, reverse that here.
+		if n.removed != nil {
+			delete(n.removed, peer)
+			if len(n.removed) == 0 {
+				n.removed = nil
+			}
+		}
+	} else {
+		// This was an addition, remove it.
+		delete(n.peers, peer)
+	}
+	n.adjustClusterSizeAndQuorum()
+	n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+	n.membChange = nil
 }
 
 // Reset our WAL. This is equivalent to truncating all data from the log.
@@ -4947,6 +5051,25 @@ func (n *raft) PeerNames() []string {
 	return n.peerNames()
 }
 
+// VotingPeerNames returns every peer that could still be voting on entries,
+// which is our peer set plus a peer we speculatively dropped for a removal
+// that has not committed yet. See votingPeerNames.
+func (n *raft) VotingPeerNames() []string {
+	n.RLock()
+	defer n.RUnlock()
+	return n.votingPeerNames()
+}
+
+func (n *raft) votingPeerNames() []string {
+	peers := n.peerNames()
+	// Only a removal tracks the previous membership state, an addition does not,
+	// and there can only ever be one membership change inflight.
+	if n.membChange != nil && n.membChange.prev != nil && !slices.Contains(peers, n.membChange.peer) {
+		peers = append(peers, n.membChange.peer)
+	}
+	return peers
+}
+
 // Lock should be held.
 func (n *raft) peerNames() []string {
 	peers := make([]string, 0, len(n.peers))
@@ -5517,6 +5640,10 @@ func (n *raft) switchToCandidate() {
 	// Do not campaign with an uncommitted membership change about us,
 	// otherwise we would try to become leader outside our peer set.
 	if n.membChange != nil && n.membChange.peer == n.id {
+		// The election timer fired, so we've not heard from a leader. Clear it
+		// like campaigning would, or we'd keep reporting we have one and the
+		// upper layer could never recognize the group as stuck.
+		n.updateLeader(noLeader)
 		n.resetElect(minElectionTimeout)
 		return
 	}
@@ -5524,7 +5651,7 @@ func (n *raft) switchToCandidate() {
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
 	} else {
-		if n.lostQuorumLocked() && time.Since(n.llqrt) > 20*time.Second {
+		if n.lostQuorumLocked() && time.Since(n.llqrt) > lostQuorumSignal {
 			// We signal to the upper layers such that can alert on quorum lost.
 			n.updateLeadChange(false)
 			n.llqrt = time.Now()

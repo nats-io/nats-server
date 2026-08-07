@@ -3723,33 +3723,6 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentWithoutSpace(t *testing
 	streamCurrent(2)
 }
 
-// Helpers for the meta leader peer reconciliation tests below.
-func metaStreamPeers(s *Server, account, stream string) []string {
-	js := s.getJetStream()
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	sa := js.streamAssignmentOrInflight(account, stream)
-	if sa == nil {
-		return nil
-	}
-	peers := copyStrings(sa.Group.Peers)
-	slices.Sort(peers)
-	return peers
-}
-
-func metaConsumerPeers(s *Server, account, stream, consumer string) []string {
-	js := s.getJetStream()
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	ca := js.consumerAssignmentOrInflight(account, stream, consumer)
-	if ca == nil {
-		return nil
-	}
-	peers := copyStrings(ca.Group.Peers)
-	slices.Sort(peers)
-	return peers
-}
-
 // Evacuating a server out of an R3 stream can leave it with two peers, needing a new one
 // admitted. That's only done by whoever is meta leader at the time, so if there's none then
 // (or it can't see the peer yet) the stream stays under-replicated. Becoming meta leader

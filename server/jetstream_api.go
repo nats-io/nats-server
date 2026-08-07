@@ -2005,7 +2005,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 				// We know we are a member here, if this group is new and we are preferred allow us to answer.
 				// Also, we have seen cases where rg.node is nil at this point,
 				// so check explicitly and bail if that is the case.
-				bail = rg.Preferred != ourID || (rg.node != nil && time.Since(rg.node.Created()) > lostQuorumIntervalDefault)
+				bail = rg.Preferred != ourID || (rg.node != nil && time.Since(rg.node.Created()) > lostQuorumInterval)
 			}
 			js.mu.RUnlock()
 			if bail {
@@ -5183,7 +5183,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		// Also capture if we think there is no meta leader.
 		var isLeaderLess bool
 		if !isLeader {
-			isLeaderLess = groupLeaderless && time.Since(groupCreated) > lostQuorumIntervalDefault
+			isLeaderLess = groupLeaderless && time.Since(groupCreated) > lostQuorumInterval
 		}
 		js.mu.RUnlock()
 
@@ -5273,7 +5273,7 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			bail := !node.Leaderless() || node.HadPreviousLeader() || rg == nil
 			if !bail {
 				js.mu.RLock()
-				bail = rg.Preferred != ourID || (rg.node != nil && time.Since(rg.node.Created()) > lostQuorumIntervalDefault)
+				bail = rg.Preferred != ourID || (rg.node != nil && time.Since(rg.node.Created()) > lostQuorumInterval)
 				js.mu.RUnlock()
 			}
 			if bail {

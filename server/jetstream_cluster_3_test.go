@@ -12517,6 +12517,789 @@ func TestJetStreamClusterDesiredOriginReportsTarget(t *testing.T) {
 	}
 }
 
+// peerRemove takes the given servers out as an operator would, either out of the
+// cluster entirely or just out of the stream.
+func peerRemove(t *testing.T, c *cluster, nc *nats.Conn, stream string, serverScope bool, peers []string) {
+	t.Helper()
+	if !serverScope {
+		for _, name := range peers {
+			req, err := json.Marshal(&JSApiStreamRemovePeerRequest{Peer: name})
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, stream), req, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamRemovePeerResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_True(t, resp.Error == nil)
+		}
+		return
+	}
+
+	// The server scoped endpoint is system account only.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	snc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer snc.Close()
+
+	for _, name := range peers {
+		req, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := snc.Request(JSApiRemoveServer, req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+	}
+}
+
+// proposeSelectedScaleDown rewrites a consumer assignment as if a scale-down had
+// already selected its final peer set before the group lost quorum: the desired
+// peers hold only the kept peer, while the actual peers still hold the downed
+// ones. A subsequent peer-remove of the downed servers is a no-op for the desired
+// peers, so recovering from this shape requires recording the removals against
+// the actual peers.
+func proposeSelectedScaleDown(t *testing.T, c *cluster, stream, consumer string, replicas int, keep *Server) {
+	t.Helper()
+	const desiredID = "selected-scale-down"
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	cc := mjs.cluster
+	ca := mjs.consumerAssignment(globalAccountName, stream, consumer)
+	if ca == nil || cc == nil || cc.meta == nil {
+		mjs.mu.Unlock()
+		t.Fatalf("no consumer assignment for %q", consumer)
+	}
+	nca := ca.copyGroup()
+	if replicas > 0 {
+		cfg := *nca.Config
+		cfg.Replicas = replicas
+		nca.Config = &cfg
+	}
+	nca.Group.Desired = &desiredRaftGroup{ID: desiredID, Peers: []string{keep.Node()}}
+	err := cc.meta.Propose(cc.term, encodeAddConsumerAssignment(nca))
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Wait for the assignment to be applied before returning.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		if ca := mjs.consumerAssignment(globalAccountName, stream, consumer); ca == nil ||
+			ca.Group.Desired == nil || ca.Group.Desired.ID != desiredID {
+			return fmt.Errorf("consumer %q assignment not applied yet", consumer)
+		}
+		return nil
+	})
+}
+
+// A stream and consumer that lost quorum, because their peers were shut down,
+// must recover once those peers are removed. They can't commit the peer removal
+// through their own log, since that needs the quorum they lost. Removing the
+// servers from the cluster takes them out of every group, removing them from the
+// stream only takes them out of this one and leaves them cluster members.
+func TestJetStreamClusterPeerRemoveRestoresQuorum(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		serverScope bool
+	}{
+		{"Server", true},
+		{"Stream", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R5S", 5)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "dur",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			// A second consumer that will be rewritten below as a stuck scale-down.
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "scaled",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Shut down both stream followers, taking the stream and its consumer
+			// below quorum. The meta group has 3 of 5 servers left, so it stays
+			// available.
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			var downed []string
+			for _, r := range si.Cluster.Replicas {
+				downed = append(downed, r.Name)
+			}
+			sl := c.serverByName(si.Cluster.Leader)
+			for _, name := range downed {
+				c.serverByName(name).Shutdown()
+			}
+			c.waitOnLeader()
+
+			// Reconnect to a server that's still up.
+			nc.Close()
+			nc, js = jsClientConnect(t, sl)
+			defer nc.Close()
+
+			// Both groups must be stuck at this point. The old leaders step down
+			// once they notice they've lost quorum, and no new leader can be
+			// elected. Can take up to lostQuorumInterval plus lostQuorumCheck for
+			// them to notice.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+					return fmt.Errorf("stream still has leader %q", l.Name())
+				}
+				for _, consumer := range []string{"dur", "scaled"} {
+					if l := c.consumerLeader(globalAccountName, "TEST", consumer); l != nil {
+						return fmt.Errorf("consumer %q still has leader %q", consumer, l.Name())
+					}
+				}
+				return nil
+			})
+			_, err = js.Publish("foo", nil)
+			require_Error(t, err, nats.ErrNoStreamResponse)
+
+			// The second consumer already selected its scale-down peer set, so the
+			// peer-remove below can't touch its desired peers, only its actual ones.
+			proposeSelectedScaleDown(t, c, "TEST", "scaled", 1, sl)
+
+			// Now remove both downed servers. Only a server peer-remove changes
+			// cluster membership, so that's the only one there is something to
+			// wait for. A stream peer-remove leaves it alone, which the check at
+			// the end of the test confirms.
+			peerRemove(t, c, nc, "TEST", test.serverScope, downed)
+			if test.serverScope {
+				checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+					ml := c.leader()
+					if ml == nil {
+						return errors.New("no meta leader")
+					}
+					if n := len(ml.getJetStream().getMetaGroup().Peers()); n != 3 {
+						return fmt.Errorf("expected 3 meta members, got %d", n)
+					}
+					return nil
+				})
+			}
+
+			// Both the stream and the consumers must now be able to elect a leader
+			// again, having evicted the removed peers, and become fully available.
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "dur")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "scaled")
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// And no group should reference the removed servers anymore.
+			// Waiting on the leaders above also waits for the groups to have
+			// converged, so this must hold right away.
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_NotNil(t, si.Cluster)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			ci, err := js.ConsumerInfo("TEST", "dur")
+			require_NoError(t, err)
+			require_NotNil(t, ci.Cluster)
+			require_Equal(t, len(ci.Cluster.Replicas), 2)
+
+			// The stuck scale-down settles on its selected peer.
+			sci, err := js.ConsumerInfo("TEST", "scaled")
+			require_NoError(t, err)
+			require_NotNil(t, sci.Cluster)
+			require_Equal(t, sci.Cluster.Leader, sl.Name())
+			require_Equal(t, len(sci.Cluster.Replicas), 0)
+
+			for _, name := range downed {
+				require_NotEqual(t, si.Cluster.Leader, name)
+				require_NotEqual(t, ci.Cluster.Leader, name)
+				for _, r := range si.Cluster.Replicas {
+					require_NotEqual(t, r.Name, name)
+				}
+				for _, r := range ci.Cluster.Replicas {
+					require_NotEqual(t, r.Name, name)
+				}
+			}
+
+			// Only a server peer-remove takes them out of the cluster as well.
+			expectedMetaPeers := 5
+			if test.serverScope {
+				expectedMetaPeers = 3
+			}
+			ml := c.leader()
+			require_NotNil(t, ml)
+			require_Equal(t, len(ml.getJetStream().getMetaGroup().Peers()), expectedMetaPeers)
+		})
+	}
+}
+
+// A stream peer remove that would leave the group below its replica count is rejected, even
+// when the peers are offline and the group is below quorum. Scaling the stream down is the
+// way out, after which the same removes are accepted and evict the peers, restoring the
+// stream without needing a server peer remove.
+func TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum(t *testing.T) {
+	// Tag placement so the stream can only ever live on S-1, S-2 and S-3. That leaves no
+	// eligible replacement once peers go down, while the meta group keeps quorum on five.
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 5,
+		func(serverName, clusterName, storeDir, conf string) string {
+			switch serverName {
+			case "S-1", "S-2", "S-3":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:a]", conf, serverName)
+			default:
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:b]", conf, serverName)
+			}
+		})
+	defer c.shutdown()
+
+	// The meta leader must be outside the stream's peer set so it stays able to propose.
+	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
+		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	ml := c.leader()
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"grp:a"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	toSend := 5
+	for range toSend {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Take two of the three stream peers down for good, putting the stream below quorum.
+	var offline []string
+	for _, name := range []string{"S-2", "S-3"} {
+		s := c.serverByName(name)
+		offline = append(offline, s.Node())
+		s.Shutdown()
+	}
+	checkFor(t, 15*time.Second, 250*time.Millisecond, func() error {
+		for _, p := range offline {
+			si, ok := ml.nodeToInfo.Load(p)
+			if !ok || si == nil || !si.(nodeInfo).offline {
+				return fmt.Errorf("peer %q not offline yet", p)
+			}
+		}
+		return nil
+	})
+
+	// The stream must actually be stuck before we exercise the recovery. The old leader
+	// steps down once it notices it has lost quorum, which can take up to
+	// lostQuorumInterval plus lostQuorumCheck.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+			return fmt.Errorf("stream still has leader %q", l.Name())
+		}
+		return nil
+	})
+
+	removePeer := func(peer string) *JSApiStreamRemovePeerResponse {
+		t.Helper()
+		b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: peer})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRemovePeerResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		return &resp
+	}
+
+	// At R3 there is nowhere to hand the peer to, so this must be rejected and the group
+	// left exactly as it was.
+	resp := removePeer(offline[0])
+	require_False(t, resp.Success)
+	require_Error(t, resp.Error, NewJSPeerRemapError())
+	require_Len(t, len(metaStreamPeers(ml, globalAccountName, "TEST")), 3)
+
+	// Scale the stream down. The request can time out waiting on a stream that has no
+	// leader to respond, what matters is that the meta layer records it.
+	cfg.Replicas = 1
+	_, _ = js.UpdateStream(cfg, nats.MaxWait(time.Second))
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Config.Replicas != 1 {
+			return fmt.Errorf("expected R1, got R%d", sa.Config.Replicas)
+		}
+		return nil
+	})
+
+	// Now the same removes are accepted, the group is no longer short of its replica count.
+	for _, peer := range offline {
+		require_True(t, removePeer(peer).Success)
+	}
+
+	// Both offline peers are evicted, leaving the stream on its one surviving peer.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("stream still converging: peers=%v desired=%v scaleDown=%v scaleUp=%v",
+				sa.Group.Peers, sa.Group.Desired.Peers, sa.Group.Desired.ScaleDown, sa.Group.Desired.ScaleUp)
+		}
+		if len(sa.Group.Peers) != 1 {
+			return fmt.Errorf("expected 1 peer, got %v", sa.Group.Peers)
+		}
+		for _, p := range offline {
+			if slices.Contains(sa.Group.Peers, p) {
+				return fmt.Errorf("offline peer %q still in peer set %v", p, sa.Group.Peers)
+			}
+		}
+		return nil
+	})
+
+	// And the stream is usable again, with its data, without a server peer remove.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(toSend+1))
+	require_Len(t, len(si.Cluster.Replicas), 0)
+}
+
+// A scale-down or move that appended a removal of the surviving peer, but lost
+// quorum before committing it, leaves that peer speculatively dropped from its
+// own peer set while the assignment still lists it. Peer-removing the downed
+// servers must still evict them, reverting the stuck self-removal, or the
+// survivor could never campaign again.
+func TestJetStreamClusterStreamPeerRemoveWithUncommittedSelfRemoval(t *testing.T) {
+	// Tag placement so the stream can only ever live on S-1, S-2 and S-3, same as
+	// TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum.
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 5,
+		func(serverName, clusterName, storeDir, conf string) string {
+			switch serverName {
+			case "S-1", "S-2", "S-3":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:a]", conf, serverName)
+			default:
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:b]", conf, serverName)
+			}
+		})
+	defer c.shutdown()
+
+	// The meta leader must be outside the stream's peer set so it stays able to propose.
+	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
+		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	ml := c.leader()
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"grp:a"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Take the other two stream peers down for good, leaving S-1 as the survivor.
+	survivor := c.serverByName("S-1")
+	var offline []string
+	for _, name := range []string{"S-2", "S-3"} {
+		s := c.serverByName(name)
+		offline = append(offline, s.Node())
+		s.Shutdown()
+	}
+
+	// The stream must be stuck before we exercise the recovery.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+			return fmt.Errorf("stream still has leader %q", l.Name())
+		}
+		return nil
+	})
+
+	// Put the survivor in the state a scale-down or move would leave behind if it
+	// appended a removal of this peer and lost quorum before committing it. This
+	// is the same speculative apply processAppendEntry does for the entry.
+	mset, err := survivor.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode().(*raft)
+	node.Lock()
+	node.membChange = &membChange{index: node.pindex + 1, peer: node.id, prev: node.peers[node.id]}
+	delete(node.peers, node.id)
+	node.adjustClusterSizeAndQuorum()
+	pendingSelfRemoval := node.pendingSelfRemoval()
+	node.Unlock()
+	require_True(t, pendingSelfRemoval)
+
+	// Scale the stream down, so the peer removes below aren't rejected for leaving
+	// the group short of its replica count. No leader can respond to the request.
+	cfg.Replicas = 1
+	_, _ = js.UpdateStream(cfg, nats.MaxWait(time.Second))
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Config.Replicas != 1 {
+			return fmt.Errorf("expected R1, got R%d", sa.Config.Replicas)
+		}
+		return nil
+	})
+
+	// Remove both downed peers.
+	for _, peer := range offline {
+		b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: peer})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRemovePeerResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Success)
+	}
+
+	// The survivor must evict the removed peers, revert its own stuck removal and
+	// be able to elect a leader again, settling the group at R1.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		node.RLock()
+		pendingSelfRemoval := node.pendingSelfRemoval()
+		node.RUnlock()
+		if pendingSelfRemoval {
+			return errors.New("self removal still pending")
+		}
+		if !slices.Contains(node.PeerNames(), node.ID()) {
+			return fmt.Errorf("not a member of our own group: %v", node.PeerNames())
+		}
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return errors.New("stream not found")
+		}
+		if len(sa.Group.Peers) != 1 || sa.Group.Peers[0] != survivor.Node() {
+			return fmt.Errorf("expected the survivor as only peer, got %v", sa.Group.Peers)
+		}
+		return nil
+	})
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(2))
+	require_Equal(t, si.Cluster.Leader, survivor.Name())
+	require_Len(t, len(si.Cluster.Replicas), 0)
+}
+
+// A stream that lost quorum can't scale down either, removing peers needs the
+// quorum it just lost. Removing the downed servers must let it shrink around
+// them and settle at its new replica count.
+func TestJetStreamClusterPeerRemoveRestoresQuorumWhileScalingDown(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		serverScope bool
+	}{
+		{"Server", true},
+		{"Stream", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R5S", 5)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// A consumer that will be rewritten below as a stuck scale-down.
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "scaled",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Shut down both stream followers, taking the stream below quorum. The
+			// meta group has 3 of 5 servers left, so it stays available.
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			var downed []string
+			for _, r := range si.Cluster.Replicas {
+				downed = append(downed, r.Name)
+			}
+			sl := c.serverByName(si.Cluster.Leader)
+			for _, name := range downed {
+				c.serverByName(name).Shutdown()
+			}
+			c.waitOnLeader()
+
+			// Reconnect to a server that's still up.
+			nc.Close()
+			nc, js = jsClientConnect(t, sl)
+			defer nc.Close()
+
+			// Scale the stream down to R1. The meta layer takes the new replica
+			// count, but the group can't shrink to it while it has no quorum. The
+			// request races the old leader stepping down, so it may not get a
+			// response at all. What matters is that the new config took.
+			_, _ = js.UpdateStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 1,
+			})
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				ml := c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				mjs := ml.getJetStream()
+				mjs.mu.RLock()
+				sa := mjs.streamAssignment(globalAccountName, "TEST")
+				var replicas int
+				if sa != nil && sa.Config != nil {
+					replicas = sa.Config.Replicas
+				}
+				mjs.mu.RUnlock()
+				if replicas != 1 {
+					return fmt.Errorf("expected 1 replica in the assignment, got %d", replicas)
+				}
+				return nil
+			})
+
+			// It must be stuck, no leader can be elected.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+					return fmt.Errorf("stream still has leader %q", l.Name())
+				}
+				if l := c.consumerLeader(globalAccountName, "TEST", "scaled"); l != nil {
+					return fmt.Errorf("consumer still has leader %q", l.Name())
+				}
+				return nil
+			})
+			_, err = js.Publish("foo", nil)
+			require_Error(t, err, nats.ErrNoStreamResponse)
+
+			// The consumer already selected its scale-down peer set, so the
+			// peer-remove below can't touch its desired peers, only its actual ones.
+			proposeSelectedScaleDown(t, c, "TEST", "scaled", 0, sl)
+
+			// Now remove both downed servers. Only a server peer-remove changes
+			// cluster membership, so that's the only one there is something to
+			// wait for. A stream peer-remove leaves it alone, which the check at
+			// the end of the test confirms.
+			peerRemove(t, c, nc, "TEST", test.serverScope, downed)
+			if test.serverScope {
+				checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+					ml := c.leader()
+					if ml == nil {
+						return errors.New("no meta leader")
+					}
+					if n := len(ml.getJetStream().getMetaGroup().Peers()); n != 3 {
+						return fmt.Errorf("expected 3 meta members, got %d", n)
+					}
+					return nil
+				})
+			}
+
+			// The stream and consumer must be able to elect a leader again, having
+			// evicted the removed peers, and settle at R1.
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "scaled")
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_NotNil(t, si.Cluster)
+			require_Equal(t, si.Config.Replicas, 1)
+			require_Equal(t, len(si.Cluster.Replicas), 0)
+			for _, name := range downed {
+				require_NotEqual(t, si.Cluster.Leader, name)
+			}
+
+			// The stuck scale-down settles on its selected peer.
+			ci, err := js.ConsumerInfo("TEST", "scaled")
+			require_NoError(t, err)
+			require_NotNil(t, ci.Cluster)
+			require_Equal(t, ci.Cluster.Leader, sl.Name())
+			require_Equal(t, len(ci.Cluster.Replicas), 0)
+
+			// Only a server peer-remove takes them out of the cluster as well.
+			expectedMetaPeers := 5
+			if test.serverScope {
+				expectedMetaPeers = 3
+			}
+			ml := c.leader()
+			require_NotNil(t, ml)
+			require_Equal(t, len(ml.getJetStream().getMetaGroup().Peers()), expectedMetaPeers)
+		})
+	}
+}
+
+// A new desired state must not lose which peers were peer-removed, the group can
+// still be carrying them and need to shrink around them. Peers the new desired
+// set takes back on are no longer removed.
+func TestJetStreamClusterDesiredStateCarriesRemoved(t *testing.T) {
+	const a, b, c, d, e = "A", "B", "C", "D", "E"
+
+	newGroup := func() *raftGroup {
+		return &raftGroup{
+			Name:  "G",
+			Peers: []string{a, b, c},
+			Desired: &desiredRaftGroup{
+				Peers:   []string{a, c, d},
+				Removed: []string{b},
+			},
+		}
+	}
+
+	// A further removal must keep the earlier one on record.
+	rg := newGroup()
+	ng := rg.withDesired(&raftGroup{Name: "G", Peers: []string{a, d}})
+	require_True(t, slices.Contains(ng.Desired.Removed, b))
+	// And must not have mutated the original.
+	require_True(t, slices.Contains(rg.Desired.Removed, b))
+
+	// A peer the new desired set takes back on is no longer removed.
+	rg = newGroup()
+	ng = rg.withDesired(&raftGroup{Name: "G", Peers: []string{a, b, d}})
+	require_False(t, slices.Contains(ng.Desired.Removed, b))
+
+	// Recording is idempotent, and never records a peer that's still desired.
+	// In the real flow the peers are stripped from the desired set first, so that
+	// guard only catches a caller that hasn't.
+	rg = newGroup()
+	rg.Desired.addRemoved([]string{b, c, e})
+	require_Equal(t, len(rg.Desired.Removed), 2)
+	require_True(t, slices.Contains(rg.Desired.Removed, b))
+	require_True(t, slices.Contains(rg.Desired.Removed, e))
+	require_False(t, slices.Contains(rg.Desired.Removed, c))
+}
+
+// A consumer already scaling down can hold a peer-removed peer only in its actual
+// peer set, with its desired peers untouched by the removal. Remapping must still
+// record that removal, or the group could never evict the peer and stay leaderless
+// below quorum.
+func TestJetStreamClusterRemapConsumerRecordsRemovedActualPeer(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	js := &jetStream{cluster: &jetStreamCluster{}}
+	newAssignments := func(consumerPeers []string) (*streamAssignment, *consumerAssignment) {
+		// Stream already had peer C removed by the operator.
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 2, Retention: LimitsPolicy},
+			Group: &raftGroup{
+				Name:  "S",
+				Peers: []string{a, b},
+				Desired: &desiredRaftGroup{
+					Peers:   []string{a, b},
+					Removed: []string{c},
+				},
+			},
+		}
+		// Consumer is mid-scale-down with its final peers already selected, C is
+		// gone from its desired peers but still in its actual peers, so the
+		// peer-remove itself is a desired no-op.
+		ca := &consumerAssignment{
+			Name:   "CONSUMER",
+			Stream: "TEST",
+			Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: 2},
+			Group: &raftGroup{
+				Name:  "C",
+				Peers: consumerPeers,
+				Desired: &desiredRaftGroup{
+					Peers: []string{a, b},
+				},
+			},
+		}
+		sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+		return sa, ca
+	}
+
+	// The removed peer must be dropped from the actual peers and recorded as removed.
+	sa, _ := newAssignments([]string{a, b, c})
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca := consumers[0]
+	require_False(t, slices.Contains(cca.Group.Peers, c))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, c))
+	require_True(t, slices.Contains(cca.Group.Peers, a))
+	require_True(t, slices.Contains(cca.Group.Peers, b))
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
+	require_False(t, cca.Group.Desired.ScaleDown)
+
+	// Recording is idempotent, once recorded there's nothing left to propose.
+	sa.consumers[cca.Name] = cca
+	consumers, deleted, _ = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_Len(t, len(deleted), 0)
+
+	// If all actual peers were removed, the consumer jumps to its desired set.
+	sa, _ = newAssignments([]string{c})
+	consumers, deleted, _ = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	cca = consumers[0]
+	require_False(t, slices.Contains(cca.Group.Peers, c))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, c))
+	require_True(t, slices.Contains(cca.Group.Peers, a))
+	require_True(t, slices.Contains(cca.Group.Peers, b))
+}
+
 func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

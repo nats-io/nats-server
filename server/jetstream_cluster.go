@@ -207,6 +207,10 @@ type desiredRaftGroup struct {
 	ScaleUp   bool `json:"scale_up,omitempty"`
 	ScaleDown bool `json:"scale_down,omitempty"`
 
+	// Removed are peers an operator peer-removed from this group. A group that
+	// can't reach quorum may only evict what's recorded here.
+	Removed []string `json:"removed,omitempty"`
+
 	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
 }
 
@@ -269,10 +273,18 @@ func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
 		Cluster:   target.Cluster,
 		Preferred: target.Preferred,
 	}
-	// Must preserve the prior origin (if any).
-	if rg.Desired != nil && rg.Desired.Origin != nil {
-		origin := *rg.Desired.Origin
-		ng.Desired.Origin = &origin
+	if rg.Desired != nil {
+		// Must preserve the prior origin (if any).
+		if rg.Desired.Origin != nil {
+			origin := *rg.Desired.Origin
+			ng.Desired.Origin = &origin
+		}
+		// Must also preserve which peers were peer-removed.
+		for _, peer := range rg.Desired.Removed {
+			if !slices.Contains(ng.Desired.Peers, peer) {
+				ng.Desired.Removed = append(ng.Desired.Removed, peer)
+			}
+		}
 	}
 	return ng
 }
@@ -1377,7 +1389,7 @@ func (js *jetStream) isLeaderless() bool {
 
 	// If we don't have a leader.
 	// Make sure we have been running for enough time.
-	if meta.Leaderless() && time.Since(meta.Created()) > lostQuorumIntervalDefault {
+	if meta.Leaderless() && time.Since(meta.Created()) > lostQuorumInterval {
 		return true
 	}
 	return false
@@ -1420,7 +1432,7 @@ func (js *jetStream) isGroupLeaderless(rg *raftGroup) bool {
 			}
 		}
 		// Make sure we have been running for enough time.
-		if time.Since(node.Created()) > lostQuorumIntervalDefault {
+		if time.Since(node.Created()) > lostQuorumInterval {
 			return true
 		}
 	}
@@ -2739,6 +2751,21 @@ func (ca *consumerAssignment) copyGroup() *consumerAssignment {
 	return cca
 }
 
+// addRemoved records peers that were peer-removed from this group, so a group
+// that can't reach quorum knows which of its peers an operator took out.
+// Lock should be held.
+func (d *desiredRaftGroup) addRemoved(peers []string) {
+	if d == nil {
+		return
+	}
+	for _, peer := range peers {
+		if slices.Contains(d.Peers, peer) || slices.Contains(d.Removed, peer) {
+			continue
+		}
+		d.Removed = append(d.Removed, peer)
+	}
+}
+
 // copyGroup returns a copy of rg whose Peers slice and nested Desired placement
 // are independent of the original, so it can be mutated and encoded.
 // Lock should be held.
@@ -2752,6 +2779,7 @@ func (rg *raftGroup) copyGroup() *raftGroup {
 	if rg.Desired != nil {
 		cd := *rg.Desired
 		cd.Peers = copyStrings(rg.Desired.Peers)
+		cd.Removed = copyStrings(rg.Desired.Removed)
 		if rg.Desired.Origin != nil {
 			cr := *rg.Desired.Origin
 			cr.Placement = rg.Desired.Origin.Placement.clone()
@@ -2993,6 +3021,67 @@ func (js *jetStream) processRemovePeer(peer string) {
 	}
 }
 
+// checkEvictedPeers drops the peers an operator peer-removed from a group that
+// can't reach quorum without them. Removing them through the log would require
+// quorum, so a stuck group never recovers on its own. Once they're gone it can
+// elect a leader again and reconciliation takes over.
+// Returns whether the caller should check back.
+func (js *jetStream) checkEvictedPeers(n RaftNode, rg *raftGroup, desc string) bool {
+	js.mu.RLock()
+	cc := js.cluster
+	if n == nil || cc == nil || cc.meta == nil || js.metaRecovering || len(rg.Peers) == 0 {
+		js.mu.RUnlock()
+		return true
+	}
+	// Can only evict safely if the assignment recorded removed peers.
+	if rg.Desired == nil || len(rg.Desired.Removed) == 0 {
+		js.mu.RUnlock()
+		return false
+	}
+	// Wait until we're leaderless, but we're in contact with a meta leader.
+	if !n.Leaderless() || cc.meta.Leaderless() {
+		js.mu.RUnlock()
+		return true
+	}
+
+	groupPeers, removedPeers := copyStrings(rg.Peers), copyStrings(rg.Desired.Removed)
+	js.mu.RUnlock()
+
+	// Use voting membership, so a peer we speculatively dropped for an uncommitted
+	// removal is still accounted for. That also covers a scale-down or move that
+	// appended a removal of ourselves but never got to commit it: the assignment
+	// can still list us, and EvictPeers reverts the pending removal.
+	current, ourPeerId := n.VotingPeerNames(), n.ID()
+
+	// Skip if we're not member anymore, we're not allowed to make changes to this group.
+	if !slices.Contains(current, ourPeerId) || !slices.Contains(groupPeers, ourPeerId) {
+		return false
+	}
+
+	// Only drop peers an operator removed, and that the assignment hasn't taken
+	// back on since. Everyone else could still be taking part.
+	var evict []string
+	for _, peer := range current {
+		// Skip ourselves.
+		if peer == ourPeerId {
+			continue
+		}
+		if slices.Contains(removedPeers, peer) && !slices.Contains(groupPeers, peer) {
+			evict = append(evict, peer)
+		}
+	}
+	if len(evict) == 0 {
+		return false
+	}
+	evicted, err := n.EvictPeers(evict)
+	if err == errQuorumPossible {
+		js.srv.Debugf("JetStream cluster can not evict peers for %s, the peers left could still reach quorum without us", desc)
+	} else if err == nil && len(evicted) > 0 {
+		js.srv.Noticef("JetStream cluster evicted peers %+v for %s", evicted, desc)
+	}
+	return true
+}
+
 // peerRemoval controls how a peer is taken out of a stream's group.
 type peerRemoval struct {
 	// remove drops the peer right away, otherwise the group migrates off of it first.
@@ -3042,6 +3131,7 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 
 	// Send our proposal for this csa. Also use same group definition for all the consumers as well.
 	consumers, deleted, _ := js.remapConsumerAssignments(accName, csa)
+
 	if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(csa)); err != nil {
 		return false
 	}
@@ -3739,6 +3829,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 	defer stopMigrationMonitoring()
 
+	// Start monitoring if we're already meant to be migrating. If we're out of quorum
+	// with peer-removed peers, it will trigger a shrink of the group.
+	if mset.isMigrating() {
+		startMigrationMonitoring()
+	}
+
 	// This is to optionally track when we are ready as a non-leader for direct access participation.
 	// Either direct or if we are a direct mirror, or both.
 	var dat *time.Ticker
@@ -3954,7 +4050,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			migrating := mset.isMigrating()
 
 			// Check for migrations here. We set the state on the stream assignment update below.
-			if isLeader && migrating {
+			if migrating {
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
@@ -4030,15 +4126,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// We get this when we have a new stream assignment caused by an update.
 			// We want to know if we are migrating.
 			migrating := mset.isMigrating()
-			if isLeader && migrating {
+			if migrating {
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
 			}
 		case <-mmtc:
 			if !isLeader {
-				// We are no longer leader, so not our job.
-				stopMigrationMonitoring()
+				// We're not the leader, but check if we're out of quorum and
+				// need to shrink based on peer-removes.
+				if !js.checkEvictedPeers(n, sa.Group, fmt.Sprintf("stream '%s > %s'", accName, sa.Config.Name)) {
+					stopMigrationMonitoring()
+					continue
+				}
+				resetMigrationMonitoring(migrateFallbackCheckInterval)
 				continue
 			}
 			// Reset to the slower fallback speed.
@@ -7250,6 +7351,12 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	}
 	defer stopMigrationMonitoring()
 
+	// Start monitoring if we're already meant to be migrating. If we're out of quorum
+	// with peer-removed peers, it will trigger a shrink of the group.
+	if o.isMigrating() {
+		startMigrationMonitoring()
+	}
+
 	// Track if we are leader.
 	var isLeader bool
 	var leaderTerm uint64
@@ -7337,7 +7444,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Or the old leader is no longer part of the set and transferred leadership
 			// for this leader to resume with removal
 			migrating := o.isMigrating()
-			if isLeader && migrating {
+			if migrating {
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
@@ -7345,18 +7452,24 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 		case <-uch:
 			// keep consumer assignment current
 			ca = o.consumerAssignment()
+
 			// We get this when we have a new consumer assignment caused by an update.
 			// We want to know if we are migrating.
 			migrating := o.isMigrating()
-			if isLeader && migrating {
+			if migrating {
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
 			}
 		case <-mmtc:
 			if !isLeader {
-				// We are no longer leader, so not our job.
-				stopMigrationMonitoring()
+				// We're not the leader, but check if we're out of quorum and
+				// need to shrink based on peer-removes.
+				if !js.checkEvictedPeers(n, ca.Group, fmt.Sprintf("consumer '%s > %s > %s'", o.acc.Name, ca.Stream, ca.Name)) {
+					stopMigrationMonitoring()
+					continue
+				}
+				resetMigrationMonitoring(migrateFallbackCheckInterval)
 				continue
 			}
 			// Reset to the slower fallback speed.
@@ -8846,12 +8959,13 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 		csa.Group.Desired.ScaleDown = d.ScaleDown
 		csa.Group.Desired.ScaleUp = d.ScaleUp
 	}
-	removeFrom := func(from []string) []string {
-		return slices.DeleteFunc(from, func(p string) bool { return slices.Contains(peers, p) })
-	}
 	if remove {
+		removeFrom := func(from []string) []string {
+			return slices.DeleteFunc(from, func(p string) bool { return slices.Contains(peers, p) })
+		}
 		csa.Group.Peers = removeFrom(csa.Group.Peers)
 		csa.Group.Desired.Peers = removeFrom(csa.Group.Desired.Peers)
+		csa.Group.Desired.addRemoved(peers)
 	}
 	// Don't carry a stale preferred into the remaining group.
 	isMember := func(peer string) bool {
@@ -8923,7 +9037,17 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		}
 		// Leave the consumer alone if its peer set is unaffected.
 		if kept == len(consumerPeers) && kept == size {
-			continue
+			// If the consumer has any peers that need to be peer-removed, we can't skip.
+			var removals bool
+			if sa.Group.Desired != nil && len(sa.Group.Desired.Removed) > 0 {
+				removals = slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
+					return slices.Contains(sa.Group.Desired.Removed, p) &&
+						(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
+				})
+			}
+			if !removals {
+				continue
+			}
 		}
 
 		// Drop peers that are no longer part of the stream. If moving, the tail MUST be the new peer set.
@@ -8974,11 +9098,18 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			cca.Group = ca.Group.withDesired(cca.Group)
 			// Scaled down if we kept at least one peer, but removed others.
 			cca.Group.Desired.ScaleDown = kept > 0 && kept != len(consumerPeers)
+
+			// Drop any peers that are no longer part of the stream's peer set.
+			var dropped []string
+			cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
+				if slices.Contains(sa.Group.Peers, peer) {
+					return false
+				}
+				dropped = append(dropped, peer)
+				return true
+			})
+			cca.Group.Desired.addRemoved(dropped)
 		}
-		// Drop any peers that are no longer part of the stream's peer set.
-		cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
-			return !slices.Contains(sa.Group.Peers, peer)
-		})
 		// If a consumer lost all of its peers to removal.
 		if len(cca.Group.Peers) == 0 {
 			// Delete it if ephemeral.

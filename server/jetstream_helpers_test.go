@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2293,4 +2294,31 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 		return StreamState{}, errors.Join(errs...)
 	}
 	return streamLeader.State, nil
+}
+
+// Helpers for the meta leader peer reconciliation tests.
+func metaStreamPeers(s *Server, account, stream string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	sa := js.streamAssignmentOrInflight(account, stream)
+	if sa == nil {
+		return nil
+	}
+	peers := copyStrings(sa.Group.Peers)
+	slices.Sort(peers)
+	return peers
+}
+
+func metaConsumerPeers(s *Server, account, stream, consumer string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	ca := js.consumerAssignmentOrInflight(account, stream, consumer)
+	if ca == nil {
+		return nil
+	}
+	peers := copyStrings(ca.Group.Peers)
+	slices.Sort(peers)
+	return peers
 }
