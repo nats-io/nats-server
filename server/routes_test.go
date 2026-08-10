@@ -1903,6 +1903,72 @@ func TestRouteSaveTLSName(t *testing.T) {
 	checkClusterFormed(t, s1, s2, s3)
 }
 
+func TestRouteTLSNamePreservedOnGossipReconnect(t *testing.T) {
+	c1Conf := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "abc"
+			port: -1
+			pool_size: -1
+			tls {
+				cert_file: '../test/configs/certs/server-noip.pem'
+				key_file: '../test/configs/certs/server-key-noip.pem'
+				ca_file: '../test/configs/certs/ca.pem'
+			}
+		}
+	`))
+	s1, o1 := RunServerWithConfig(c1Conf)
+	defer s1.Shutdown()
+
+	tmpl := `
+	port: -1
+	cluster {
+		name: "abc"
+		port: -1
+		pool_size: -1
+		routes: ["nats://%s:%d"]
+		tls {
+			cert_file: '../test/configs/certs/server-noip.pem'
+			key_file: '../test/configs/certs/server-key-noip.pem'
+			ca_file: '../test/configs/certs/ca.pem'
+		}
+	}
+	`
+	c2Conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "localhost", o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(c2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	s2.mu.RLock()
+	savedTLSName := s2.routeTLSName
+	s2.mu.RUnlock()
+	if savedTLSName != "localhost" {
+		t.Fatalf("routeTLSName should be 'localhost', got %q", savedTLSName)
+	}
+
+	for i := 0; i < 3; i++ {
+		s2.mu.RLock()
+		s2.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			if r.route.routeType == Implicit {
+				r.nc.Close()
+			}
+			r.mu.Unlock()
+		})
+		s2.mu.RUnlock()
+
+		checkClusterFormed(t, s1, s2)
+
+		s2.mu.RLock()
+		savedTLSName = s2.routeTLSName
+		s2.mu.RUnlock()
+		if savedTLSName != "localhost" {
+			t.Fatalf("routeTLSName should still be 'localhost' after implicit route reconnect, got %q", savedTLSName)
+		}
+	}
+}
+
 func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
