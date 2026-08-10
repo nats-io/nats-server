@@ -1044,21 +1044,29 @@ func (s *Server) sendStatsz(subj string) {
 			if mg.Leader() {
 				if ci := s.raftNodeToClusterInfo(mg); ci != nil {
 					jStat.Meta = &MetaClusterInfo{
-						Name:     ci.Name,
-						Leader:   ci.Leader,
-						Peer:     getHash(ci.Leader),
-						Replicas: ci.Replicas,
-						Size:     mg.ClusterSize(),
+						Name:         ci.Name,
+						Leader:       ci.Leader,
+						Replicas:     ci.Replicas,
+						Size:         mg.ClusterSize(),
+						QuorumNeeded: mg.QuorumNeeded(),
+						Rescue:       mg.InRescue(),
+					}
+					if ci.Leader != _EMPTY_ {
+						jStat.Meta.Peer = getHash(ci.Leader)
 					}
 				}
 			} else {
 				// non leader only include a shortened version without peers
 				leader := s.serverNameForNode(mg.GroupLeader())
 				jStat.Meta = &MetaClusterInfo{
-					Name:   mg.Group(),
-					Leader: leader,
-					Peer:   getHash(leader),
-					Size:   mg.ClusterSize(),
+					Name:         mg.Group(),
+					Leader:       leader,
+					Size:         mg.ClusterSize(),
+					QuorumNeeded: mg.QuorumNeeded(),
+					Rescue:       mg.InRescue(),
+				}
+				if leader != _EMPTY_ {
+					jStat.Meta.Peer = getHash(leader)
 				}
 			}
 			if jStat.Meta != nil {

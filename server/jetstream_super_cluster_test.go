@@ -4603,12 +4603,13 @@ func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
 	c2.shutdown()
 
 	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
-		var ok int
+		// Replicas are populated on every server, not just the meta leader.
 		for _, s := range c.servers {
 			jsz, err := s.Jsz(nil)
 			if err != nil {
 				return err
 			}
+			var ok int
 			for _, r := range jsz.Meta.Replicas {
 				if r.Name == "RS-1" && r.Offline {
 					ok++
@@ -4616,9 +4617,9 @@ func TestJetStreamSuperClusterGWOfflineSatus(t *testing.T) {
 					ok++
 				}
 			}
-		}
-		if ok != 2 {
-			return fmt.Errorf("RS-1 or RS-2 still marked as online")
+			if ok != 2 {
+				return fmt.Errorf("%s: RS-1 or RS-2 still marked as online", s.Name())
+			}
 		}
 		return nil
 	})

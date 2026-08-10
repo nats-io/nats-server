@@ -11765,3 +11765,372 @@ func TestJetStreamClusterAckAllAfterConsumerFilterUpdate(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterMetaRescueRejectedWithLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 1})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// This is a broadcast subject, every online server evaluates and responds
+	// to the request independently. All of them know of a healthy meta leader
+	// so all must reject the rescue.
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+		require_True(t, strings.Contains(resp.Error.Description, errRescueLeaderKnown.Error()))
+		require_Equal(t, resp.NewQuorum, 0)
+		require_NotEqual(t, resp.Server, _EMPTY_)
+		require_NotEqual(t, resp.ServerID, _EMPTY_)
+	}
+	// And no more responses than that.
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestJetStreamClusterMetaRescue(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Keep two servers that are not the meta leader, and shut down the other
+	// three without peer-removing them. The meta group still believes its size
+	// is 5 and needs 3 votes for quorum, so the meta layer is now stuck.
+	leader := c.leader()
+	var survivors []*Server
+	var downed []string
+	for _, s := range c.servers {
+		if s != leader && len(survivors) < 2 {
+			survivors = append(survivors, s)
+			continue
+		}
+		downed = append(downed, s.Name())
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+	require_Len(t, len(survivors), 2)
+	require_Len(t, len(downed), 3)
+
+	// Wait until the survivors see no meta leader.
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if leader := s.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+				return fmt.Errorf("server %q still sees meta leader %q", s.Name(), leader)
+			}
+		}
+		return nil
+	})
+
+	nc, err := nats.Connect(survivors[0].ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// Listen for the rescue advisories.
+	advSub, err := nc.SubscribeSync(JSAdvisoryMetaRescue)
+	require_NoError(t, err)
+	// Make sure interest has propagated to the other survivor.
+	checkSubInterest(t, survivors[1], "$SYS", JSAdvisoryMetaRescue, time.Second)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	checkSubInterest(t, survivors[1], "$SYS", inbox, time.Second)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 2})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// Both survivors respond independently. At least one must have applied the
+	// rescue, the other may already know of a new leader by the time it
+	// evaluates the request and reject it.
+	var applied int
+	for range 2 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		if resp.Error != nil {
+			require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+			require_True(t, strings.Contains(resp.Error.Description, errRescueLeaderKnown.Error()))
+			continue
+		}
+		// No error means the rescue was applied and the new quorum is set.
+		require_Equal(t, resp.PrevQuorum, 3)
+		require_Equal(t, resp.NewQuorum, 2)
+		applied++
+	}
+	require_True(t, applied >= 1)
+
+	// Every server that applied the rescue also published an advisory.
+	for range applied {
+		msg, err := advSub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var adv JSMetaRescueAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &adv))
+		require_Equal(t, adv.Type, JSMetaRescueAdvisoryType)
+		require_Equal(t, adv.PrevQuorum, 3)
+		require_Equal(t, adv.NewQuorum, 2)
+		require_Equal(t, adv.Cluster, c.name)
+	}
+
+	// With the lowered quorum the survivors can now elect a meta leader.
+	var metaLeader string
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if leader := s.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+				metaLeader = leader
+				return nil
+			}
+		}
+		return fmt.Errorf("expected a meta leader among the survivors")
+	})
+	require_True(t, metaLeader == getHash(survivors[0].Name()) || metaLeader == getHash(survivors[1].Name()))
+
+	// While the rescue is active, JSZ exposes the lowered quorum and the
+	// rescue state on the servers that applied it.
+	var inRescue int
+	for _, s := range survivors {
+		jsz, err := s.Jsz(nil)
+		require_NoError(t, err)
+		require_True(t, jsz.Meta != nil)
+		if jsz.Meta.Rescue {
+			require_Equal(t, jsz.Meta.QuorumNeeded, 2)
+			inRescue++
+		}
+	}
+	require_True(t, inRescue >= applied)
+
+	// The meta layer is unblocked, use the normal peer-remove path to
+	// permanently drop the lost peers.
+	for _, name := range downed {
+		rmReq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(JSApiRemoveServer, rmReq, 2*time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+	}
+
+	// The peer set should now only contain the survivors, and with the natural
+	// quorum of the shrunken peer set the meta group operates normally.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if cs := s.getJetStream().getMetaGroup().ClusterSize(); cs != 2 {
+				return fmt.Errorf("expected cluster size 2 on %q, got %d", s.Name(), cs)
+			}
+			if qn := s.getJetStream().getMetaGroup().QuorumNeeded(); qn != 2 {
+				return fmt.Errorf("expected quorum 2 on %q, got %d", s.Name(), qn)
+			}
+			// The natural quorum of the shrunken peer set reached the rescued
+			// value, which stops the rescue.
+			if s.getJetStream().getMetaGroup().InRescue() {
+				return fmt.Errorf("expected rescue to be stopped on %q", s.Name())
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaRescueBadRequest(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	// Empty request.
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, nil))
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSBadRequestErr))
+	}
+
+	// Quorum larger than the current effective quorum, it can only be
+	// lowered. This is checked before the leader-known check would reject it.
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 4})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+		require_True(t, strings.Contains(resp.Error.Description, errRescueBadQuorum.Error()))
+	}
+}
+
+func TestJetStreamClusterMetaRescueSingleSurvivor(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Keep the first server, it seeds the routes for the servers added in
+	// later. Shut down the other two without peer-removing them, the meta
+	// group still believes its size is 3 and needs 2 votes for quorum.
+	survivor := c.servers[0]
+	var downed []string
+	for _, s := range c.servers[1:] {
+		downed = append(downed, s.Name())
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+	// Only track the survivor, so the servers added in later join through it.
+	c.servers = c.servers[:1]
+	c.opts = c.opts[:1]
+
+	// Wait until the survivor sees no meta leader. If the survivor was the
+	// meta leader itself, it steps down once it detects the lost quorum.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if leader := survivor.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+			return fmt.Errorf("survivor still sees meta leader %q", leader)
+		}
+		return nil
+	})
+
+	nc, err := nats.Connect(survivor.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 1})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// Only the survivor is online to respond, and it applies the rescue.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaRescueResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_Equal(t, resp.PrevQuorum, 2)
+	require_Equal(t, resp.NewQuorum, 1)
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// With a quorum of 1 the survivor can elect itself.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if !survivor.JetStreamIsLeader() {
+			return fmt.Errorf("survivor is not meta leader yet")
+		}
+		return nil
+	})
+
+	// The meta layer is unblocked, use the normal peer-remove path to
+	// permanently drop the lost peers.
+	for _, name := range downed {
+		rmReq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(JSApiRemoveServer, rmReq, 2*time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+	}
+
+	// The peer set shrunk to just the survivor. The natural quorum reached
+	// the rescued value, which stops the rescue.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if cs := meta.ClusterSize(); cs != 1 {
+			return fmt.Errorf("expected cluster size 1, got %d", cs)
+		}
+		if qn := meta.QuorumNeeded(); qn != 1 {
+			return fmt.Errorf("expected quorum 1, got %d", qn)
+		}
+		if meta.InRescue() {
+			return fmt.Errorf("expected rescue to be stopped")
+		}
+		return nil
+	})
+
+	// Add two new servers to go back to R3, under names not seen before.
+	// Reusing the names of the peer-removed servers would not work, they
+	// map to the same peer IDs which are marked as removed and can not
+	// immediately be re-added to the peer set.
+	for _, sn := range []string{"S-NEW-1", "S-NEW-2"} {
+		seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
+		conf := fmt.Sprintf(jsClusterTempl, sn, t.TempDir(), c.name, -1, seedRoute)
+		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
+		c.servers = append(c.servers, s)
+		c.opts = append(c.opts, o)
+	}
+	c.checkClusterFormed()
+	c.waitOnPeerCount(3)
+
+	// Quorum is back at its natural value for the new R3 peer set.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if qn := meta.QuorumNeeded(); qn != 2 {
+			return fmt.Errorf("expected quorum 2, got %d", qn)
+		}
+		return nil
+	})
+
+	// And the meta layer is fully operational again.
+	ncjs, js := jsClientConnect(t, survivor)
+	defer ncjs.Close()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterMetaReplicasInJsz(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// The configured meta peer set must be visible on every server, not just
+	// the meta leader, so it can be inspected during disaster recovery when
+	// there is no meta leader.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(nil)
+			if err != nil {
+				return err
+			}
+			if jsz.Meta == nil {
+				return fmt.Errorf("no meta cluster info on %q", s.Name())
+			}
+			// Excludes the server itself, hence one less than the peer set size.
+			if len(jsz.Meta.Replicas) != 2 {
+				return fmt.Errorf("expected 2 meta replicas on %q, got %d", s.Name(), len(jsz.Meta.Replicas))
+			}
+			if jsz.Meta.QuorumNeeded != 2 {
+				return fmt.Errorf("expected quorum 2 on %q, got %d", s.Name(), jsz.Meta.QuorumNeeded)
+			}
+			if jsz.Meta.Rescue {
+				return fmt.Errorf("expected no active rescue on %q", s.Name())
+			}
+		}
+		return nil
+	})
+}

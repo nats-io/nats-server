@@ -2218,5 +2218,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSClusterRescueErr",
+    "code": 400,
+    "error_code": 10224,
+    "description": "JetStream system rescue not applied: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
