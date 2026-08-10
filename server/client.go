@@ -6679,16 +6679,9 @@ func (c *client) doTLSHandshake(typ string, solicit bool, url *url.URL, tlsConfi
 			// See: https://github.com/nats-io/nats-server/issues/1256
 			// NOTE: As of Go 1.20, the HostnameError is wrapped so cannot
 			// type assert to check directly.
-			//
-			// Only clear the saved tlsName when the URL itself carries a
-			// hostname (not an IP). If the URL has an IP, the tlsName was
-			// used as a fallback for ServerName verification; clearing it
-			// would cause subsequent reconnection attempts to use the IP as
-			// ServerName, which fails against certificates that only have DNS
-			// SANs. See: https://github.com/nats-io/nats-server/issues/8309
 			var hostnameErr x509.HostnameError
 			if errors.As(err, &hostnameErr) {
-				if host == tlsName && net.ParseIP(url.Hostname()) == nil {
+				if host == tlsName {
 					resetTLSName = true
 				}
 			}

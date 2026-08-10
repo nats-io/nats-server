@@ -225,6 +225,7 @@ type Server struct {
 	routeResolver       netResolver
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
+	routeTLSLastName    string
 	leafNodeListener    net.Listener
 	leafNodeListenerErr error
 	leafNodeInfo        Info

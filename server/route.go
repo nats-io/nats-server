@@ -1986,7 +1986,23 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			c.mu.Unlock()
 			if resetTLSName {
 				s.mu.Lock()
-				s.routeTLSName = _EMPTY_
+				if net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
+					// The URL hostname is an IP, meaning the saved tlsName was used
+					// as a fallback for ServerName. Instead of clearing tlsName
+					// outright, restore it from the backup so that the next
+					// reconnection attempt can try the hostname again. This
+					// handles the case where a transient error causes a
+					// HostnameError for a correctly configured hostname (DNS-only
+					// SANs). The backup is consumed so that on a subsequent
+					// failure, tlsName will be cleared and the IP will be tried
+					// instead, handling mixed DNS/IP SAN environments.
+					// See: https://github.com/nats-io/nats-server/issues/8309
+					// See: https://github.com/nats-io/nats-server/issues/1256
+					s.routeTLSName = s.routeTLSLastName
+					s.routeTLSLastName = _EMPTY_
+				} else {
+					s.routeTLSName = _EMPTY_
+				}
 				s.mu.Unlock()
 			}
 			return nil
@@ -2984,8 +3000,14 @@ func (c *client) isSolicitedRoute() bool {
 // Lock is held on entry
 func (s *Server) saveRouteTLSName(routes []*url.URL) {
 	for _, u := range routes {
-		if s.routeTLSName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
-			s.routeTLSName = u.Hostname()
+		host := u.Hostname()
+		if net.ParseIP(host) == nil {
+			if s.routeTLSName == _EMPTY_ {
+				s.routeTLSName = host
+			}
+			if s.routeTLSLastName == _EMPTY_ {
+				s.routeTLSLastName = host
+			}
 		}
 	}
 }

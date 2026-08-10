@@ -1903,7 +1903,7 @@ func TestRouteSaveTLSName(t *testing.T) {
 	checkClusterFormed(t, s1, s2, s3)
 }
 
-func TestRouteTLSNamePreservedOnGossipReconnect(t *testing.T) {
+func TestRouteTLSNameBackupRestoreOnHostnameError(t *testing.T) {
 	c1Conf := createConfFile(t, []byte(`
 		port: -1
 		cluster {
@@ -1942,11 +1942,16 @@ func TestRouteTLSNamePreservedOnGossipReconnect(t *testing.T) {
 
 	s2.mu.RLock()
 	savedTLSName := s2.routeTLSName
+	savedTLSLastName := s2.routeTLSLastName
 	s2.mu.RUnlock()
 	if savedTLSName != "localhost" {
 		t.Fatalf("routeTLSName should be 'localhost', got %q", savedTLSName)
 	}
+	if savedTLSLastName != "localhost" {
+		t.Fatalf("routeTLSLastName should be 'localhost', got %q", savedTLSLastName)
+	}
 
+	// Verify that routeTLSName is preserved across implicit route reconnections.
 	for i := 0; i < 3; i++ {
 		s2.mu.RLock()
 		s2.forEachRoute(func(r *client) {
@@ -1966,6 +1971,18 @@ func TestRouteTLSNamePreservedOnGossipReconnect(t *testing.T) {
 		if savedTLSName != "localhost" {
 			t.Fatalf("routeTLSName should still be 'localhost' after implicit route reconnect, got %q", savedTLSName)
 		}
+	}
+
+	// Simulate the HostnameError recovery path: when routeTLSName is cleared
+	// (e.g., by a HostnameError), routeTLSLastName should allow it to be
+	// restored for IP-based route URLs, giving the hostname one more chance
+	// before falling back to the IP.
+	s2.mu.Lock()
+	s2.routeTLSName = _EMPTY_
+	restoredName := s2.routeTLSLastName
+	s2.mu.Unlock()
+	if restoredName != "localhost" {
+		t.Fatalf("routeTLSLastName should be 'localhost', got %q", restoredName)
 	}
 }
 
