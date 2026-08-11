@@ -1030,7 +1030,9 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		s.mu.Unlock()
 		return
 	}
-	s.leafURLsMap[s.leafNodeInfo.IP]++
+	if !opts.LeafNode.NoAdvertise {
+		s.leafURLsMap[s.leafNodeInfo.IP]++
+	}
 	s.generateLeafNodeInfoJSON()
 
 	// Setup state that can enable shutdown
@@ -1562,7 +1564,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 	if firstINFO && !c.flags.isSet(compressionNegotiated) {
 		// A solicited leafnode connection must first receive a leafnode INFO.
 		// Classify wrong-port connections before any leaf-specific negotiation.
-		if didSolicit && (info.CID == 0 || info.LeafNodeURLs == nil) {
+		if didSolicit && (info.CID == 0 || (info.LeafNodeURLs == nil && !info.InfoOnConnect)) {
 			c.mu.Unlock()
 			c.Errorf(ErrConnectedToWrongPort.Error())
 			c.closeConnection(WrongPort)
