@@ -11521,3 +11521,146 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 		return nil
 	})
 }
+
+func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	getCreated := func(s *Server) (time.Time, error) {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+		if sa == nil {
+			return time.Time{}, fmt.Errorf("server %q has no stream assignment", s)
+		}
+		return sa.Created, nil
+	}
+	c.waitOnLeader()
+	created, err := getCreated(c.leader())
+	require_NoError(t, err)
+
+	// An idempotent create retry re-proposes the stream assignment.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// The retry responds after its proposal applied, but replicas might lag.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sc, err := getCreated(s)
+			if err != nil {
+				return err
+			}
+			if !sc.Equal(created) {
+				return fmt.Errorf("server %q changed Created from %v to %v", s, created, sc)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaSnapshotIdempotentCreatePreservesStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Make sure the R1 stream is not hosted on the meta leader, so we can shut
+	// down its host while keeping the meta leader around.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	ml := c.leader()
+	require_NotNil(t, ml)
+	if sl == ml {
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+		c.waitOnLeader()
+	}
+	ml = c.leader()
+	require_NotNil(t, ml)
+	require_NotEqual(t, sl, ml)
+
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Capture the assignment's created time before the host goes down.
+	mljs := ml.getJetStream()
+	mljs.mu.RLock()
+	sa := mljs.streamAssignmentOrInflight(globalAccountName, "TEST")
+	if sa == nil {
+		mljs.mu.RUnlock()
+		t.Fatal("stream assignment not found")
+	}
+	created := sa.Created
+	mljs.mu.RUnlock()
+
+	sl.Shutdown()
+	sl.WaitForShutdown()
+
+	// Reconnect in case our client was on the downed server.
+	nc.Close()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Perform an idempotent create while the host is down. The duplicate
+	// assignment is proposed, but the only member is down and can't respond.
+	_, err = js.AddStream(cfg, nats.MaxWait(time.Second))
+	require_Error(t, err, nats.ErrTimeout, context.DeadlineExceeded)
+
+	// Wait for the duplicate assignment to be applied, it must preserve the
+	// original created time.
+	var created2 time.Time
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if len(mljs.cluster.inflightStreams[globalAccountName]) > 0 {
+			return fmt.Errorf("create proposal not applied yet")
+		}
+		nsa := mljs.streamAssignment(globalAccountName, "TEST")
+		if nsa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if nsa == sa {
+			return fmt.Errorf("duplicate create proposal not applied yet")
+		}
+		created2 = nsa.Created
+		return nil
+	})
+	require_True(t, created2.Equal(created))
+
+	// Compact the meta log so the downed server recovers via snapshot and
+	// never replays the duplicate create entry.
+	require_NoError(t, ml.JetStreamSnapshotMeta())
+
+	// Restart. The server must not treat the idempotent create as a recreate,
+	// it holds the only copy of the data.
+	sl = c.restartServer(sl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(sl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 10 {
+			return fmt.Errorf("stream data lost on idempotent create: %+v", state)
+		}
+		return nil
+	})
+}
