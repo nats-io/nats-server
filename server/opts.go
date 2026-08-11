@@ -229,10 +229,18 @@ type LeafNodeOpts struct {
 	// east-west propagation.
 	IsolateLeafnodeInterest bool `json:"-"`
 
+	// DialTimeout is the amount of time the server will wait for the TCP
+	// connection to a remote server to be established. This is useful on high
+	// latency links where the default (DEFAULT_ROUTE_DIAL, 1 second) is not
+	// enough for the handshake to complete. It applies to all remotes, but can
+	// be overridden on a per-remote basis with RemoteLeafOpts.DialTimeout.
+	// If not set (or <= 0), DEFAULT_ROUTE_DIAL is used.
+	DialTimeout time.Duration `json:"-"`
+
 	// Not exported, for tests.
-	resolver    netResolver
-	dialTimeout time.Duration
-	connDelay   time.Duration
+	resolver  netResolver
+	connDelay time.Duration
+	dialer    leafNodeDialer
 
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
@@ -263,6 +271,13 @@ type RemoteLeafOpts struct {
 	// initial INFO protocol from the remote server before closing the
 	// connection.
 	FirstInfoTimeout time.Duration `json:"-"`
+
+	// DialTimeout is the amount of time the server will wait for the TCP
+	// connection to this remote server to be established. This is useful on
+	// high latency links where the default is not enough for the handshake to
+	// complete. If not set (or <= 0), the server-wide LeafNodeOpts.DialTimeout
+	// is used, which itself defaults to DEFAULT_ROUTE_DIAL (1 second).
+	DialTimeout time.Duration `json:"-"`
 
 	// Compression options for this remote. Each remote could have a different
 	// setting and also be different from the LeafNode options.
@@ -2854,6 +2869,8 @@ func parseLeafNodes(v any, opts *Options, errors *[]error, warnings *[]error) er
 			opts.LeafNode.Remotes = remotes
 		case "reconnect", "reconnect_delay", "reconnect_interval":
 			opts.LeafNode.ReconnectInterval = parseDuration("reconnect", tk, mv, errors, warnings)
+		case "dial_timeout":
+			opts.LeafNode.DialTimeout = parseDuration("dial_timeout", tk, mv, errors, warnings)
 		case "tls":
 			tc, err := parseTLS(tk, true)
 			if err != nil {
@@ -3191,6 +3208,8 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 				}
 			case "first_info_timeout":
 				remote.FirstInfoTimeout = parseDuration(k, tk, v, errors, warnings)
+			case "dial_timeout":
+				remote.DialTimeout = parseDuration(k, tk, v, errors, warnings)
 			case "disabled":
 				remote.Disabled = v.(bool)
 			case "proxy":

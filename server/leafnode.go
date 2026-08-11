@@ -589,18 +589,30 @@ func (cfg *leafNodeCfg) setConnectDelay(delay time.Duration) {
 	cfg.Unlock()
 }
 
+// leafNodeDialer establishes the TCP connection to a remote leafnode server.
+// It has the same signature as natsDialTimeout(), which is what is used in
+// production. Tests can substitute their own implementation via
+// LeafNodeOpts.dialer in order to observe the resolved dial timeout, or to
+// simulate a slow/unreachable remote, without needing to manipulate the
+// network stack.
+type leafNodeDialer func(network, address string, timeout time.Duration) (net.Conn, error)
+
 // Ensure that non-exported options (used in tests) have
 // been properly set.
 func (s *Server) setLeafNodeNonExportedOptions() {
 	opts := s.getOpts()
-	s.leafNodeOpts.dialTimeout = opts.LeafNode.dialTimeout
-	if s.leafNodeOpts.dialTimeout == 0 {
+	s.leafNodeOpts.dialTimeout = opts.LeafNode.DialTimeout
+	if s.leafNodeOpts.dialTimeout <= 0 {
 		// Use same timeouts as routes for now.
 		s.leafNodeOpts.dialTimeout = DEFAULT_ROUTE_DIAL
 	}
 	s.leafNodeOpts.resolver = opts.LeafNode.resolver
 	if s.leafNodeOpts.resolver == nil {
 		s.leafNodeOpts.resolver = net.DefaultResolver
+	}
+	s.leafNodeOpts.dialer = opts.LeafNode.dialer
+	if s.leafNodeOpts.dialer == nil {
+		s.leafNodeOpts.dialer = natsDialTimeout
 	}
 }
 
@@ -710,6 +722,7 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 	s.mu.RLock()
 	dialTimeout := s.leafNodeOpts.dialTimeout
 	resolver := s.leafNodeOpts.resolver
+	dialer := s.leafNodeOpts.dialer
 	var isSysAcc bool
 	if s.eventsEnabled() {
 		isSysAcc = remote.LocalAccount == s.sys.account.Name
@@ -744,6 +757,12 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 	proxyUsername := remote.Proxy.Username
 	proxyPassword := remote.Proxy.Password
 	proxyTimeout := remote.Proxy.Timeout
+	// A remote can override the server-wide dial timeout. This is useful on
+	// high latency links where the default is too short for the TCP handshake
+	// to complete.
+	if remote.DialTimeout > 0 {
+		dialTimeout = remote.DialTimeout
+	}
 	remote.RUnlock()
 
 	// Set default proxy timeout if not specified
@@ -794,7 +813,7 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 					conn, err = establishHTTPProxyTunnel(proxyURL, targetHost, proxyTimeout, proxyUsername, proxyPassword)
 				} else {
 					// Direct connection
-					conn, err = natsDialTimeout("tcp", url, dialTimeout)
+					conn, err = dialer("tcp", url, dialTimeout)
 				}
 			}
 		}

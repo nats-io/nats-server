@@ -2051,7 +2051,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 			if nsa := nasa[sn]; nsa == nil {
 				// Stream was removed.
 				saDel = append(saDel, sa)
-			} else if !nsa.Created.Equal(sa.Created) {
+			} else if !nsa.Created.Equal(sa.Created) && (nsa.Group == nil || sa.Group == nil || nsa.Group.Name != sa.Group.Name) {
 				// Stream was recreated.
 				saDel = append(saDel, sa)
 				saAdd = append(saAdd, nsa)
@@ -2082,7 +2082,7 @@ func (js *jetStream) applyMetaSnapshot(buf []byte, ru *recoveryUpdates, isRecove
 				// Consumer was either removed or recreated.
 				if nca := sa.consumers[ca.Name]; nca == nil {
 					caDel = append(caDel, ca)
-				} else if !nca.Created.Equal(ca.Created) {
+				} else if !nca.Created.Equal(ca.Created) && (nca.Group == nil || ca.Group == nil || nca.Group.Name != ca.Group.Name) {
 					caDel = append(caDel, ca)
 				}
 			}
@@ -8296,8 +8296,13 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	if syncSubject == _EMPTY_ {
 		syncSubject = syncSubjForStream()
 	}
+	// Preserve the original creation time on an idempotent create retry.
+	created := time.Now().UTC()
+	if self != nil {
+		created = self.Created
+	}
 	// Sync subject for post snapshot sync.
-	sa := &streamAssignment{Group: rg, Sync: syncSubject, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
+	sa := &streamAssignment{Group: rg, Sync: syncSubject, Config: cfg, Subject: subject, Reply: reply, Client: ci, Created: created}
 	if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(sa)); err != nil {
 		return
 	}
