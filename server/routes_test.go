@@ -5663,3 +5663,66 @@ func BenchmarkProcessLeafMsgArgs_Queues(b *testing.B) {
 		}
 	}
 }
+
+func TestRouteReconnectAfterDuplicateRouteUpgrade(t *testing.T) {
+	// Default pool size + pinned $SYS route, like a production setup, with a
+	// hostname-based route URL like production configs use.
+	ob := DefaultOptions()
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := DefaultOptions()
+	oa.Routes = RoutesFromStr(fmt.Sprintf("nats://localhost:%d", sb.ClusterAddr().Port))
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+	checkClusterFormed(t, sa, sb)
+
+	// Find A's pooled route connection for the slot that carries the global
+	// account's interest.
+	gSlot := computeRoutePoolIdx(sa.getOpts().Cluster.PoolSize, globalAccountName)
+	var route *client
+	sa.mu.RLock()
+	sa.forEachRouteIdx(gSlot, func(r *client) bool {
+		route = r
+		return false
+	})
+	sa.mu.RUnlock()
+	require_NotNil(t, route)
+
+	// Put the connection in the pre-upgrade gossip-dial state, then run the
+	// actual upgrade with the configured URL, as duplicate-route resolution
+	// does. The upgrade must adopt the configured URL so the later reconnect
+	// passes routeStillValid.
+	gossipURL, err := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d/", sb.ClusterAddr().Port))
+	require_NoError(t, err)
+	route.mu.Lock()
+	route.route.didSolicit = true
+	route.route.routeType = Implicit
+	route.route.url = gossipURL
+	route.mu.Unlock()
+
+	configured := oa.Routes[0]
+	upgradeRouteToSolicited(route, configured, Explicit)
+
+	route.mu.Lock()
+	upURL := route.route.url
+	route.mu.Unlock()
+	require_Equal(t, upURL, configured)
+
+	// Drop the connection the way a fault would (slow consumer). The sibling
+	// pool slots and the pinned $SYS route stay up, so the remote is never
+	// treated as new and only this reconnect can re-establish the slot.
+	route.closeConnection(SlowConsumerWriteDeadline)
+	checkClusterFormed(t, sa, sb)
+
+	// Interest must flow across the re-established slot again.
+	nca := natsConnect(t, sa.ClientURL())
+	defer nca.Close()
+	ncb := natsConnect(t, sb.ClientURL())
+	defer ncb.Close()
+	natsSub(t, ncb, "reconnect.echo", func(m *nats.Msg) { m.Respond(m.Data) })
+	natsFlush(t, ncb)
+	checkSubInterest(t, sa, globalAccountName, "reconnect.echo", 2*time.Second)
+	_, err = nca.Request("reconnect.echo", []byte("ping"), time.Second)
+	require_NoError(t, err)
+}

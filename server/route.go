@@ -2457,10 +2457,13 @@ func upgradeRouteToSolicited(r *client, url *url.URL, rtype RouteType) {
 		return
 	}
 	r.mu.Lock()
-	if !r.route.didSolicit {
-		r.route.didSolicit = true
+	// On disconnect, an explicit route only reconnects if the connection's
+	// URL matches a configured route. So adopt the given URL rather than
+	// keeping a gossiped one, which may not match any configured route.
+	if !r.route.didSolicit || (rtype == Explicit && r.route.routeType != Explicit) {
 		r.route.url = url
 	}
+	r.route.didSolicit = true
 	if rtype == Explicit {
 		r.route.routeType = Explicit
 	}
@@ -2909,6 +2912,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 	for attempts := 0; s.isRunning(); {
 		if tryForEver {
 			if !s.routeStillValid(rURL) {
+				s.Debugf("Not attempting to connect to explicit route %q, no longer part of configured routes", rURL.Redacted())
 				return
 			}
 			if accName != _EMPTY_ {
@@ -2916,6 +2920,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 				_, valid := s.accRoutes[accName]
 				s.mu.RUnlock()
 				if !valid {
+					s.Debugf("Not attempting to connect to route %q for account %q, no longer a per-account route", rURL.Redacted(), accName)
 					return
 				}
 			}
