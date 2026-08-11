@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -8818,6 +8819,8 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 		cfg.Replicas = 3
 		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 
 		checkStreamAndConsumerState := func() error {
 			t.Helper()
@@ -9002,6 +9005,217 @@ func TestJetStreamClusterScaleUpWithQuorum(t *testing.T) {
 		n.ResumeApply()
 	}
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+}
+
+func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
+	s := &Server{}
+	now := time.Now()
+	newNode := func(members map[string]time.Time, observed map[string]time.Time) *raft {
+		peers := make(map[string]*lps, len(members))
+		for id, ts := range members {
+			peers[id] = &lps{ts: ts}
+			s.nodeToInfo.Store(id, nodeInfo{})
+		}
+		for id := range observed {
+			s.nodeToInfo.Store(id, nodeInfo{})
+		}
+		return &raft{peers: peers, observed: observed}
+	}
+	selectFor := func(n *raft, candidates []string) string {
+		var current []*Peer
+		for id, ps := range n.peers {
+			current = append(current, &Peer{ID: id, Last: ps.ts})
+		}
+		return s.selectPeerToAdd(n, "A", current, candidates)
+	}
+
+	// No candidates to add.
+	n := newNode(map[string]time.Time{"A": {}}, nil)
+	require_Equal(t, selectFor(n, nil), _EMPTY_)
+
+	// A candidate we've recently heard from is preferred, even if an unheard
+	// candidate comes first.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"C": now})
+	require_Equal(t, selectFor(n, []string{"B", "C"}), "C")
+
+	// The most recently heard candidate is preferred.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"B": now.Add(-time.Second), "C": now})
+	require_Equal(t, selectFor(n, []string{"B", "C"}), "C")
+
+	// A candidate heard too long ago doesn't count as heard.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"B": now.Add(-4 * hbInterval)})
+	require_Equal(t, selectFor(n, []string{"B"}), _EMPTY_)
+
+	// An unheard candidate can't be added to a group that would then require
+	// a quorum larger than its live members, e.g. growing R1 with an offline
+	// peer would require a quorum of two with only one live member.
+	n = newNode(map[string]time.Time{"A": {}}, nil)
+	require_Equal(t, selectFor(n, []string{"B"}), _EMPTY_)
+
+	// Same for a larger group: two live members of three can't grow to four,
+	// which would require a quorum of three.
+	n = newNode(map[string]time.Time{"A": {}, "B": now, "C": now.Add(-time.Minute)}, nil)
+	require_Equal(t, selectFor(n, []string{"D"}), _EMPTY_)
+
+	// An unheard candidate can be added if the live members still form a
+	// quorum in the grown group.
+	n = newNode(map[string]time.Time{"A": {}, "B": now, "C": now}, nil)
+	require_Equal(t, selectFor(n, []string{"D"}), "D")
+
+	// A candidate marked offline doesn't count as heard, even with a recent
+	// timestamp.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"B": now})
+	s.nodeToInfo.Store("B", nodeInfo{offline: true})
+	require_Equal(t, selectFor(n, []string{"B"}), _EMPTY_)
+
+	// A member marked offline doesn't count toward the live quorum.
+	n = newNode(map[string]time.Time{"A": {}, "B": now, "C": now}, nil)
+	s.nodeToInfo.Store("C", nodeInfo{offline: true})
+	require_Equal(t, selectFor(n, []string{"D"}), _EMPTY_)
+}
+
+func TestJetStreamClusterScaleUpOfflinePeerPreservesQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	pubAck, err := js.Publish("foo", nil)
+	require_NoError(t, err)
+	require_Equal(t, pubAck.Sequence, 1)
+
+	// Identify the stream members: the leader, one member that stays up, and
+	// one member that we'll take down.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	var otherUp, downMember *Server
+	for _, r := range si.Cluster.Replicas {
+		s := c.serverByName(r.Name)
+		require_NotNil(t, s)
+		if otherUp == nil {
+			otherUp = s
+		} else {
+			downMember = s
+		}
+	}
+	require_NotNil(t, otherUp)
+	require_NotNil(t, downMember)
+
+	// Move the meta leader to the stream member that stays up. We can't pause
+	// applies on the meta leader itself, and it must survive the shutdowns.
+	ml := otherUp
+	if c.leader() != ml {
+		ncSys, err := nats.Connect(c.leader().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+		require_NoError(t, err)
+		defer ncSys.Close()
+		jreq, err := json.Marshal(&JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: ml.Name()}})
+		require_NoError(t, err)
+		_, err = ncSys.Request(JSApiLeaderStepDown, jreq, time.Second)
+		require_NoError(t, err)
+		c.waitOnLeader()
+		require_Equal(t, c.leader(), ml)
+	}
+
+	// Pause meta applies on the stream leader, so it doesn't see the scale up
+	// yet and the migration can't start.
+	smeta := sl.getJetStream().getMetaGroup()
+	require_NotNil(t, smeta)
+	require_NoError(t, smeta.PauseApply())
+
+	// Scale up the stream. The response times out since the stream leader can't
+	// respond while its applies are paused, so don't wait for it.
+	cfg.Replicas = 5
+	_, err = js.UpdateStream(cfg, nats.MaxWait(time.Second))
+	require_Error(t, err, context.DeadlineExceeded)
+
+	// Wait for the meta leader to register the desired scale up.
+	mjs := ml.getJetStream()
+	currentPeers := []string{sl.NodeName(), otherUp.NodeName(), downMember.NodeName()}
+	var desiredPeers []string
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group.Desired == nil {
+			return fmt.Errorf("desired state not registered yet")
+		}
+		desiredPeers = copyStrings(sa.Group.Desired.Peers)
+		return nil
+	})
+	require_Len(t, len(desiredPeers), 5)
+
+	// The stream leader extends its raft group with the new desired peers in
+	// order, take down the server hosting the first one, as well as one of the
+	// existing members. The group then has two of three members online, and
+	// adding the offline peer to the raft group first would grow quorum to
+	// three and lose it. The online new peer must be added first.
+	var newPeer string
+	for _, p := range desiredPeers {
+		if !slices.Contains(currentPeers, p) {
+			newPeer = p
+			break
+		}
+	}
+	require_NotEqual(t, newPeer, _EMPTY_)
+	var downNew *Server
+	for _, s := range c.servers {
+		if s.NodeName() == newPeer {
+			downNew = s
+			break
+		}
+	}
+	require_NotNil(t, downNew)
+
+	downMember.Shutdown()
+	downMember.WaitForShutdown()
+	downNew.Shutdown()
+	downNew.WaitForShutdown()
+
+	// Reconnect in case we were connected to a downed server.
+	nc.Close()
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	// Resume applies on the stream leader, starting the migration.
+	smeta.ResumeApply()
+
+	// The stream must keep quorum: the migration must complete and publishes
+	// must work, even with the offline peers staying down.
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		if _, err = js.Publish("foo", nil, nats.AckWait(time.Second)); err != nil {
+			return fmt.Errorf("publish failed: %v", err)
+		}
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("scale up still pending")
+		}
+		if len(sa.Group.Peers) != 5 {
+			return fmt.Errorf("expected 5 peers, got %d", len(sa.Group.Peers))
+		}
+		return nil
+	})
+
+	// Restart the offline servers, they should catch up and the stream should heal.
+	for _, down := range []*Server{downMember, downNew} {
+		rs := c.restartServer(down)
+		c.waitOnStreamCurrent(rs, globalAccountName, "TEST")
+	}
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 }

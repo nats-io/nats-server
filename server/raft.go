@@ -69,6 +69,7 @@ type RaftNode interface {
 	Peers() []*Peer
 	PeerNames() []string
 	VotingPeerNames() []string
+	LastHeardFromPeer(peer string) time.Time
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	EvictPeers(peers []string) ([]string, error)
@@ -180,9 +181,10 @@ type raft struct {
 	qn    int             // Number of nodes needed to establish quorum
 	peers map[string]*lps // Other peers in the Raft group
 
-	removed map[string]time.Time           // Peers that were removed from the group
-	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
-	pae     map[uint64]*appendEntry        // Pending append entries
+	removed  map[string]time.Time           // Peers that were removed from the group
+	observed map[string]time.Time           // Peers not in our peer set that we've heard from, only for managed groups
+	acks     map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
+	pae      map[uint64]*appendEntry        // Pending append entries
 
 	rescue *time.Timer // Non-nil while an unsafe quorum rescue is active (see RescueQuorum)
 	elect  *time.Timer // Election timer, normally accessed via electTimer
@@ -3969,16 +3971,39 @@ func (n *raft) trackPeer(peer string) error {
 	}
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now()
+		if n.observed != nil {
+			delete(n.observed, peer)
+			if len(n.observed) == 0 {
+				n.observed = nil
+			}
+		}
+	} else if n.managed && !isRemoved {
+		// For managed groups the meta layer can assign peers before they've been
+		// added to our peer set. Track when we hear from them, so the upper layer
+		// can prefer adding peers that are demonstrably up.
+		if n.observed == nil {
+			n.observed = make(map[string]time.Time, 1)
+		}
+		n.observed[peer] = time.Now()
 	}
-	// FIXME(mvv): if managed, could track meta assigned but not tracked peers here
-	//  that could help in preserving quorum if the meta assignment was updated but
-	//  it's not coming up on the new peer
 	n.Unlock()
 
 	if needPeerAdd {
 		n.ProposeAddPeer(peer)
 	}
 	return nil
+}
+
+// LastHeardFromPeer returns when we last heard from the given peer, even if
+// it's not in our peer set yet. Zero if we never heard from it. The upper
+// layer uses this to judge if a meta-assigned peer is up before adding it.
+func (n *raft) LastHeardFromPeer(peer string) time.Time {
+	n.RLock()
+	defer n.RUnlock()
+	if ps := n.peers[peer]; ps != nil {
+		return ps.ts
+	}
+	return n.observed[peer]
 }
 
 func (n *raft) runAsCandidate() {

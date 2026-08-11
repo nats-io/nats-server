@@ -3682,6 +3682,32 @@ func TestNRGDoesntRequestVoteOnWriteError(t *testing.T) {
 	require_Error(t, err, nats.ErrTimeout)
 }
 
+func TestNRGTrackPeerObserved(t *testing.T) {
+	n := &raft{managed: true, id: "A", peers: map[string]*lps{"A": {}}}
+
+	// Untracked peers of managed groups are observed when we hear from them.
+	require_True(t, n.LastHeardFromPeer("B").IsZero())
+	require_NoError(t, n.trackPeer("B"))
+	require_False(t, n.LastHeardFromPeer("B").IsZero())
+
+	// Members are tracked through their own peer state.
+	require_True(t, n.LastHeardFromPeer("A").IsZero())
+	require_NoError(t, n.trackPeer("A"))
+	require_False(t, n.LastHeardFromPeer("A").IsZero())
+
+	// Once the peer becomes a member, the observed entry is cleaned up.
+	require_Len(t, len(n.observed), 1)
+	n.peers["B"] = &lps{}
+	require_NoError(t, n.trackPeer("B"))
+	require_Len(t, len(n.observed), 0)
+	require_False(t, n.LastHeardFromPeer("B").IsZero())
+
+	// Removed peers are not observed.
+	n.removed = map[string]time.Time{"C": time.Now()}
+	require_NoError(t, n.trackPeer("C"))
+	require_True(t, n.LastHeardFromPeer("C").IsZero())
+}
+
 func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

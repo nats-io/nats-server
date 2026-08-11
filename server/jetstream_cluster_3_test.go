@@ -12873,8 +12873,8 @@ func TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum(t *testing
 			return errors.New("stream not found")
 		}
 		if sa.Group.Desired != nil {
-			return fmt.Errorf("stream still converging: peers=%v desired=%v scaleDown=%v scaleUp=%v",
-				sa.Group.Peers, sa.Group.Desired.Peers, sa.Group.Desired.ScaleDown, sa.Group.Desired.ScaleUp)
+			return fmt.Errorf("stream still converging: peers=%v desired=%v scaleDown=%v",
+				sa.Group.Peers, sa.Group.Desired.Peers, sa.Group.Desired.ScaleDown)
 		}
 		if len(sa.Group.Peers) != 1 {
 			return fmt.Errorf("expected 1 peer, got %v", sa.Group.Peers)

@@ -204,7 +204,6 @@ type desiredRaftGroup struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Preferred string   `json:"preferred,omitempty"`
 
-	ScaleUp   bool `json:"scale_up,omitempty"`
 	ScaleDown bool `json:"scale_down,omitempty"`
 
 	// Removed are peers an operator peer-removed from this group. A group that
@@ -2719,7 +2718,11 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	sa.Restore = nil
 	if sa.Group != nil {
 		sa.Group.Preferred = _EMPTY_
-		sa.Group.ScaleUp = false
+		// Must be preserved while a migration is inflight, so peers that create
+		// their raft node late keep the empty-log protection.
+		if sa.Group.Desired == nil {
+			sa.Group.ScaleUp = false
+		}
 	}
 }
 
@@ -2731,7 +2734,11 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	ca.recovering = true
 	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
-		ca.Group.ScaleUp = false
+		// Must be preserved while a migration is inflight, so peers that create
+		// their raft node late keep the empty-log protection.
+		if ca.Group.Desired == nil {
+			ca.Group.ScaleUp = false
+		}
 	}
 }
 
@@ -4372,12 +4379,19 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	}
 
 	// Extend the actual peer set through the log, but only if it's part of the desired set.
+	var candidates []string
 	for _, peer := range current {
 		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
-			js.mu.RUnlock()
-			n.ProposeAddPeer(peer)
-			return
+			candidates = append(candidates, peer)
 		}
+	}
+	if len(candidates) > 0 {
+		add := s.selectPeerToAdd(n, ourPeerId, actual, candidates)
+		js.mu.RUnlock()
+		if add != _EMPTY_ {
+			n.ProposeAddPeer(add)
+		}
+		return
 	}
 
 	// If scaling down, we need to select where to.
@@ -4401,8 +4415,6 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		for _, peer := range desiredPeers {
 			if !slices.Contains(current, peer) {
 				combined = append(combined, peer)
-				// FIXME(mvv): for testing only add one replica per cycle.
-				break
 			}
 		}
 		update.MetaPeers = combined
@@ -7584,12 +7596,19 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	}
 
 	// Extend the actual peer set through the log, but only if it's part of the desired set.
+	var candidates []string
 	for _, peer := range current {
 		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
-			js.mu.RUnlock()
-			n.ProposeAddPeer(peer)
-			return
+			candidates = append(candidates, peer)
 		}
+	}
+	if len(candidates) > 0 {
+		add := s.selectPeerToAdd(n, ourPeerId, actual, candidates)
+		js.mu.RUnlock()
+		if add != _EMPTY_ {
+			n.ProposeAddPeer(add)
+		}
+		return
 	}
 
 	// If scaling down, we need to select where to.
@@ -7611,7 +7630,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	if !foundAll {
 		// Only add a peer once the stream is actually hosted on it. A consumer can't
 		// move to a peer earlier until the stream is hosted there.
-		var nextPeer string
+		combined := current
 		for _, peer := range desiredPeers {
 			if slices.Contains(current, peer) {
 				continue
@@ -7619,15 +7638,13 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			if !slices.Contains(osa.Group.Peers, peer) {
 				continue
 			}
-			nextPeer = peer
-			break
+			combined = append(combined, peer)
 		}
-		if nextPeer == _EMPTY_ {
+		if len(combined) == len(current) {
 			js.mu.RUnlock()
 			return
 		}
-		// FIXME(mvv): for testing only add one replica per cycle.
-		update.MetaPeers = append(current, nextPeer)
+		update.MetaPeers = combined
 		js.mu.RUnlock()
 		sendMetaUpdate()
 		return
@@ -8601,11 +8618,20 @@ func (rg *raftGroup) reconcileDesiredState(reconcile desiredAssignmentUpdate, re
 		if len(ng.Peers) >= replicas {
 			ng.Excluded = nil
 		}
+		// Don't reset ScaleUp here. If it was set, we'll want each replica to know
+		// about it until it unsets it as part of recovery.
 	} else {
 		// Skip if the peer set is unchanged.
 		slices.Sort(prevPeers)
 		if slices.Equal(metaPeers, prevPeers) {
 			return nil
+		}
+		// If new peers are added, mark this assignment for scale up.
+		for _, peer := range metaPeers {
+			if !slices.Contains(prevPeers, peer) {
+				ng.ScaleUp = true
+				break
+			}
 		}
 		// Still converging toward the desired peer set.
 		ng.Desired.ID = nuid.Next()
@@ -8957,7 +8983,6 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 	// Preserve how the group is meant to converge.
 	if d := sa.Group.Desired; d != nil {
 		csa.Group.Desired.ScaleDown = d.ScaleDown
-		csa.Group.Desired.ScaleUp = d.ScaleUp
 	}
 	if remove {
 		removeFrom := func(from []string) []string {
@@ -9852,8 +9877,12 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 	// Make copy so to not change original.
 	rg := osa.copyGroup().Group
 
-	// Reset notion of scaling up, if this was done in a previous update.
-	rg.ScaleUp = false
+	// Reset notion of scaling up, if this was done in a previous update. Must be
+	// preserved while a migration is inflight, so peers that create their raft
+	// node late keep the empty-log protection.
+	if rg.Desired == nil {
+		rg.ScaleUp = false
+	}
 	if isMoveRequest {
 		if len(peerSet) == 0 {
 			nrg, err := js.createGroupForStream(ci, newCfg)
@@ -9916,7 +9945,6 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 			}
 			rg.Peers = peers
 			rg = osa.Group.withDesired(rg)
-			rg.Desired.ScaleUp = true
 		} else {
 			// Mark the group as scaling down, the current leader will be preserved.
 			rg.Peers = currentPeers
@@ -10170,6 +10198,45 @@ func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining
 		return _EMPTY_
 	}
 	return sorted[len(sorted)-1]
+}
+
+// selectPeerToAdd picks the peer from candidates that is most preferable to
+// add during a migration: the one we heard from most recently. An unheard
+// candidate is only picked if the live members still form a quorum in the
+// grown group, so adding an offline peer can't stall it. Empty if no peer
+// can be added safely right now.
+func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, candidates []string) string {
+	if len(candidates) == 0 {
+		return _EMPTY_
+	}
+	cutoff := time.Now().Add(-hbInterval * 3)
+	heard := func(ts time.Time) bool { return !ts.IsZero() && ts.After(cutoff) }
+	online := func(peer string) bool {
+		si, ok := s.nodeToInfo.Load(peer)
+		return ok && si != nil && !si.(nodeInfo).offline
+	}
+	// Prefer the candidate we've heard from most recently.
+	add, last := _EMPTY_, time.Time{}
+	for _, peer := range candidates {
+		if ts := n.LastHeardFromPeer(peer); online(peer) && heard(ts) && ts.After(last) {
+			add, last = peer, ts
+		}
+	}
+	if add != _EMPTY_ {
+		return add
+	}
+	// Otherwise, only add a peer if the members we've recently heard from can
+	// still reach quorum after the group has grown.
+	live := 0
+	for _, p := range current {
+		if p.ID == ourPeerId || (online(p.ID) && heard(p.Last)) {
+			live++
+		}
+	}
+	if quorum := (len(current)+1)/2 + 1; live >= quorum {
+		return candidates[0]
+	}
+	return _EMPTY_
 }
 
 // selectStepDownPreferred picks the peer to transfer leadership to before the
@@ -11021,8 +11088,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 		nca := ca.copyGroup()
 
-		// Reset notion of scaling up, if this was done in a previous update.
-		nca.Group.ScaleUp = false
+		// Reset notion of scaling up, if this was done in a previous update. Must be
+		// preserved while a migration is inflight, so peers that create their raft
+		// node late keep the empty-log protection.
+		if nca.Group.Desired == nil {
+			nca.Group.ScaleUp = false
+		}
 
 		rBefore := nca.Config.replicas(sa.Config)
 		rAfter := cfg.replicas(sa.Config)
@@ -11060,7 +11131,6 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			}
 			nca.Group.Peers = newPeerSet
 			nca.Group = ca.Group.withDesired(nca.Group)
-			nca.Group.Desired.ScaleUp = true
 		} else if rBefore > rAfter {
 			// Mark the group as scaling down, the current leader will be preserved.
 			nca.Group = ca.Group.withDesired(nca.Group)
