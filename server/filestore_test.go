@@ -36,6 +36,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ import (
 	"unsafe"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
@@ -15383,4 +15385,350 @@ func Benchmark_FileStoreDeleteMapExists(b *testing.B) {
 		v.Exists(uint64(i%numMsgs) + 1)
 	}
 	b.StopTimer()
+}
+
+const (
+	expiryPrefixFullStateV4 = uint8(4)
+	expiryPrefixFullStateV5 = uint8(5)
+)
+
+// rewriteExpiryPrefixFullStateV4 converts an immediately written v5 state into
+// the exact v4 payload written by the predecessor. Version 5 only added a
+// canonical tsOrdered uvarint after each block's schedules field.
+func rewriteExpiryPrefixFullStateV4(tb testing.TB, storeDir, stream string) {
+	tb.Helper()
+	fn := filepath.Join(storeDir, msgDir, streamStreamStateFile)
+	state, err := os.ReadFile(fn)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if len(state) < hdrLen+highwayhash.Size64 {
+		tb.Fatalf("stream state is too short: %d", len(state))
+	}
+
+	payload, checksum := state[:len(state)-highwayhash.Size64], state[len(state)-highwayhash.Size64:]
+	if payload[0] != fullStateMagic {
+		tb.Fatalf("unexpected stream state magic: %d", payload[0])
+	}
+	if payload[1] == expiryPrefixFullStateV4 {
+		return
+	}
+	if payload[1] != expiryPrefixFullStateV5 {
+		tb.Fatalf("unexpected stream state version: %d", payload[1])
+	}
+
+	key := sha256.Sum256([]byte(stream))
+	hh, err := highwayhash.NewDigest64(key[:])
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if _, err := hh.Write(payload); err != nil {
+		tb.Fatal(err)
+	}
+	if expected := hh.Sum(nil); !bytes.Equal(checksum, expected) {
+		tb.Fatal("stream state checksum does not match")
+	}
+
+	v4, err := expiryPrefixFullStateV5AsV4(payload)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	hh.Reset()
+	if _, err := hh.Write(v4); err != nil {
+		tb.Fatal(err)
+	}
+	v4 = append(v4, hh.Sum(nil)...)
+	if err := os.WriteFile(fn, v4, defaultFilePerms); err != nil {
+		tb.Fatal(err)
+	}
+}
+
+func expiryPrefixFullStateV5AsV4(v5 []byte) ([]byte, error) {
+	if len(v5) < hdrLen || v5[0] != fullStateMagic || v5[1] != expiryPrefixFullStateV5 {
+		return nil, fmt.Errorf("unexpected v5 stream state")
+	}
+
+	v4 := append([]byte(nil), v5[:hdrLen]...)
+	v4[1] = expiryPrefixFullStateV4
+	off := hdrLen
+	copyUvarint := func() (uint64, error) {
+		value, n := binary.Uvarint(v5[off:])
+		if n <= 0 {
+			return 0, fmt.Errorf("invalid stream state uvarint at %d", off)
+		}
+		v4 = append(v4, v5[off:off+n]...)
+		off += n
+		return value, nil
+	}
+	copyVarint := func() error {
+		_, n := binary.Varint(v5[off:])
+		if n <= 0 {
+			return fmt.Errorf("invalid stream state varint at %d", off)
+		}
+		v4 = append(v4, v5[off:off+n]...)
+		off += n
+		return nil
+	}
+
+	for range 3 {
+		if _, err := copyUvarint(); err != nil {
+			return nil, err
+		}
+	}
+	if err := copyVarint(); err != nil {
+		return nil, err
+	}
+	if _, err := copyUvarint(); err != nil {
+		return nil, err
+	}
+	if err := copyVarint(); err != nil {
+		return nil, err
+	}
+
+	nsubjects, err := copyUvarint()
+	if err != nil {
+		return nil, err
+	}
+	for range nsubjects {
+		length, err := copyUvarint()
+		if err != nil {
+			return nil, err
+		}
+		if length > uint64(len(v5)-off) {
+			return nil, fmt.Errorf("invalid stream state subject length at %d", off)
+		}
+		v4 = append(v4, v5[off:off+int(length)]...)
+		off += int(length)
+		for range 3 {
+			if _, err := copyUvarint(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	nblocks, err := copyUvarint()
+	if err != nil {
+		return nil, err
+	}
+	for range nblocks {
+		for range 3 {
+			if _, err := copyUvarint(); err != nil {
+				return nil, err
+			}
+		}
+		if err := copyVarint(); err != nil {
+			return nil, err
+		}
+		if _, err := copyUvarint(); err != nil {
+			return nil, err
+		}
+		if err := copyVarint(); err != nil {
+			return nil, err
+		}
+		numDeleted, err := copyUvarint()
+		if err != nil {
+			return nil, err
+		}
+		for range 2 {
+			if _, err := copyUvarint(); err != nil {
+				return nil, err
+			}
+		}
+
+		// Drop tsOrdered, which is the only field added in version 5.
+		if _, n := binary.Uvarint(v5[off:]); n <= 0 {
+			return nil, fmt.Errorf("invalid stream state tsOrdered at %d", off)
+		} else {
+			off += n
+		}
+		if numDeleted > 0 {
+			_, n, err := avl.Decode(v5[off:])
+			if err != nil {
+				return nil, err
+			}
+			v4 = append(v4, v5[off:off+n]...)
+			off += n
+		}
+	}
+	if _, err := copyUvarint(); err != nil {
+		return nil, err
+	}
+	if len(v5)-off != 8 {
+		return nil, fmt.Errorf("invalid stream state checksum length: %d", len(v5)-off)
+	}
+	return append(v4, v5[off:]...), nil
+}
+
+const expireMsgsBenchMessages = 16_384
+
+func storeExpireMsgsBenchFixture(tb testing.TB, fs *fileStore) {
+	tb.Helper()
+	expired := time.Now().Add(-time.Hour).UnixNano()
+	msg := bytes.Repeat([]byte("x"), 128)
+	for seq := uint64(1); seq <= expireMsgsBenchMessages; seq++ {
+		if err := fs.StoreRawMsg("foo", nil, msg, seq, expired, 0, false); err != nil {
+			tb.Fatalf("error storing message %d: %v", seq, err)
+		}
+	}
+	if err := fs.StoreRawMsg("foo", nil, msg, expireMsgsBenchMessages+1, time.Now().UnixNano(), 0, false); err != nil {
+		tb.Fatalf("error storing surviving message: %v", err)
+	}
+}
+
+func setExpireMsgsBenchMaxAge(fs *fileStore) {
+	setExpireMsgsBenchMaxAgeFor(fs, time.Second)
+}
+
+func setExpireMsgsBenchMaxAgeFor(fs *fileStore, maxAge time.Duration) {
+	fs.mu.Lock()
+	fs.cfg.MaxAge = maxAge
+	fs.mu.Unlock()
+}
+
+func BenchmarkFileStoreExpireMsgsColdBlocks(b *testing.B) {
+	dir := b.TempDir()
+	i := 0
+	for b.Loop() {
+		b.StopTimer()
+		fcfg := FileStoreConfig{StoreDir: filepath.Join(dir, fmt.Sprintf("%d", i)), BlockSize: 64 * 1024}
+		cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStore(fcfg, cfg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		storeExpireMsgsBenchFixture(b, fs)
+		if err := fs.stop(false, true); err != nil {
+			b.Fatal(err)
+		}
+		rewriteExpiryPrefixFullStateV4(b, fcfg.StoreDir, cfg.Name)
+
+		fs, err = newFileStore(fcfg, cfg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		setExpireMsgsBenchMaxAge(fs)
+
+		b.StartTimer()
+		fs.expireMsgs()
+		b.StopTimer()
+		if state := fs.State(); state.Msgs != 1 || state.FirstSeq != expireMsgsBenchMessages+1 {
+			b.Fatalf("unexpected state after expiry: %+v", state)
+		}
+		if err := fs.stop(false, true); err != nil {
+			b.Fatal(err)
+		}
+		i++
+		b.StartTimer()
+	}
+}
+
+func newExpireMsgsEndToEndFixture(tb testing.TB, pending int) (*Server, *stream, *fileStore, *consumer) {
+	tb.Helper()
+	s := RunBasicJetStreamServer(tb)
+	mset, err := s.GlobalAccount().addStreamWithStore(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	}, &FileStoreConfig{BlockSize: 64 * 1024})
+	if err != nil {
+		s.Shutdown()
+		tb.Fatal(err)
+	}
+	fs, ok := mset.store.(*fileStore)
+	if !ok {
+		mset.stop(true, true)
+		s.Shutdown()
+		tb.Fatal("expected a file store")
+	}
+	storeExpireMsgsBenchFixture(tb, fs)
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:       "C",
+		DeliverPolicy: DeliverNew,
+		AckPolicy:     AckExplicit,
+	})
+	if err != nil {
+		mset.stop(true, true)
+		s.Shutdown()
+		tb.Fatal(err)
+	}
+
+	o.mu.Lock()
+	o.pending = make(map[uint64]*Pending)
+	o.rdc = make(map[uint64]uint64)
+	for i := 1; i <= pending; i++ {
+		seq := uint64(i * expireMsgsBenchMessages / pending)
+		o.pending[seq] = &Pending{Sequence: seq, Timestamp: time.Now().UnixNano()}
+		o.rdc[seq] = 1
+	}
+	o.dseq = expireMsgsBenchMessages + 2
+	o.sseq = expireMsgsBenchMessages + 2
+	state := ConsumerState{
+		Delivered:   SequencePair{Consumer: o.dseq - 1, Stream: o.sseq - 1},
+		Pending:     o.pending,
+		Redelivered: o.rdc,
+	}
+	o.mu.Unlock()
+	cfs, ok := o.store.(*consumerFileStore)
+	if !ok {
+		mset.stop(true, true)
+		s.Shutdown()
+		tb.Fatal("expected a file consumer store")
+	}
+	if err := cfs.ForceUpdate(&state); err != nil {
+		mset.stop(true, true)
+		s.Shutdown()
+		tb.Fatal(err)
+	}
+	setExpireMsgsBenchMaxAge(fs)
+	return s, mset, fs, o
+}
+
+func waitForExpireMsgsBenchConsumer(tb testing.TB, fs *fileStore, o *consumer) {
+	tb.Helper()
+	expires := time.Now().Add(10 * time.Second)
+	for time.Now().Before(expires) {
+		o.mu.RLock()
+		np := len(o.pending)
+		o.mu.RUnlock()
+		state := fs.State()
+		if np == 0 && state.Msgs == 1 && state.FirstSeq == expireMsgsBenchMessages+1 {
+			cs, err := o.store.BorrowState()
+			if err == nil && (cs == nil || len(cs.Pending) == 0) {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	tb.Fatal("timed out waiting for MaxAge expiry")
+}
+
+func benchmarkFileStoreExpireMsgsEndToEnd(b *testing.B, pending int) {
+	var results []time.Duration
+	for b.Loop() {
+		b.StopTimer()
+		s, mset, fs, o := newExpireMsgsEndToEndFixture(b, pending)
+		b.StartTimer()
+		start := time.Now()
+		fs.expireMsgs()
+		waitForExpireMsgsBenchConsumer(b, fs, o)
+		results = append(results, time.Since(start))
+		b.StopTimer()
+		mset.stop(true, true)
+		s.Shutdown()
+		b.StartTimer()
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
+	if len(results) > 0 {
+		p95 := results[(len(results)*95+99)/100-1]
+		b.ReportMetric(float64(p95), "p95-ns/op")
+	}
+}
+
+func BenchmarkFileStoreExpireMsgsEndToEnd(b *testing.B) {
+	b.Run("sparse-pending", func(b *testing.B) {
+		benchmarkFileStoreExpireMsgsEndToEnd(b, 128)
+	})
+	b.Run("dense-pending", func(b *testing.B) {
+		benchmarkFileStoreExpireMsgsEndToEnd(b, 4096)
+	})
 }
