@@ -6056,6 +6056,52 @@ func TestNRGInstallSnapshotFromCheckpoint(t *testing.T) {
 	require_Error(t, err, errors.New("snapshot index mismatch"))
 }
 
+// A forced install must be able to take over from an async snapshot that's still in
+// progress, otherwise a shutdown snapshot gets suppressed.
+func TestNRGForcedInstallSnapshotAbortsInProgressCheckpoint(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2})
+
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	n.Applied(2)
+
+	// An async snapshot is in progress.
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	// Without forcing we can't snapshot, this is what would suppress a shutdown snapshot.
+	require_Error(t, n.InstallSnapshot([]byte("blocked"), false), errSnapInProgress)
+
+	// Forcing installs directly, which aborts the checkpoint that was in progress. The
+	// install holds the Raft lock throughout, so the two can't interleave.
+	require_NoError(t, n.InstallSnapshot([]byte("fresh"), true))
+
+	// The aborted checkpoint must not be able to install or read anything anymore.
+	_, err = c.LoadLastSnapshot()
+	require_Error(t, err, errSnapAborted)
+	_, err = c.InstallSnapshot([]byte("stale"))
+	require_Error(t, err, errSnapAborted)
+
+	// And its late abort must not cancel anything installed after it.
+	c.Abort()
+
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("fresh")))
+}
+
 func TestNRGSnapshotCheckpointNodeClosed(t *testing.T) {
 	for _, test := range []struct {
 		title string

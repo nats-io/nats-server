@@ -11354,13 +11354,34 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 		sds = append(sds, s.StoreDir())
 	}
 
-	for _, sd := range sds {
-		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir, "*"))
-		require_NoError(t, err)
-		require_True(t, len(matches) > 0)
-		for _, match := range matches {
-			require_NoError(t, os.RemoveAll(match))
+	// Snapshots installed for the stream's Raft group. Skips temporary files, an
+	// install writes into one before renaming it into place.
+	streamSnapshots := func(sd string) ([]string, error) {
+		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir))
+		if err != nil {
+			return nil, err
 		}
+		// Matches _meta_ and stream raft groups.
+		if len(matches) != 2 {
+			return nil, fmt.Errorf("expected 2 snapshot dirs for %s, got %d", sd, len(matches))
+		}
+		for _, match := range matches {
+			if !strings.Contains(match, "S-R3F") {
+				continue
+			}
+			entries, err := os.ReadDir(match)
+			if err != nil {
+				return nil, err
+			}
+			var snaps []string
+			for _, entry := range entries {
+				if name := entry.Name(); !strings.HasSuffix(name, ".tmp") {
+					snaps = append(snaps, name)
+				}
+			}
+			return snaps, nil
+		}
+		return nil, fmt.Errorf("no stream raft group for %s", sd)
 	}
 
 	// Publish, so we have something new to snapshot.
@@ -11370,28 +11391,29 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 
+	applied := make(map[string]uint64, len(sds))
+	for i, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		_, _, a := mset.raftNode().Progress()
+		applied[sds[i]] = a
+	}
+
 	// Shutdown servers, and check if all made stream snapshots.
 	for _, s := range c.servers {
 		s.Shutdown()
 	}
 	for _, sd := range sds {
-		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir))
+		snaps, err := streamSnapshots(sd)
 		require_NoError(t, err)
-		// Matches _meta_ and stream raft groups.
-		require_Len(t, len(matches), 2)
-		var foundStream bool
-		for _, match := range matches {
-			if !strings.Contains(match, "S-R3F") {
-				continue
-			}
-			foundStream = true
-			dirs, err := os.ReadDir(match)
-			require_NoError(t, err)
-			if len(dirs) != 1 {
-				t.Errorf("Missing snapshot for %s", match)
-			}
+		if len(snaps) != 1 {
+			t.Fatalf("Expected 1 snapshot for %s, got %d: %v", sd, len(snaps), snaps)
 		}
-		require_True(t, foundStream)
+		_, index, err := termAndIndexFromSnapFile(snaps[0])
+		require_NoError(t, err)
+		if index < applied[sd] {
+			t.Fatalf("Snapshot %s for %s doesn't cover applied index %d", snaps[0], sd, applied[sd])
+		}
 	}
 }
 

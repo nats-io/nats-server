@@ -1221,15 +1221,24 @@ func (sa *streamAssignment) identity() string {
 	return getHash(sa.Created.UTC().Format(time.RFC3339Nano))
 }
 
+// Returned by monitorQuitC once the monitor was signaled to quit, so a monitor
+// that only gets there afterwards still exits immediately.
+var closedMonitorQuitC = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
 func (mset *stream) monitorQuitC() <-chan struct{} {
 	if mset == nil {
 		return nil
 	}
 	mset.mu.Lock()
 	defer mset.mu.Unlock()
-	// Recreate if a prior monitor routine was stopped.
+	// Don't recreate, a concurrent stopMonitoring would wait forever for a monitor
+	// that can't be signaled anymore. startMonitorWg creates it per generation.
 	if mset.mqch == nil {
-		mset.mqch = make(chan struct{})
+		return closedMonitorQuitC
 	}
 	return mset.mqch
 }
@@ -8486,6 +8495,11 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	mset.mu.Unlock()
 
+	// If we're shutting down, wait for the monitor routine, which attempts to snapshot.
+	if isShuttingDown && !deleteFlag {
+		mset.stopMonitoring()
+	}
+
 	for _, o := range obs {
 		if !o.isClosed() {
 			// Third flag says do not broadcast a signal.
@@ -9407,6 +9421,13 @@ func (mset *stream) checkConsumerReplication() {
 // the monitor goroutine directly and must not be wrapped with monitorMu.
 func (mset *stream) startMonitorWg() {
 	mset.monitorMu.Lock()
+	// Quit channel for this new monitor generation. Not if the stream is (being)
+	// stopped, stop won't signal again so the monitor must exit right away instead.
+	mset.mu.Lock()
+	if mset.mqch == nil && !mset.closed.Load() {
+		mset.mqch = make(chan struct{})
+	}
+	mset.mu.Unlock()
 	mset.monitorWg.Add(1)
 	mset.monitorMu.Unlock()
 }

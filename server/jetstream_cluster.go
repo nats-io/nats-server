@@ -3698,6 +3698,25 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		failedSnapshots  int
 	)
 
+	// Make sure all pending data is flushed before allowing snapshots. Returns false if
+	// it couldn't be flushed, in which case we have no safe way to continue.
+	flushPending := func() bool {
+		err := mset.flushAllPending()
+		if err == nil {
+			return true
+		}
+		s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", accName, mset.name(), n.Group(), err)
+		assert.Unreachable("Stream snapshot flush failed", map[string]any{
+			"account": accName,
+			"stream":  mset.name(),
+			"group":   n.Group(),
+			"err":     err,
+		})
+		mset.setWriteErr(err)
+		n.Stop()
+		return false
+	}
+
 	doSnapshot := func(force bool) {
 		// Suppress during recovery.
 		if mset == nil || isRecovering || isRestore {
@@ -3705,6 +3724,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		}
 		snapMu.Lock()
 		defer snapMu.Unlock()
+
+		// Don't suppress a snapshot during shutdown.
+		if js.isShuttingDown() {
+			if !flushPending() {
+				return
+			}
+			if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil &&
+				err != errNoSnapAvailable && err != errNodeClosed {
+				s.RateLimitWarnf("Failed to install snapshot for '%s > %s' [%s]: %v",
+					mset.acc.Name, mset.name(), n.Group(), err)
+			}
+			return
+		}
+
 		// If snapshots have failed, and we're not forced to, we'll wait for the timer since it'll now be forced.
 		if !force && failedSnapshots > 0 {
 			return
@@ -3732,20 +3765,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 			return
 		}
-
-		// Make sure all pending data is flushed before allowing snapshots.
-		if err := mset.flushAllPending(); err != nil {
-			// If the pending data couldn't be flushed, we have no safe way to continue.
-			s.Errorf("Failed to flush pending data for '%s > %s' [%s]: %v", accName, mset.name(), n.Group(), err)
-			assert.Unreachable("Stream snapshot flush failed", map[string]any{
-				"account": accName,
-				"stream":  mset.name(),
-				"group":   n.Group(),
-				"err":     err,
-			})
+		if !flushPending() {
 			c.Abort()
-			mset.setWriteErr(err)
-			n.Stop()
 			return
 		}
 
@@ -3902,19 +3923,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		select {
 		case <-s.quitCh:
 			// Server shutting down, but we might receive this before qch, so try to snapshot.
-			snapMu.Lock()
-			fallbackSnapshot = true
-			snapMu.Unlock()
 			doSnapshot(false)
 			return
 		case <-mqch:
 			// Clean signal from shutdown routine so do best effort attempt to snapshot.
 			// Don't snapshot if not shutting down, monitor goroutine could be going away
 			// on a scale down or a remove for example.
-			if s.isShuttingDown() {
-				snapMu.Lock()
-				fallbackSnapshot = true
-				snapMu.Unlock()
+			if js.isShuttingDown() {
 				doSnapshot(false)
 			}
 			return
