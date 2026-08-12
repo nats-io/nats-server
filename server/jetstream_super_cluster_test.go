@@ -3271,27 +3271,30 @@ func TestJetStreamSuperClusterStreamDirectGetMirrorQueueGroup(t *testing.T) {
 	}
 	addStream(t, nc, cfg)
 
-	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M2")
-		require_NoError(t, err)
-		if si.State.Msgs != uint64(num) {
-			return fmt.Errorf("Expected %d msgs, got state: %d", num, si.State.Msgs)
+	checkMirrorReady := func(cluster, stream string) error {
+		si, err := js.StreamInfo(stream)
+		if err != nil {
+			return err
 		}
-		return nil
-	})
-
-	// Since last one was an R3, check and wait for the direct subscription.
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		sl := sc.clusterForName("C3").streamLeader("$G", "M2")
-		if mset, err := sl.GlobalAccount().lookupStream("M2"); err == nil {
+		if si.State.Msgs != uint64(num) {
+			return fmt.Errorf("Expected %d msgs for %s, got state: %d", num, stream, si.State.Msgs)
+		}
+		sl := sc.clusterForName(cluster).streamLeader("$G", stream)
+		if mset, err := sl.GlobalAccount().lookupStream(stream); err == nil {
 			mset.mu.RLock()
-			ok := mset.mirrorDirectSub != nil
+			ready := mset.mirrorDirectSub != nil
 			mset.mu.RUnlock()
-			if ok {
+			if ready {
 				return nil
 			}
 		}
-		return fmt.Errorf("No dsub yet")
+		return fmt.Errorf("No dsub yet for %s", stream)
+	}
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		return checkMirrorReady("C2", "M1")
+	})
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		return checkMirrorReady("C3", "M2")
 	})
 
 	// Always do a direct get to the source, but check that we are getting answers from the mirrors when connected to their cluster.
