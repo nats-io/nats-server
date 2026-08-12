@@ -8191,6 +8191,63 @@ func TestFileStoreSyncCompressOnlyIfDirty(t *testing.T) {
 	require_False(t, noCompact)
 }
 
+func TestFileStoreSyncBlocksSyncsCompaction(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256, SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Create two full blocks and one active block.
+	for range 13 {
+		_, _, err = fs.StoreMsg("foo.BB", nil, []byte("hello"), 0)
+		require_NoError(t, err)
+	}
+	require_Equal(t, fs.numMsgBlocks(), 3)
+
+	checkAllNeedSync := func(expected bool) {
+		t.Helper()
+		fs.mu.RLock()
+		blks := append([]*msgBlock(nil), fs.blks...)
+		fs.mu.RUnlock()
+		for _, mb := range blks {
+			mb.mu.RLock()
+			needSync := mb.needSync
+			mb.mu.RUnlock()
+			require_Equal(t, needSync, expected)
+		}
+	}
+
+	// Start with all blocks synced.
+	checkAllNeedSync(true)
+	fs.syncBlocks()
+	checkAllNeedSync(false)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+
+	// Logical deletes make the synced block compactable without dirtying its file.
+	for _, seq := range []uint64{2, 3, 4, 5} {
+		_, err = fs.RemoveMsg(seq)
+		require_NoError(t, err)
+	}
+	mb.mu.RLock()
+	shouldCompact, needSync, rbytes := mb.shouldCompactSync(), mb.needSync, mb.rbytes
+	mb.mu.RUnlock()
+	require_True(t, shouldCompact)
+	require_False(t, needSync)
+
+	// The pass that compacts the block must also sync the replacement.
+	fs.syncBlocks()
+	mb.mu.RLock()
+	newRbytes := mb.rbytes
+	mb.mu.RUnlock()
+	require_LessThan(t, newRbytes, rbytes)
+	checkAllNeedSync(false)
+}
+
 // This test is for deleted interior message tracking after compaction from limits based deletes, meaning no tombstones.
 // Bug was that dmap would not be properly be hydrated after the compact from rebuild. But we did so in populateGlobalInfo.
 // So this is just to fix a bug in rebuildState tracking gaps after a compact.

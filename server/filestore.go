@@ -7833,6 +7833,48 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 	return nil
 }
 
+// Lock should be held.
+func (mb *msgBlock) syncFile() error {
+	fd, didOpen := mb.mfd, false
+	if fd == nil {
+		mb.fs.dios.acquire()
+		var err error
+		fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+		mb.fs.dios.release()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		didOpen = true
+	}
+	if err := fd.Sync(); err != nil {
+		// Close fd if we opened it, but ignore its error since sync takes precedence.
+		if didOpen {
+			_ = fd.Close()
+		}
+		return err
+	}
+	if didOpen {
+		return fd.Close()
+	}
+	return nil
+}
+
+// Lock should be held.
+func (mb *msgBlock) syncFileAndDir() error {
+	if err := mb.syncFile(); err != nil {
+		return err
+	}
+	if canFsyncDirectories {
+		mb.fs.dios.acquire()
+		defer mb.fs.dios.release()
+		return syncDir(mb.mfn)
+	}
+	return nil
+}
+
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
 	if fs.isClosed() {
@@ -7910,6 +7952,7 @@ func (fs *fileStore) syncBlocks() {
 
 		// Check if we should compact here.
 		// Need to hold fs lock in case we reference psim when loading in the mb and we may remove this block if truly empty.
+		var compacted bool
 		if needsCompact {
 			// Load a delete map containing only interior deletes.
 			// This is used when compacting to know if tombstones are still relevant,
@@ -7934,6 +7977,7 @@ func (fs *fileStore) syncBlocks() {
 				storeFsWerr(err)
 				continue
 			}
+			compacted = !shouldRemove
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
 			//  it above which we would prefer to be a readlock such that other lookups can occur while compacting this block.
@@ -7960,45 +8004,22 @@ func (fs *fileStore) syncBlocks() {
 		}
 
 		// Check if we need to sync this block.
-		if needSync {
-			mb.mu.Lock()
-			var fd *os.File
+		if needSync || compacted {
 			var err error
-			var didOpen bool
-			if mb.mfd != nil {
-				fd = mb.mfd
+			mb.mu.Lock()
+			if compacted {
+				err = mb.syncFileAndDir()
 			} else {
-				fs.dios.acquire()
-				fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-				fs.dios.release()
-				didOpen = true
-				if err != nil && !os.IsNotExist(err) {
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
+				err = mb.syncFile()
 			}
-			// If we have an fd.
-			if fd != nil {
-				if err = fd.Sync(); err != nil {
-					// Close fd if we opened it, but ignore its error since sync takes precedence.
-					if didOpen {
-						_ = fd.Close()
-					}
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
-				// If we opened the file close the fd.
-				if didOpen {
-					if err = fd.Close(); err != nil {
-						mb.mu.Unlock()
-						storeFsWerr(err)
-						continue
-					}
-				}
+			if err == nil {
+				mb.needSync = false
 			}
 			mb.mu.Unlock()
+			if err != nil {
+				storeFsWerr(err)
+				continue
+			}
 		}
 	}
 
