@@ -16,6 +16,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -8781,4 +8782,110 @@ func TestJetStreamClusterCreateGroupForConsumerNoPeers(t *testing.T) {
 	require_True(t, cerr == nil)
 	require_True(t, rg != nil)
 	require_Len(t, len(rg.Peers), 3)
+}
+
+func TestJetStreamClusterMaxAgeR3ConcurrentTimers(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterTempl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		MaxBytes: 100 * 1024,
+		Storage:  FileStorage,
+		Replicas: 3,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	stores := make([]*fileStore, 0, len(c.servers))
+	for i, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		fs, ok := mset.store.(*fileStore)
+		require_True(t, ok)
+		fs.mu.Lock()
+		if i == 0 {
+			fs.fcfg.BlockSize = 4 * 1024
+		} else {
+			fs.fcfg.BlockSize = 8 * 1024
+		}
+		fs.mu.Unlock()
+		stores = append(stores, fs)
+	}
+
+	const expired = 48
+	msg := bytes.Repeat([]byte("x"), 1024)
+	for range expired {
+		_, err := js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		return checkState(t, c, "$G", "TEST")
+	})
+	for _, fs := range stores {
+		require_True(t, fs.numMsgBlocks() > 1)
+	}
+
+	// Keep MaxAge disabled until the prefix and boundary message are present on
+	// every replica, then drive the three local timers at the same time.
+	time.Sleep(2200 * time.Millisecond)
+	_, err = js.Publish("foo", msg)
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		return checkState(t, c, "$G", "TEST")
+	})
+
+	for _, fs := range stores {
+		fs.mu.Lock()
+		fs.cfg.MaxAge = 2 * time.Second
+		fs.mu.Unlock()
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, fs := range stores {
+		wg.Go(func() {
+			<-start
+			fs.expireMsgs()
+		})
+	}
+	close(start)
+	wg.Wait()
+	for _, fs := range stores {
+		fs.mu.Lock()
+		fs.cancelAgeChk()
+		fs.mu.Unlock()
+	}
+
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		for _, fs := range stores {
+			state := fs.State()
+			if state.Msgs != 1 || state.FirstSeq != expired+1 || state.LastSeq != expired+1 {
+				return fmt.Errorf("unexpected local state after concurrent expiry: %+v", state)
+			}
+		}
+		return checkState(t, c, "$G", "TEST")
+	})
+
+	// A normal replicated write after the independent local timers confirms that
+	// no expiry path left the stream or its store unable to accept new data.
+	for _, fs := range stores {
+		fs.mu.Lock()
+		fs.cfg.MaxAge = 0
+		fs.mu.Unlock()
+	}
+	_, err = js.Publish("foo", []byte("after expiry"))
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		for _, fs := range stores {
+			state := fs.State()
+			if state.Msgs != 2 || state.FirstSeq != expired+1 || state.LastSeq != expired+2 {
+				return fmt.Errorf("unexpected local state after normal write: %+v", state)
+			}
+		}
+		return checkState(t, c, "$G", "TEST")
+	})
 }

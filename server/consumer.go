@@ -6876,6 +6876,41 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	}
 }
 
+func (o *consumer) expireStreamPendingPrefix(first uint64) {
+	if first == 0 {
+		return
+	}
+	type pendingTerm struct {
+		sseq, dseq, dc uint64
+	}
+	var terms []pendingTerm
+	o.mu.Lock()
+	for sseq, p := range o.pending {
+		if sseq >= first {
+			continue
+		}
+		terms = append(terms, pendingTerm{sseq, p.Sequence, o.deliveryCount(sseq)})
+	}
+	for sseq := range o.rdc {
+		if sseq >= first {
+			continue
+		}
+		if _, ok := o.pending[sseq]; ok || !o.isLeader() {
+			continue
+		}
+		delete(o.rdc, sseq)
+		o.removeFromRedeliverQueue(sseq)
+		// Pass 0 as the delivered sequence to only remove the redelivered state.
+		o.updateAcks(0, sseq, _EMPTY_)
+	}
+	o.streamNumPending()
+	o.mu.Unlock()
+
+	for _, pt := range terms {
+		go o.processTerm(pt.sseq, pt.dseq, pt.dc, ackTermUnackedLimitsReason, _EMPTY_)
+	}
+}
+
 func (o *consumer) account() *Account {
 	o.mu.RLock()
 	a := o.acc

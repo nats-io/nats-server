@@ -81,7 +81,8 @@ type StoreMsg struct {
 }
 
 // Used to call back into the upper layers to report on changes in storage resources.
-// For the cases where its a single message we will also supply sequence number and subject.
+// A single-message change supplies its sequence number and subject; batch and range
+// changes use a zero sequence and empty subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
 // Used to call back into the upper layers to remove a message.
