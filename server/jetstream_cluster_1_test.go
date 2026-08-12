@@ -4050,6 +4050,119 @@ func TestJetStreamClusterPeerRemovalAndConsumerReassignmentOnMetaLeaderChange(t 
 	})
 }
 
+// An under-replicated stream or consumer, one holding fewer peers than its configured
+// replica count, is not migrating. There are no peers to move off of, and the meta leader
+// heals it by adding peers back rather than through migration. Reporting it as migrating
+// leaves the migration monitor running against a group that cannot converge, which registers
+// desired state and clears it again every cycle, churning assignment proposals through the
+// meta log forever.
+func TestJetStreamClusterUnderReplicatedNotMigrating(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Strip a stream member out of the meta group, on a cluster with no spare to replace it.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	peers := metaStreamPeers(ml, globalAccountName, "TEST")
+	require_Len(t, len(peers), 3)
+
+	// The member to remove must not be the meta leader, so the leader stays able to propose.
+	var gone, kept *Server
+	for _, s := range c.servers {
+		if s == ml || !slices.Contains(peers, s.Node()) {
+			continue
+		}
+		if gone == nil {
+			gone = s
+		} else {
+			kept = s
+		}
+	}
+	if kept == nil {
+		kept = ml
+	}
+	require_NotNil(t, gone)
+
+	snc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer snc.Close()
+
+	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: gone.Name()})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiRemoveServer, jsreq, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	c.waitOnPeerCount(2)
+
+	// There is no spare left to take the removed peer's place, so the stream settles below its
+	// replica count and stays there. The consumer follows it down to 2 peers, while both still
+	// resolve to 3 replicas.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		l := c.leader()
+		if l == nil {
+			return errors.New("no meta leader")
+		}
+		if p := metaStreamPeers(l, globalAccountName, "TEST"); len(p) != 2 {
+			return fmt.Errorf("expected stream on 2 peers, got %d", len(p))
+		}
+		if p := metaConsumerPeers(l, globalAccountName, "TEST", "dur"); len(p) != 2 {
+			return fmt.Errorf("expected consumer on 2 peers, got %d", len(p))
+		}
+		return nil
+	})
+
+	mset, err := kept.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Both must settle out of migrating, rather than staying there because they're short a peer.
+	var o *consumer
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if mset.isMigrating() {
+			return errors.New("stream still reports migrating while under-replicated")
+		}
+		if o = mset.lookupConsumer("dur"); o == nil {
+			return errors.New("consumer not found")
+		}
+		if o.isMigrating() {
+			return errors.New("consumer still reports migrating while under-replicated")
+		}
+		return nil
+	})
+
+	// And must stay settled, no desired state churn on either assignment.
+	for range 200 {
+		require_False(t, mset.isMigrating())
+		require_False(t, o.isMigrating())
+		l := c.leader()
+		require_NotNil(t, l)
+		ljs := l.getJetStream()
+		ljs.mu.RLock()
+		sa := ljs.streamAssignment(globalAccountName, "TEST")
+		ca := ljs.consumerAssignment(globalAccountName, "TEST", "dur")
+		streamChurning := sa != nil && sa.Group != nil && sa.Group.Desired != nil
+		consumerChurning := ca != nil && ca.Group != nil && ca.Group.Desired != nil
+		ljs.mu.RUnlock()
+		if streamChurning {
+			t.Fatalf("Desired state re-registered for an under-replicated stream, migration monitor is churning")
+		}
+		if consumerChurning {
+			t.Fatalf("Desired state re-registered for an under-replicated consumer, migration monitor is churning")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestJetStreamClusterReconcileOnlyForNewMetaPeers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

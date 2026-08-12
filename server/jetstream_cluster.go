@@ -4552,13 +4552,14 @@ func (mset *stream) isMigrating() bool {
 	if sa.Group.Desired != nil {
 		return true
 	}
-	// The sign of migration is if our group peer count != configured replica count.
-	if sa.Config.Replicas != len(sa.Group.Peers) {
+	// Without desired state, more peers than replicas is a legacy move left to finish.
+	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
+	if len(sa.Group.Peers) > sa.Config.Replicas {
 		return true
 	}
 	// Final sanity check is that the actual peer set equals the one in the assignment.
 	peers := sa.Group.node.PeerNames()
-	if sa.Config.Replicas != len(peers) {
+	if len(peers) > sa.Config.Replicas {
 		return true
 	}
 	for _, peer := range sa.Group.Peers {
@@ -7775,13 +7776,14 @@ func (o *consumer) isMigrating() bool {
 	if ca.Group.Desired != nil {
 		return true
 	}
-	// The sign of migration is if our group peer count != configured replica count.
-	if replicas != len(ca.Group.Peers) {
+	// Without desired state, more peers than replicas is a legacy move left to finish.
+	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
+	if len(ca.Group.Peers) > replicas {
 		return true
 	}
 	// Final sanity check is that the actual peer set equals the one in the assignment.
 	peers := ca.Group.node.PeerNames()
-	if replicas != len(peers) {
+	if len(peers) > replicas {
 		return true
 	}
 	for _, peer := range ca.Group.Peers {
