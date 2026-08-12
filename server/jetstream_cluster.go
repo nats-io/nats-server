@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"math"
 	"math/rand"
 	"os"
@@ -4285,14 +4286,9 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	}
 	ourPeerId, cc, s := n.ID(), js.cluster, js.srv
 
-	// FIXME(mvv): a move should make sure that peers are also upper-layer current
-	//  should peers where we're moving to, become required for quorum before we move?
-	//// Check to see where we are..
-	//rg := mset.raftGroup()
-	//
-	//// Make sure we have correct cluster information on the other peers.
-	//ci := js.clusterInfo(rg)
-	//mset.checkClusterInfo(ci)
+	// Store whether any peers are currently being caught up, in which case they're
+	// not current yet and we need to wait before removing peers.
+	catchups := mset.catchupPeers()
 
 	js.mu.RLock()
 	// We are shutting down.
@@ -4453,16 +4449,51 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 				}
 			}
 		}
+
+		// Remove old peers one at a time, the leader selected last.
+		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
+
+		// Only remove a peer if the group left after the removal retains a
+		// store-current majority; otherwise wait for catchups to complete.
+		var currentCount int
+		var currentDesired []string
+		for _, p := range actual {
+			if p.Current && p.Lag == 0 && !slices.Contains(catchups, p.ID) {
+				if p.ID != remove {
+					currentCount++
+				}
+				if slices.Contains(desiredPeers, p.ID) {
+					currentDesired = append(currentDesired, p.ID)
+				}
+			}
+		}
+		if quorum := (len(actual)-1)/2 + 1; currentCount < quorum {
+			js.mu.RUnlock()
+			return
+		}
+		// If we have current desired peers, and we're not a desired peer ourselves, step down.
+		if len(currentDesired) > 0 && !slices.Contains(desiredPeers, ourPeerId) {
+			// If desired peers are still catching up, we wait for a quorum of them to complete for now.
+			if quorum := len(desiredPeers)/2 + 1; len(currentDesired) < quorum {
+				js.mu.RUnlock()
+				return
+			}
+			preferred := s.selectStepDownPreferred(ourPeerId, actual, currentDesired)
+			js.mu.RUnlock()
+			if preferred != _EMPTY_ {
+				n.StepDown(preferred)
+			}
+			return
+		}
+
+		js.mu.RUnlock()
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
-		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
-		if remove == ourPeerId {
-			js.mu.RUnlock()
-			n.StepDown()
-		} else {
-			js.mu.RUnlock()
+		if remove != ourPeerId {
 			n.ProposeRemovePeer(remove)
+		} else {
+			n.StepDown()
 		}
 		return
 	}
@@ -11766,6 +11797,12 @@ func (mset *stream) hasCatchupPeers() bool {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return len(mset.catchups) > 0
+}
+
+func (mset *stream) catchupPeers() []string {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return slices.Collect(maps.Keys(mset.catchups))
 }
 
 func (mset *stream) setCatchingUp() {

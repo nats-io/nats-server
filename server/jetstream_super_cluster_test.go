@@ -2790,6 +2790,213 @@ func TestJetStreamSuperClusterMovingStreamAndMoveBack(t *testing.T) {
 	}
 }
 
+func TestJetStreamSuperClusterMovingStreamWaitsForStoreCatchup(t *testing.T) {
+	// Speed up catchup stall/retry cycles.
+	streamCatchupActivityInterval = 2 * time.Second
+	t.Cleanup(func() {
+		streamCatchupActivityInterval = defaultStreamCatchupActivityInterval
+	})
+
+	for _, test := range []struct {
+		name     string
+		replicas int
+		// Group size expected to hold steady while the destination peers'
+		// store catchups are stalled.
+		holdPeers     int
+		finalReplicas int
+	}{
+		// Moving R3: the gate must hold the full old+new group, no old peer
+		// may be removed while no destination peer is store-current.
+		{name: "move", replicas: 3, holdPeers: 6, finalReplicas: 2},
+		// Moving to R1: old peers can be removed while the group left after
+		// each removal retains a store-current majority, so the group must
+		// shrink from 4 to 3 peers (us, one old peer, and the destination)
+		// and then hold.
+		{name: "move-scale-down", replicas: 1, holdPeers: 3, finalReplicas: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sc := createJetStreamTaggedSuperCluster(t)
+			defer sc.shutdown()
+
+			nc, js := jsClientConnect(t, sc.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      "TEST",
+				Replicas:  3,
+				Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+			})
+			require_NoError(t, err)
+
+			toSend := 1_000
+			for range toSend {
+				_, err = js.Publish("TEST", []byte("HELLO WORLD"))
+				require_NoError(t, err)
+			}
+
+			// Exhaust the source leader's outbound catchup budget, as if
+			// another large catchup holds all of it, so the destination peers
+			// can't complete their store catchup until it's released.
+			sl := sc.clusterForName("C1").streamLeader(globalAccountName, "TEST")
+			require_NotNil(t, sl)
+			hold := new(int64)
+			sl.gcbAdd(hold, int64(1)<<30)
+
+			mset, err := sl.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			node := mset.raftNode()
+			require_NotNil(t, node)
+			require_Len(t, len(node.PeerNames()), 3)
+
+			// Compact the leader's raft log so the destination peers can't be
+			// caught up through raft-log replay alone. They'll receive a raft
+			// snapshot and must pull the stream data through the (stalled)
+			// out-of-band catchup.
+			require_NoError(t, node.InstallSnapshot(mset.stateSnapshot(), true))
+
+			// Move the stream to the other cluster.
+			_, err = js.UpdateStream(&nats.StreamConfig{
+				Name:      "TEST",
+				Replicas:  test.replicas,
+				Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+			})
+			require_NoError(t, err)
+
+			// Wait for the migration to reach its hold point, with store
+			// catchups in flight.
+			checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+				if peers := node.PeerNames(); len(peers) != test.holdPeers {
+					return fmt.Errorf("expected %d peers, got %d", test.holdPeers, len(peers))
+				}
+				if !mset.hasCatchupPeers() {
+					return fmt.Errorf("no store catchups in flight yet")
+				}
+				return nil
+			})
+
+			// While the destination peers can't complete their store catchup,
+			// the gate must hold: leadership stays on the source leader and
+			// the group must not shrink further.
+			for done := time.Now().Add(2 * time.Second); time.Now().Before(done); time.Sleep(250 * time.Millisecond) {
+				require_True(t, node.Leader())
+				require_Len(t, len(node.PeerNames()), test.holdPeers)
+			}
+
+			// Release the budget, catchups can now complete and the move finish.
+			sl.gcbSubLast(hold)
+
+			sc.waitOnStreamLeader(globalAccountName, "TEST")
+			checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TEST")
+				if err != nil {
+					return err
+				}
+				if si.Cluster.Name != "C2" {
+					return fmt.Errorf("wrong cluster: %q", si.Cluster.Name)
+				}
+				if si.Cluster.Leader == _EMPTY_ {
+					return fmt.Errorf("no leader yet")
+				} else if !strings.HasPrefix(si.Cluster.Leader, "C2") {
+					return fmt.Errorf("wrong leader: %q", si.Cluster.Leader)
+				}
+				if len(si.Cluster.Replicas) != test.finalReplicas {
+					return fmt.Errorf("expected %d replicas, got %d", test.finalReplicas, len(si.Cluster.Replicas))
+				}
+				if si.State.Msgs != uint64(toSend) {
+					return fmt.Errorf("only see %d msgs", si.State.Msgs)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestJetStreamSuperClusterMovingStreamStaleCatchupPeerDoesNotBlock(t *testing.T) {
+	sc := createJetStreamTaggedSuperCluster(t)
+	defer sc.shutdown()
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:aws"}},
+	})
+	require_NoError(t, err)
+
+	toSend := 100
+	for range toSend {
+		_, err = js.Publish("TEST", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	sl := sc.clusterForName("C1").streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	require_Len(t, len(node.PeerNames()), 3)
+
+	// Pick an old peer that isn't us, it must be removed by the migration.
+	var stale string
+	for _, peer := range node.PeerNames() {
+		if peer != node.ID() {
+			stale = peer
+			break
+		}
+	}
+	require_NotEqual(t, stale, _EMPTY_)
+
+	// Move the stream to the other cluster.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"cloud:gcp"}},
+	})
+	require_NoError(t, err)
+
+	// Simulate an old peer whose catchup stalled and left its entry behind.
+	// runCatchup intentionally keeps the entry on a transient inactivity stall,
+	// and nothing clears it while we remain leader. Keep it set until both peer
+	// sets are in the group, so it's certain to be there once we start removing
+	// old peers. That peer is on its way out and doesn't need to become
+	// store-current, so it must not hold up the handover to the desired peers.
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		mset.setCatchupPeer(stale, uint64(toSend))
+		if peers := node.PeerNames(); len(peers) != 6 {
+			return fmt.Errorf("expected 6 peers, got %d", len(peers))
+		}
+		return nil
+	})
+	require_True(t, mset.hasCatchupPeers())
+
+	// The migration must still complete, the stale entry must not wedge it.
+	sc.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster.Name != "C2" {
+			return fmt.Errorf("wrong cluster: %q", si.Cluster.Name)
+		}
+		if si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("no leader yet")
+		} else if !strings.HasPrefix(si.Cluster.Leader, "C2") {
+			return fmt.Errorf("wrong leader: %q", si.Cluster.Leader)
+		}
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d", len(si.Cluster.Replicas))
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("only see %d msgs", si.State.Msgs)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamSuperClusterImportConsumerStreamSubjectRemap(t *testing.T) {
 	template := `
 	listen: 127.0.0.1:-1

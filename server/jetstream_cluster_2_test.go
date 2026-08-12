@@ -9076,6 +9076,18 @@ func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
 	require_Equal(t, selectFor(n, []string{"D"}), _EMPTY_)
 }
 
+func TestJetStreamClusterStreamCatchupPeers(t *testing.T) {
+	// Presence of an entry, not its lag, signals a peer requiring catchup.
+	// A zero-lag entry is included: it can mean a catchup stalled on its
+	// final message, kept so we don't lose track of the peer.
+	mset := &stream{catchups: map[string]uint64{"A": 0, "B": 100}}
+	peers := mset.catchupPeers()
+	slices.Sort(peers)
+	require_True(t, slices.Equal(peers, []string{"A", "B"}))
+	mset.catchups = nil
+	require_True(t, mset.catchupPeers() == nil)
+}
+
 func TestJetStreamClusterScaleUpOfflinePeerPreservesQuorum(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
