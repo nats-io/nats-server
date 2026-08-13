@@ -9239,13 +9239,13 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		sa.Created = time.Time{}
 		return sjs, acc, sa, mset
 	}
-	checkNodeIsClosed := func(sa *streamAssignment) {
+	checkNodeIsClosed := func(sjs *jetStream, sa *streamAssignment) {
 		t.Helper()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
 		require_True(t, sa.Group != nil)
-		rg := sa.Group
-		require_True(t, rg.node != nil)
-		n := rg.node
-		require_Equal(t, n.State(), Closed)
+		require_True(t, sa.Group.node != nil)
+		require_Equal(t, sa.Group.node.State(), Closed)
 	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -9259,10 +9259,15 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 	// We manually stop the RAFT node and ensure it doesn't get restarted.
 	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
 	sjs, acc, sa, mset := getStreamAssignment(rs)
-	require_True(t, sa.Group != nil)
+	sjs.mu.RLock()
 	rg := sa.Group
-	require_True(t, rg.node != nil)
-	n := rg.node
+	var n RaftNode
+	if rg != nil {
+		n = rg.node
+	}
+	sjs.mu.RUnlock()
+	require_True(t, rg != nil)
+	require_True(t, n != nil)
 	n.Stop()
 	n.WaitForStop()
 
@@ -9281,9 +9286,9 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down, but we're still in the stream monitor.
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 	sjs.isStreamHealthy(acc, sa)
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 
 	err = js.DeleteStream("TEST")
 	require_NoError(t, err)
@@ -9301,9 +9306,9 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.mu.Unlock()
 
 	// The underlying stream has been deleted. Checking health must not recreate the stream.
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 	sjs.isStreamHealthy(acc, sa)
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 }
 
 func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
@@ -9557,13 +9562,13 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 		ca.Created = time.Time{}
 		return sjs, sa, ca, mset
 	}
-	checkNodeIsClosed := func(ca *consumerAssignment) {
+	checkNodeIsClosed := func(sjs *jetStream, ca *consumerAssignment) {
 		t.Helper()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
 		require_True(t, ca.Group != nil)
-		rg := ca.Group
-		require_True(t, rg.node != nil)
-		n := rg.node
-		require_Equal(t, n.State(), Closed)
+		require_True(t, ca.Group.node != nil)
+		require_Equal(t, ca.Group.node.State(), Closed)
 	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -9580,10 +9585,15 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// We manually stop the RAFT node and ensure it doesn't get restarted.
 	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 	sjs, sa, ca, mset := getConsumerAssignment(rs)
-	require_True(t, ca.Group != nil)
+	sjs.mu.RLock()
 	rg := ca.Group
-	require_True(t, rg.node != nil)
-	n := rg.node
+	var n RaftNode
+	if rg != nil {
+		n = rg.node
+	}
+	sjs.mu.RUnlock()
+	require_True(t, rg != nil)
+	require_True(t, n != nil)
 	n.Stop()
 	n.WaitForStop()
 
@@ -9598,9 +9608,9 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 
 	// We create a new RAFT group, the health check should detect this skew.
 	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, false, MemoryStorage, pprofLabels{})
@@ -9628,9 +9638,9 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.mu.Unlock()
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 }
 
 func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
