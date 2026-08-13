@@ -7835,12 +7835,12 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 
 // Lock should be held.
 func (mb *msgBlock) syncFile() error {
+	mb.fs.dios.acquire()
+	defer mb.fs.dios.release()
 	fd, didOpen := mb.mfd, false
 	if fd == nil {
-		mb.fs.dios.acquire()
 		var err error
 		fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-		mb.fs.dios.release()
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
