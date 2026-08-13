@@ -507,7 +507,7 @@ type consumer struct {
 	infoSub   *subscription
 	lqsent    time.Time
 	prm       map[string]struct{}
-	rsm       map[string]bool // Reset requests that need to be responded to on the internal sys account (if true).
+	rsm       map[string]resetRequest // Reset requests that need to be responded to.
 	prOk      bool
 	uch       chan struct{}
 	retention RetentionPolicy
@@ -1434,7 +1434,7 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	mset.mu.Unlock()
 
 	if config.Sourcing && standalone {
-		o.resetStartingSeq(0, _EMPTY_, false)
+		o.resetStartingSeq(0, _EMPTY_, false, false)
 	}
 	if config.Direct || standalone {
 		o.setLeader(true, 0)
@@ -2657,7 +2657,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	o.cfg = *cfg
 
 	if cfg.Sourcing && (!o.srv.JetStreamIsClustered() && o.srv.standAloneMode()) {
-		o.resetStartingSeqLocked(0, _EMPTY_, false)
+		o.resetStartingSeqLocked(0, _EMPTY_, false, false)
 	}
 	if updatedFilters {
 		// Cleanup messages that lost interest.
@@ -2828,14 +2828,21 @@ func (o *consumer) updateSkipped(seq uint64) {
 	o.propose(b[:])
 }
 
-func (o *consumer) resetStartingSeq(seq uint64, reply string, internal bool) (uint64, bool, error) {
+// resetRequest tracks a reset request that still needs to be responded to
+// once the reset has been applied.
+type resetRequest struct {
+	internal bool // Respond on the internal sys account.
+	identity bool // Include the stream identity header in the response.
+}
+
+func (o *consumer) resetStartingSeq(seq uint64, reply string, internal, identity bool) (uint64, bool, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.resetStartingSeqLocked(seq, reply, internal)
+	return o.resetStartingSeqLocked(seq, reply, internal, identity)
 }
 
 // Lock should be held.
-func (o *consumer) resetStartingSeqLocked(seq uint64, reply string, internal bool) (uint64, bool, error) {
+func (o *consumer) resetStartingSeqLocked(seq uint64, reply string, internal, identity bool) (uint64, bool, error) {
 	// Reset to a specific sequence, or back to the ack floor.
 	if seq == 0 {
 		seq = o.asflr + 1
@@ -2877,9 +2884,9 @@ VALID:
 		o.propose(b[:])
 		if reply != _EMPTY_ {
 			if o.rsm == nil {
-				o.rsm = make(map[string]bool, 1)
+				o.rsm = make(map[string]resetRequest, 1)
 			}
-			o.rsm[reply] = internal
+			o.rsm[reply] = resetRequest{internal: internal, identity: identity}
 		}
 		return seq, false, nil
 	}
@@ -4537,6 +4544,13 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 		return
 	}
 
+	// If the user provided an expected stream identity.
+	// We don't reject the request, we only populate the identity in the response.
+	var streamIdentity string
+	if sliceHeader(JSStreamIdentity, hdr) != nil {
+		streamIdentity = o.streamIdentity()
+	}
+
 	// An empty message resets back to the ack floor, otherwise a custom sequence can be used.
 	var req JSApiConsumerResetRequest
 	if len(msg) > 0 {
@@ -4546,14 +4560,19 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 			return
 		}
 	}
-	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply, false)
+	resetSeq, canRespond, err := o.resetStartingSeq(req.Seq, reply, false, streamIdentity != _EMPTY_)
 	if err != nil {
 		resp.Error = NewJSConsumerInvalidResetError(err)
 		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 	} else if canRespond {
 		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 		resp.ResetSeq = resetSeq
-		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		if streamIdentity != _EMPTY_ {
+			rhdr := genHeader(nil, JSStreamIdentity, streamIdentity)
+			s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, rhdr, s.jsonResponse(&resp), false)
+		} else {
+			s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+		}
 	}
 }
 
@@ -6307,13 +6326,11 @@ func (o *consumer) selectStartingSeqNo() error {
 			o.sseq = o.cfg.OptStartSeq
 		}
 
-		if state.FirstSeq == 0 && (o.cfg.Direct || o.cfg.OptStartSeq == 0) {
+		if state.FirstSeq == 0 && o.cfg.OptStartSeq == 0 {
 			// If the stream is empty, deliver only new.
-			// But only if mirroring/sourcing, or start seq is unset, otherwise need to respect provided value.
 			o.sseq = 1
-		} else if o.sseq > state.LastSeq && (o.cfg.Direct || o.cfg.OptStartSeq == 0) {
+		} else if o.sseq > state.LastSeq && o.cfg.OptStartSeq == 0 {
 			// If selected sequence is in the future, clamp back down.
-			// But only if mirroring/sourcing, or start seq is unset, otherwise need to respect provided value.
 			o.sseq = state.LastSeq + 1
 		} else if o.sseq < state.FirstSeq {
 			// If the first sequence is further ahead than the starting sequence,
@@ -6424,6 +6441,18 @@ func (o *consumer) streamName() string {
 	o.mu.RUnlock()
 	if mset != nil {
 		return mset.name()
+	}
+	return _EMPTY_
+}
+
+// streamIdentity returns the identity of the consumer's stream, which changes
+// if the stream is recreated. Returns empty if the stream is not available.
+func (o *consumer) streamIdentity() string {
+	o.mu.RLock()
+	mset := o.mset
+	o.mu.RUnlock()
+	if mset != nil {
+		return mset.identity()
 	}
 	return _EMPTY_
 }

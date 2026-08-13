@@ -6284,7 +6284,12 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 							} else {
 								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+								if resp.Config.Direct || resp.Config.Sourcing {
+									rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
+									s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
+								} else {
+									s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+								}
 							}
 						},
 						pprofLabels{
@@ -6362,19 +6367,25 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 						// If it's a sourcing consumer, we need to respond after the consumer has been reset instead.
 						if sourcing {
 							var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
-							resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true)
+							resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true, true)
 							if err != nil {
 								resp.Error = NewJSConsumerInvalidResetError(err)
 								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 							} else if canRespond {
 								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 								resp.ResetSeq = resetSeq
-								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
+								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
 							}
 						} else {
 							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
 							resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							if resp.Config.Direct || resp.Config.Sourcing {
+								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
+								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
+							} else {
+								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							}
 						}
 					}
 				}
@@ -7097,7 +7108,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					s, a := o.srv, o.acc
 					if reply == _EMPTY_ {
 						o.mu.Unlock()
-					} else if internal, ok := o.rsm[reply]; !ok {
+					} else if rr, ok := o.rsm[reply]; !ok {
 						o.mu.Unlock()
 					} else {
 						delete(o.rsm, reply)
@@ -7105,13 +7116,18 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 
 						// Check if the reset request needs to be answered on the system account.
 						// This will happen for replicated sourcing consumers that get reset as part of a create/update.
-						if internal {
+						if rr.internal {
 							a = nil
 						}
 						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
 						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 						resp.ResetSeq = sseq
-						s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						if rr.identity {
+							rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
+							s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, rhdr, s.jsonResponse(&resp), false)
+						} else {
+							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						}
 					}
 				}
 			case addPendingRequest:
@@ -7321,18 +7337,24 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 		// If it's a sourcing consumer, we need to respond after the consumer has been reset instead.
 		if sourcing {
 			var rresp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
-			resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true)
+			resetSeq, canRespond, err := o.resetStartingSeq(0, reply, true, true)
 			if err != nil {
 				rresp.Error = NewJSConsumerInvalidResetError(err)
 				s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
 			} else if canRespond {
 				rresp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
 				rresp.ResetSeq = resetSeq
-				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
+				rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
+				s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&rresp))
 			}
 		} else {
 			resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
-			s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+			if resp.Config.Direct || resp.Config.Sourcing {
+				rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
+				s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
+			} else {
+				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+			}
 		}
 		o.sendCreateAdvisory()
 	}
@@ -9575,11 +9597,13 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 }
 
 // jsClusteredConsumerRequest is first point of entry to create a consumer in clustered mode.
-func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, stream string, cfg *ConsumerConfig, action ConsumerAction, pedantic bool) {
+func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subject, reply string, hdr, msg []byte, req *CreateConsumerRequest) {
 	js, cc := s.getJetStreamCluster()
 	if js == nil || cc == nil {
 		return
 	}
+
+	stream, cfg, action, pedantic := req.Stream, &req.Config, req.Action, req.Pedantic
 
 	// If the consumer is a direct sourcing consumer, we need to "upgrade" it to be durable without AckNone.
 	// We only get here if the stream is not Limits-based.
@@ -9597,26 +9621,26 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	streamCfg, ok := js.clusterStreamConfig(acc.Name, stream)
 	if !ok {
 		resp.Error = NewJSStreamNotFoundError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&streamCfg))
 	if apiErr != nil {
 		resp.Error = apiErr
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 	srvLim := &s.getOpts().JetStreamLimits
 	// Make sure we have sane defaults
 	if err := setConsumerConfigDefaults(cfg, &streamCfg, srvLim, selectedLimits, pedantic); err != nil {
 		resp.Error = err
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
 	if err := checkConsumerCfg(cfg, srvLim, &streamCfg, acc, selectedLimits, false); err != nil {
 		resp.Error = err
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
 
@@ -9631,8 +9655,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	sa := js.streamAssignmentOrInflight(acc.Name, stream)
 	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
+	}
+
+	// If the user provided an expected stream identity, reject the request on a mismatch.
+	var streamIdentity string
+	if req.Config.Direct || req.Config.Sourcing {
+		streamIdentity = sa.identity()
+		if reqIdentity := sliceHeader(JSStreamIdentity, hdr); len(reqIdentity) > 0 && bytesToString(reqIdentity) != streamIdentity {
+			resp.Error = NewJSConsumerStreamIdentityMismatchError(streamIdentity)
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			return
+		}
 	}
 
 	// Was a consumer name provided?
@@ -9670,7 +9705,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				}
 				if total >= maxc {
 					resp.Error = NewJSMaximumConsumersLimitError()
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 					return
 				}
 			}
@@ -9681,7 +9716,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if cfg.DeliverPolicy == DeliverLastPerSubject {
 		if cfg.FilterSubject == _EMPTY_ && len(cfg.FilterSubjects) == 0 {
 			resp.Error = NewJSConsumerInvalidPolicyError(fmt.Errorf("consumer delivery policy is deliver last per subject, but FilterSubject is not set"))
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 	}
@@ -9720,19 +9755,19 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 
 			if action == ActionCreate && !reflect.DeepEqual(cfg, ca.Config) {
 				resp.Error = NewJSConsumerAlreadyExistsError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
 			// Do quick sanity check on new cfg to prevent here if possible.
 			if err := acc.checkNewConsumerConfig(ca.Config, cfg); err != nil {
 				resp.Error = NewJSConsumerCreateError(err, Unless(err))
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
 			// Don't allow updating if all peers are offline.
 			if s.allPeersOffline(ca.Group) {
 				resp.Error = NewJSConsumerOfflineError()
-				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp), nil, errRespDelay)
+				s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 				return
 			}
 		} else {
@@ -9753,13 +9788,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	if ca == nil {
 		if action == ActionUpdate {
 			resp.Error = NewJSConsumerDoesNotExistError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		rg, err := cc.createGroupForConsumer(cfg, sa)
 		if err != nil {
 			resp.Error = NewJSInsufficientResourcesError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 			return
 		}
 		// Pick a preferred leader.
@@ -9790,7 +9825,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 						ni := ni.(nodeInfo)
 						if stats := ni.stats; stats != nil && stats.HAAssets > maxHaAssets {
 							resp.Error = NewJSInsufficientResourcesError()
-							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 							s.Warnf("%s@%s (HA Asset Count: %d) exceeds max ha asset limit of %d"+
 								" for (durable) consumer %s placement on stream %s",
 								ni.name, ni.cluster, ni.stats.HAAssets, maxHaAssets, oname, stream)
@@ -9806,12 +9841,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		if sa.Config.Retention == WorkQueuePolicy && !cfg.Direct && !cfg.Sourcing {
 			if cfg.AckPolicy != AckExplicit && cfg.AckPolicy != AckFlowControl {
 				resp.Error = NewJSConsumerWQRequiresExplicitAckError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
 			if cfg.DeliverPolicy != DeliverAll {
 				resp.Error = NewJSConsumerWQConsumerNotDeliverAllError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
 			subjects := gatherSubjectFilters(cfg.FilterSubject, cfg.FilterSubjects)
@@ -9821,14 +9856,14 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 				}
 				if len(subjects) == 0 {
 					resp.Error = NewJSConsumerWQMultipleUnfilteredError()
-					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 					return
 				}
 				for _, psubj := range gatherSubjectFilters(oca.Config.FilterSubject, oca.Config.FilterSubjects) {
 					for _, subj := range subjects {
 						if SubjectsCollide(subj, psubj) {
 							resp.Error = NewJSConsumerWQConsumerNotUniqueError()
-							s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+							s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 							return
 						}
 					}
@@ -9887,7 +9922,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			// Respond with error when there is a config mismatch between the intended config and expected peer size.
 			if len(streamPeerSet) < rAfter {
 				resp.Error = NewJSConsumerReplicasExceedsStreamError()
-				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 				return
 			}
 			rand.Shuffle(rAfter, func(i, j int) { streamPeerSet[i], streamPeerSet[j] = streamPeerSet[j], streamPeerSet[i] })

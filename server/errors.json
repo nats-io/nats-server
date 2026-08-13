@@ -2228,5 +2228,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerStreamIdentityMismatchF",
+    "code": 400,
+    "error_code": 10225,
+    "description": "consumer's stream identity does not match: {msg}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]
