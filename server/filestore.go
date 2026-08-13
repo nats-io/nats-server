@@ -7862,19 +7862,6 @@ func (mb *msgBlock) syncFile() error {
 	return nil
 }
 
-// Lock should be held.
-func (mb *msgBlock) syncFileAndDir() error {
-	if err := mb.syncFile(); err != nil {
-		return err
-	}
-	if canFsyncDirectories {
-		mb.fs.dios.acquire()
-		defer mb.fs.dios.release()
-		return syncDir(mb.mfn)
-	}
-	return nil
-}
-
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
 	if fs.isClosed() {
@@ -7900,6 +7887,7 @@ func (fs *fileStore) syncBlocks() {
 	var fsDmap *interiorDeletes
 
 	var markDirty bool
+	var needDirSync bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -7977,6 +7965,7 @@ func (fs *fileStore) syncBlocks() {
 				storeFsWerr(err)
 				continue
 			}
+			needDirSync = true
 			compacted = !shouldRemove
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
@@ -8005,13 +7994,8 @@ func (fs *fileStore) syncBlocks() {
 
 		// Check if we need to sync this block.
 		if needSync || compacted {
-			var err error
 			mb.mu.Lock()
-			if compacted {
-				err = mb.syncFileAndDir()
-			} else {
-				err = mb.syncFile()
-			}
+			err := mb.syncFile()
 			if err == nil {
 				mb.needSync = false
 			}
@@ -8020,6 +8004,14 @@ func (fs *fileStore) syncBlocks() {
 				storeFsWerr(err)
 				continue
 			}
+		}
+	}
+	if needDirSync && canFsyncDirectories {
+		fs.dios.acquire()
+		err := syncDir(filepath.Join(fs.fcfg.StoreDir, msgDir))
+		fs.dios.release()
+		if err != nil {
+			storeFsWerr(err)
 		}
 	}
 
@@ -14008,7 +14000,7 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14034,7 +14026,7 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 		return err
 	}
 	if canFsyncDirectories {
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14042,10 +14034,10 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 }
 
 // Dios should already be held.
-func syncDir(name string) error {
+func syncDir(path string) error {
 	var d *os.File
 	var err error
-	if d, err = os.Open(filepath.Dir(name)); err != nil {
+	if d, err = os.Open(path); err != nil {
 		return err
 	}
 	if err = d.Sync(); err != nil {
