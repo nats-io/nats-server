@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -4368,4 +4369,214 @@ func TestAccountSendTrackingLatencyRcRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// sharedInboxRequests stands up a foo/bar service export/import pair and has
+// bar send numReqs requests that all share one reply subject. The responder
+// never answers, so every response is left outstanding under that single rrMap
+// key. Returns both accounts and the shared reply subject.
+func sharedInboxRequests(t *testing.T, numReqs int) (*Account, *Account, string) {
+	t.Helper()
+
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	t.Cleanup(s.Shutdown)
+
+	if err := fooAcc.AddServiceExport("test", nil); err != nil {
+		t.Fatalf("Error adding service export: %v", err)
+	}
+	if err := barAcc.AddServiceImport(fooAcc, "test", _EMPTY_); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// Both connections are net.Pipe, so anything the server writes blocks until
+	// it is read. Drain them, otherwise the write loops sit on the flush
+	// deadline and shutdown takes ten seconds.
+	cfoo, rfoo, _ := newClientForServer(s)
+	t.Cleanup(cfoo.close)
+	go io.Copy(io.Discard, rfoo)
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	// Responder never answers, so the entries stay outstanding.
+	cfoo.parse([]byte("SUB test 1\r\n"))
+
+	cbar, rbar, _ := newClientForServer(s)
+	t.Cleanup(cbar.close)
+	go io.Copy(io.Discard, rbar)
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	const inbox = "my.inbox"
+	cbar.parse([]byte("SUB my.inbox 11\r\n"))
+	for i := 0; i < numReqs; i++ {
+		cbar.parse([]byte("PUB test my.inbox 4\r\nhelp\r\n"))
+	}
+
+	return fooAcc, barAcc, inbox
+}
+
+// A client is allowed to reuse a single reply subject across many concurrent
+// service import requests, which piles every outstanding response entry under
+// one rrMap key. Make sure those entries are tracked and removed correctly in
+// both the small (unindexed) and large (indexed) cases.
+func TestServiceImportReverseEntriesSharedReplySubject(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		numReqs int
+		indexed bool
+	}{
+		{"below index threshold", rrIndexThreshold - 1, false},
+		{"above index threshold", rrIndexThreshold * 100, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fooAcc, barAcc, inbox := sharedInboxRequests(t, test.numReqs)
+
+			barAcc.mu.RLock()
+			re, ok := barAcc.imports.rrMap[inbox]
+			numEntries, indexed := len(re.list), re.idx != nil
+			barAcc.mu.RUnlock()
+
+			if !ok {
+				t.Fatalf("Expected a reverse entry for %q", inbox)
+			}
+			if numEntries != test.numReqs {
+				t.Fatalf("Expected %d reverse entries, got %d", test.numReqs, numEntries)
+			}
+			if indexed != test.indexed {
+				t.Fatalf("Expected indexed to be %v, got %v", test.indexed, indexed)
+			}
+
+			// Now expire them the way the response threshold timer does, and make
+			// sure every entry is accounted for as we go.
+			fooAcc.mu.RLock()
+			var expired []*serviceImport
+			for _, si := range fooAcc.exports.responses {
+				expired = append(expired, si)
+			}
+			fooAcc.mu.RUnlock()
+
+			if len(expired) != test.numReqs {
+				t.Fatalf("Expected %d outstanding responses, got %d", test.numReqs, len(expired))
+			}
+
+			for i, si := range expired {
+				fooAcc.removeRespServiceImport(si, rsiTimeout)
+				barAcc.mu.RLock()
+				re, ok := barAcc.imports.rrMap[inbox]
+				remaining := len(re.list)
+				idxLen := len(re.idx)
+				barAcc.mu.RUnlock()
+
+				if expect := test.numReqs - i - 1; remaining != expect {
+					t.Fatalf("After %d removals expected %d entries, got %d", i+1, expect, remaining)
+				} else if expect == 0 {
+					if ok {
+						t.Fatalf("Expected the reverse entry for %q to be removed once empty", inbox)
+					}
+				} else if re.idx != nil && idxLen != remaining {
+					t.Fatalf("Index out of sync with list: %d vs %d", idxLen, remaining)
+				}
+			}
+
+			fooAcc.mu.RLock()
+			left := len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if left != 0 {
+				t.Fatalf("Expected no outstanding responses left, got %d", left)
+			}
+		})
+	}
+}
+
+// The other removal path drops a whole reply subject at once instead of one
+// entry at a time. That is what runs when interest in the reply subject goes
+// away, so it is the path a disconnecting requestor takes.
+func TestServiceImportReverseEntriesBulkRemoval(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		numReqs int
+	}{
+		{"below index threshold", rrIndexThreshold - 1},
+		{"above index threshold", rrIndexThreshold * 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fooAcc, barAcc, inbox := sharedInboxRequests(t, test.numReqs)
+
+			fooAcc.mu.RLock()
+			outstanding := len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if outstanding != test.numReqs {
+				t.Fatalf("Expected %d outstanding responses, got %d", test.numReqs, outstanding)
+			}
+
+			// A nil si means drop every entry under this reply subject and clean
+			// up the responses they point at on the exporting account.
+			barAcc.checkForReverseEntry(inbox, nil, false)
+
+			barAcc.mu.RLock()
+			_, ok := barAcc.imports.rrMap[inbox]
+			remaining := len(barAcc.imports.rrMap)
+			barAcc.mu.RUnlock()
+			if ok {
+				t.Fatalf("Expected the reverse entry for %q to be gone", inbox)
+			}
+			if remaining != 0 {
+				t.Fatalf("Expected no reverse entries left, got %d", remaining)
+			}
+
+			fooAcc.mu.RLock()
+			outstanding = len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if outstanding != 0 {
+				t.Fatalf("Expected every outstanding response to be cleaned up, got %d", outstanding)
+			}
+		})
+	}
+}
+
+// Guards the cost of clearing outstanding responses. Each iteration clears the
+// whole set, so ns/op is the cost of draining n entries, not of one removal.
+// The shared case is the one that used to go quadratic; the unique case is the
+// common one and should stay where it is.
+func BenchmarkReverseRespMapRemoval(b *testing.B) {
+	for _, bench := range []struct {
+		name   string
+		shared bool
+	}{
+		{"SharedReplySubject", true},
+		{"UniqueReplySubjects", false},
+	} {
+		for _, n := range []int{1000, 10000, 40000} {
+			b.Run(fmt.Sprintf("%s/%d", bench.name, n), func(b *testing.B) {
+				replies, sis := make([]string, n), make([]*serviceImport, n)
+				for i := 0; i < n; i++ {
+					if bench.shared {
+						replies[i] = "my.inbox"
+					} else {
+						replies[i] = fmt.Sprintf("my.inbox.%d", i)
+					}
+					sis[i] = &serviceImport{from: fmt.Sprintf("_R_.%d", i), to: replies[i]}
+				}
+
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					acc := NewAccount("bar")
+					for j := 0; j < n; j++ {
+						acc.addReverseRespMapEntry(acc, replies[j], sis[j].from)
+					}
+					b.StartTimer()
+
+					for j := 0; j < n; j++ {
+						acc.checkForReverseEntry(replies[j], sis[j], false)
+					}
+
+					if left := len(acc.imports.rrMap); left != 0 {
+						b.Fatalf("Expected no reverse entries left, got %d", left)
+					}
+				}
+			})
+		}
+	}
 }
