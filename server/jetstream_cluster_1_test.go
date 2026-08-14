@@ -11606,33 +11606,34 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		var s *Server
 		checkStoreIsAsync := func(expectAsync bool) {
 			t.Helper()
-			mset, err := s.globalAccount().lookupStream("TEST")
-			require_NoError(t, err)
-			fs := mset.Store().(*fileStore)
-			fs.mu.RLock()
-			lmb := fs.lmb
-			asyncFlush := fs.fcfg.AsyncFlush
-			fip := fs.fip
-			fs.mu.RUnlock()
-			require_Equal(t, asyncFlush, expectAsync)
-			require_Equal(t, fip, !expectAsync)
-			require_NotNil(t, lmb)
-			lmb.mu.RLock()
-			flusher := lmb.flusher
-			lmb.mu.RUnlock()
-			if expectAsync {
-				if !flusher {
-					t.Fatal("flusher not initialized")
-				} else if !asyncFlush {
-					t.Fatal("async flush config not set")
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				mset, err := s.globalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
 				}
-			} else {
-				if flusher {
-					t.Fatal("flusher still initialized")
-				} else if asyncFlush {
-					t.Fatal("async flush config not reset")
+				fs := mset.Store().(*fileStore)
+				fs.mu.RLock()
+				lmb := fs.lmb
+				asyncFlush := fs.fcfg.AsyncFlush
+				fip := fs.fip
+				fs.mu.RUnlock()
+				if asyncFlush != expectAsync {
+					return fmt.Errorf("expected async flush config %v, got %v", expectAsync, asyncFlush)
 				}
-			}
+				if fip != !expectAsync {
+					return fmt.Errorf("expected flush in place %v, got %v", !expectAsync, fip)
+				}
+				if lmb == nil {
+					return errors.New("expected last message block to be set")
+				}
+				lmb.mu.RLock()
+				flusher := lmb.flusher
+				lmb.mu.RUnlock()
+				if flusher != expectAsync {
+					return fmt.Errorf("expected flusher initialized %v, got %v", expectAsync, flusher)
+				}
+				return nil
+			})
 		}
 
 		cfg := &StreamConfig{
@@ -11653,6 +11654,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		cfg.Replicas = 3
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			return checkState(t, c, globalAccountName, "TEST")
 		})
@@ -11664,6 +11666,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		cfg.Replicas = 1
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
 		checkStoreIsAsync(false)
