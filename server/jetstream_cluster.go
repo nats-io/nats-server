@@ -4326,7 +4326,77 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 }
 
-// Migrate a stream from peer set A to peer set B. Returns true when migration is done.
+// desiredSnapshot copies the group's desired state, so it stays usable after the
+// JetStream lock is released. needDesired is true if desired state is missing or was
+// recorded under another leader term, and the meta leader must record it first.
+// Lock should be held.
+func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers []string, needDesired bool) {
+	desired := rg.Desired
+	if desired != nil {
+		// MUST copy the peers, the assignment can be updated once we release.
+		id, scaleDown, peers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
+	}
+	needDesired = desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm
+	return id, scaleDown, peers, needDesired
+}
+
+// peerIDs returns the IDs of the given peers.
+func peerIDs(peers []*Peer) []string {
+	ids := make([]string, 0, len(peers))
+	for _, p := range peers {
+		ids = append(ids, p.ID)
+	}
+	return ids
+}
+
+// removeEvictedPeers removes a raft member that is not a current member or no
+// longer part of the meta group, it has been evicted from the cluster, e.g. by a
+// server peer-remove. It can't take part in a migration, so remove it from the
+// group right away rather than waiting for the rest of the migration to complete.
+// Returns true if we've acted, and the migration must wait for the next cycle.
+func (s *Server) removeEvictedPeers(n, meta RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) bool {
+	metaPeers := meta.PeerNames()
+	var evicted []string
+	for _, peer := range actualPeers {
+		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
+			evicted = append(evicted, peer)
+		}
+	}
+	if len(evicted) == 0 {
+		return false
+	}
+	// Remove evicted peers one at a time, the leader last so leadership stays
+	// stable throughout. Step down and perform a leader transfer if we'd remove
+	// ourselves, preferring a successor that is already in the desired peer set.
+	ourPeerId := n.ID()
+	if remove := s.selectPeerToRemove(ourPeerId, actual, evicted); remove == ourPeerId {
+		n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, desiredPeers))
+	} else {
+		n.ProposeRemovePeer(remove)
+	}
+	return true
+}
+
+// extendPeerSet extends the actual peer set through the log, but only with peers
+// that are part of the desired set.
+// Returns true if we've acted, and the migration must wait for the next cycle.
+func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) bool {
+	var candidates []string
+	for _, peer := range current {
+		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
+			candidates = append(candidates, peer)
+		}
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+	if add := s.selectPeerToAdd(n, n.ID(), actual, candidates); add != _EMPTY_ {
+		n.ProposeAddPeer(add)
+	}
+	return true
+}
+
+// Migrate a stream from peer set A to peer set B.
 func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64) {
 	if leaderTerm == 0 {
 		return
@@ -4358,17 +4428,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	meta := cc.meta
 	accName, streamName, replicas := sa.Client.serviceAccount(), sa.Config.Name, sa.Config.Replicas
 	current := copyStrings(sa.Group.Peers)
-	// If desired state is missing, inform the meta leader to create desired state.
-	// Or, if the recorded leader term isn't ours, then get that updated first.
-	desired := sa.Group.Desired
-	var desiredID string
-	var desiredScaleDown bool
-	var desiredPeers []string
-	if desired != nil {
-		// MUST copy the peers, the assignment can be updated once we release below.
-		desiredID, desiredScaleDown, desiredPeers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
-	}
-	needDesired := desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm
+	desiredID, desiredScaleDown, desiredPeers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -4376,12 +4436,10 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		reconcile := &streamAssignmentReconcile{Account: accName, Stream: streamName, desiredAssignmentUpdate: update}
 		s.sendInternalMsgLocked(streamAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
 	}
-
 	if needDesired {
 		sendMetaUpdate()
 		return
 	}
-
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
 		if err := mset.flushAllPending(); err == nil {
@@ -4395,49 +4453,16 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	}
 
 	actual := n.Peers()
-	actualPeers := make([]string, 0, len(actual))
-	for _, p := range actual {
-		actualPeers = append(actualPeers, p.ID)
-	}
+	actualPeers := peerIDs(actual)
 
-	// A raft member that is not current member or no longer part of the meta group,
-	// has been evicted from the cluster, e.g. by a server peer-remove. It can't take
-	// part in this migration, so remove it from the group right away rather than
-	// waiting for the rest of the migration to complete.
-	metaPeers := meta.PeerNames()
-	var evicted []string
-	for _, peer := range actualPeers {
-		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
-			evicted = append(evicted, peer)
-		}
-	}
-	if len(evicted) > 0 {
-		// Remove evicted peers one at a time, the leader last so leadership stays
-		// stable throughout. Step down and perform a leader transfer if we'd remove
-		// ourselves, preferring a successor that is already in the desired peer set.
-		remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
-		if remove == ourPeerId {
-			n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, desiredPeers))
-		} else {
-			n.ProposeRemovePeer(remove)
-		}
+	// Remove any peers that have been evicted from the cluster.
+	if s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers) {
 		return
 	}
-
-	// Extend the actual peer set through the log, but only if it's part of the desired set.
-	var candidates []string
-	for _, peer := range current {
-		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
-			candidates = append(candidates, peer)
-		}
-	}
-	if len(candidates) > 0 {
-		if add := s.selectPeerToAdd(n, ourPeerId, actual, candidates); add != _EMPTY_ {
-			n.ProposeAddPeer(add)
-		}
+	// Extend the actual peer set through the log.
+	if s.extendPeerSet(n, actual, actualPeers, current, desiredPeers) {
 		return
 	}
-
 	// If scaling down, we need to select where to.
 	if desiredScaleDown {
 		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desiredPeers, replicas)
@@ -7635,17 +7660,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	// MUST copy, the stream assignment can be updated once we release below.
 	streamPeers := copyStrings(osa.Group.Peers)
 	current := copyStrings(ca.Group.Peers)
-	// If desired state is missing, inform the meta leader to create desired state.
-	// Or, if the recorded leader term isn't ours, then get that updated first.
-	desired := ca.Group.Desired
-	var desiredID string
-	var desiredScaleDown bool
-	var desiredPeers []string
-	if desired != nil {
-		// MUST copy the peers, the assignment can be updated once we release below.
-		desiredID, desiredScaleDown, desiredPeers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
-	}
-	needDesired := desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm
+	desiredID, desiredScaleDown, desiredPeers, needDesired := ca.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -7653,12 +7668,10 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		reconcile := &consumerAssignmentReconcile{Account: accName, Stream: streamName, Consumer: consumerName, desiredAssignmentUpdate: update}
 		s.sendInternalMsgLocked(consumerAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
 	}
-
 	if needDesired {
 		sendMetaUpdate()
 		return
 	}
-
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
 		if snap, err := o.store.EncodedState(); err == nil {
@@ -7672,49 +7685,16 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	}
 
 	actual := n.Peers()
-	actualPeers := make([]string, 0, len(actual))
-	for _, p := range actual {
-		actualPeers = append(actualPeers, p.ID)
-	}
+	actualPeers := peerIDs(actual)
 
-	// A raft member that is not current member or no longer part of the meta group,
-	// has been evicted from the cluster, e.g. by a server peer-remove. It can't take
-	// part in this migration, so remove it from the group right away rather than
-	// waiting for the rest of the migration to complete.
-	metaPeers := meta.PeerNames()
-	var evicted []string
-	for _, peer := range actualPeers {
-		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
-			evicted = append(evicted, peer)
-		}
-	}
-	if len(evicted) > 0 {
-		// Remove evicted peers one at a time, the leader last so leadership stays
-		// stable throughout. Step down and perform a leader transfer if we'd remove
-		// ourselves, preferring a successor that is already in the desired peer set.
-		remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
-		if remove == ourPeerId {
-			n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, desiredPeers))
-		} else {
-			n.ProposeRemovePeer(remove)
-		}
+	// Remove any peers that have been evicted from the cluster.
+	if s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers) {
 		return
 	}
-
-	// Extend the actual peer set through the log, but only if it's part of the desired set.
-	var candidates []string
-	for _, peer := range current {
-		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
-			candidates = append(candidates, peer)
-		}
-	}
-	if len(candidates) > 0 {
-		if add := s.selectPeerToAdd(n, ourPeerId, actual, candidates); add != _EMPTY_ {
-			n.ProposeAddPeer(add)
-		}
+	// Extend the actual peer set through the log.
+	if s.extendPeerSet(n, actual, actualPeers, current, desiredPeers) {
 		return
 	}
-
 	// If scaling down, we need to select where to.
 	if desiredScaleDown {
 		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desiredPeers, replicas)
