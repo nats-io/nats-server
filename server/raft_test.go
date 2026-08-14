@@ -1491,6 +1491,350 @@ func TestNRGTruncateWALRevertsUncommittedRemovePeer(t *testing.T) {
 	t.Run("Restart", func(t *testing.T) { test(KindRestart) })
 }
 
+func TestNRGEvictPeers(t *testing.T) {
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+	nats2 := "cnrtt3eg" // "nats-2"
+	nats3 := "bkCGheKT" // "nats-3"
+
+	t.Run("Guards", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+
+		// Refuse for unmanaged groups.
+		_, err := n.EvictPeers([]string{nats0})
+		require_Error(t, err, errNotManaged)
+		n.Lock()
+		n.managed = true
+		n.Unlock()
+
+		// Refuse if we still have a leader.
+		n.Lock()
+		n.updateLeader(nats0)
+		n.Unlock()
+		_, err = n.EvictPeers([]string{nats0})
+		require_Error(t, err, errNotLeaderless)
+
+		n.Lock()
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Never evict ourselves.
+		evicted, err := n.EvictPeers([]string{n.id})
+		require_NoError(t, err)
+		require_Len(t, len(evicted), 0)
+
+		// Unknown peers are ignored.
+		evicted, err = n.EvictPeers([]string{nats1})
+		require_NoError(t, err)
+		require_Len(t, len(evicted), 0)
+
+		// The peer is evicted and marked removed, size and quorum shrink.
+		evicted, err = n.EvictPeers([]string{nats0})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0}))
+		_, ok := n.peers[nats0]
+		require_False(t, ok)
+		_, ok = n.removed[nats0]
+		require_True(t, ok)
+		require_Equal(t, n.csz, 1)
+		require_Equal(t, n.qn, 1)
+
+		// Never empty out the group.
+		evicted, err = n.EvictPeers([]string{n.id})
+		require_NoError(t, err)
+		require_Len(t, len(evicted), 0)
+	})
+
+	// Evicting is only allowed if the peers left behind can't reach quorum
+	// without us, or they could commit entries we'd never see.
+	t.Run("RefusesWhenQuorumPossible", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		n.addPeer(nats1)
+		n.addPeer(nats2)
+		n.addPeer(nats3)
+		require_Len(t, len(n.peers), 5)
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Three peers left is exactly quorum for the group of five, refuse.
+		_, err := n.EvictPeers([]string{nats0})
+		require_Error(t, err, errQuorumPossible)
+
+		// Two peers left can't commit without us, so we're good to go.
+		evicted, err := n.EvictPeers([]string{nats0, nats1})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0, nats1}))
+		require_Equal(t, n.csz, 3)
+	})
+
+	// A stuck uncommitted RemovePeer of a peer we're not evicting speculatively
+	// dropped it from our peer map, but it can still be voting for everyone
+	// else. It must be counted when deciding if eviction is safe.
+	t.Run("RefusesForUncommittedRemovePeer", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		n.addPeer(nats1)
+		n.addPeer(nats2)
+		n.addPeer(nats3)
+		require_Len(t, len(n.peers), 5)
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		normal := []*Entry{newEntry(EntryNormal, esm)}
+		removePeer := newEntry(EntryRemovePeer, []byte(nats3))
+		ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: normal})
+		ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{removePeer}})
+		n.processAppendEntry(ae1, n.aesub)
+		n.processAppendEntry(ae2, n.aesub)
+
+		// The peer is gone speculatively, but it's still a voting member.
+		_, ok := n.peers[nats3]
+		require_False(t, ok)
+		require_Len(t, len(n.peers), 4)
+		require_Len(t, len(n.votingPeerNames()), 5)
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Only counting our peer map would leave two of four and evict, but the
+		// committed group is five and the three left could commit without us.
+		_, err := n.EvictPeers([]string{nats0})
+		require_Error(t, err, errQuorumPossible)
+
+		// Evicting the pending removal as well leaves too few behind, so allowed.
+		evicted, err := n.EvictPeers([]string{nats0, nats1, nats3})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0, nats1, nats3}))
+		require_True(t, n.membChange == nil)
+		require_Equal(t, n.csz, 2)
+	})
+
+	// A stuck uncommitted RemovePeer of the peer we're evicting was already
+	// speculatively applied to the peer map. It must be reverted first so
+	// eviction properly marks the peer as removed.
+	t.Run("RevertsUncommittedRemovePeer", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		n.addPeer(nats1)
+		require_Len(t, len(n.peers), 3)
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		normal := []*Entry{newEntry(EntryNormal, esm)}
+		removePeer := newEntry(EntryRemovePeer, []byte(nats1))
+		ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: normal})
+		ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{removePeer}})
+		n.processAppendEntry(ae1, n.aesub)
+		n.processAppendEntry(ae2, n.aesub)
+
+		// The peer is gone speculatively, and a membership change is inflight.
+		_, ok := n.peers[nats1]
+		require_False(t, ok)
+		require_NotNil(t, n.membChange)
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Evicting the peer must first revert the speculative removal, then
+		// evict it for real: marked removed, size and quorum adjusted.
+		evicted, err := n.EvictPeers([]string{nats1})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats1}))
+		_, ok = n.peers[nats1]
+		require_False(t, ok)
+		_, ok = n.removed[nats1]
+		require_True(t, ok)
+		require_Equal(t, n.csz, 2)
+		require_Equal(t, n.qn, 2)
+		require_True(t, n.membChange == nil)
+	})
+
+	// A scale-down or move that appended a RemovePeer of ourselves, but never
+	// committed it, already dropped us from our own peer map. Evicting the
+	// peers the meta layer removed must revert it as well, or we'd evict the
+	// others and still not be a member that can campaign.
+	t.Run("RevertsUncommittedSelfRemoval", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		n.addPeer(nats1)
+		require_Len(t, len(n.peers), 3)
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		normal := []*Entry{newEntry(EntryNormal, esm)}
+		removePeer := newEntry(EntryRemovePeer, []byte(n.id))
+		ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: normal})
+		ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{removePeer}})
+		n.processAppendEntry(ae1, n.aesub)
+		n.processAppendEntry(ae2, n.aesub)
+
+		// We're gone from our own peer map speculatively.
+		_, ok := n.peers[n.id]
+		require_False(t, ok)
+		require_True(t, n.pendingSelfRemoval())
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Evicting the other peers must revert our own pending removal first,
+		// leaving us as the sole member with quorum of one.
+		evicted, err := n.EvictPeers([]string{nats0, nats1})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0, nats1}))
+		_, ok = n.peers[n.id]
+		require_True(t, ok)
+		require_Len(t, len(n.peers), 1)
+		require_Equal(t, n.csz, 1)
+		require_Equal(t, n.qn, 1)
+		require_False(t, n.pendingSelfRemoval())
+		require_True(t, n.membChange == nil)
+
+		// We must be able to become leader again, and commit at quorum one.
+		n.Lock()
+		n.term++
+		n.Unlock()
+		n.switchToLeader()
+		n.sendAppendEntry(normal)
+		require_Equal(t, n.commit, n.pindex)
+	})
+
+	// A stuck uncommitted AddPeer speculatively added the peer to the peer
+	// map. While the peer is part of the assignment the change must be left
+	// alone, but once the assignment doesn't know it anymore it must be
+	// reverted, or the phantom peer would keep inflating size and quorum.
+	t.Run("RevertsUncommittedAddPeer", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		require_Len(t, len(n.peers), 2)
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		normal := []*Entry{newEntry(EntryNormal, esm)}
+		addPeer := newEntry(EntryAddPeer, []byte(nats1))
+		ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: normal})
+		ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{addPeer}})
+		n.processAppendEntry(ae1, n.aesub)
+		n.processAppendEntry(ae2, n.aesub)
+
+		// The peer is tracked speculatively, and a membership change is inflight.
+		_, ok := n.peers[nats1]
+		require_True(t, ok)
+		require_Equal(t, n.csz, 3)
+		require_NotNil(t, n.membChange)
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Evicting another peer must leave the membership change and its
+		// speculatively added peer alone; the assignment still contains it.
+		evicted, err := n.EvictPeers([]string{nats0})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0}))
+		_, ok = n.peers[nats1]
+		require_True(t, ok)
+		_, ok = n.peers[nats0]
+		require_False(t, ok)
+		_, ok = n.removed[nats0]
+		require_True(t, ok)
+		require_Equal(t, n.csz, 2)
+		require_Equal(t, n.qn, 2)
+		require_NotNil(t, n.membChange)
+
+		// Once the added peer is peer-removed or reconciled away, it shows
+		// up in the evict list itself and the change is reverted. There's
+		// nothing to remove from the peer map, so it's not marked removed;
+		// the entry may still commit under another leader.
+		evicted, err = n.EvictPeers([]string{nats1})
+		require_NoError(t, err)
+		require_Len(t, len(evicted), 0)
+		_, ok = n.peers[nats1]
+		require_False(t, ok)
+		_, ok = n.removed[nats1]
+		require_False(t, ok)
+		require_Equal(t, n.csz, 1)
+		require_Equal(t, n.qn, 1)
+		require_True(t, n.membChange == nil)
+	})
+
+	// Sole survivor: eviction reverts an uncommitted AddPeer for a peer
+	// that was peer-removed, then we win the election. The entry stays in
+	// the WAL but commits as a no-op, so the phantom peer can't inflate
+	// quorum again.
+	t.Run("RevertedAddPeerCommitsAsNoopWhenLeader", func(t *testing.T) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		n.addPeer(nats0)
+		require_Len(t, len(n.peers), 2)
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		normal := []*Entry{newEntry(EntryNormal, esm)}
+		addPeer := newEntry(EntryAddPeer, []byte(nats1))
+		ae1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: normal})
+		ae2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{addPeer}})
+		n.processAppendEntry(ae1, n.aesub)
+		n.processAppendEntry(ae2, n.aesub)
+		require_NotNil(t, n.membChange)
+		require_Equal(t, n.csz, 3)
+
+		n.Lock()
+		n.managed = true
+		n.updateLeader(noLeader)
+		n.Unlock()
+
+		// Evict the other real peer and the peer-removed phantom, leaving us
+		// as the sole survivor. The uncommitted AddPeer is reverted, but
+		// stays in the WAL.
+		evicted, err := n.EvictPeers([]string{nats0, nats1})
+		require_NoError(t, err)
+		require_True(t, slices.Equal(evicted, []string{nats0}))
+		require_Equal(t, n.csz, 1)
+		require_Equal(t, n.qn, 1)
+		require_True(t, n.membChange == nil)
+
+		// Become leader. This appends our peer state above the reverted
+		// entry and self-commits everything at quorum 1. The AddPeer must
+		// commit as a no-op: no phantom peer, size and quorum stay 1.
+		n.Lock()
+		n.term++
+		n.Unlock()
+		n.switchToLeader()
+
+		require_Equal(t, n.commit, 3)
+		_, ok := n.peers[nats1]
+		require_False(t, ok)
+		require_Equal(t, n.csz, 1)
+		require_Equal(t, n.qn, 1)
+
+		// The group must remain functional, new proposals commit at quorum 1.
+		n.sendAppendEntry(normal)
+		require_Equal(t, n.commit, 4)
+		_, ok = n.peers[nats1]
+		require_False(t, ok)
+	})
+}
+
 func TestNRGResetWALClearsPendingAppendEntryCache(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -3336,6 +3680,32 @@ func TestNRGDoesntRequestVoteOnWriteError(t *testing.T) {
 	// Nothing should have been published to the vote subject.
 	_, err = sub.NextMsg(250 * time.Millisecond)
 	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestNRGTrackPeerObserved(t *testing.T) {
+	n := &raft{managed: true, id: "A", peers: map[string]*lps{"A": {}}}
+
+	// Untracked peers of managed groups are observed when we hear from them.
+	require_True(t, n.LastHeardFromPeer("B").IsZero())
+	require_NoError(t, n.trackPeer("B"))
+	require_False(t, n.LastHeardFromPeer("B").IsZero())
+
+	// Members are tracked through their own peer state.
+	require_True(t, n.LastHeardFromPeer("A").IsZero())
+	require_NoError(t, n.trackPeer("A"))
+	require_False(t, n.LastHeardFromPeer("A").IsZero())
+
+	// Once the peer becomes a member, the observed entry is cleaned up.
+	require_Len(t, len(n.observed), 1)
+	n.peers["B"] = &lps{}
+	require_NoError(t, n.trackPeer("B"))
+	require_Len(t, len(n.observed), 0)
+	require_False(t, n.LastHeardFromPeer("B").IsZero())
+
+	// Removed peers are not observed.
+	n.removed = map[string]time.Time{"C": time.Now()}
+	require_NoError(t, n.trackPeer("C"))
+	require_True(t, n.LastHeardFromPeer("C").IsZero())
 }
 
 func TestNRGInitializeAndScaleUp(t *testing.T) {
@@ -6188,9 +6558,18 @@ func TestNRGDontSwitchToCandidateWithInflightSelfMembershipChange(t *testing.T) 
 	require_Equal(t, n.membChange.index, 2)
 
 	// We must not become a candidate while our own removal is uncommitted.
+	// The election timer firing does mean we've not heard from the leader, so
+	// we must still report as leaderless. Otherwise the upper layer would never
+	// see the group as stuck and could not recover it.
+	n.Lock()
+	n.updateLeader(nats0)
+	n.Unlock()
+	require_False(t, n.Leaderless())
+
 	n.Applied(1)
 	n.switchToCandidate()
 	require_Equal(t, n.State(), Follower)
+	require_True(t, n.Leaderless())
 
 	// Truncate the uncommitted removal back to the committed index. This
 	// restores us to our own peer set and clears the inflight change.

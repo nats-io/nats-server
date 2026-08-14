@@ -369,13 +369,31 @@ type StreamAlternate struct {
 // ClusterInfo shows information about the underlying set of servers
 // that make up the stream or consumer.
 type ClusterInfo struct {
-	Name        string      `json:"name,omitempty"`
-	RaftGroup   string      `json:"raft_group,omitempty"`
-	Leader      string      `json:"leader,omitempty"`
-	LeaderSince *time.Time  `json:"leader_since,omitempty"`
-	SystemAcc   bool        `json:"system_account,omitempty"`
-	TrafficAcc  string      `json:"traffic_account,omitempty"`
-	Replicas    []*PeerInfo `json:"replicas,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	RaftGroup   string              `json:"raft_group,omitempty"`
+	Leader      string              `json:"leader,omitempty"`
+	LeaderSince *time.Time          `json:"leader_since,omitempty"`
+	SystemAcc   bool                `json:"system_account,omitempty"`
+	TrafficAcc  string              `json:"traffic_account,omitempty"`
+	Replicas    []*PeerInfo         `json:"replicas,omitempty"`
+	Desired     *DesiredClusterInfo `json:"desired,omitempty"`
+}
+
+// DesiredClusterInfo shows information of the desired set of servers
+// that should make up the stream or consumer.
+type DesiredClusterInfo struct {
+	Name     string                    `json:"name,omitempty"`
+	Replicas []*PeerInfo               `json:"replicas,omitempty"`
+	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
+}
+
+type DesiredClusterInfoOrigin struct {
+	// Original replicas before it was updated.
+	Replicas int `json:"replicas"`
+	// Original placement before it was updated.
+	Placement *Placement `json:"placement,omitempty"`
+	// When changing between retention policies, this retention remains active until unset.
+	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
 // PeerInfo shows information about all the peers in the cluster that
@@ -1154,7 +1172,6 @@ func (mset *stream) streamAssignment() *streamAssignment {
 
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	var node RaftNode
-	var peers []string
 
 	mset.mu.RLock()
 	js := mset.js
@@ -1164,7 +1181,6 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		js.mu.RLock()
 		if sa.Group != nil {
 			node = sa.Group.node
-			peers = sa.Group.Peers
 		}
 		js.mu.RUnlock()
 	}
@@ -1179,9 +1195,6 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 
 	// Set our node.
 	mset.node = node
-	if mset.node != nil {
-		mset.node.UpdateKnownPeers(peers)
-	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {
@@ -1651,7 +1664,17 @@ func (jsa *jsAccount) subjectsOverlap(subjects []string, self *stream) bool {
 // StreamDefaultDuplicatesWindow default duplicates window.
 const StreamDefaultDuplicatesWindow = 2 * time.Minute
 
+// Do not hold the jetStream lock, it will be read-locked internally.
 func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic bool) (StreamConfig, *ApiError) {
+	if js := s.getJetStream(); js != nil {
+		js.mu.RLock()
+		defer js.mu.RUnlock()
+	}
+	return s.checkStreamCfgLocked(config, acc, pedantic)
+}
+
+// jetStream lock (read or write) should be held, if JetStream is enabled.
+func (s *Server) checkStreamCfgLocked(config *StreamConfig, acc *Account, pedantic bool) (StreamConfig, *ApiError) {
 	lim := &s.getOpts().JetStreamLimits
 
 	if config == nil {
@@ -1852,12 +1875,10 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		var cfg StreamConfig
 		if s.JetStreamIsClustered() {
 			if js, _ := s.getJetStreamCluster(); js != nil {
-				js.mu.RLock()
-				if sa := js.streamAssignment(acc.Name, streamName); sa != nil {
+				if sa := js.streamAssignmentOrInflight(acc.Name, streamName); sa != nil {
 					cfg = *sa.Config.clone()
 					exists = true
 				}
-				js.mu.RUnlock()
 			}
 		} else if mset, err := acc.lookupStream(streamName); err == nil {
 			cfg = mset.cfg
@@ -1962,19 +1983,12 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 				cfg.MirrorDirect = ocfg.AllowDirect
 			} else if js := s.getJetStream(); js != nil && js.isClustered() {
 				// Could not find it here. If we are clustered we can look it up.
-				js.mu.RLock()
-				if cc := js.cluster; cc != nil {
-					if as := cc.streams[acc.Name]; as != nil {
-						if sa := as[cfg.Mirror.Name]; sa != nil {
-							if pedantic && cfg.MirrorDirect != sa.Config.AllowDirect {
-								js.mu.RUnlock()
-								return StreamConfig{}, NewJSPedanticError(fmt.Errorf("origin stream has direct get set, mirror has it disabled"))
-							}
-							cfg.MirrorDirect = sa.Config.AllowDirect
-						}
+				if sa := js.streamAssignmentOrInflight(acc.Name, cfg.Mirror.Name); sa != nil {
+					if pedantic && cfg.MirrorDirect != sa.Config.AllowDirect {
+						return StreamConfig{}, NewJSPedanticError(fmt.Errorf("origin stream has direct get set, mirror has it disabled"))
 					}
+					cfg.MirrorDirect = sa.Config.AllowDirect
 				}
-				js.mu.RUnlock()
 			}
 		} else {
 			if cfg.Mirror.External.DeliverPrefix != _EMPTY_ {
@@ -2290,9 +2304,17 @@ func (mset *stream) fileStoreConfig() (FileStoreConfig, error) {
 	return fs.fileStoreConfig(), nil
 }
 
-// Do not hold jsAccount or jetStream lock
+// Do not hold jsAccount or jetStream lock, the latter will be read-locked internally.
 func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedantic bool) (*StreamConfig, error) {
-	cfg, apiErr := s.checkStreamCfg(new, jsa.acc(), pedantic)
+	js, _ := jsa.jetStreamAndClustered()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return jsa.configUpdateCheckLocked(old, new, s, pedantic)
+}
+
+// Do not hold jsAccount lock. The jetStream lock (read or write) should be held.
+func (jsa *jsAccount) configUpdateCheckLocked(old, new *StreamConfig, s *Server, pedantic bool) (*StreamConfig, error) {
+	cfg, apiErr := s.checkStreamCfgLocked(new, jsa.acc(), pedantic)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -2406,8 +2428,6 @@ func (jsa *jsAccount) configUpdateCheck(old, new *StreamConfig, s *Server, pedan
 	if !hasTier {
 		return nil, NewJSNoLimitsError()
 	}
-	js.mu.RLock()
-	defer js.mu.RUnlock()
 	if isClustered {
 		_, reserved = js.tieredStreamAndReservationCount(acc.Name, tier, &cfg)
 	}

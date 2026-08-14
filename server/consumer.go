@@ -399,9 +399,9 @@ const (
 )
 
 // Calculate accurate replicas for the consumer config with the parent stream config.
-func (consCfg ConsumerConfig) replicas(strCfg *StreamConfig) int {
+func (consCfg *ConsumerConfig) replicas(strCfg *StreamConfig) int {
 	if consCfg.Replicas == 0 || consCfg.Replicas > strCfg.Replicas {
-		if !isDurableConsumer(&consCfg) && strCfg.Retention == LimitsPolicy && consCfg.Replicas == 0 {
+		if !isDurableConsumer(consCfg) && strCfg.Retention == LimitsPolicy && consCfg.Replicas == 0 {
 			// Matches old-school ephemerals only, where the replica count is 0.
 			return 1
 		}

@@ -16581,6 +16581,7 @@ func TestJetStreamLimitsToInterestPolicy(t *testing.T) {
 	require_NoError(t, err)
 
 	// We need to wait for all nodes to have applied the new configs.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 	c.waitOnAllCurrent()
 
 	// The previously R1 consumer should now be R3, matching the stream.
@@ -16672,6 +16673,7 @@ func TestJetStreamLimitsToInterestPolicyWhileAcking(t *testing.T) {
 
 			// We need to wait for all nodes to have applied the new stream
 			// configuration.
+			c.waitOnStreamLeader(globalAccountName, "TEST")
 			c.waitOnAllCurrent()
 
 			var retention nats.RetentionPolicy

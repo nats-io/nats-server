@@ -402,6 +402,13 @@ type nodeInfo struct {
 	accountNRG      bool
 }
 
+// selectable reports whether we've had STATSZ from this node. Peer selection
+// skips nodes without config or stats, so until then there's nothing we could
+// place on it.
+func (ni nodeInfo) selectable() bool {
+	return ni.cfg != nil && ni.stats != nil
+}
+
 type stats struct {
 	inMsgs           int64
 	inBytes          int64

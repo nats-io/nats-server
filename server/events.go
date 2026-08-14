@@ -1773,7 +1773,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 
 	node := getHash(si.Name)
 	accountNRG := si.AccountNRG()
-	oldInfo, _ := s.nodeToInfo.Swap(node, nodeInfo{
+	newInfo := nodeInfo{
 		name:            si.Name,
 		version:         si.Version,
 		cluster:         si.Cluster,
@@ -1786,12 +1786,20 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		js:              si.JetStreamEnabled(),
 		binarySnapshots: si.BinaryStreamSnapshot(),
 		accountNRG:      accountNRG,
-	})
+	}
+	oldInfo, _ := s.nodeToInfo.Swap(node, newInfo)
 	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
 		// whether or not it supports in-account NRG, so update the groups
 		// with this information.
 		s.updateNRGAccountStatus()
+	}
+
+	// Process a peer's statsz when it has sufficient information.
+	if newInfo.selectable() {
+		if js := s.getJetStream(); js != nil {
+			js.processPeerStatsz(node)
+		}
 	}
 }
 
