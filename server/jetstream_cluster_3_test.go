@@ -14002,6 +14002,10 @@ func TestJetStreamClusterMetaRescueBadRequest(t *testing.T) {
 }
 
 func TestJetStreamClusterMetaRescueSingleSurvivor(t *testing.T) {
+	lqi := lostQuorumInterval
+	lostQuorumInterval = 2 * time.Second
+	defer func() { lostQuorumInterval = lqi }()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 

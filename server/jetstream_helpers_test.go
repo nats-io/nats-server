@@ -50,7 +50,7 @@ func init() {
 	hbInterval = 50 * time.Millisecond
 	minElectionTimeout = 1500 * time.Millisecond
 	maxElectionTimeout = 3500 * time.Millisecond
-	lostQuorumInterval = 2 * time.Second
+	lostQuorumInterval = 5 * time.Second
 	lostQuorumCheck = 4 * hbInterval
 
 	// For statz and jetstream placement speedups as well.
