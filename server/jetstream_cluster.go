@@ -573,6 +573,26 @@ func (ca *consumerAssignment) sameIdentity(nca *consumerAssignment) bool {
 		nca.Group.Name == ca.Group.Name
 }
 
+// limitable reports whether this consumer counts toward the system-wide asset
+// totals. Direct and sourcing consumers are internal, so they don't. Mirrors the
+// standalone accounting in stream.numLimitableConsumers.
+func (ca *consumerAssignment) limitable() bool {
+	return ca != nil && ca.Config != nil && !ca.Config.Direct && !ca.Config.Sourcing
+}
+
+// numLimitableConsumers returns how many of this stream's consumers count toward
+// the system-wide asset totals.
+// Lock should be held.
+func (sa *streamAssignment) numLimitableConsumers() int32 {
+	var total int32
+	for _, ca := range sa.consumers {
+		if ca.limitable() {
+			total++
+		}
+	}
+	return total
+}
+
 // clone returns a copy of ca. Field-explicit (rather than `*ca`) and
 // pointer-returning so the embedded atomic.Bool isn't value-copied;
 // responded is transferred via Load/Store. Concurrent callers may write
@@ -5578,6 +5598,8 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	cc.removeInflightStreamProposal(accName, sa.Config.Name)
 
 	accStreams := cc.streams[accName]
+	// Whether this is a new stream, rather than an update of one we already track.
+	isNew := accStreams == nil || accStreams[stream] == nil
 	if accStreams == nil {
 		accStreams = make(map[string]*streamAssignment)
 	} else if osa := accStreams[stream]; osa != nil {
@@ -5605,6 +5627,11 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 	// Update our state.
 	accStreams[stream] = sa
 	cc.streams[accName] = accStreams
+	// Account for it in the system-wide totals.
+	if isNew {
+		js.totalStreams++
+		js.totalConsumers += sa.numLimitableConsumers()
+	}
 	hasResponded := sa.hasResponded()
 
 	// If unsupported, we can't register any further.
@@ -6243,13 +6270,18 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	accStreams := cc.streams[accName]
 	needDelete := accStreams != nil && accStreams[stream] != nil
 	if needDelete {
-		if osa := accStreams[stream]; osa != nil && osa.unsupported != nil {
+		osa := accStreams[stream]
+		if osa.unsupported != nil {
 			osa.unsupported.closeInfoSub(js.srv)
 			// Remember we used to be unsupported, just so we can send a successful delete response.
 			if sa.unsupported == nil {
 				sa.unsupported = osa.unsupported
 			}
 		}
+		// Remove from the system-wide totals. Deleting a stream takes its consumers
+		// with it, so they come off the total here rather than one removal at a time.
+		js.totalStreams--
+		js.totalConsumers -= osa.numLimitableConsumers()
 		delete(accStreams, stream)
 		if len(accStreams) == 0 {
 			delete(cc.streams, accName)
@@ -6435,6 +6467,16 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	// Place into our internal map under the stream assignment.
 	// Ok to replace an existing one, we check on process call below.
 	sa.consumers[ca.Name] = ca
+	// Account for it in the system-wide totals. This is also the update path, and a
+	// config change could flip whether the consumer counts at all, so apply the delta
+	// rather than only counting new ones.
+	if was, is := oca.limitable(), ca.limitable(); was != is {
+		if is {
+			js.totalConsumers++
+		} else {
+			js.totalConsumers--
+		}
+	}
 	cc.removeInflightConsumerProposal(accName, stream, consumerName)
 
 	// If unsupported, we can't register any further.
@@ -6551,6 +6593,10 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
 				delete(sa.consumers, ca.Name)
+				// Remove from the system-wide totals.
+				if oca.limitable() {
+					js.totalConsumers--
+				}
 				// Remember we used to be unsupported, just so we can send a successful delete response.
 				if ca.unsupported == nil {
 					ca.unsupported = oca.unsupported

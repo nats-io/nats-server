@@ -8982,3 +8982,270 @@ func TestJetStreamClusterConsumerAssignmentDeleteAPI(t *testing.T) {
 	_, err = js.ConsumerInfo("TEST", "CONSUMER")
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
+
+// scanMetaTotals recomputes the system-wide asset totals from the applied meta state.
+// This is the independent oracle for the counters maintained in the meta apply path.
+// Lock should be held.
+func (js *jetStream) scanMetaTotals() (streams, consumers int32) {
+	cc := js.cluster
+	if cc == nil {
+		return 0, 0
+	}
+	for _, asa := range cc.streams {
+		for _, sa := range asa {
+			streams++
+			for _, ca := range sa.consumers {
+				if ca.limitable() {
+					consumers++
+				}
+			}
+		}
+	}
+	return streams, consumers
+}
+
+// checkAssetTotals asserts on every server that the maintained system-wide asset
+// totals agree with a fresh scan of the applied meta state.
+func checkAssetTotals(t *testing.T, c *cluster) {
+	t.Helper()
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if !s.Running() {
+				continue
+			}
+			sjs := s.getJetStream()
+			if sjs == nil {
+				continue
+			}
+			sjs.mu.RLock()
+			gotStreams, gotConsumers := sjs.totalStreams, sjs.totalConsumers
+			wantStreams, wantConsumers := sjs.scanMetaTotals()
+			sjs.mu.RUnlock()
+			if gotStreams != wantStreams || gotConsumers != wantConsumers {
+				return fmt.Errorf("%s: totals (%d streams, %d consumers) != meta state (%d streams, %d consumers)",
+					s.Name(), gotStreams, gotConsumers, wantStreams, wantConsumers)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterAssetTotalsTrackMetaState(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Nothing assigned yet.
+	checkAssetTotals(t, c)
+
+	// A mix of replica counts, so both clustered and R1 assignments are covered.
+	for i := range 6 {
+		name := fmt.Sprintf("TEST-%d", i)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Subjects: []string{fmt.Sprintf("foo.%d.>", i)},
+			Replicas: 1 + i%3,
+		})
+		require_NoError(t, err)
+		for j := 0; j < 1+i%3; j++ {
+			_, err = js.AddConsumer(name, &nats.ConsumerConfig{
+				Durable:   fmt.Sprintf("C-%d", j),
+				Replicas:  1 + i%3,
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+		}
+	}
+	checkAssetTotals(t, c)
+
+	// A mirror's sourcing consumer is internal and must not be counted, so this
+	// would break the totals if the limitable check drifted from the scan.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "MIRROR",
+		Mirror:   &nats.StreamSource{Name: "TEST-0"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	checkAssetTotals(t, c)
+
+	// Updates must not move the totals.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:     "TEST-1",
+		Subjects: []string{"foo.1.>", "bar.1.>"},
+		Replicas: 2,
+	})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("TEST-1", &nats.ConsumerConfig{
+		Durable:     "C-0",
+		Replicas:    2,
+		AckPolicy:   nats.AckExplicitPolicy,
+		Description: "updated",
+	})
+	require_NoError(t, err)
+	checkAssetTotals(t, c)
+
+	// Deleting a consumer, then a whole stream, which takes its consumers with it.
+	require_NoError(t, js.DeleteConsumer("TEST-2", "C-0"))
+	checkAssetTotals(t, c)
+	require_NoError(t, js.DeleteStream("TEST-3"))
+	checkAssetTotals(t, c)
+
+	// Totals must survive a meta leader change, they're maintained on every server.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+	require_NotNil(t, mjs)
+	mjs.mu.RLock()
+	meta := mjs.cluster.meta
+	mjs.mu.RUnlock()
+	require_NotNil(t, meta)
+	require_NoError(t, meta.StepDown())
+	c.waitOnLeader()
+	checkAssetTotals(t, c)
+
+	// A restarted server rebuilds them by replaying the meta log, so this covers the
+	// recovery drain and any meta snapshot it installs on the way.
+	rs := c.randomNonLeader()
+	require_NotNil(t, rs)
+	rs.Shutdown()
+	rs.WaitForShutdown()
+	c.restartServer(rs)
+	c.waitOnAllCurrent()
+	c.waitOnLeader()
+	checkAssetTotals(t, c)
+
+	// And still correct after more churn on the restarted cluster.
+	require_NoError(t, js.DeleteStream("MIRROR"))
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:     "AFTER-RESTART",
+		Subjects: []string{"baz.>"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("AFTER-RESTART", &nats.ConsumerConfig{
+		Durable:   "C",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	checkAssetTotals(t, c)
+}
+
+func TestJetStreamClusterAssetTotalsMetaSnapshotConsumers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// R1, so there are servers that don't host the stream and installing the
+	// snapshot on one of them doesn't have to start any assets.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	checkAssetTotals(t, c)
+
+	var s *Server
+	for _, cs := range c.servers {
+		if _, err := cs.GlobalAccount().lookupStream("TEST"); err != nil {
+			s = cs
+			break
+		}
+	}
+	require_NotNil(t, s)
+
+	sjs := s.getJetStream()
+	require_NotNil(t, sjs)
+	buf, _, _, err := sjs.metaSnapshot()
+	require_NoError(t, err)
+
+	// Simulate a server that fell behind and must install the leader's snapshot for
+	// assets it doesn't track yet, i.e. not the recovery path. The snapshot decodes a
+	// stream and its consumers as one object graph, so the consumers arrive already
+	// attached to the stream assignment and are never seen as a new assignment.
+	sjs.mu.Lock()
+	delete(sjs.cluster.streams, globalAccountName)
+	sjs.totalStreams, sjs.totalConsumers = 0, 0
+	sjs.mu.Unlock()
+
+	require_NoError(t, sjs.applyMetaSnapshot(buf, nil, false))
+
+	sjs.mu.RLock()
+	gotStreams, gotConsumers := sjs.totalStreams, sjs.totalConsumers
+	wantStreams, wantConsumers := sjs.scanMetaTotals()
+	sjs.mu.RUnlock()
+
+	// Guard against passing vacuously if the snapshot carried nothing.
+	require_Equal(t, wantStreams, 1)
+	require_Equal(t, wantConsumers, 1)
+	require_Equal(t, gotStreams, wantStreams)
+	require_Equal(t, gotConsumers, wantConsumers)
+}
+
+func TestJetStreamClusterAssetTotalsExtendedLeafRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "HUB", 3)
+	defer c.shutdown()
+
+	// A leafnode extending the hub's domain has no cluster or gateway port, so it still
+	// looks standalone while its accounts are enabled, which is before clustering starts.
+	ln := c.createLeafNode(true)
+	defer ln.Shutdown()
+	c.waitOnPeerCount(4)
+
+	// R1 from a client on the leaf places the assets on the leaf, which is its own
+	// cluster. They must live on its disk, otherwise there's nothing to recover.
+	nc, js := jsClientConnect(t, ln)
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.>"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	for i := range 3 {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:   fmt.Sprintf("C-%d", i),
+			AckPolicy: nats.AckExplicitPolicy,
+		})
+		require_NoError(t, err)
+	}
+	nc.Close()
+	require_Equal(t, len(ln.globalAccount().streams()), 1)
+
+	// Restart, so the leaf recovers those assets from disk before it starts clustering.
+	ln.Shutdown()
+	ln.WaitForShutdown()
+	ln = c.restartServer(ln)
+	c.waitOnPeerCount(4)
+
+	// The meta layer owns the totals, so what local recovery counted must not be
+	// carried over and counted a second time as the assignments are applied.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		ljs := ln.getJetStream()
+		if ljs == nil {
+			return errors.New("leaf has no jetstream")
+		}
+		ljs.mu.RLock()
+		defer ljs.mu.RUnlock()
+		gotStreams, gotConsumers := ljs.totalStreams, ljs.totalConsumers
+		wantStreams, wantConsumers := ljs.scanMetaTotals()
+		if wantStreams != 1 || wantConsumers != 3 {
+			return fmt.Errorf("meta state not applied yet, got %d streams and %d consumers",
+				wantStreams, wantConsumers)
+		}
+		if gotStreams != wantStreams || gotConsumers != wantConsumers {
+			return fmt.Errorf("totals (%d streams, %d consumers) != meta state (%d streams, %d consumers)",
+				gotStreams, gotConsumers, wantStreams, wantConsumers)
+		}
+		return nil
+	})
+}
