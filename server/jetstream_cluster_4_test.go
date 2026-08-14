@@ -9020,10 +9020,22 @@ func checkAssetTotals(t *testing.T, c *cluster) {
 			sjs.mu.RLock()
 			gotStreams, gotConsumers := sjs.totalStreams, sjs.totalConsumers
 			wantStreams, wantConsumers := sjs.scanMetaTotals()
+			var pendingStreams, pendingConsumers int32
+			var inflight int
+			if cc := sjs.cluster; cc != nil {
+				pendingStreams, pendingConsumers = cc.pendingStreams, cc.pendingConsumers
+				inflight = len(cc.inflightStreams) + len(cc.inflightConsumers)
+			}
 			sjs.mu.RUnlock()
 			if gotStreams != wantStreams || gotConsumers != wantConsumers {
 				return fmt.Errorf("%s: totals (%d streams, %d consumers) != meta state (%d streams, %d consumers)",
 					s.Name(), gotStreams, gotConsumers, wantStreams, wantConsumers)
+			}
+			// Once everything has applied there is nothing left inflight, so the pending
+			// deltas must have unwound completely. A leak here would falsely trip the limits.
+			if inflight == 0 && (pendingStreams != 0 || pendingConsumers != 0) {
+				return fmt.Errorf("%s: no inflight proposals but pending is (%d streams, %d consumers)",
+					s.Name(), pendingStreams, pendingConsumers)
 			}
 		}
 		return nil
