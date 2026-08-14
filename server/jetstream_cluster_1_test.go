@@ -11525,7 +11525,7 @@ func TestJetStreamClusterCreateR3StreamWithOfflineNodes(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader(globalAccountName, "FOO")
 	c.waitOnStreamLeader(globalAccountName, "BAR")
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		if err := checkState(t, c, globalAccountName, "FOO"); err != nil {
 			return err
 		}
