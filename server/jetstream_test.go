@@ -25446,3 +25446,79 @@ func TestJetStreamSourceStreamRecreatedRespectsStartSeq(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamStreamUpdateReplicasNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Creating a replicated stream is not supported while non-clustered.
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_Error(t, err, NewJSStreamReplicasNotSupportedError())
+
+	cfg.Replicas = 1
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+
+	// Scaling up using an update must be rejected as well, otherwise the stream
+	// would report itself as replicated while it can't be, and it would not be
+	// recovered from disk after a restart.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamReplicasNotSupportedError())
+
+	// The update must not have been applied.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+
+	// Unrelated updates must still be allowed.
+	cfg.Replicas = 1
+	cfg.Subjects = append(cfg.Subjects, "bar")
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+	require_Equal(t, len(si.Config.Subjects), 2)
+}
+
+func TestJetStreamStreamRecoverReplicasNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	// Simulate a config stored by a server that still allowed updating to R>1
+	// while non-clustered. Can't go through the API, that's rejected now.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	cfg := mset.config()
+	cfg.Replicas = 3
+	mset.mu.RLock()
+	store := mset.store
+	mset.mu.RUnlock()
+	require_NoError(t, store.UpdateConfig(&cfg))
+
+	// Restart.
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Must not be loaded, R>1 is not supported while non-clustered.
+	_, err = js.StreamInfo("TEST")
+	require_Error(t, err, nats.ErrStreamNotFound)
+	_, err = s.GlobalAccount().lookupStream("TEST")
+	require_Error(t, err, NewJSStreamNotFoundError())
+}
