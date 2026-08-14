@@ -15141,21 +15141,19 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
-	// While that is still converging the stream has desired state, so a scale must be rejected
-	// instead of retargeting the peer set and dropping the pending retention origin.
+	// While that is still converging the stream has desired state. A scale stacks on top,
+	// retargeting the peer set while the pending retention origin must be preserved.
 	cfg.Replicas = 5
 	_, err = js.UpdateStream(cfg)
-	require_Error(t, err, NewJSStreamMoveInProgressError())
+	require_NoError(t, err)
 
-	// Unblock the consumer scale-up so the stream can converge and the scale is accepted.
+	// Unblock the consumer scale-up so the stream can converge.
 	require_True(t, ml == c.leader())
 	mjs.mu.Lock()
 	mjs.startUpdatesSub()
 	mjs.mu.Unlock()
 
 	c.waitOnStreamLeader("$G", "TEST")
-	_, err = js.UpdateStream(cfg)
-	require_NoError(t, err)
 
 	// The scale must land on top of the applied retention change, not roll it back to the
 	// origin's limits retention, and the consumer must follow the stream to the new peer set.
@@ -15172,6 +15170,179 @@ func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 		if interest != len(c.servers) || len(speers) != 5 || len(cpeers) != 5 {
 			return fmt.Errorf("have %d/%d servers on interest retention, stream peers %v, consumer peers %v",
 				interest, len(c.servers), speers, cpeers)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterScaleStackingMoveExclusion(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// A move and a scale can't combine in a single update, even with nothing in flight.
+	// The guard fires before peer selection, so the placement doesn't need to resolve.
+	comboCfg := *cfg
+	comboCfg.Replicas = 5
+	comboCfg.Placement = &nats.Placement{Tags: []string{"na"}}
+	_, err = js.UpdateStream(&comboCfg)
+	require_Error(t, err, NewJSStreamMoveAndScaleError())
+
+	// Block the meta leader from reconciling desired stream assignments, so the
+	// desired state below stays in flight deterministically.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	streamReconcile := mjs.cluster.streamReconcile
+	mjs.cluster.streamReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, streamReconcile)
+	ml.sysUnsubscribe(streamReconcile)
+
+	// Scale up, it stays converging while reconciliation is blocked.
+	cfg.Replicas = 5
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	// A move can't combine with the in-flight scale.
+	moveCfg := *cfg
+	moveCfg.Placement = &nats.Placement{Tags: []string{"na"}}
+	_, err = js.UpdateStream(&moveCfg)
+	require_Error(t, err, NewJSStreamReconfigureInProgressError())
+
+	// Another scale stacks onto the in-flight one, retargeting the desired state while
+	// the origin from before the first scale is preserved.
+	cfg.Replicas = 4
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	mjs.mu.RLock()
+	var replicas, originReplicas int
+	var hasDesired bool
+	if sa := mjs.streamAssignment(globalAccountName, "TEST"); sa != nil && sa.Config != nil && sa.Group != nil {
+		replicas = sa.Config.Replicas
+		if sa.Group.Desired != nil {
+			hasDesired = true
+			if sa.Group.Desired.Origin != nil {
+				originReplicas = sa.Group.Desired.Origin.Replicas
+			}
+		}
+	}
+	mjs.mu.RUnlock()
+	require_Equal(t, replicas, 4)
+	require_True(t, hasDesired)
+	require_Equal(t, originReplicas, 3)
+
+	// Unblock reconciliation, the stacked scale must converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return fmt.Errorf("no stream assignment")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still in flight")
+		}
+		if len(sa.Group.Peers) != 4 {
+			return fmt.Errorf("expected 4 peers, got %d", len(sa.Group.Peers))
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Block the meta leader from reconciling desired stream assignments, so the
+	// desired state below stays in flight deterministically.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	streamReconcile := mjs.cluster.streamReconcile
+	mjs.cluster.streamReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, streamReconcile)
+	ml.sysUnsubscribe(streamReconcile)
+
+	// A retention change goes through desired state, it stays converging while
+	// reconciliation is blocked. No scale is involved.
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	mjs.mu.RLock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	var hasDesired, isMove bool
+	var originReplicas int
+	if sa != nil && sa.Group != nil && sa.Group.Desired != nil {
+		hasDesired = true
+		isMove = sa.Group.Desired.Move
+		if sa.Group.Desired.Origin != nil {
+			originReplicas = sa.Group.Desired.Origin.Replicas
+		}
+	}
+	mjs.mu.RUnlock()
+	require_True(t, hasDesired)
+	// Confirm it is not a move, and the replicas are untouched so it is not a scale either.
+	require_False(t, isMove)
+	require_Equal(t, originReplicas, 3)
+
+	// A move can't combine with the in-flight retention change. The error must reflect
+	// that a reconfiguration is in flight, reporting a scale here would be wrong.
+	moveCfg := *cfg
+	moveCfg.Placement = &nats.Placement{Tags: []string{"na"}}
+	_, err = js.UpdateStream(&moveCfg)
+	require_Error(t, err, NewJSStreamReconfigureInProgressError())
+
+	// Unblock reconciliation, the retention change must converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil || sa.Config == nil {
+			return fmt.Errorf("no stream assignment")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still in flight")
+		}
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("expected interest retention, got %v", sa.Config.Retention)
 		}
 		return nil
 	})

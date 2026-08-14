@@ -181,6 +181,14 @@ const (
 	JSApiStreamEvacuatePeer  = "$JS.API.STREAM.PEER.EVACUATE.*"
 	JSApiStreamEvacuatePeerT = "$JS.API.STREAM.PEER.EVACUATE.%s"
 
+	// JSApiStreamCancelMove is the endpoint to cancel an in-progress stream reconfiguration,
+	// rolling the stream back to the config and peers it had before the reconfiguration
+	// started. This is not limited to moves, any in-flight desired state is rolled back,
+	// which includes a scale up/down or a retention change.
+	// Will return JSON response.
+	JSApiStreamCancelMove  = "$JS.API.STREAM.CANCEL_MOVE.*"
+	JSApiStreamCancelMoveT = "$JS.API.STREAM.CANCEL_MOVE.%s"
+
 	// JSApiStreamLeaderStepDown is the endpoint to have stream leader stepdown.
 	// Will return JSON response.
 	JSApiStreamLeaderStepDown  = "$JS.API.STREAM.LEADER.STEPDOWN.*"
@@ -226,7 +234,9 @@ const (
 	JSApiServerStreamMove  = "$JS.API.ACCOUNT.STREAM.MOVE.*.*"
 	JSApiServerStreamMoveT = "$JS.API.ACCOUNT.STREAM.MOVE.%s.%s"
 
-	// JSApiServerStreamCancelMove is the endpoint to cancel a stream move
+	// JSApiServerStreamCancelMove is the endpoint to cancel an in-progress stream
+	// reconfiguration. Like JSApiStreamCancelMove this is not limited to moves, any
+	// in-flight desired state is rolled back to its origin.
 	// Only works from system account.
 	// Will return JSON response.
 	JSApiServerStreamCancelMove  = "$JS.API.ACCOUNT.STREAM.CANCEL_MOVE.*.*"
@@ -1037,6 +1047,7 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreamRestore, s.jsStreamRestoreRequest},
 		{JSApiStreamRemovePeer, s.jsStreamRemovePeerRequest},
 		{JSApiStreamEvacuatePeer, s.jsStreamEvacuatePeerRequest},
+		{JSApiStreamCancelMove, s.jsStreamCancelMoveRequest},
 		{JSApiStreamLeaderStepDown, s.jsStreamLeaderStepDownRequest},
 		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
@@ -2386,6 +2397,81 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
+// Request to cancel an in-progress reconfiguration of a clustered stream, rolling the
+// desired state back to its origin. Not limited to moves, a scale or retention change
+// in flight is rolled back just the same.
+func (s *Server) jsStreamCancelMoveRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	name := tokenAt(subject, 5)
+
+	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+
+	// A move only exists in clustered mode.
+	if !s.JetStreamIsClustered() {
+		resp.Error = NewJSClusterRequiredError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+	if js.isLeaderless() {
+		resp.Error = NewJSClusterNotAvailError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	// The rollback is proposed to the meta layer, only the meta leader can do that.
+	if !isLeader {
+		return
+	}
+
+	if errorOnRequiredApiLevel(hdr) {
+		resp.Error = NewJSRequiredApiLevelError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.Error = NewJSNotEnabledForAccountError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		}
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	osa := js.streamAssignmentOrInflight(acc.Name, name)
+	if osa == nil {
+		resp.Error = NewJSStreamNotFoundError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	// A group that has no desired state or origin has no reconfigure in progress.
+	if osa.desiredOrigin() == nil {
+		resp.Error = NewJSStreamReconfigureNotInProgressError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
+	s.jsClusteredStreamCancelMoveLocked(osa, acc.Name, reply)
+}
+
 // Request to remove a peer from a clustered stream.
 func (s *Server) jsStreamRemovePeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	s.jsStreamRemapPeerRequest(nil, c, nil, subject, reply, rmsg, true)
@@ -2969,7 +3055,9 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	s.jsClusteredStreamUpdateRequestLocked(&ciNew, targetAcc.(*Account), subject, reply, rmsg, &cfg, peers, newCluster, false)
 }
 
-// Request to have the metaleader move a stream on a peer to another
+// Request to have the metaleader cancel an in-progress reconfiguration of a stream,
+// rolling the desired state back to its origin. Not limited to moves, a scale or
+// retention change in flight is rolled back just the same.
 func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
@@ -3025,48 +3113,13 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	var origin *desiredRaftGroupOrigin
-	if osa.Group.Desired != nil {
-		origin = osa.Group.Desired.Origin
-	} else {
-		// A move started before the upgrade to desired state must stay cancellable,
-		// reconstruct the origin if it's a legacy move.
-		origin = osa.legacyMoveOrigin()
-	}
-	// A group that has no desired state or origin, so no move in progress.
-	if origin == nil {
-		resp.Error = NewJSStreamMoveNotInProgressError()
+	// A group that has no desired state or origin has no reconfigure in progress.
+	if osa.desiredOrigin() == nil {
+		resp.Error = NewJSStreamReconfigureNotInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-
-	csa := osa.copyGroup()
-	// Need to respond to the client that cancels.
-	csa.Reply = reply
-	// Revert replicas and placement in the config immediately.
-	csa.Config = osa.Config.clone()
-	csa.Config.Replicas = origin.Replicas
-	csa.Config.Placement = origin.Placement.clone()
-	if origin.Retention != nil {
-		csa.Config.Retention = *origin.Retention
-	}
-	// Move back to the initial peer set via desired state.
-	csa.Group.Peers = copyStrings(origin.Peers)
-	csa.Group.Cluster = origin.Cluster
-	csa.Group = osa.Group.withDesired(csa.Group)
-	// withDesired only carries over a prior origin, a legacy move has none yet.
-	// Record it, so the rollback reports the same target while it converges.
-	if csa.Group.Desired.Origin == nil {
-		csa.Group.Desired.Origin = origin
-	}
-
-	s.Noticef("Requested cancel of move: R=%d '%s > %s' and restore previous peer set %+v",
-		origin.Replicas, accName, streamName, s.peerSetToNames(origin.Peers))
-
-	if err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(csa)); err != nil {
-		return
-	}
-	cc.trackInflightStreamProposal(accName, csa, false)
+	s.jsClusteredStreamCancelMoveLocked(osa, accName, reply)
 }
 
 // Request to have an account purged

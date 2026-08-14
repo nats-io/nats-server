@@ -1280,10 +1280,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSStreamMoveNotInProgress",
+    "constant": "JSStreamReconfigureNotInProgressErr",
     "code": 400,
     "error_code": 10129,
-    "description": "stream move not in progress",
+    "description": "stream reconfiguration not in progress",
     "comment": "",
     "help": "",
     "url": "",
@@ -2234,6 +2234,16 @@
     "code": 400,
     "error_code": 10225,
     "description": "consumer's stream identity does not match: {msg}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamReconfigureInProgressErr",
+    "code": 400,
+    "error_code": 10226,
+    "description": "stream reconfiguration already in progress",
     "comment": "",
     "help": "",
     "url": "",

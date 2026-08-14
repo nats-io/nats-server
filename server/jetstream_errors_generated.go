@@ -584,9 +584,6 @@ const (
 	// JSStreamMoveInProgressErr stream move already in progress
 	JSStreamMoveInProgressErr ErrorIdentifier = 10124
 
-	// JSStreamMoveNotInProgress stream move not in progress
-	JSStreamMoveNotInProgress ErrorIdentifier = 10129
-
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
 
@@ -613,6 +610,12 @@ const (
 
 	// JSStreamPurgeFailedF Generic stream purge failure error string ({err})
 	JSStreamPurgeFailedF ErrorIdentifier = 10110
+
+	// JSStreamReconfigureInProgressErr stream reconfiguration already in progress
+	JSStreamReconfigureInProgressErr ErrorIdentifier = 10226
+
+	// JSStreamReconfigureNotInProgressErr stream reconfiguration not in progress
+	JSStreamReconfigureNotInProgressErr ErrorIdentifier = 10129
 
 	// JSStreamReplicasNotSupportedErr replicas > 1 not supported in non-clustered mode
 	JSStreamReplicasNotSupportedErr ErrorIdentifier = 10074
@@ -873,7 +876,6 @@ var (
 		JSStreamMismatchErr:                          {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                      {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
 		JSStreamMoveInProgressErr:                    {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
-		JSStreamMoveNotInProgress:                    {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
 		JSStreamMsgDeleteFailedF:                     {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:        {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
 		JSStreamNameExistErr:                         {Code: 400, ErrCode: 10058, Description: "stream name already in use with a different configuration"},
@@ -883,6 +885,8 @@ var (
 		JSStreamOfflineErr:                           {Code: 500, ErrCode: 10118, Description: "stream is offline"},
 		JSStreamOfflineReasonErrF:                    {Code: 500, ErrCode: 10194, Description: "stream is offline: {err}"},
 		JSStreamPurgeFailedF:                         {Code: 500, ErrCode: 10110, Description: "{err}"},
+		JSStreamReconfigureInProgressErr:             {Code: 400, ErrCode: 10226, Description: "stream reconfiguration already in progress"},
+		JSStreamReconfigureNotInProgressErr:          {Code: 400, ErrCode: 10129, Description: "stream reconfiguration not in progress"},
 		JSStreamReplicasNotSupportedErr:              {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:              {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
 		JSStreamRestoreErrF:                          {Code: 500, ErrCode: 10062, Description: "restore failed: {err}"},
@@ -3081,16 +3085,6 @@ func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMoveInProgressErr]
 }
 
-// NewJSStreamMoveNotInProgressError creates a new JSStreamMoveNotInProgress error: "stream move not in progress"
-func NewJSStreamMoveNotInProgressError(opts ...ErrorOption) *ApiError {
-	eopts := parseOpts(opts)
-	if ae, ok := eopts.err.(*ApiError); ok {
-		return ae
-	}
-
-	return ApiErrors[JSStreamMoveNotInProgress]
-}
-
 // NewJSStreamMsgDeleteFailedError creates a new JSStreamMsgDeleteFailedF error: "{err}"
 func NewJSStreamMsgDeleteFailedError(err error, opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -3197,6 +3191,26 @@ func NewJSStreamPurgeFailedError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamReconfigureInProgressError creates a new JSStreamReconfigureInProgressErr error: "stream reconfiguration already in progress"
+func NewJSStreamReconfigureInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamReconfigureInProgressErr]
+}
+
+// NewJSStreamReconfigureNotInProgressError creates a new JSStreamReconfigureNotInProgressErr error: "stream reconfiguration not in progress"
+func NewJSStreamReconfigureNotInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamReconfigureNotInProgressErr]
 }
 
 // NewJSStreamReplicasNotSupportedError creates a new JSStreamReplicasNotSupportedErr error: "replicas > 1 not supported in non-clustered mode"
