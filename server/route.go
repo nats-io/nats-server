@@ -1987,21 +1987,21 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			if resetTLSName {
 				s.mu.Lock()
 				if net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
-					// The URL hostname is an IP, meaning the saved tlsName was used
-					// as a fallback for ServerName. Instead of clearing tlsName
-					// outright, restore it from the backup so that the next
-					// reconnection attempt can try the hostname again. This
-					// handles the case where a transient error causes a
-					// HostnameError for a correctly configured hostname (DNS-only
-					// SANs). The backup is consumed so that on a subsequent
-					// failure, tlsName will be cleared and the IP will be tried
-					// instead, handling mixed DNS/IP SAN environments.
-					// See: https://github.com/nats-io/nats-server/issues/8309
-					// See: https://github.com/nats-io/nats-server/issues/1256
+					// Restore from backup for DNS-only SAN certs (#8309);
+					// backup is consumed so IP fallback still works (#1256).
 					s.routeTLSName = s.routeTLSLastName
 					s.routeTLSLastName = _EMPTY_
 				} else {
 					s.routeTLSName = _EMPTY_
+				}
+				s.mu.Unlock()
+			} else if didSolicit && net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
+				// Handshake failed without resetTLSName, but the URL is an IP
+				// and we have a backup hostname. Restore it for the next attempt.
+				s.mu.Lock()
+				if s.routeTLSName == _EMPTY_ {
+					s.routeTLSName = s.routeTLSLastName
+					s.routeTLSLastName = _EMPTY_
 				}
 				s.mu.Unlock()
 			}
