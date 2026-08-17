@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -2106,6 +2108,70 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 			require_Equal(t, string(getHeader("Nats-Batch-Commit", sm.Header)), "1")
 		}
 	}
+}
+
+func TestJetStreamAtomicBatchCleanupRemovesStagingWhenRenameFails(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	cfg := &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Retention:          LimitsPolicy,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	jsa := mset.jsa
+	jsa.mu.RLock()
+	storeDir := jsa.storeDir
+	jsa.mu.RUnlock()
+
+	const batchId = "uuid"
+	hash, dir := getBatchStoreDir(storeDir, "TEST", batchId)
+	tomb := filepath.Join(filepath.Dir(dir), tsep+hash)
+	require_NoError(t, os.MkdirAll(tomb, defaultDirPerms))
+
+	mset.mu.Lock()
+	if mset.batches == nil {
+		mset.batches = &batching{}
+	}
+	batches := mset.batches
+	mset.mu.Unlock()
+
+	batches.mu.Lock()
+	globalInflightAtomicBatches.Add(1)
+	b, err := batches.newAtomicBatch(mset, batchId, 1, FileStorage, storeDir, "TEST")
+	if err != nil {
+		globalInflightAtomicBatches.Add(-1)
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+	if batches.atomic == nil {
+		batches.atomic = make(map[string]*atomicBatch, 1)
+	}
+	batches.atomic[batchId] = b
+	_, _, err = b.store.StoreMsg("foo", nil, []byte("x"), 0)
+	if err != nil {
+		batches.mu.Unlock()
+		require_NoError(t, err)
+	}
+
+	b.cleanupLocked(batchId, batches)
+	batches.mu.Unlock()
+
+	_, err = os.Stat(dir)
+	require_True(t, os.IsNotExist(err))
+	_, err = os.Stat(tomb)
+	require_True(t, os.IsNotExist(err))
 }
 
 func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
