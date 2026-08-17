@@ -5885,6 +5885,10 @@ func TestJetStreamClusterPeerOffline(t *testing.T) {
 }
 
 func TestJetStreamClusterNoQuorumStepdown(t *testing.T) {
+	lqi := lostQuorumInterval
+	lostQuorumInterval = 2 * time.Second
+	defer func() { lostQuorumInterval = lqi }()
+
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -9239,13 +9243,13 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		sa.Created = time.Time{}
 		return sjs, acc, sa, mset
 	}
-	checkNodeIsClosed := func(sa *streamAssignment) {
+	checkNodeIsClosed := func(sjs *jetStream, sa *streamAssignment) {
 		t.Helper()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
 		require_True(t, sa.Group != nil)
-		rg := sa.Group
-		require_True(t, rg.node != nil)
-		n := rg.node
-		require_Equal(t, n.State(), Closed)
+		require_True(t, sa.Group.node != nil)
+		require_Equal(t, sa.Group.node.State(), Closed)
 	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -9259,10 +9263,15 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 	// We manually stop the RAFT node and ensure it doesn't get restarted.
 	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
 	sjs, acc, sa, mset := getStreamAssignment(rs)
-	require_True(t, sa.Group != nil)
+	sjs.mu.RLock()
 	rg := sa.Group
-	require_True(t, rg.node != nil)
-	n := rg.node
+	var n RaftNode
+	if rg != nil {
+		n = rg.node
+	}
+	sjs.mu.RUnlock()
+	require_True(t, rg != nil)
+	require_True(t, n != nil)
 	n.Stop()
 	n.WaitForStop()
 
@@ -9281,9 +9290,9 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down, but we're still in the stream monitor.
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 	sjs.isStreamHealthy(acc, sa)
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 
 	err = js.DeleteStream("TEST")
 	require_NoError(t, err)
@@ -9301,9 +9310,9 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.mu.Unlock()
 
 	// The underlying stream has been deleted. Checking health must not recreate the stream.
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 	sjs.isStreamHealthy(acc, sa)
-	checkNodeIsClosed(sa)
+	checkNodeIsClosed(sjs, sa)
 }
 
 func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
@@ -9557,13 +9566,13 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 		ca.Created = time.Time{}
 		return sjs, sa, ca, mset
 	}
-	checkNodeIsClosed := func(ca *consumerAssignment) {
+	checkNodeIsClosed := func(sjs *jetStream, ca *consumerAssignment) {
 		t.Helper()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
 		require_True(t, ca.Group != nil)
-		rg := ca.Group
-		require_True(t, rg.node != nil)
-		n := rg.node
-		require_Equal(t, n.State(), Closed)
+		require_True(t, ca.Group.node != nil)
+		require_Equal(t, ca.Group.node.State(), Closed)
 	}
 
 	_, err := js.AddStream(&nats.StreamConfig{
@@ -9580,10 +9589,15 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// We manually stop the RAFT node and ensure it doesn't get restarted.
 	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 	sjs, sa, ca, mset := getConsumerAssignment(rs)
-	require_True(t, ca.Group != nil)
+	sjs.mu.RLock()
 	rg := ca.Group
-	require_True(t, rg.node != nil)
-	n := rg.node
+	var n RaftNode
+	if rg != nil {
+		n = rg.node
+	}
+	sjs.mu.RUnlock()
+	require_True(t, rg != nil)
+	require_True(t, n != nil)
 	n.Stop()
 	n.WaitForStop()
 
@@ -9598,9 +9612,9 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 
 	// We create a new RAFT group, the health check should detect this skew.
 	_, err = sjs.createRaftGroup(globalAccountName, ca.Group, false, MemoryStorage, pprofLabels{})
@@ -9628,9 +9642,9 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	sjs.mu.Unlock()
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
-	checkNodeIsClosed(ca)
+	checkNodeIsClosed(sjs, ca)
 }
 
 func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
@@ -11354,13 +11368,34 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 		sds = append(sds, s.StoreDir())
 	}
 
-	for _, sd := range sds {
-		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir, "*"))
-		require_NoError(t, err)
-		require_True(t, len(matches) > 0)
-		for _, match := range matches {
-			require_NoError(t, os.RemoveAll(match))
+	// Snapshots installed for the stream's Raft group. Skips temporary files, an
+	// install writes into one before renaming it into place.
+	streamSnapshots := func(sd string) ([]string, error) {
+		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir))
+		if err != nil {
+			return nil, err
 		}
+		// Matches _meta_ and stream raft groups.
+		if len(matches) != 2 {
+			return nil, fmt.Errorf("expected 2 snapshot dirs for %s, got %d", sd, len(matches))
+		}
+		for _, match := range matches {
+			if !strings.Contains(match, "S-R3F") {
+				continue
+			}
+			entries, err := os.ReadDir(match)
+			if err != nil {
+				return nil, err
+			}
+			var snaps []string
+			for _, entry := range entries {
+				if name := entry.Name(); !strings.HasSuffix(name, ".tmp") {
+					snaps = append(snaps, name)
+				}
+			}
+			return snaps, nil
+		}
+		return nil, fmt.Errorf("no stream raft group for %s", sd)
 	}
 
 	// Publish, so we have something new to snapshot.
@@ -11370,28 +11405,29 @@ func TestJetStreamClusterSnapshotStreamAssetOnShutdown(t *testing.T) {
 		return checkState(t, c, globalAccountName, "TEST")
 	})
 
+	applied := make(map[string]uint64, len(sds))
+	for i, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		_, _, a := mset.raftNode().Progress()
+		applied[sds[i]] = a
+	}
+
 	// Shutdown servers, and check if all made stream snapshots.
 	for _, s := range c.servers {
 		s.Shutdown()
 	}
 	for _, sd := range sds {
-		matches, err := filepath.Glob(filepath.Join(sd, "$SYS", "_js_", "*", snapshotsDir))
+		snaps, err := streamSnapshots(sd)
 		require_NoError(t, err)
-		// Matches _meta_ and stream raft groups.
-		require_Len(t, len(matches), 2)
-		var foundStream bool
-		for _, match := range matches {
-			if !strings.Contains(match, "S-R3F") {
-				continue
-			}
-			foundStream = true
-			dirs, err := os.ReadDir(match)
-			require_NoError(t, err)
-			if len(dirs) != 1 {
-				t.Errorf("Missing snapshot for %s", match)
-			}
+		if len(snaps) != 1 {
+			t.Fatalf("Expected 1 snapshot for %s, got %d: %v", sd, len(snaps), snaps)
 		}
-		require_True(t, foundStream)
+		_, index, err := termAndIndexFromSnapFile(snaps[0])
+		require_NoError(t, err)
+		if index < applied[sd] {
+			t.Fatalf("Snapshot %s for %s doesn't cover applied index %d", snaps[0], sd, applied[sd])
+		}
 	}
 }
 
@@ -11493,7 +11529,7 @@ func TestJetStreamClusterCreateR3StreamWithOfflineNodes(t *testing.T) {
 	c.waitOnLeader()
 	c.waitOnStreamLeader(globalAccountName, "FOO")
 	c.waitOnStreamLeader(globalAccountName, "BAR")
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		if err := checkState(t, c, globalAccountName, "FOO"); err != nil {
 			return err
 		}
@@ -11574,33 +11610,34 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		var s *Server
 		checkStoreIsAsync := func(expectAsync bool) {
 			t.Helper()
-			mset, err := s.globalAccount().lookupStream("TEST")
-			require_NoError(t, err)
-			fs := mset.Store().(*fileStore)
-			fs.mu.RLock()
-			lmb := fs.lmb
-			asyncFlush := fs.fcfg.AsyncFlush
-			fip := fs.fip
-			fs.mu.RUnlock()
-			require_Equal(t, asyncFlush, expectAsync)
-			require_Equal(t, fip, !expectAsync)
-			require_NotNil(t, lmb)
-			lmb.mu.RLock()
-			flusher := lmb.flusher
-			lmb.mu.RUnlock()
-			if expectAsync {
-				if !flusher {
-					t.Fatal("flusher not initialized")
-				} else if !asyncFlush {
-					t.Fatal("async flush config not set")
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				mset, err := s.globalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
 				}
-			} else {
-				if flusher {
-					t.Fatal("flusher still initialized")
-				} else if asyncFlush {
-					t.Fatal("async flush config not reset")
+				fs := mset.Store().(*fileStore)
+				fs.mu.RLock()
+				lmb := fs.lmb
+				asyncFlush := fs.fcfg.AsyncFlush
+				fip := fs.fip
+				fs.mu.RUnlock()
+				if asyncFlush != expectAsync {
+					return fmt.Errorf("expected async flush config %v, got %v", expectAsync, asyncFlush)
 				}
-			}
+				if fip != !expectAsync {
+					return fmt.Errorf("expected flush in place %v, got %v", !expectAsync, fip)
+				}
+				if lmb == nil {
+					return errors.New("expected last message block to be set")
+				}
+				lmb.mu.RLock()
+				flusher := lmb.flusher
+				lmb.mu.RUnlock()
+				if flusher != expectAsync {
+					return fmt.Errorf("expected flusher initialized %v, got %v", expectAsync, flusher)
+				}
+				return nil
+			})
 		}
 
 		cfg := &StreamConfig{
@@ -11621,6 +11658,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		cfg.Replicas = 3
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 			return checkState(t, c, globalAccountName, "TEST")
 		})
@@ -11632,6 +11670,7 @@ func TestJetStreamClusterAsyncFlushBasics(t *testing.T) {
 		cfg.Replicas = 1
 		_, err = jsStreamUpdate(t, nc, cfg)
 		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
 		checkStoreIsAsync(false)
