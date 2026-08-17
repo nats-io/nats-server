@@ -11732,7 +11732,16 @@ func (fs *fileStore) Delete(inline bool) error {
 	// Now move into different directory with "." prefix.
 	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir))
 	if err := os.Rename(fs.fcfg.StoreDir, ndir); err != nil {
-		return err
+		// meta.inf is already gone, so StoreDir is unrecoverable. Rename fails when
+		// a leftover "." tomb exists (Linux ENOTEMPTY; Windows dest-exists). Remove
+		// both paths inline so callers that ignore the error do not leak the original dir.
+		if rerr := removeAllWithRetry(fs.dios, fs.fcfg.StoreDir); rerr != nil {
+			return rerr
+		}
+		if rerr := removeAllWithRetry(fs.dios, ndir); rerr != nil {
+			return rerr
+		}
+		return nil
 	}
 	// Do this in separate Go routine in case lots of blocks.
 	// Purge above protects us as does the removal of meta artifacts above.

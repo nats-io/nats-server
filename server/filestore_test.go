@@ -3140,6 +3140,33 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 	})
 }
 
+func TestFileStoreDeleteRemovesStoreDirWhenRenameDestExists(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		// Keep the tomb inside the test temp root so it is cleaned up.
+		root := fcfg.StoreDir
+		fcfg.StoreDir = filepath.Join(root, "store")
+
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+		require_NoError(t, err)
+
+		// Non-empty dest so Linux rename fails with ENOTEMPTY, not only Windows dest-exists.
+		tomb := filepath.Join(filepath.Dir(fcfg.StoreDir), tsep+filepath.Base(fcfg.StoreDir))
+		require_NoError(t, os.MkdirAll(tomb, defaultDirPerms))
+		require_NoError(t, os.WriteFile(filepath.Join(tomb, "leftover"), []byte("x"), defaultFilePerms))
+
+		require_NoError(t, fs.Delete(true))
+
+		_, err = os.Stat(fcfg.StoreDir)
+		require_True(t, os.IsNotExist(err))
+		_, err = os.Stat(tomb)
+		require_True(t, os.IsNotExist(err))
+	})
+}
+
 func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()

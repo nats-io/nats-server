@@ -2139,6 +2139,7 @@ func TestJetStreamAtomicBatchCleanupRemovesStagingWhenRenameFails(t *testing.T) 
 	hash, dir := getBatchStoreDir(storeDir, "TEST", batchId)
 	tomb := filepath.Join(filepath.Dir(dir), tsep+hash)
 	require_NoError(t, os.MkdirAll(tomb, defaultDirPerms))
+	require_NoError(t, os.WriteFile(filepath.Join(tomb, "leftover"), []byte("x"), defaultFilePerms))
 
 	mset.mu.Lock()
 	if mset.batches == nil {

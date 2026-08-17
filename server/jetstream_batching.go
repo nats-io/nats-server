@@ -20,7 +20,6 @@ import (
 	"maps"
 	"math"
 	"math/big"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -105,20 +104,7 @@ func (b *atomicBatch) cleanupLocked(batchId string, batches *batching) {
 	}
 	globalInflightAtomicBatches.Add(-1)
 	b.timer.Stop()
-	err := b.store.Delete(true)
-	if fs, ok := b.store.(*fileStore); ok {
-		dir := fs.fcfg.StoreDir
-		tomb := filepath.Join(filepath.Dir(dir), tsep+filepath.Base(dir))
-		if err != nil {
-			fs.warn("atomic batch staging Delete failed for %q: %v", dir, err)
-		}
-		if rerr := os.RemoveAll(dir); rerr != nil {
-			fs.warn("atomic batch staging dir remove failed for %q: %v", dir, rerr)
-		}
-		if rerr := os.RemoveAll(tomb); rerr != nil {
-			fs.warn("atomic batch staging tombstone remove failed for %q: %v", tomb, rerr)
-		}
-	}
+	b.store.Delete(true)
 	delete(batches.atomic, batchId)
 	// Reset so that another invocation doesn't double-account.
 	b.timer = nil
