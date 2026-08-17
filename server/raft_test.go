@@ -5714,8 +5714,7 @@ func TestNRGForcedInstallSnapshotAbortsInProgressCheckpoint(t *testing.T) {
 	// Without forcing we can't snapshot, this is what would suppress a shutdown snapshot.
 	require_Error(t, n.InstallSnapshot([]byte("blocked"), false), errSnapInProgress)
 
-	// Forcing installs directly, which aborts the checkpoint that was in progress. The
-	// install holds the Raft lock throughout, so the two can't interleave.
+	// Forcing installs directly, which aborts the checkpoint that was in progress.
 	require_NoError(t, n.InstallSnapshot([]byte("fresh"), true))
 
 	// The aborted checkpoint must not be able to install or read anything anymore.
@@ -5730,6 +5729,106 @@ func TestNRGForcedInstallSnapshotAbortsInProgressCheckpoint(t *testing.T) {
 	snap, err := n.loadLastSnapshot()
 	require_NoError(t, err)
 	require_True(t, bytes.Equal(snap.data, []byte("fresh")))
+
+	// The aborted checkpoint targets the same file for the same term/applied index, so
+	// it must not have written anything, not even a temporary file it never renamed.
+	files, err := os.ReadDir(filepath.Join(n.sd, snapshotsDir))
+	require_NoError(t, err)
+	require_Len(t, len(files), 1)
+	require_Equal(t, files[0].Name(), fmt.Sprintf(snapFileT, 1, 2))
+}
+
+// A direct install must wait for a snapshot write that's already in flight. The async
+// install path releases the Raft lock while writing, and both would target the same
+// file, and the same temporary file it's renamed from.
+func TestNRGDirectInstallSnapshotWaitsForInFlightWrite(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2})
+
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	n.Applied(2)
+
+	// Stand in for a checkpoint that's in the middle of writing its snapshot file.
+	n.snapLock.Lock()
+
+	installed := make(chan error, 1)
+	go func() {
+		installed <- n.InstallSnapshot([]byte("fresh"), true)
+	}()
+
+	select {
+	case err := <-installed:
+		t.Fatalf("Expected install to wait for the in-flight snapshot write, got %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	n.snapLock.Unlock()
+	require_NoError(t, <-installed)
+
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("fresh")))
+}
+
+// An async install must claim the snapshot write lock before it gives up the Raft lock,
+// otherwise a direct install could slip in between its checks and its write.
+func TestNRGCheckpointInstallSnapshotWaitsForInFlightWrite(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 2})
+
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	n.Applied(2)
+
+	c, err := n.CreateSnapshotCheckpoint(false)
+	require_NoError(t, err)
+
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+
+	// Stand in for another snapshot write that's already in flight.
+	n.snapLock.Lock()
+
+	installed := make(chan error, 1)
+	go func() {
+		_, err := c.InstallSnapshot([]byte("async"))
+		installed <- err
+	}()
+
+	// Must not have written anything yet, not even a temporary file.
+	time.Sleep(250 * time.Millisecond)
+	files, err := os.ReadDir(snapDir)
+	require_NoError(t, err)
+	require_Len(t, len(files), 0)
+
+	n.snapLock.Unlock()
+	require_NoError(t, <-installed)
+
+	snap, err := n.loadLastSnapshot()
+	require_NoError(t, err)
+	require_True(t, bytes.Equal(snap.data, []byte("async")))
 }
 
 func TestNRGSnapshotCheckpointNodeClosed(t *testing.T) {
