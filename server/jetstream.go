@@ -529,6 +529,11 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// If we are in clustered mode go ahead and start the meta controller.
 	if !standAlone || canExtend {
+		// The meta layer owns the system-wide asset totals from here on, reset.
+		js.mu.Lock()
+		js.totalStreams, js.totalConsumers = 0, 0
+		js.mu.Unlock()
+
 		if err := s.enableJetStreamClustering(); err != nil {
 			return err
 		}
