@@ -371,7 +371,7 @@ func generateRemoteLeafOptsName(r *RemoteLeafOpts, redacted bool) string {
 	return fmt.Sprintf("urls=%q, account=%q%s", urls, acc, optional)
 }
 
-// JSLimitOpts are active limits for the meta cluster
+// JSLimitOpts are active limits for the system
 type JSLimitOpts struct {
 	MaxRequestBatch           int           `json:"max_request_batch,omitempty"`             // MaxRequestBatch is the maximum amount of updates that can be sent in a batch
 	MaxAckPending             int           `json:"max_ack_pending,omitempty"`               // MaxAckPending is the server limit for maximum amount of outstanding Acks
@@ -381,6 +381,10 @@ type JSLimitOpts struct {
 	MaxBatchInflightTotal     int           `json:"max_batch_inflight_total,omitempty"`      // MaxBatchInflightTotal is the maximum amount of total open batches per server
 	MaxBatchSize              int           `json:"max_batch_size,omitempty"`                // MaxBatchSize is the maximum amount of messages allowed in a batch publish to a Stream
 	MaxBatchTimeout           time.Duration `json:"max_batch_timeout,omitempty"`             // MaxBatchTimeout is the maximum time to receive the commit message after receiving the first message of a batch
+
+	// Max stream/consumer asset limits
+	MaxStreamsTotal   int `json:"max_streams_total,omitempty"`   // MaxStreamsTotal is the maximum number of streams that the system can have (-1=unlimited)
+	MaxConsumersTotal int `json:"max_consumers_total,omitempty"` // MaxConsumersTotal is the maximum number of consumers that the system can have (-1=unlimited)
 }
 
 type JSTpmOpts struct {
@@ -2535,6 +2539,10 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 			opts.JetStreamLimits.MaxHAAssets = int(mv.(int64))
 		case "max_request_batch":
 			opts.JetStreamLimits.MaxRequestBatch = int(mv.(int64))
+		case "max_streams_total":
+			opts.JetStreamLimits.MaxStreamsTotal = int(mv.(int64))
+		case "max_consumers_total":
+			opts.JetStreamLimits.MaxConsumersTotal = int(mv.(int64))
 		case "duplicate_window":
 			var err error
 			opts.JetStreamLimits.Duplicates, err = time.ParseDuration(mv.(string))
@@ -6186,6 +6194,12 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.JetStreamConcurrentIOs <= 0 {
 		opts.JetStreamConcurrentIOs = defaultConcurrentIOs
+	}
+	if opts.JetStreamLimits.MaxStreamsTotal == 0 {
+		opts.JetStreamLimits.MaxStreamsTotal = JSDefaultMaxStreamsTotal
+	}
+	if opts.JetStreamLimits.MaxConsumersTotal == 0 {
+		opts.JetStreamLimits.MaxConsumersTotal = JSDefaultMaxConsumersTotal
 	}
 }
 

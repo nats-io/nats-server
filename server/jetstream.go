@@ -107,14 +107,16 @@ type jetStream struct {
 	apiTotal       int64
 	apiErrors      int64
 	memMax         int64
-	memReserved    int64 // Requires JS lock to be held.
+	memReserved    int64 // Requires JS lock to be held (not atomic).
 	memUsed        int64
 	storeMax       int64
-	storeReserved  int64 // Requires JS lock to be held.
+	storeReserved  int64 // Requires JS lock to be held (not atomic).
 	storeUsed      int64
 	queueLimit     int64
 	infoQueueLimit int64
 	clustered      int32
+	totalStreams   int32 // Requires JS lock to be held (not atomic).
+	totalConsumers int32 // Requires JS lock to be held (not atomic).
 	mu             sync.RWMutex
 	srv            *Server
 	config         JetStreamConfig
@@ -1682,6 +1684,24 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 	// Make sure to cleanup any old remaining snapshots.
 	os.RemoveAll(filepath.Join(jsa.storeDir, snapsDir))
 
+	// For a standalone server populate the system-wide total streams and consumers.
+	// In clustered mode these are maintained by the meta layer instead.
+	singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+	if singleServerMode {
+		var streams, consumers int
+		for _, mset := range a.streams() {
+			streams++
+			// Direct/sourcing consumers are internal and don't count against asset totals.
+			mset.mu.RLock()
+			consumers += mset.numLimitableConsumers()
+			mset.mu.RUnlock()
+		}
+		js.mu.Lock()
+		js.totalStreams += int32(streams)
+		js.totalConsumers += int32(consumers)
+		js.mu.Unlock()
+	}
+
 	s.Debugf("JetStream state for account %q recovered", a.Name)
 
 	return nil
@@ -2044,6 +2064,27 @@ func (js *jetStream) disableJetStream(jsa *jsAccount) error {
 	js.mu.Lock()
 	delete(js.accounts, jsa.account.Name)
 	js.mu.Unlock()
+
+	// For a standalone server, remove the account's assets from the system-wide
+	// totals. This mirrors the bulk-add in EnableJetStream. The streams are only
+	// stopped, not deleted, so mset.stop will not adjust the totals itself.
+	s := js.srv
+	if !s.JetStreamIsClustered() && s.standAloneMode() {
+		var streams, consumers int32
+		jsa.mu.RLock()
+		for _, mset := range jsa.streams {
+			streams++
+			// Direct/sourcing consumers are internal and don't count against asset totals.
+			mset.mu.RLock()
+			consumers += int32(mset.numLimitableConsumers())
+			mset.mu.RUnlock()
+		}
+		jsa.mu.RUnlock()
+		js.mu.Lock()
+		js.totalStreams -= streams
+		js.totalConsumers -= consumers
+		js.mu.Unlock()
+	}
 
 	jsa.delete()
 
