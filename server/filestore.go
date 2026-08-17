@@ -171,6 +171,10 @@ type psi struct {
 	lblk  uint32
 }
 
+// storageExpirePrefixHandler receives one completed local MaxAge prefix expiry.
+// first is the new stream floor; msgs and bytes are the removed totals.
+type storageExpirePrefixHandler func(first, msgs, bytes uint64)
+
 type fileStore struct {
 	srv         *Server
 	mu          sync.RWMutex
@@ -179,6 +183,7 @@ type fileStore struct {
 	ld          *LostStreamData
 	scb         StorageUpdateHandler
 	rmcb        StorageRemoveMsgHandler
+	epcb        storageExpirePrefixHandler
 	pmsgcb      ProcessJetStreamMsgHandler
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
@@ -267,6 +272,8 @@ type msgBlock struct {
 	closed      bool
 	ttls        uint64 // How many msgs have TTLs?
 	schedules   uint64 // How many msgs have schedules?
+	tsKnown     bool   // Whether timestamp, TTL, and schedule metadata is known.
+	tsOrdered   bool   // Whether message record timestamps are in sequence order.
 
 	// Used to mock write failures.
 	mockWriteErr bool
@@ -2071,6 +2078,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if version >= 3 {
 				schedules = readU64()
 			}
+			var tsOrdered bool
+			if version >= 5 {
+				tsOrdered = readU64() != 0
+			}
 			if bi < 0 {
 				_ = os.Remove(fn)
 				return errCorruptState
@@ -2082,6 +2093,8 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			mb.first.ts, mb.last.ts = fts+baseTime, lts+baseTime
 			mb.ttls = ttls
 			mb.schedules = schedules
+			mb.tsKnown = version >= 3
+			mb.tsOrdered = tsOrdered
 			if numDeleted > 0 {
 				dmap, n, err := avl.Decode(buf[bi:])
 				if err != nil {
@@ -2627,16 +2640,18 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			last.ts = mb.last.ts
 		}
 		// Make sure we do subject cleanup as well.
-		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
-			return err
-		}
-		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj)
+		if !mb.noTrack {
+			if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+				return err
 			}
-			return true
-		})
+			mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
+				subj := bytesToString(bsubj)
+				for i := uint64(0); i < ss.Msgs; i++ {
+					fs.removePerSubject(subj)
+				}
+				return true
+			})
+		}
 		if err := mb.dirtyCloseWithRemove(true); err != nil {
 			return err
 		}
@@ -2652,7 +2667,33 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			break
 		}
 		// Can we remove whole block here?
-		if mb.last.ts <= minAge {
+		if mb.expirePrefixEligibleLocked(minAge) {
+			if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+				mb.mu.Unlock()
+				return err
+			}
+			if mb.expirePrefixEligibleLocked(minAge) {
+				purged += mb.msgs
+				bytes += mb.bytes
+				err := deleteEmptyBlock(mb)
+				mb.mu.Unlock()
+				if err != nil {
+					return err
+				}
+				continue
+			}
+		}
+
+		// If we are here we have to process the interior messages of this blk.
+		// This will load fss as well.
+		if err := mb.loadMsgsWithLock(); err != nil {
+			mb.mu.Unlock()
+			return err
+		}
+		// Pre-v5 full states do not record timestamp ordering. Once loading
+		// proves this block is an ordered, expired prefix, remove it and keep
+		// recovering later blocks instead of treating it as a boundary block.
+		if mb.expirePrefixEligibleLocked(minAge) {
 			purged += mb.msgs
 			bytes += mb.bytes
 			err := deleteEmptyBlock(mb)
@@ -2661,13 +2702,6 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 				return err
 			}
 			continue
-		}
-
-		// If we are here we have to process the interior messages of this blk.
-		// This will load fss as well.
-		if err := mb.loadMsgsWithLock(); err != nil {
-			mb.mu.Unlock()
-			return err
 		}
 
 		var smv StoreMsg
@@ -2696,6 +2730,14 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			}
 
 			// No error and sm != nil from here onward.
+
+			if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
+				atomic.StoreUint64(&mb.first.seq, sm.seq)
+				mb.first.ts = sm.ts
+				needNextFirst = false
+				nts = sm.ts
+				break
+			}
 
 			// Check for done.
 			if minAge < sm.ts {
@@ -2733,14 +2775,19 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			mb.selectNextFirst()
 		}
 		// Check if empty after processing, could happen if tail of messages are all deleted.
+		empty := mb.msgs == 0
 		var err error
-		if mb.msgs == 0 {
+		if empty {
 			err = deleteEmptyBlock(mb)
 		}
 		mb.finishedWithCache()
 		mb.mu.Unlock()
 		if err != nil {
 			return err
+		}
+		if empty {
+			// The whole block was scanned, so no surviving boundary remains.
+			continue
 		}
 		break
 	}
@@ -4755,6 +4802,14 @@ func (fs *fileStore) RegisterStorageRemoveMsg(cb StorageRemoveMsgHandler) {
 	fs.mu.Unlock()
 }
 
+// registerStorageExpirePrefix installs the stream owner for completed local
+// prefix expiry. Unlike StorageUpdateHandler, this has an explicit range floor.
+func (fs *fileStore) registerStorageExpirePrefix(cb storageExpirePrefixHandler) {
+	fs.mu.Lock()
+	fs.epcb = cb
+	fs.mu.Unlock()
+}
+
 // RegisterProcessJetStreamMsg registers a callback to process new JetStream messages.
 func (fs *fileStore) RegisterProcessJetStreamMsg(cb ProcessJetStreamMsgHandler) {
 	fs.mu.Lock()
@@ -4855,6 +4910,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 
 	mb := fs.initMsgBlock(index)
+	mb.tsKnown, mb.tsOrdered = true, true
 	// Lock should be held to quiet race detector.
 	mb.mu.Lock()
 	if err := mb.setupWriteCache(rbuf); err != nil {
@@ -5088,17 +5144,27 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		return err
 	}
 
+	// Track header metadata even when no expiration wheel or scheduler is active.
+	// Whole-block MaxAge expiry relies on these counts to avoid bypassing per-message semantics.
+	hasTTL := ttl != 0 || len(sliceHeader(JSMessageTTL, hdr)) > 0
+	hasSchedule := len(sliceHeader(JSSchedulePattern, hdr)) > 0
+	if hasTTL || hasSchedule {
+		fs.lmb.mu.Lock()
+		if hasTTL {
+			fs.lmb.ttls++
+		}
+		if hasSchedule {
+			fs.lmb.schedules++
+		}
+		fs.lmb.mu.Unlock()
+	}
+
 	// Per-message TTL.
 	if ttl > 0 {
 		if fs.ttls != nil {
 			expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
 			fs.ttls.Add(seq, int64(expires))
 		}
-		// Need to count these regardless as we might want to enable TTLs
-		// later via UpdateConfig.
-		fs.lmb.mu.Lock()
-		fs.lmb.ttls++
-		fs.lmb.mu.Unlock()
 	}
 
 	// Check if we have and need the age expiration timer running.
@@ -5113,9 +5179,6 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	if fs.scheduling != nil {
 		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
 			fs.scheduling.add(seq, subj, schedule.UnixNano())
-			fs.lmb.mu.Lock()
-			fs.lmb.schedules++
-			fs.lmb.mu.Unlock()
 		} else if getMessageScheduler(hdr) == _EMPTY_ {
 			fs.scheduling.removeSubject(subj)
 		}
@@ -5770,6 +5833,271 @@ func (fs *fileStore) deleteFirstMsg() (bool, error) {
 // Lock should be held.
 func (fs *fileStore) removeMsgViaLimits(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, false, true, false)
+}
+
+// Lock should be held.
+func (mb *msgBlock) expirePrefixEligibleLocked(cutoff int64) bool {
+	return mb.msgs > 0 && mb.tsKnown && mb.tsOrdered && mb.ttls == 0 && mb.schedules == 0 &&
+		mb.first.ts > 0 && mb.last.ts >= mb.first.ts && mb.last.ts <= cutoff
+}
+
+type expirePrefixSubject struct {
+	subj string
+	msgs uint64
+}
+
+type expirePrefixBlock struct {
+	mb       *msgBlock
+	msgs     uint64
+	bytes    uint64
+	subjects []expirePrefixSubject
+}
+
+// Lock should be held.
+func (mb *msgBlock) collectExpirePrefixSubjectsLocked(totals map[string]uint64) ([]expirePrefixSubject, error) {
+	if mb.noTrack {
+		return nil, nil
+	}
+	if mb.fss == nil {
+		return nil, errors.New("missing message block subject state")
+	}
+
+	subjects := make([]expirePrefixSubject, 0, mb.fss.Size())
+	var count uint64
+	var rerr error
+	mb.fss.IterFast(func(subj []byte, ss *SimpleState) bool {
+		if ss == nil || ss.Msgs == 0 {
+			rerr = fmt.Errorf("invalid message block subject state for %q", subj)
+			return false
+		}
+		if ss.Msgs > math.MaxUint64-count {
+			rerr = errors.New("message block subject accounting overflow")
+			return false
+		}
+		count += ss.Msgs
+
+		name := string(subj)
+		if ss.Msgs > math.MaxUint64-totals[name] {
+			rerr = fmt.Errorf("message block subject accounting overflow for %q", name)
+			return false
+		}
+		totals[name] += ss.Msgs
+		subjects = append(subjects, expirePrefixSubject{subj: name, msgs: ss.Msgs})
+		return true
+	})
+	if rerr != nil {
+		return nil, rerr
+	}
+	if count != mb.msgs {
+		return nil, fmt.Errorf("message block accounting mismatch: %d messages, %d subject entries", mb.msgs, count)
+	}
+	return subjects, nil
+}
+
+// Lock should be held.
+func (fs *fileStore) validateExpirePrefixSubjectsLocked(totals map[string]uint64) error {
+	for subj, msgs := range totals {
+		info, ok := fs.psim.Find(stringToBytes(subj))
+		if !ok || info == nil || info.total < msgs {
+			return fmt.Errorf("message block subject accounting mismatch for %q", subj)
+		}
+	}
+	return nil
+}
+
+// Lock should be held.
+func (fs *fileStore) removeExpirePrefixSubjectsLocked(blocks []expirePrefixBlock) {
+	for _, block := range blocks {
+		for _, subj := range block.subjects {
+			info, _ := fs.psim.Find(stringToBytes(subj.subj))
+			info.total -= subj.msgs
+			if info.total == 0 {
+				fs.psim.Delete(stringToBytes(subj.subj))
+				fs.tsl -= len(subj.subj)
+			}
+		}
+	}
+}
+
+// Lock should be held.
+func (mb *msgBlock) removeForExpirePrefixLocked() error {
+	if fd := mb.mfd; fd != nil {
+		mb.mfd = nil
+		if err := fd.Close(); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if mb.mfn != _EMPTY_ {
+		if err := os.Remove(mb.mfn); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		mb.mfn = _EMPTY_
+	}
+
+	if mb.ctmr != nil {
+		mb.ctmr.Stop()
+		mb.ctmr = nil
+	}
+	mb.clearCacheAndOffset()
+	if mb.qch != nil {
+		close(mb.qch)
+		mb.qch = nil
+	}
+	mb.fss = nil
+	mb.closed = true
+
+	// The key file is now an orphan and recovery removes it. Do not turn a
+	// successful block removal into a partial prefix failure if that cleanup
+	// happens to fail.
+	if mb.kfn != _EMPTY_ {
+		_ = os.Remove(mb.kfn)
+		mb.kfn = _EMPTY_
+	}
+	return nil
+}
+
+// expirePrefixViaLimits removes locally verified complete blocks without
+// forcing a full state write. It validates every candidate block and all
+// shared accounting before unlinking the first block. If an unlink fails after
+// earlier blocks were removed, it returns the committed prefix so its callback
+// and the next timer run can account for exactly that work.
+func (fs *fileStore) expirePrefixViaLimits(first uint64, cutoff int64) (uint64, error) {
+	fs.mu.Lock()
+	if fs.isClosed() {
+		fs.mu.Unlock()
+		return 0, ErrStoreClosed
+	}
+	if err := fs.werr; err != nil {
+		fs.mu.Unlock()
+		return 0, err
+	}
+
+	purged, bytes, newFirst, err := fs.expirePrefixViaLimitsLocked(first, cutoff)
+	scb, epcb := fs.scb, fs.epcb
+	fs.mu.Unlock()
+
+	if purged > 0 {
+		if epcb != nil {
+			epcb(newFirst, purged, bytes)
+		} else if scb != nil {
+			// A range has no single-message sequence or subject.
+			scb(-int64(purged), -int64(bytes), 0, _EMPTY_)
+		}
+	}
+	return purged, err
+}
+
+// Lock should be held.
+func (fs *fileStore) expirePrefixViaLimitsLocked(first uint64, cutoff int64) (purged, bytes, newFirst uint64, rerr error) {
+	if first == 0 || first != fs.state.FirstSeq || fs.state.Msgs == 0 {
+		return 0, 0, 0, nil
+	}
+
+	var blocks []expirePrefixBlock
+	totals := make(map[string]uint64)
+	next := first
+	for _, mb := range fs.blks {
+		if mb == fs.lmb {
+			break
+		}
+
+		mb.mu.Lock()
+		needsCleanup := mb.cache == nil
+		finish := func() {
+			if needsCleanup {
+				mb.finishedWithCache()
+			}
+		}
+		if atomic.LoadUint64(&mb.first.seq) < next {
+			finish()
+			mb.mu.Unlock()
+			break
+		}
+		if !mb.tsKnown || !mb.tsOrdered {
+			if err := mb.loadMsgsWithLock(); err != nil {
+				finish()
+				mb.mu.Unlock()
+				return 0, 0, 0, err
+			}
+		}
+		if !mb.expirePrefixEligibleLocked(cutoff) {
+			finish()
+			mb.mu.Unlock()
+			break
+		}
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			finish()
+			mb.mu.Unlock()
+			return 0, 0, 0, err
+		}
+		subjects, err := mb.collectExpirePrefixSubjectsLocked(totals)
+		if err != nil {
+			finish()
+			mb.mu.Unlock()
+			return 0, 0, 0, err
+		}
+		if purged > fs.state.Msgs || bytes > fs.state.Bytes ||
+			mb.msgs > fs.state.Msgs-purged || mb.bytes > fs.state.Bytes-bytes {
+			finish()
+			mb.mu.Unlock()
+			return 0, 0, 0, errors.New("message block accounting exceeds stream state")
+		}
+
+		blocks = append(blocks, expirePrefixBlock{mb: mb, msgs: mb.msgs, bytes: mb.bytes, subjects: subjects})
+		purged += mb.msgs
+		bytes += mb.bytes
+		next = atomic.LoadUint64(&mb.last.seq) + 1
+		finish()
+		mb.mu.Unlock()
+	}
+	if len(blocks) == 0 {
+		return 0, 0, 0, nil
+	}
+	if err := fs.validateExpirePrefixSubjectsLocked(totals); err != nil {
+		return 0, 0, 0, err
+	}
+
+	committed := 0
+	for ; committed < len(blocks); committed++ {
+		mb := blocks[committed].mb
+		mb.mu.Lock()
+		err := mb.removeForExpirePrefixLocked()
+		mb.mu.Unlock()
+		if err != nil {
+			rerr = err
+			break
+		}
+	}
+	if committed == 0 {
+		return 0, 0, 0, rerr
+	}
+	blocks = blocks[:committed]
+
+	purged, bytes = 0, 0
+	for _, block := range blocks {
+		purged += block.msgs
+		bytes += block.bytes
+	}
+	fs.removeExpirePrefixSubjectsLocked(blocks)
+	for _, block := range blocks {
+		delete(fs.bim, block.mb.index)
+	}
+	fs.blks = copyMsgBlocks(fs.blks[committed:])
+	fs.state.Msgs -= purged
+	fs.state.Bytes -= bytes
+	// Keep a safe floor if leading empty-block cleanup fails. Successful cleanup
+	// below replaces it with the first live sequence and timestamp.
+	lastRemoved := blocks[len(blocks)-1].mb
+	fs.state.FirstSeq = atomic.LoadUint64(&lastRemoved.last.seq) + 1
+	fs.state.FirstTime = time.Time{}
+	fs.firstMoved = true
+	if err := fs.selectNextFirst(); err != nil {
+		rerr = errors.Join(rerr, err)
+	}
+	newFirst = fs.state.FirstSeq
+	fs.dirty++
+
+	return purged, bytes, newFirst, rerr
 }
 
 // RemoveMsg will remove the message from this store.
@@ -6961,8 +7289,6 @@ func (fs *fileStore) cancelAgeChk() {
 
 // Will expire msgs that are too old.
 func (fs *fileStore) expireMsgs() {
-	// We need to delete one by one here and can not optimize for the time being.
-	// Reason is that we need more information to adjust ack pending in consumers.
 	var smv StoreMsg
 	var sm *StoreMsg
 
@@ -6981,11 +7307,31 @@ func (fs *fileStore) expireMsgs() {
 		return
 	}
 	fs.ageChkRun = true
+
+	var first uint64
+	if maxAge > 0 && !sdmEnabled {
+		first = fs.state.FirstSeq
+	}
 	fs.mu.Unlock()
 
-	if maxAge > 0 {
-		var seq uint64
-		for sm, seq, _ = fs.LoadNextMsg(fwcs, true, 0, &smv); sm != nil && sm.ts <= minAge; sm, seq, _ = fs.LoadNextMsg(fwcs, true, seq+1, &smv) {
+	var seq uint64
+	var prefixErr error
+	if first > 0 {
+		// expirePrefixViaLimits validates each block itself. Calling it directly
+		// also lets recovered pre-v5 blocks load and learn timestamp ordering.
+		_, prefixErr = fs.expirePrefixViaLimits(first, minAge)
+		if prefixErr == nil {
+			fs.mu.RLock()
+			seq = fs.state.FirstSeq
+			fs.mu.RUnlock()
+		}
+	}
+
+	// A failed range validation has not removed anything. Leave its prefix for a
+	// bounded retry instead of turning the same timer run into partial
+	// per-message work.
+	if maxAge > 0 && prefixErr == nil {
+		for sm, seq, _ = fs.LoadNextMsg(fwcs, true, seq, &smv); sm != nil && sm.ts <= minAge; sm, seq, _ = fs.LoadNextMsg(fwcs, true, seq+1, &smv) {
 			if len(sm.hdr) > 0 {
 				if ttl, err := getMessageTTL(sm.hdr); err == nil && ttl < 0 {
 					// The message has a negative TTL, therefore it must "never expire".
@@ -7564,6 +7910,9 @@ func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 	isDeleted := seq&ebit != 0
 	if isDeleted {
 		seq = seq &^ ebit
+	}
+	if mb.msgs > 0 && ts < mb.last.ts {
+		mb.tsOrdered = false
 	}
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -8191,6 +8540,9 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	lbuf := uint32(len(buf))
 	var seq, ttls, schedules uint64
+	var lastTs int64
+	var haveTs bool
+	tsOrdered := true
 	var sm StoreMsg // Used for finding headers
 
 	// To ensure the sequence keeps moving up. As well as confirming our index
@@ -8231,6 +8583,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// Clear any erase bits.
 		erased := seq&ebit != 0
 		seq = seq &^ ebit
+		ts := int64(le.Uint64(hdr[12:]))
 
 		// The sequence needs to only ever move up.
 		if seq <= last {
@@ -8242,6 +8595,10 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// We defer checksum checks to individual msg cache lookups to amortorize costs and
 		// not introduce latency for first message from a newly loaded block.
 		if seq >= mbFirstSeq {
+			if haveTs && ts < lastTs {
+				tsOrdered = false
+			}
+			lastTs, haveTs = ts, true
 			last = seq
 
 			// If the first sequence doesn't align with what we had in-memory, we need to rebuild.
@@ -8315,6 +8672,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.wp = int(lbuf)
 	mb.ttls = ttls
 	mb.schedules = schedules
+	mb.tsKnown = true
+	mb.tsOrdered = tsOrdered
 	mb.cache.registerRecycle()
 
 	return nil
@@ -11770,10 +12129,13 @@ func (fs *fileStore) cancelSyncTimer() {
 // The full state file is versioned.
 // - 0x1: original binary index.db format
 // - 0x2: adds support for TTL count field after num deleted
+// - 0x3: adds support for schedule count field after TTL count
+// - 0x4: adds last block to per-subject state
+// - 0x5: adds per-block timestamp ordering metadata
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(4) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(5) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -11904,7 +12266,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		binary.MaxVarintLen64 + fs.tsl + // NumSubjects + total subject length
 		numSubjects*(binary.MaxVarintLen64*4) + // psi record
 		binary.MaxVarintLen64 + // Num blocks.
-		len(fs.blks)*((binary.MaxVarintLen64*8)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
+		len(fs.blks)*((binary.MaxVarintLen64*10)+avgDmapLen) + // msg blocks, avgDmapLen is est for dmaps
 		binary.MaxVarintLen64 + 8 + 8 // last index + record checksum + full state checksum
 
 	// Do 4k on stack if possible.
@@ -11966,6 +12328,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
 		buf = binary.AppendUvarint(buf, mb.ttls)      // Field is new in version 2
 		buf = binary.AppendUvarint(buf, mb.schedules) // Field is new in version 3
+		if mb.tsOrdered {
+			buf = binary.AppendUvarint(buf, 1) // Field is new in version 5
+		} else {
+			buf = binary.AppendUvarint(buf, 0)
+		}
 		if numDeleted > 0 {
 			dmap := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)

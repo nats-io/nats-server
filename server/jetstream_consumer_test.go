@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"net/url"
 	os "os"
@@ -13013,5 +13014,113 @@ func TestJetStreamConsumerResetResponseAcrossServiceImport(t *testing.T) {
 			c.waitOnConsumerLeader("A", "TEST", "CONSUMER")
 			return c.consumerLeader("A", "TEST", "CONSUMER")
 		})
+	})
+}
+
+func TestJetStreamConsumerExpireStreamPendingPrefix(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("deliver")
+	require_NoError(t, err)
+	asub, err := nc.SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.TEST.C")
+	require_NoError(t, err)
+	require_NoError(t, nc.FlushTimeout(10*time.Second))
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:        "C",
+		DeliverSubject: "deliver",
+		AckPolicy:      AckExplicit,
+	})
+	require_NoError(t, err)
+
+	for i := 1; i <= 6; i++ {
+		sendStreamMsg(t, nc, "foo", fmt.Sprintf("message %d", i))
+	}
+	for i := 0; i < 6; i++ {
+		_, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+	}
+
+	o.mu.RLock()
+	require_Equal(t, 6, len(o.pending))
+	o.mu.RUnlock()
+
+	mset.expirePrefixUpdates(5, 4, 0)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		np := len(o.pending)
+		o.mu.RUnlock()
+		if np != 2 {
+			return fmt.Errorf("expected 2 pending messages above floor, got %d", np)
+		}
+		state, err := o.store.BorrowState()
+		if err != nil {
+			return err
+		}
+		if state == nil || len(state.Pending) != 2 {
+			return fmt.Errorf("expected 2 persisted pending messages, got %+v", state)
+		}
+		return nil
+	})
+
+	for i := 0; i < 4; i++ {
+		_, err := asub.NextMsg(time.Second)
+		require_NoError(t, err)
+	}
+}
+
+func TestJetStreamConsumerExpireStreamPendingPrefixCleansRedelivery(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "C", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	o.rdc = map[uint64]uint64{1: 2, 2: 2, 5: 2}
+	o.addToRedeliverQueue(1, 2, 5)
+	o.dseq, o.sseq = 5, 6
+	state := ConsumerState{
+		Delivered:   SequencePair{Consumer: 5, Stream: 5},
+		Redelivered: map[uint64]uint64{1: 2, 2: 2, 5: 2},
+	}
+	o.mu.Unlock()
+	cfs, ok := o.store.(*consumerFileStore)
+	require_True(t, ok)
+	require_NoError(t, cfs.ForceUpdate(&state))
+
+	mset.expirePrefixUpdates(5, 4, 0)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		inMemory := maps.Clone(o.rdc)
+		queued := append([]uint64(nil), o.rdq...)
+		o.mu.RUnlock()
+		if len(inMemory) != 1 || inMemory[5] != 2 || len(queued) != 1 || queued[0] != 5 {
+			return fmt.Errorf("unexpected redelivery state after prefix expiry: rdc=%v rdq=%v", inMemory, queued)
+		}
+		state, err := o.store.BorrowState()
+		if err != nil {
+			return err
+		}
+		if state == nil || len(state.Redelivered) != 1 || state.Redelivered[5] != 2 {
+			return fmt.Errorf("unexpected persisted redelivery state after prefix expiry: %+v", state)
+		}
+		return nil
 	})
 }

@@ -5312,6 +5312,9 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 			mset.removeMsg(seq)
 		}
 	})
+	if fs, ok := mset.store.(*fileStore); ok {
+		fs.registerStorageExpirePrefix(mset.expirePrefixUpdates)
+	}
 	mset.store.RegisterProcessJetStreamMsg(func(im *inMsg) {
 		if mset.IsClustered() {
 			if mset.IsLeader() {
@@ -5326,13 +5329,33 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 	return nil
 }
 
+// expirePrefixUpdates handles the local file-store range after it has
+// committed the removal. This is deliberately separate from StorageUpdateHandler:
+// a range has a stream floor, not a synthetic single-message sequence.
+func (mset *stream) expirePrefixUpdates(first, msgs, bytes uint64) {
+	if first == 0 || msgs == 0 {
+		return
+	}
+	mset.mu.Lock()
+	mset.clearAllPreAcksBelowFloor(first)
+	mset.mu.Unlock()
+
+	mset.clsMu.RLock()
+	for _, o := range mset.cList {
+		o.expireStreamPendingPrefix(first)
+	}
+	mset.clsMu.RUnlock()
+
+	if mset.jsa != nil {
+		mset.jsa.updateUsage(mset.tier, mset.stype, -int64(bytes))
+	}
+}
+
 // Called for any updates to the underlying stream. We pass through the bytes to the
 // jetstream account. We do local processing for stream pending for consumers, but only
 // for removals.
 // Lock should not be held.
 func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
-	// If we have a single negative update then we will process our consumers for stream pending.
-	// Purge and Store handled separately inside individual calls.
 	if md == -1 && seq > 0 && subj != _EMPTY_ {
 		// We use our consumer list mutex here instead of the main stream lock since it may be held already.
 		mset.clsMu.RLock()
