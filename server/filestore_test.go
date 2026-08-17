@@ -8050,6 +8050,62 @@ func TestFileStoreMsgBlockShouldCompact(t *testing.T) {
 	require_False(t, shouldCompact)
 }
 
+func TestFileStoreInlineCompactionSync(t *testing.T) {
+	for _, syncAlways := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sync_always_%v", syncAlways), func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{
+					StoreDir:     t.TempDir(),
+					BlockSize:    3 * 1024 * 1024,
+					SyncInterval: time.Hour,
+					SyncAlways:   syncAlways,
+				},
+				StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage},
+			)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// Eleven records fit in the first block and put it over the inline
+			// compaction minimum. The twelfth record creates an active block.
+			msg := bytes.Repeat([]byte("Z"), 256*1024)
+			for range 12 {
+				_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+				require_NoError(t, err)
+			}
+			require_Equal(t, fs.numMsgBlocks(), 2)
+
+			// Use syncBlocks to make sure mb.needSync
+			// is cleared on all blocks
+			fs.syncBlocks()
+			fs.mu.RLock()
+			fmb := fs.blks[0]
+			fmb.mu.RLock()
+			oldRawbytes, needSync := fmb.rbytes, fmb.needSync
+			fmb.mu.RUnlock()
+			fs.mu.RUnlock()
+
+			require_True(t, oldRawbytes > compactMinimum)
+			require_False(t, needSync)
+
+			// The final removal makes the first block less than half full and
+			// compacts it inline before RemoveMsg returns.
+			for seq := uint64(2); seq <= 7; seq++ {
+				removed, err := fs.RemoveMsg(seq)
+				require_True(t, removed)
+				require_NoError(t, err)
+			}
+
+			fmb.mu.RLock()
+			newRawbytes, needSync := fmb.rbytes, fmb.needSync
+			fmb.mu.RUnlock()
+			// Compaction happened
+			require_LessThan(t, newRawbytes, oldRawbytes)
+			// SyncAlways store should sync inline compaction
+			require_Equal(t, needSync, !syncAlways)
+		})
+	}
+}
+
 func TestFileStoreCheckSkipFirstBlockNotLoadOldBlocks(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(
