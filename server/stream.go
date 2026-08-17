@@ -1636,10 +1636,10 @@ func (mset *stream) setCreatedTime(created time.Time) {
 	mset.mu.Lock()
 	mset.created = created
 	store := mset.store
-	mset.mu.Unlock()
 	if fs, ok := store.(*fileStore); ok {
 		fs.setCreatedTime(created)
 	}
+	mset.mu.Unlock()
 }
 
 // subjectsOverlap to see if these subjects overlap with existing subjects.
