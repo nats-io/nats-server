@@ -12845,6 +12845,103 @@ func TestJetStreamConsumerUpdateConfigStopRace(t *testing.T) {
 }
 
 // Must be run with -race.
+// updateConfig assigns the whole ConsumerConfig under o.mu, while
+// getPublicConsumers/getDirectConsumers used to read o.cfg.Direct holding only
+// mset.clsMu. They read the immutable o.direct now. Real world pairing is
+// jsConsumerCreateRequest (update path) against jsConsumerListRequest.
+func TestJetStreamConsumerConfigDirectRace(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: AckExplicit,
+	})
+	require_NoError(t, err)
+
+	const iters = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+	start := make(chan struct{})
+
+	// Writer: Description is updatable, and varying it defeats the
+	// DeepEqual early return in checkNewConsumerConfig.
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range iters {
+			cfg := o.config()
+			cfg.Description = fmt.Sprintf("update-%d", i)
+			_ = o.updateConfig(&cfg)
+		}
+	}()
+
+	// Reader: walks cList without taking the consumer lock.
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iters {
+			if n := len(mset.getPublicConsumers()); n != 1 {
+				t.Errorf("Expected 1 public consumer, got %d", n)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+}
+
+// Direct and Sourcing classify a consumer for its whole lifetime. The stream
+// reads them off the consumer without taking the consumer lock, so an update
+// must not be able to change them.
+func TestJetStreamConsumerUpdateRejectsDirectAndSourcingChange(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	// Direct consumers need to be push based ephemerals.
+	od, err := mset.addConsumer(&ConsumerConfig{
+		DeliverSubject: "d",
+		AckPolicy:      AckNone,
+		Direct:         true,
+	})
+	require_NoError(t, err)
+
+	cfg := od.config()
+	cfg.Direct = false
+	require_Error(t, od.updateConfig(&cfg), errors.New("direct can not be updated"))
+	require_True(t, od.direct)
+	require_True(t, od.config().Direct)
+
+	os, err := mset.addConsumer(&ConsumerConfig{
+		Durable:   "S",
+		AckPolicy: AckExplicit,
+		Sourcing:  true,
+	})
+	require_NoError(t, err)
+
+	cfg = os.config()
+	cfg.Sourcing = false
+	require_Error(t, os.updateConfig(&cfg), errors.New("sourcing can not be updated"))
+	require_True(t, os.sourcing)
+	require_True(t, os.config().Sourcing)
+}
+
+// Must be run with -race.
 func TestJetStreamConsumerSetRateLimitAccountMpayRace(t *testing.T) {
 	acc := &Account{Name: "A"}
 	acc.mpay = 1024
