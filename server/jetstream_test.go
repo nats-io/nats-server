@@ -3485,6 +3485,70 @@ func TestJetStreamSnapshotV2RestoreAtAccountReservationLimit(t *testing.T) {
 	require_Equal(t, reserved, int64(restoreBytes))
 }
 
+func TestJetStreamRestoreV2DefersSchedulesUntilReady(t *testing.T) {
+	for _, storage := range []StorageType{MemoryStorage, FileStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().addStreamForRestore(&StreamConfig{
+				Name:              "TEST",
+				Subjects:          []string{"foo.>"},
+				Storage:           storage,
+				AllowMsgSchedules: true,
+			})
+			require_NoError(t, err)
+			defer mset.delete()
+
+			due := time.Now().Add(100 * time.Millisecond)
+			hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", due.Format(time.RFC3339Nano)))
+			hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+			require_NoError(t, mset.store.StoreRawMsg("foo.schedule", hdr, []byte("scheduled"), 1, time.Now().UnixNano(), 0, false))
+
+			time.Sleep(500 * time.Millisecond)
+
+			var restoring, paused, timerSet, inflight bool
+			switch store := mset.store.(type) {
+			case *memStore:
+				store.mu.RLock()
+				restoring = store.recovering
+				paused = store.scheduling.paused
+				timerSet = store.scheduling.timer != nil
+				_, inflight = store.scheduling.inflight["foo.schedule"]
+				store.mu.RUnlock()
+			case *fileStore:
+				store.mu.RLock()
+				restoring = store.recovering
+				paused = store.scheduling.paused
+				timerSet = store.scheduling.timer != nil
+				_, inflight = store.scheduling.inflight["foo.schedule"]
+				store.mu.RUnlock()
+			}
+			require_True(t, restoring)
+			require_True(t, paused)
+			require_False(t, timerSet)
+			require_False(t, inflight)
+
+			mset.mu.RLock()
+			active := mset.active
+			mset.mu.RUnlock()
+			require_False(t, active)
+
+			require_NoError(t, mset.completeRestore())
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				sm, err := mset.store.LoadMsg(2, nil)
+				if err != nil {
+					return err
+				}
+				if sm.subj != "foo.target" {
+					return fmt.Errorf("unexpected scheduled message subject %q", sm.subj)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamSnapshotV2MemoryEphemeralConsumerRemainsEphemeral(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

@@ -1027,7 +1027,7 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		fsCfg.SyncAlways = false
 		fsCfg.AsyncFlush = true
 	}
-	if err := mset.setupStore(fsCfg); err != nil {
+	if err := mset.setupStore(fsCfg, recovering || restoring); err != nil {
 		mset.stop(true, false)
 		return nil, NewJSStreamStoreFailedError(err)
 	}
@@ -1105,6 +1105,9 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 	jsa.mu.Lock()
 	jsa.streams[cfg.Name] = mset
 	jsa.mu.Unlock()
+	if recovering && !restoring {
+		mset.store.Ready()
+	}
 
 	return mset, nil
 }
@@ -1378,8 +1381,11 @@ func (mset *stream) completeRestore() error {
 	mset.restoreLeader, mset.restoreTerm = false, 0
 	mset.mu.Unlock()
 	if isLeader {
-		return mset.setLeader(true, term)
+		if err := mset.setLeader(true, term); err != nil {
+			return err
+		}
 	}
+	mset.store.Ready()
 	return nil
 }
 
@@ -5304,11 +5310,11 @@ func (mset *stream) unsubscribe(sub *subscription) {
 	mset.client.processUnsub(sub.sid)
 }
 
-func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
+func (mset *stream) setupStore(fsCfg *FileStoreConfig, recovering bool) error {
 	mset.mu.Lock()
 	switch mset.cfg.Storage {
 	case MemoryStorage:
-		ms, err := newMemStore(&mset.cfg)
+		ms, err := newMemStoreWithMode(&mset.cfg, recovering)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
@@ -5324,7 +5330,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
 		cfg := *fsCfg
 		cfg.srv = s
-		fs, err := newFileStoreWithCreated(cfg, mset.cfg, mset.created, prf, oldprf)
+		fs, err := newFileStoreWithCreatedAndMode(cfg, mset.cfg, mset.created, prf, oldprf, recovering)
 		if err != nil {
 			mset.mu.Unlock()
 			return err

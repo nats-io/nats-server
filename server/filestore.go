@@ -184,6 +184,7 @@ type fileStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
+	recovering  bool        // Timers, schedules, TTLs etc won't fire while set.
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
@@ -395,6 +396,10 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 }
 
 func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (fs *fileStore, err error) {
+	return newFileStoreWithCreatedAndMode(fcfg, cfg, created, prf, oldprf, false)
+}
+
+func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen, recovering bool) (fs *fileStore, err error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -438,16 +443,17 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	dios.release()
 
 	fs = &fileStore{
-		fcfg:   fcfg,
-		dios:   dios,
-		psim:   stree.NewSubjectTree[psi](),
-		bim:    make(map[uint32]*msgBlock),
-		cfg:    FileStreamInfo{Created: created, StreamConfig: cfg},
-		prf:    prf,
-		oldprf: oldprf,
-		qch:    make(chan struct{}),
-		fsld:   make(chan struct{}),
-		srv:    fcfg.srv,
+		fcfg:       fcfg,
+		dios:       dios,
+		psim:       stree.NewSubjectTree[psi](),
+		bim:        make(map[uint32]*msgBlock),
+		cfg:        FileStreamInfo{Created: created, StreamConfig: cfg},
+		prf:        prf,
+		oldprf:     oldprf,
+		qch:        make(chan struct{}),
+		fsld:       make(chan struct{}),
+		srv:        fcfg.srv,
+		recovering: recovering,
 	}
 	fs.syncAlways.Store(fcfg.SyncAlways)
 
@@ -468,6 +474,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Only create scheduling data structure if we're going to allow message schedules.
 	if cfg.AllowMsgSchedules {
 		fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+		fs.scheduling.paused = recovering
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -2308,6 +2315,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 	}
 
 	fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+	fs.scheduling.paused = fs.recovering
 
 	var schedSeq uint64
 	if err == nil {
@@ -2317,6 +2325,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			// Remove the file, and reset collected state (if any).
 			_ = os.Remove(fn)
 			fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+			fs.scheduling.paused = fs.recovering
 		}
 	}
 
@@ -6875,7 +6884,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 }
 
 func (fs *fileStore) startAgeChk() {
-	if fs.ageChk != nil {
+	if fs.recovering || fs.ageChk != nil {
 		return
 	}
 	if fs.cfg.MaxAge != 0 || fs.ttls != nil {
@@ -6885,6 +6894,9 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
+	if fs.recovering {
+		return
+	}
 	// If we're already expiring messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if fs.ageChkRun {
@@ -6968,6 +6980,11 @@ func (fs *fileStore) expireMsgs() {
 	var sm *StoreMsg
 
 	fs.mu.Lock()
+	if fs.recovering {
+		fs.cancelAgeChk()
+		fs.mu.Unlock()
+		return
+	}
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
@@ -7146,7 +7163,7 @@ func (fs *fileStore) runMsgScheduling() {
 	defer fs.mu.Unlock()
 
 	// If scheduling is enabled, but handler isn't set up yet. Try again later.
-	if fs.scheduling == nil {
+	if fs.scheduling == nil || fs.scheduling.paused {
 		return
 	}
 	if fs.pmsgcb == nil {
@@ -9730,6 +9747,27 @@ func (fs *fileStore) ResetState() {
 	defer fs.mu.Unlock()
 	if fs.scheduling != nil {
 		fs.scheduling.clearInflight()
+	}
+}
+
+func (fs *fileStore) Ready() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if !fs.recovering {
+		return
+	}
+	fs.recovering = false
+	var ageDelta int64
+	if fs.cfg.MaxAge > 0 && !fs.state.FirstTime.IsZero() {
+		ageDelta = time.Until(fs.state.FirstTime.Add(fs.cfg.MaxAge)).Nanoseconds()
+		if ageDelta <= 0 {
+			ageDelta = 1
+		}
+	}
+	fs.resetAgeChk(ageDelta)
+	if fs.scheduling != nil {
+		fs.scheduling.paused = false
+		fs.scheduling.resetTimer()
 	}
 }
 

@@ -129,6 +129,7 @@ type StreamStore interface {
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterProcessJetStreamMsg(ProcessJetStreamMsgHandler)
 	UpdateConfig(cfg *StreamConfig) error
+	Ready() // Only needed if store started in recovering mode.
 	Delete(inline bool) error
 	Stop() error
 	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
