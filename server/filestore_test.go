@@ -15848,3 +15848,86 @@ func Benchmark_FileStoreDeleteMapExists(b *testing.B) {
 	}
 	b.StopTimer()
 }
+
+func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
+	const iname = "ORIGIN1 > >"
+
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN1"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN1 5 > > foo.a IDENT1")
+	for range 3 {
+		_, _, err = fs.StoreMsg("foo.a", hdr, nil, 0)
+		require_NoError(t, err)
+	}
+	// Interior delete, so the encoding also carries delete blocks, which are read
+	// to the end of the buffer and so must stay last.
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+
+	// Without the sources, the encoding stays on the version every server accepts.
+	buf, err := fs.EncodedStreamState(7, false)
+	require_NoError(t, err)
+	require_Equal(t, buf[1], streamStateVersion)
+	require_True(t, IsEncodedStreamState(buf))
+
+	ss, err := DecodeStreamState(buf)
+	require_NoError(t, err)
+	require_Equal(t, len(ss.Sources), 0)
+	require_Equal(t, ss.Failed, 7)
+	require_Len(t, len(ss.Deleted), 1)
+
+	// With the sources, the version is bumped and the state round-trips.
+	buf, err = fs.EncodedStreamState(7, true)
+	require_NoError(t, err)
+	require_Equal(t, buf[1], streamStateVersionSources)
+	require_True(t, IsEncodedStreamState(buf))
+
+	ss, err = DecodeStreamState(buf)
+	require_NoError(t, err)
+	require_Equal(t, ss.Failed, 7)
+	require_Len(t, len(ss.Deleted), 1)
+	require_Len(t, len(ss.Sources), 1)
+	require_Equal(t, ss.Sources[iname].Seq, 5)
+	require_Equal(t, ss.Sources[iname].Ident, "IDENT1")
+
+	fs2, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs2.Stop()
+
+	fs2.ApplySourcesState(ss.Sources)
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 5)
+	require_Equal(t, fs2.SourcesState()[iname].Ident, "IDENT1")
+
+	// The leader's view replaces what we had, it is authoritative even when that
+	// means moving an entry back.
+	fs2.ApplySourcesState(map[string]StreamSourceState{iname: {Seq: 2, Ident: "OLD"}})
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 2)
+	require_Equal(t, fs2.SourcesState()[iname].Ident, "OLD")
+
+	// An empty set says nothing, so it leaves what we have alone.
+	fs2.ApplySourcesState(nil)
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 2)
+
+	// Anything the leader no longer tracks is dropped, but a configured source
+	// stays present as not yet observed.
+	fs2.ApplySourcesState(map[string]StreamSourceState{"OTHER > >": {Seq: 9}})
+	require_Equal(t, fs2.SourcesState()["OTHER > >"].Seq, 9)
+	_, ok := fs2.SourcesState()[iname]
+	require_False(t, ok)
+	fs2.mu.RLock()
+	seeded := fs2.sources[iname]
+	fs2.mu.RUnlock()
+	require_NotNil(t, seeded)
+	require_Equal(t, seeded.Seq, 0)
+}

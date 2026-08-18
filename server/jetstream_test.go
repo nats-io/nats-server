@@ -25206,6 +25206,51 @@ func TestJetStreamSourcesStateStartingSequence(t *testing.T) {
 	})
 }
 
+func TestJetStreamSourcesStateAddedSourceUsesAdoptedState(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN1"}},
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+
+		// Adopt a leader's sourcing state that already covers ORIGIN2, which this
+		// stream's own config doesn't have yet. That is what a replica is left
+		// holding when it installs a snapshot before the meta layer adds the
+		// source, and the store has no messages to derive the position from.
+		mset.store.ApplySourcesState(map[string]StreamSourceState{
+			"ORIGIN2 > >": {Seq: 7, Ident: "IDENT2"},
+		})
+
+		// Adding the source has to reuse that state rather than start over.
+		cfg.Sources = append(cfg.Sources, &nats.StreamSource{Name: "ORIGIN2"})
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		mset.mu.RLock()
+		si := mset.sources["ORIGIN2 > >"]
+		mset.mu.RUnlock()
+
+		require_NotNil(t, si)
+		require_Equal(t, si.sseq, 7)
+		require_Equal(t, si.ident, "IDENT2")
+	}
+
+	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
+	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
+}
+
 func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
 	// Use a real raft node with its RWMutex held to simulate a Raft
 	// runloop blocked during vote processing, e.g. by dios. clusterInfo

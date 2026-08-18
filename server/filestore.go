@@ -4928,6 +4928,31 @@ func (fs *fileStore) subjectsTotalsLocked(filter string) map[string]uint64 {
 	return fst
 }
 
+// ApplySourcesState replaces the tracked sourcing state with the leader's.
+func (fs *fileStore) ApplySourcesState(sources map[string]StreamSourceState) {
+	if len(sources) == 0 {
+		return
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// Nil means no sources are configured, so there is nothing to track.
+	if fs.sources == nil {
+		return
+	}
+	clear(fs.sources)
+	for name, ss := range sources {
+		fs.sources[name] = &StreamSourceState{Seq: ss.Seq, Ident: ss.Ident}
+	}
+	// Keep every configured source present, seeded as not yet observed, which is
+	// the invariant recoverPerMessageState and storeRawMsg expect.
+	for _, ssi := range fs.cfg.Sources {
+		if iname := ssi.composeIName(); fs.sources[iname] == nil {
+			fs.sources[iname] = &StreamSourceState{}
+		}
+	}
+	fs.dirty++
+}
+
 // SourcesState return sources keys and their last known state.
 func (fs *fileStore) SourcesState() (dst map[string]StreamSourceState) {
 	fs.mu.RLock()
@@ -12889,9 +12914,12 @@ func (fs *fileStore) readUnlockAllMsgBlocks() {
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (fs *fileStore) EncodedStreamState(failed uint64, withSources bool) ([]byte, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+
+	withSources = withSources && len(fs.sources) > 0
+	version := streamStateVersion
 
 	// Calculate deleted.
 	var numDeleted int64
@@ -12908,6 +12936,26 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		uvarintLen(fs.state.FirstSeq) + uvarintLen(fs.state.LastSeq) +
 		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
+	var numSources uint64
+	var sourcesLen int
+	if withSources {
+		for name, ss := range fs.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			numSources++
+			// Length prefix + source bytes + seq varint +
+			// length prefix + identity bytes.
+			sourcesLen += uvarintLen(uint64(len(name))) + len(name) + uvarintLen(ss.Seq) +
+				uvarintLen(uint64(len(ss.Ident))) + len(ss.Ident)
+		}
+		// Nothing observed yet, then there is nothing to carry.
+		if withSources = numSources > 0; withSources {
+			total += uvarintLen(numSources) + sourcesLen
+			version = streamStateVersionSources
+		}
+	}
+
 	var dbs DeleteBlocks
 	if numDeleted > 0 {
 		fs.readLockAllMsgBlocks()
@@ -12918,12 +12966,25 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 	}
 
 	b := make([]byte, 0, total)
-	b = append(b, streamStateMagic, streamStateVersion)
+	b = append(b, streamStateMagic, version)
 	b = binary.AppendUvarint(b, fs.state.Msgs)
 	b = binary.AppendUvarint(b, fs.state.Bytes)
 	b = binary.AppendUvarint(b, fs.state.FirstSeq)
 	b = binary.AppendUvarint(b, fs.state.LastSeq)
 	b = binary.AppendUvarint(b, failed)
+	if withSources {
+		b = binary.AppendUvarint(b, numSources)
+		for name, ss := range fs.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			b = binary.AppendUvarint(b, uint64(len(name)))
+			b = append(b, name...)
+			b = binary.AppendUvarint(b, ss.Seq)
+			b = binary.AppendUvarint(b, uint64(len(ss.Ident)))
+			b = append(b, ss.Ident...)
+		}
+	}
 	b = binary.AppendUvarint(b, uint64(numDeleted))
 
 	for _, db := range dbs {

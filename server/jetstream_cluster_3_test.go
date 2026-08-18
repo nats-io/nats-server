@@ -14137,3 +14137,110 @@ func TestJetStreamClusterMigrationStatusReportedInClusterInfo(t *testing.T) {
 	ci = js.clusterInfo(rg)
 	require_True(t, ci.Desired == nil)
 }
+
+// The sourcing state outlives the messages it was collected from, so unlike other
+// per-message derived state it can't always be rebuilt from what's replicated. A
+// replica that catches up over a stream whose sourced messages are already gone
+// never sees the headers that carried the source's position, and would resume
+// sourcing from an earlier point once it becomes leader.
+func TestJetStreamClusterSourcesStateSnapshot(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		title := "Disabled"
+		if enabled {
+			title = "Enabled"
+		}
+		t.Run(title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.FeatureFlags = map[string]bool{FeatureFlagJsSnapshotSources: enabled}
+				s.optsMu.Unlock()
+			}
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "ORIGIN",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Start at R1, so the other peers never take part in the sourcing.
+			cfg := &nats.StreamConfig{
+				Name:     "SOURCE",
+				Sources:  []*nats.StreamSource{{Name: "ORIGIN"}},
+				Replicas: 1,
+			}
+			_, err = js.AddStream(cfg)
+			require_NoError(t, err)
+
+			const total = 5
+			for range total {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			c.waitOnStreamLeader(globalAccountName, "SOURCE")
+			sl := c.streamLeader(globalAccountName, "SOURCE")
+			mset, err := sl.globalAccount().lookupStream("SOURCE")
+			require_NoError(t, err)
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				if msgs := mset.store.State().Msgs; msgs != total {
+					return fmt.Errorf("expected %d messages, got %d", total, msgs)
+				}
+				return nil
+			})
+
+			const iname = "ORIGIN > >"
+			require_Equal(t, mset.store.SourcesState()[iname].Seq, total)
+
+			// Purge. The tracked state deliberately survives, but the messages that
+			// established it are gone, so it can no longer be derived by a scan.
+			_, err = mset.purge(nil)
+			require_NoError(t, err)
+			require_Equal(t, mset.store.State().Msgs, 0)
+			require_Equal(t, mset.store.SourcesState()[iname].Seq, total)
+
+			// Scale out. The added replicas catch up over an emptied stream, so they
+			// never see the headers that carried the source's position.
+			cfg.Replicas = 3
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			c.waitOnStreamLeader(globalAccountName, "SOURCE")
+			for _, s := range c.servers {
+				c.waitOnStreamCurrent(s, globalAccountName, "SOURCE")
+			}
+
+			var known int
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				known = 0
+				for _, s := range c.servers {
+					m, err := s.globalAccount().lookupStream("SOURCE")
+					if err != nil {
+						return err
+					}
+					if m.store.SourcesState()[iname].Seq == total {
+						known++
+					}
+				}
+				if enabled && known != 3 {
+					return fmt.Errorf("expected all 3 replicas to know the source position, got %d", known)
+				}
+				return nil
+			})
+
+			if enabled {
+				// The snapshot carried it, so every replica agrees.
+				require_Equal(t, known, 3)
+			} else {
+				// Only the replica that did the sourcing knows where to resume.
+				require_Equal(t, known, 1)
+			}
+		})
+	}
+}
