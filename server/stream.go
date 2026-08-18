@@ -8596,7 +8596,7 @@ func (mset *stream) getPublicConsumers() []*consumer {
 
 	var obs []*consumer
 	for _, o := range mset.cList {
-		if !o.cfg.Direct {
+		if !o.direct {
 			obs = append(obs, o)
 		}
 	}
@@ -8610,7 +8610,7 @@ func (mset *stream) getDirectConsumers() []*consumer {
 
 	var obs []*consumer
 	for _, o := range mset.cList {
-		if o.cfg.Direct {
+		if o.direct {
 			obs = append(obs, o)
 		}
 	}
@@ -8683,7 +8683,7 @@ func (mset *stream) setConsumer(o *consumer) {
 	if len(o.subjf) > 0 {
 		mset.numFilter++
 	}
-	if o.cfg.Direct || o.cfg.Sourcing {
+	if o.direct || o.sourcing {
 		mset.sourcingConsumers++
 	}
 	// Now update consumers list as well
@@ -8706,7 +8706,7 @@ func (mset *stream) removeConsumer(o *consumer) {
 		if o.cfg.FilterSubject != _EMPTY_ && mset.numFilter > 0 {
 			mset.numFilter--
 		}
-		if (o.cfg.Direct || o.cfg.Sourcing) && mset.sourcingConsumers > 0 {
+		if (o.direct || o.sourcing) && mset.sourcingConsumers > 0 {
 			mset.sourcingConsumers--
 		}
 
@@ -8790,11 +8790,9 @@ func (mset *stream) numDirectConsumers() (num int) {
 
 	// Consumers that are direct are not recorded at the store level.
 	for _, o := range mset.cList {
-		o.mu.RLock()
-		if o.cfg.Direct {
+		if o.direct {
 			num++
 		}
-		o.mu.RUnlock()
 	}
 	return num
 }
@@ -8837,12 +8835,11 @@ func (mset *stream) partitionUnique(name string, partitions []string) bool {
 			if n == name {
 				continue
 			}
-			o.mu.RLock()
 			// Ignore direct/sourcing consumers.
-			if o.cfg.Direct || o.cfg.Sourcing {
-				o.mu.RUnlock()
+			if o.direct || o.sourcing {
 				continue
 			}
+			o.mu.RLock()
 			if o.subjf == nil {
 				o.mu.RUnlock()
 				return false

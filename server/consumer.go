@@ -476,6 +476,8 @@ type consumer struct {
 	maxdc             uint64
 	waiting           *waitQueue
 	cfg               ConsumerConfig
+	direct            bool // Immutable, enforced by checkNewConsumerConfig. Read without o.mu.
+	sourcing          bool // Immutable, enforced by checkNewConsumerConfig. Read without o.mu.
 	ici               *ConsumerInfo
 	store             ConsumerStore
 	active            bool
@@ -1184,6 +1186,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		client:    s.createInternalJetStreamClient(),
 		sysc:      s.createInternalJetStreamClient(),
 		cfg:       *config,
+		direct:    config.Direct,
+		sourcing:  config.Sourcing,
 		dsubj:     config.DeliverSubject,
 		outq:      mset.outq,
 		active:    true,
@@ -2235,7 +2239,7 @@ func (o *consumer) deleteNotActive() {
 	}
 
 	s, js := o.mset.srv, o.srv.js.Load()
-	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
+	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.direct
 	// Capture our own view of the assignment while we still hold the lock.
 	ca := o.ca
 	var qch, cqch chan struct{}
@@ -2473,6 +2477,14 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	}
 	if cfg.MemoryStorage != ncfg.MemoryStorage {
 		return errors.New("storage type can not be updated")
+	}
+	// Direct and Sourcing classify the consumer for its whole lifetime, which the
+	// stream relies on when walking its consumer list, so they can not change.
+	if cfg.Direct != ncfg.Direct {
+		return errors.New("direct can not be updated")
+	}
+	if cfg.Sourcing != ncfg.Sourcing {
+		return errors.New("sourcing can not be updated")
 	}
 	if cfg.OptStartSeq != ncfg.OptStartSeq {
 		return errors.New("start sequence can not be updated")
@@ -5698,7 +5710,7 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && rp != LimitsPolicy {
-		if mset != nil && mset.ackq != nil && (o.node == nil || o.cfg.Direct) {
+		if mset != nil && mset.ackq != nil && (o.node == nil || o.direct) {
 			mset.ackq.push(seq)
 		} else {
 			o.updateAcks(dseq, seq, _EMPTY_)
