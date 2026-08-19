@@ -6265,20 +6265,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	mb.fs.dios.acquire()
-	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
-	mb.fs.dios.release()
-	if err != nil {
-		_ = os.Remove(mfn)
-		return err
-	}
-	if err := os.Rename(mfn, mb.mfn); err != nil {
-		_ = os.Remove(mfn)
+	sync := mb.syncAlways
+	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
 	}
 
-	// Make sure to sync
-	mb.needSync = true
+	// Make sure to sync if we have not done so yet
+	mb.needSync = !sync
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
@@ -7958,7 +7951,6 @@ func (fs *fileStore) syncBlocks() {
 
 		// Check if we should compact here.
 		// Need to hold fs lock in case we reference psim when loading in the mb and we may remove this block if truly empty.
-		var compacted bool
 		if needsCompact {
 			// Load a delete map containing only interior deletes.
 			// This is used when compacting to know if tombstones are still relevant,
@@ -7977,14 +7969,14 @@ func (fs *fileStore) syncBlocks() {
 			err := mb.compactWithFloor(firstSeq, fsDmap)
 			// If this compact removed all raw bytes due to tombstone cleanup, schedule to remove.
 			shouldRemove := mb.rbytes == 0
+			needSync = mb.needSync
 			mb.mu.Unlock()
 			fs.mu.RUnlock()
 			if err != nil {
 				storeFsWerr(err)
 				continue
 			}
-			needDirSync = true
-			compacted = !shouldRemove
+			needDirSync = needDirSync || needSync || shouldRemove
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
 			//  it above which we would prefer to be a readlock such that other lookups can occur while compacting this block.
@@ -8011,7 +8003,7 @@ func (fs *fileStore) syncBlocks() {
 		}
 
 		// Check if we need to sync this block.
-		if needSync || compacted {
+		if needSync {
 			mb.mu.Lock()
 			err := mb.syncFile()
 			if err == nil {
@@ -14032,7 +14024,10 @@ func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.
 const canFsyncDirectories = runtime.GOOS != "windows"
 
 func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
-	tmp := name + ".tmp"
+	return writeAtomicallyWithTemp(dios, name+".tmp", name, data, perm, sync)
+}
+
+func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if sync {
 		flags = flags | os.O_SYNC
