@@ -4083,11 +4083,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if err != nil {
 					panic(err.Error())
 				}
-
-				// Ensure the whole batch is fully isolated, and reads
-				// can only happen after the full batch is committed.
 				mset.mu.Lock()
-
 				// Previous batch (if any) was abandoned.
 				if batch.id != _EMPTY_ && batchId != batch.id {
 					batch.rejectBatchState(mset)
@@ -4123,6 +4119,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					continue
 				}
 
+				// Ensure the whole batch is fully isolated, and reads
+				// can only happen after the full batch is committed.
+				mset.mu.Unlock()
+				mset.isolateMu.Lock()
+
 				// Process any entries that are part of this batch but prior to the current one.
 				var entries []*Entry
 				for j, bce := range batch.entries {
@@ -4140,7 +4141,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						}
 						// Important to clear, otherwise we could return the entries to the pool multiple times.
 						batch.clearBatchState()
-						mset.mu.Unlock()
+						mset.isolateMu.Unlock()
 					}
 					for _, entry := range entries {
 						// Non-normal entries (e.g. EntryCatchup) can be buffered but must be ignored.
@@ -4170,7 +4171,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				clearAndUnlock := func() {
 					// Important to clear, otherwise we could return the entries to the pool multiple times.
 					batch.clearBatchState()
-					mset.mu.Unlock()
+					mset.isolateMu.Unlock()
 				}
 				// Process remaining entries in the current entry.
 				for _, entry := range entries {
@@ -4190,7 +4191,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 				// Clear state, batch was successful.
 				batch.clearBatchState()
-				mset.mu.Unlock()
+				mset.isolateMu.Unlock()
 				continue
 			} else if batch != nil && batch.id != _EMPTY_ {
 				// If a batch is abandoned without a commit, reject it.
@@ -4217,11 +4218,14 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				if dr.Num == 0 {
 					continue
 				}
+				// Delete ranges mutate message state, so hold the isolation lock like any other write.
+				mset.isolateMu.Lock()
 				mset.mu.Lock()
 				first, num := dr.First, dr.Num
 				lseq := first + num - 1
 				if mset.lseq >= lseq {
 					mset.mu.Unlock()
+					mset.isolateMu.Unlock()
 					continue
 				}
 				// Trim any prefix already applied so we only skip the uncovered tail.
@@ -4231,6 +4235,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 				if err = mset.store.SkipMsgs(first, num); err != nil {
 					mset.mu.Unlock()
+					mset.isolateMu.Unlock()
 					js.srv.RateLimitWarnf("JetStream cluster failed to apply delete range [%d..%d] for '%s > %s': %v",
 						first, lseq, mset.account().Name, mset.cfg.Name, err)
 					return 0, err
@@ -4238,6 +4243,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				mset.clearAllPreAcksInRange(first, lseq)
 				mset.lseq = lseq
 				mset.mu.Unlock()
+				mset.isolateMu.Unlock()
 
 			case deleteMsgOp:
 				md, err := decodeMsgDelete(buf[1:])
@@ -4453,7 +4459,9 @@ func (mset *stream) skipBatchIfRecovering(batch *batchApply, buf []byte) (bool, 
 	return false, nil
 }
 
-func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool, needLock bool) error {
+// needIsolation should be false only if the caller already holds isolateMu
+// across a whole atomic batch; mset.mu must NOT be held by the caller.
+func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isRecovering bool, needIsolation bool) error {
 	s := js.srv
 
 	if op == compressedStreamMsgOp {
@@ -4466,11 +4474,8 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 
 	subject, reply, hdr, msg, lseq, ts, sourced, err := decodeStreamMsg(mbuf)
 	if err != nil {
-		// We're going to panic below, but if we're already holding the stream lock, we should let go now.
-		// Otherwise we'll deadlock when trying to get the raft node.
-		if !needLock {
-			mset.mu.Unlock()
-		}
+		// We're going to panic below, we're not holding the stream lock, so
+		// we'll not deadlock when trying to get the raft node.
 		if node := mset.raftNode(); node != nil {
 			s.Errorf("JetStream cluster could not decode stream msg for '%s > %s' [%s]",
 				mset.account(), mset.name(), node.Group())
@@ -4481,38 +4486,26 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 	// Check for flowcontrol here.
 	if len(msg) == 0 && len(hdr) > 0 && reply != _EMPTY_ && isControlHdr(hdr) {
 		if !isRecovering {
-			if needLock {
-				mset.mu.RLock()
-			}
+			mset.mu.RLock()
 			mset.sendFlowControlReply(reply, hdr)
-			if needLock {
-				mset.mu.RUnlock()
-			}
+			mset.mu.RUnlock()
 		}
 		return nil
 	}
 
-	if needLock {
-		mset.mu.RLock()
-	}
+	mset.mu.RLock()
 	// Grab last sequence and CLFS.
 	last, clfs := mset.lastSeqAndCLFS()
-	if needLock {
-		mset.mu.RUnlock()
-	}
+	mset.mu.RUnlock()
 
 	// We can skip if we know this is less than what we already have.
 	if lseq-clfs < last {
+		mset.mu.Lock()
 		s.Debugf("Apply stream entries for '%s > %s' skipping message with sequence %d with last of %d",
-			mset.accountLocked(needLock), mset.nameLocked(needLock), lseq+1-clfs, last)
-		if needLock {
-			mset.mu.Lock()
-		}
+			mset.accountLocked(false), mset.nameLocked(false), lseq+1-clfs, last)
 		// Check for any preAcks in case we are interest based.
 		mset.clearAllPreAcks(lseq + 1 - clfs)
-		if needLock {
-			mset.mu.Unlock()
-		}
+		mset.mu.Unlock()
 		return nil
 	}
 
@@ -4530,14 +4523,10 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		if err != nil {
 			return err
 		}
-		if needLock {
-			mset.mu.Lock()
-		}
+		mset.mu.Lock()
 		mset.lseq = last
 		mset.clearAllPreAcks(last)
-		if needLock {
-			mset.mu.Unlock()
-		}
+		mset.mu.Unlock()
 		return nil
 	}
 
@@ -4549,7 +4538,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 		mt = mset.getAndDeleteMsgTrace(lseq)
 	}
 	// Process the actual message here.
-	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+	err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation)
 
 	// Take into account subject transforms, if any.
 	// The untransformed subject is replicated, but the transformed subject is used for consistency checks below.
@@ -4629,7 +4618,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 				_, err = mset.store.Compact(lseq + 1)
 				if err == nil {
 					// Retry
-					err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock)
+					err = mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation)
 				}
 			}
 			// FIXME(dlc) - We could just run a catchup with a request defining the span between what we expected
@@ -4641,7 +4630,7 @@ func (js *jetStream) applyStreamMsgOp(mset *stream, op entryOp, mbuf []byte, isR
 			return err
 		}
 		s.Debugf("Apply stream entries for '%s > %s' got error processing message: %v",
-			mset.accountLocked(needLock), mset.nameLocked(needLock), err)
+			mset.accountLocked(true), mset.nameLocked(true), err)
 
 		// There are some errors that we can't recover from.
 		if err != ErrMaxMsgs && err != ErrMaxBytes && err != ErrMaxMsgsPerSubject && err != ErrMsgTooLarge && err != ErrStoreClosed {
