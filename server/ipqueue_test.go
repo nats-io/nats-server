@@ -118,9 +118,11 @@ func TestIPQueuePushMany(t *testing.T) {
 	s := &Server{}
 	q := newIPQueue[int](s, "test")
 
-	l, err := q.pushMany(func(push func(int)) {
+	l, err := q.pushMany(func(yield func(int) bool) {
 		for i := 1; i <= 3; i++ {
-			push(i)
+			if !yield(i) {
+				return
+			}
 		}
 	})
 	require_NoError(t, err)
@@ -137,7 +139,7 @@ func TestIPQueuePushMany(t *testing.T) {
 	}
 	q.recycle(&values)
 
-	l, err = q.pushMany(func(func(int)) {})
+	l, err = q.pushMany(func(func(int) bool) {})
 	require_NoError(t, err)
 	require_Equal(t, l, 0)
 	select {
@@ -147,9 +149,11 @@ func TestIPQueuePushMany(t *testing.T) {
 	}
 
 	limited := newIPQueue[int](s, "limited", ipqLimitByLen[int](2))
-	l, err = limited.pushMany(func(push func(int)) {
+	l, err = limited.pushMany(func(yield func(int) bool) {
 		for i := 1; i <= 3; i++ {
-			push(i)
+			if !yield(i) {
+				return
+			}
 		}
 	})
 	require_Error(t, err, errIPQLenLimitReached)

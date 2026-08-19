@@ -15,6 +15,7 @@ package server
 
 import (
 	"errors"
+	"iter"
 	"sync"
 	"sync/atomic"
 )
@@ -140,16 +141,20 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 	return l + 1, nil
 }
 
-// Add all elements pushed by generate to the queue while holding the queue
+// Add all elements yielded by seq to the queue while holding the queue
 // lock, preventing other producers from pushing interleaving elements.
-// On success, it returns the queue length after adding all pushed elements.
-// If a queue limit is reached, no pushed elements are retained, and it
+// On success, it returns the queue length after adding all yielded elements.
+// If a queue limit is reached, no yielded elements are retained, and it
 // returns the unchanged queue length and the first limit error.
-func (q *ipQueue[T]) pushMany(generate func(push func(T))) (int, error) {
+func (q *ipQueue[T]) pushMany(seq iter.Seq[T]) (int, error) {
 	q.Lock()
 	l, added, start := len(q.elts)-q.pos, 0, len(q.elts)
 	initialSize := q.sz
-	var err error
+	revert := func() {
+		clear(q.elts[start:])
+		q.elts = q.elts[:start]
+		q.sz, added = initialSize, 0
+	}
 	defer func() {
 		q.Unlock()
 		if l == 0 && added > 0 {
@@ -160,19 +165,16 @@ func (q *ipQueue[T]) pushMany(generate func(push func(T))) (int, error) {
 		}
 	}()
 
-	generate(func(e T) {
-		if err != nil {
-			return
-		}
+	for e := range seq {
 		if q.mlen > 0 && l+added == q.mlen {
-			err = errIPQLenLimitReached
-			return
+			revert()
+			return l, errIPQLenLimitReached
 		}
 		if q.calc != nil {
 			sz := q.calc(e)
 			if q.msz > 0 && q.sz+sz > q.msz {
-				err = errIPQSizeLimitReached
-				return
+				revert()
+				return l, errIPQSizeLimitReached
 			}
 			q.sz += sz
 		}
@@ -182,13 +184,8 @@ func (q *ipQueue[T]) pushMany(generate func(push func(T))) (int, error) {
 		}
 		q.elts = append(q.elts, e)
 		added++
-	})
-	if err != nil {
-		clear(q.elts[start:])
-		q.elts = q.elts[:start]
-		q.sz, added = initialSize, 0
 	}
-	return l + added, err
+	return l + added, nil
 }
 
 // Returns the whole list of elements currently present in the queue,
