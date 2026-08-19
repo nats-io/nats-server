@@ -16,6 +16,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -3868,6 +3869,9 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (fs *fileStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(fs.cfg.Subjects) {
 		return false
 	}
@@ -3945,6 +3949,17 @@ func (fs *fileStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAll
 
 	// Collect all sequences needed.
 	seqs := make([]uint64, 0, len(subs))
+
+	// If covering the whole stream, check fast path of visiting only last blocks.
+	if maxSeq >= fs.state.LastSeq {
+		if maxAllowed > 0 && len(subs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+		if err := fs.multiLastSeqsByLastBlockLocked(subs, &seqs); err != nil {
+			return nil, err
+		}
+	}
+
 	for i, lnf := lastBlkIndex, false; i >= 0; i-- {
 		if len(subs) == 0 {
 			break
@@ -4060,6 +4075,74 @@ func (fs *fileStore) MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxA
 		}
 	}
 	return total, np, nil
+}
+
+// multiLastSeqsByLastBlockLocked resolves last sequences via each subject's
+// last block (psi.lblk), moving resolved subjects from subs into seqs and
+// leaving unresolved ones (e.g. stale lblk) in subs for the caller.
+// Lock should be held.
+func (fs *fileStore) multiLastSeqsByLastBlockLocked(subs map[string]*psi, seqs *[]uint64) error {
+	// Sort requested subjects by their last block so each block is visited
+	// once and in order, one flat slice instead of per-block map bookkeeping.
+	type lblkSubj struct {
+		lblk uint32
+		subj string
+		info *psi
+	}
+	pairs := make([]lblkSubj, 0, len(subs))
+	for subj, info := range subs {
+		pairs = append(pairs, lblkSubj{info.lblk, subj, info})
+	}
+	slices.SortFunc(pairs, func(a, b lblkSubj) int {
+		return cmp.Compare(a.lblk, b.lblk)
+	})
+
+	var unresolved []lblkSubj
+	for i := 0; i < len(pairs); {
+		blkIdx := pairs[i].lblk
+		j := i + 1
+		for j < len(pairs) && pairs[j].lblk == blkIdx {
+			j++
+		}
+		mb := fs.bim[blkIdx]
+		if mb == nil {
+			unresolved = append(unresolved, pairs[i:j]...)
+			i = j
+			continue
+		}
+		mb.mu.Lock()
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			mb.mu.Unlock()
+			return err
+		}
+		for ; i < j; i++ {
+			subj := pairs[i].subj
+			ss, ok := mb.fss.Find(stringToBytes(subj))
+			if !ok || ss == nil {
+				unresolved = append(unresolved, pairs[i])
+				continue
+			}
+			// Check if we need to recalculate. We only care about the last sequence.
+			if ss.lastNeedsUpdate {
+				if err := mb.recalculateForSubj(subj, ss); err != nil {
+					mb.mu.Unlock()
+					return err
+				}
+			}
+			*seqs = append(*seqs, ss.Last)
+		}
+		mb.mu.Unlock()
+	}
+
+	// Shrink subs down to only the unresolved subjects, clearing wholesale
+	// rather than deleting per resolved subject.
+	if len(unresolved) < len(subs) {
+		clear(subs)
+		for _, p := range unresolved {
+			subs[p.subj] = p.info
+		}
+	}
+	return nil
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
