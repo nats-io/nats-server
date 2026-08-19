@@ -959,9 +959,11 @@ func (n *raft) tryFastPathProposeMulti(term uint64, entries []*Entry) bool {
 	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader {
 		return false
 	}
-	_, err := n.prop.pushMany(func(push func(*proposedEntry)) {
+	_, err := n.prop.pushMany(func(yield func(*proposedEntry) bool) {
 		for _, e := range entries {
-			push(newProposedEntry(e, _EMPTY_, term))
+			if !yield(newProposedEntry(e, _EMPTY_, term)) {
+				return
+			}
 		}
 	})
 	return err == nil
@@ -1033,9 +1035,11 @@ func (n *raft) ProposeMulti(term uint64, entries []*Entry) error {
 		n.overrunCount++
 		return errNotLeader
 	}
-	_, err := n.prop.pushMany(func(push func(*proposedEntry)) {
+	_, err := n.prop.pushMany(func(yield func(*proposedEntry) bool) {
 		for _, e := range entries {
-			push(newProposedEntry(e, _EMPTY_, n.term))
+			if !yield(newProposedEntry(e, _EMPTY_, n.term)) {
+				return
+			}
 		}
 	})
 	return err
