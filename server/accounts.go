@@ -66,7 +66,6 @@ type Account struct {
 	claimJWT     string
 	updated      time.Time
 	mu           sync.RWMutex
-	smu          sync.Mutex // serializes route interest updates
 	sl           *Sublist
 	ic           *client
 	sq           *sendq
@@ -80,7 +79,9 @@ type Account struct {
 	nrleafs      int32
 	clients      map[*client]struct{}
 	rm           map[string]int32
-	lws          map[string]int32 // per key, last rm[key] sent to routes; used to dedup sends
+	lws          map[string]int32      // per key, last rm[key] sent to routes; used to dedup sends
+	rup          []routeInterestUpdate // pending updates of routed interest to be sent to the routes
+	rupa         bool                  // set while a goroutine is actively sending the pending updates
 	usersRevoked map[string]int64
 	mappings     []*mapping
 	hasMapped    atomic.Bool

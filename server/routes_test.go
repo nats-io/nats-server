@@ -5555,6 +5555,223 @@ func TestRouteSubUnsubRaceLosesRemoteInterest(t *testing.T) {
 	}
 }
 
+// Reproduces the condition seen in production captures where the route's
+// client lock is monopolized by the data path (message delivery to a busy
+// or congested route): subscription interest updates for the account must
+// still complete. At most one goroutine - the one actually sending to the
+// route - may block on the route's lock; every other connection's sub/unsub
+// must not stall behind it. With the interest updates being serialized
+// through a per-account lock held across the route sends, all of them would
+// convoy behind the busy route (including the JS meta apply loop, since
+// consumer add/remove goes through the same path).
+func TestRouteInterestUpdatesNotStalledByBusyRoute(t *testing.T) {
+	oa := DefaultOptions()
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	ob := DefaultOptions()
+	ob.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oa.Cluster.Port))
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	const conns = 40
+
+	ncs := make([]*nats.Conn, conns)
+	for i := range ncs {
+		ncs[i] = natsConnect(t, sa.ClientURL())
+		defer ncs[i].Close()
+	}
+
+	// Locate the route connection on A that carries the global account's
+	// interest updates (the connection at the account's pool index).
+	accA := sa.globalAccount()
+	accA.mu.RLock()
+	poolIdx := accA.routePoolIdx
+	accA.mu.RUnlock()
+	var route *client
+	sa.mu.RLock()
+	for _, rconns := range sa.routes {
+		if poolIdx >= 0 && rconns[poolIdx] != nil {
+			route = rconns[poolIdx]
+			break
+		}
+	}
+	sa.mu.RUnlock()
+	if route == nil {
+		t.Fatal("Could not find the route connection for the global account")
+	}
+
+	// Simulate the busy route by holding its client lock while the
+	// connections below subscribe. Each connection subscribes and then
+	// flushes, which requires its readLoop (where the interest update runs)
+	// to be responsive.
+	route.mu.Lock()
+
+	start := make(chan struct{})
+	durs := make([]time.Duration, conns)
+	errs := make([]error, conns)
+	var wg sync.WaitGroup
+	wg.Add(conns)
+	for i := range ncs {
+		go func(i int, nc *nats.Conn) {
+			defer wg.Done()
+			<-start
+			begin := time.Now()
+			if _, err := nc.SubscribeSync(fmt.Sprintf("foo.%d", i)); err != nil {
+				errs[i] = err
+				return
+			}
+			errs[i] = nc.FlushTimeout(2 * time.Second)
+			durs[i] = time.Since(begin)
+		}(i, ncs[i])
+	}
+	close(start)
+	wg.Wait()
+
+	route.mu.Unlock()
+
+	var stalled int
+	for i := range durs {
+		if errs[i] != nil || durs[i] > 500*time.Millisecond {
+			stalled++
+		}
+	}
+	t.Logf("%d of %d connections stalled while the route was busy", stalled, conns)
+	if stalled > 1 {
+		t.Fatalf("%d of %d connections had their interest updates stalled behind a busy "+
+			"route; only the connection performing the actual send may block on it", stalled, conns)
+	}
+
+	// Once the route frees up, the interest must converge on B.
+	for i := 0; i < conns; i++ {
+		checkSubInterest(t, sb, globalAccountName, fmt.Sprintf("foo.%d", i), 5*time.Second)
+	}
+}
+
+func TestRouteBatchedInterestUpdatesConverge(t *testing.T) {
+	oa := DefaultOptions()
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+
+	ob := DefaultOptions()
+	ob.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", oa.Cluster.Port))
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	const (
+		conns  = 20
+		cycles = 50
+	)
+
+	ncs := make([]*nats.Conn, conns)
+	for i := range ncs {
+		ncs[i] = natsConnect(t, sa.ClientURL())
+		defer ncs[i].Close()
+	}
+
+	// Churn plain and queue subscriptions concurrently on node A so that
+	// interest updates pile up and are sent to the route in batches. Every
+	// connection repeatedly subscribes and unsubscribes, keeping only the
+	// subscriptions of the last cycle.
+	errCh := make(chan error, conns)
+	var wg sync.WaitGroup
+	wg.Add(conns)
+	for i := range ncs {
+		go func(i int, nc *nats.Conn) {
+			defer wg.Done()
+			subj := fmt.Sprintf("foo.%d", i)
+			for c := 0; c < cycles; c++ {
+				ps, err := nc.SubscribeSync(subj)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				qs, err := nc.QueueSubscribe("queue.foo", "qg", func(_ *nats.Msg) {})
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if c < cycles-1 {
+					ps.Unsubscribe()
+					qs.Unsubscribe()
+				}
+			}
+			errCh <- nc.Flush()
+		}(i, ncs[i])
+	}
+	wg.Wait()
+	for i := 0; i < conns; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("Error during subscriptions churn: %v", err)
+		}
+	}
+
+	// Final state on A is one plain sub per connection on foo.<i> and one
+	// queue sub per connection on queue.foo/qg, so node B must end up with
+	// interest on every subject and a total queue weight of `conns`.
+	for i := 0; i < conns; i++ {
+		checkSubInterest(t, sb, globalAccountName, fmt.Sprintf("foo.%d", i), 5*time.Second)
+	}
+	checkSubInterest(t, sb, globalAccountName, "queue.foo", 5*time.Second)
+
+	accB := sb.globalAccount()
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		// Sum the weights of the routed queue subs on B. Note that the
+		// sublist match results shadow remote queue subs by their weight,
+		// so make sure to count each subscription only once.
+		var qw int32
+		seen := map[*subscription]struct{}{}
+		res := accB.sl.Match("queue.foo")
+		for _, qsubs := range res.qsubs {
+			for _, sub := range qsubs {
+				if _, ok := seen[sub]; ok || sub.client.kind != ROUTER {
+					continue
+				}
+				seen[sub] = struct{}{}
+				qw += atomic.LoadInt32(&sub.qw)
+			}
+		}
+		if qw != conns {
+			return fmt.Errorf("expected total queue weight %d on node B, got %d", conns, qw)
+		}
+		return nil
+	})
+
+	// On A, the pending interest updates must fully drain and the sender
+	// must be released.
+	accA := sa.globalAccount()
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		accA.mu.RLock()
+		pending, active := len(accA.rup), accA.rupa
+		accA.mu.RUnlock()
+		if pending > 0 || active {
+			return fmt.Errorf("pending interest updates not drained: pending=%d, sender active=%v", pending, active)
+		}
+		return nil
+	})
+
+	// Now drop all the subscriptions and make sure B loses both the plain
+	// interest and the queue group.
+	for _, nc := range ncs {
+		nc.Close()
+	}
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if accB.SubscriptionInterest("queue.foo") {
+			return fmt.Errorf("node B still has interest on %q", "queue.foo")
+		}
+		for i := 0; i < conns; i++ {
+			if subj := fmt.Sprintf("foo.%d", i); accB.SubscriptionInterest(subj) {
+				return fmt.Errorf("node B still has interest on %q", subj)
+			}
+		}
+		return nil
+	})
+}
+
 // Benchmarks for message arg processing functions to measure heap allocations.
 // These functions parse incoming protocol messages and split arguments.
 

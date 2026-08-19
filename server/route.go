@@ -1902,31 +1902,61 @@ func (c *client) sendRouteSubOrUnSubProtos(subs []*subscription, isSubProto, tra
 		if filter != nil && !filter(sub) {
 			continue
 		}
-		// Determine the account. If sub has an ImportMap entry, use that, otherwise scoped to
-		// client. Default to global if all else fails.
-		var accName string
-		if sub.client != nil && sub.client != c {
-			sub.client.mu.Lock()
-		}
-		if sub.im != nil {
-			accName = sub.im.acc.Name
-		} else if sub.client != nil && sub.client.acc != nil {
-			accName = sub.client.acc.Name
-		} else {
-			c.Debugf("Falling back to default account for sending subs")
-			accName = globalAccountName
-		}
-		if sub.client != nil && sub.client != c {
-			sub.client.mu.Unlock()
-		}
-
-		as := len(buf)
-		buf = c.addRouteSubOrUnsubProtoToBuf(buf, accName, sub, isSubProto)
-		if trace {
-			c.traceOutOp("", buf[as:len(buf)-LEN_CR_LF])
-		}
+		buf = c.addRouteSubOrUnsubProto(buf, sub, isSubProto, trace)
 	}
 	c.enqueueProto(buf)
+}
+
+// Adds to buf the RS+/RS- (or LS+/LS- for origin cluster based leafnode
+// subscriptions) protocol for the given subscription, resolving the
+// appropriate account name, and traces the protocol if trace is set.
+// Lock is held on entry.
+func (c *client) addRouteSubOrUnsubProto(buf []byte, sub *subscription, isSubProto, trace bool) []byte {
+	// Determine the account. If sub has an ImportMap entry, use that, otherwise scoped to
+	// client. Default to global if all else fails.
+	var accName string
+	if sub.client != nil && sub.client != c {
+		sub.client.mu.Lock()
+	}
+	if sub.im != nil {
+		accName = sub.im.acc.Name
+	} else if sub.client != nil && sub.client.acc != nil {
+		accName = sub.client.acc.Name
+	} else {
+		c.Debugf("Falling back to default account for sending subs")
+		accName = globalAccountName
+	}
+	if sub.client != nil && sub.client != c {
+		sub.client.mu.Unlock()
+	}
+
+	as := len(buf)
+	buf = c.addRouteSubOrUnsubProtoToBuf(buf, accName, sub, isSubProto)
+	if trace {
+		c.traceOutOp("", buf[as:len(buf)-LEN_CR_LF])
+	}
+	return buf
+}
+
+// Sends the RS+/RS- protocols for a batch of pending route interest updates,
+// which unlike sendRouteSubOrUnSubProtos may contain a mix of subs (n > 0)
+// and unsubs (n == 0).
+// Lock is held on entry.
+func (c *client) sendRouteInterestUpdateProtos(updates []routeInterestUpdate, trace bool, filter func(sub *subscription) bool) {
+	var (
+		_buf [1024]byte
+		buf  = _buf[:0]
+	)
+
+	for _, up := range updates {
+		if filter != nil && !filter(up.sub) {
+			continue
+		}
+		buf = c.addRouteSubOrUnsubProto(buf, up.sub, up.n > 0, trace)
+	}
+	if len(buf) > 0 {
+		c.enqueueProto(buf)
+	}
 }
 
 func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, gossipMode byte, accName string) *client {
@@ -2514,6 +2544,15 @@ func (c *client) importFilter(sub *subscription) bool {
 	return c.canImport(string(sub.subject))
 }
 
+// A pending update of routed interest for a given subscription that needs
+// to be forwarded to the routes. The `n` field is set when the update is
+// resolved against the account's route map just before being sent.
+type routeInterestUpdate struct {
+	key string
+	sub *subscription
+	n   int32
+}
+
 // updateRouteSubscriptionMap will make sure to update the route map for the subscription. Will
 // also forward to all routes if needed.
 func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, delta int32) {
@@ -2530,35 +2569,14 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		return
 	}
 
-	// Copy to hold outside acc lock.
-	var n int32
-	var ok bool
-
 	isq := len(sub.queue) > 0
 
-	accLock := func() {
-		// Not required for code correctness, but helps reduce the number of
-		// updates sent to the routes when processing high number of concurrent
-		// queue subscriptions updates (sub/unsub).
-		// See https://github.com/nats-io/nats-server/pull/1126 for more details.
-		if isq {
-			acc.smu.Lock()
-		}
-		acc.mu.Lock()
-	}
-	accUnlock := func() {
-		acc.mu.Unlock()
-		if isq {
-			acc.smu.Unlock()
-		}
-	}
-
-	accLock()
+	acc.mu.Lock()
 
 	// This is non-nil when we know we are in cluster mode.
 	rm, lws := acc.rm, acc.lws
 	if rm == nil {
-		accUnlock()
+		acc.mu.Unlock()
 		return
 	}
 
@@ -2569,10 +2587,8 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	// Decide whether we need to send an update out to all the routes.
 	update := isq
 
-	// This is where we do update to account. For queues we need to take
-	// special care that this order of updates is same as what is sent out
-	// over routes.
-	if n, ok = rm[key]; ok {
+	// This is where we do update to account.
+	if n, ok := rm[key]; ok {
 		n += delta
 		if n <= 0 {
 			delete(rm, key)
@@ -2582,31 +2598,38 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 			rm[key] = n
 		}
 	} else if delta > 0 {
-		n = delta
 		rm[key] = delta
 		update = true // Adding a new entry for normal sub means update (0->1)
 	}
 
-	accUnlock()
-
 	if !update {
+		acc.mu.Unlock()
 		return
 	}
 
-	// If we are sending a queue sub, make a copy and place in the queue weight.
-	// FIXME(dlc) - We can be smarter here and avoid copying and acquiring the lock.
-	if isq {
-		sub.client.mu.Lock()
-		nsub := *sub
-		sub.client.mu.Unlock()
-		nsub.qw = n
-		sub = &nsub
+	// Queue the update. It will be resolved against the route map and sent
+	// to the routes in the same order the route map was modified, which for
+	// queues is required so that the weights seen by the remotes converge to
+	// ours. If a sender is already active it will pick this update up, so we
+	// are done. Otherwise, we become the sender. This bounds the time spent
+	// here no matter how contended the routes are: we never wait behind
+	// other senders, and redundant updates for a given key collapse when
+	// resolved against the route map (see also PR #1126).
+	acc.rup = append(acc.rup, routeInterestUpdate{key: key, sub: sub})
+	if acc.rupa {
+		acc.mu.Unlock()
+		return
 	}
+	acc.rupa = true
+	acc.mu.Unlock()
 
-	// We need to send out this update. Gather routes
-	var _routes [32]*client
-	routes := _routes[:0]
+	s.sendPendingRouteInterestUpdates(acc, true)
+}
 
+// Gathers the route connections that handle the given account, based on the
+// account's route pool index or the account's dedicated routes. Also returns
+// the current trace flag.
+func (s *Server) gatherAccountRoutes(acc *Account, routes []*client) ([]*client, bool) {
 	s.mu.RLock()
 	// The account's routePoolIdx field is set/updated under the server lock
 	// (but also the account's lock). So we don't need to acquire the account's
@@ -2650,41 +2673,97 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	}
 	trace := atomic.LoadInt32(&s.logging.trace) == 1
 	s.mu.RUnlock()
+	return routes, trace
+}
 
-	// We need to make sure our updates are serialized from potential multiple connections. We want
-	// to make sure that the order above is preserved here but not necessarily all updates need to
-	// be sent. We need to block and recheck the n count with the lock held through sending here.
-	//
-	// However, we can't hold the acc.mu lock since we allow client.mu.Lock -> acc.mu.Lock
-	// but not the opposite. So use a dedicated lock while holding the route's lock.
-	acc.smu.Lock()
-	defer acc.smu.Unlock()
-
-	acc.mu.Lock()
-	n = rm[key]
-	if isq {
-		sub.qw = n
-	}
-	// Check the last sent value here. If same, then someone beat us to it and
-	// we can just return here. Otherwise update.
-	if ls, ok := lws[key]; ok && ls == n {
+// sendPendingRouteInterestUpdates resolves the account's pending route
+// interest updates against the route map and sends them to the routes. Only
+// the goroutine that set acc.rupa runs this, which serializes the sends and
+// preserves the order of the updates for a given key, while other goroutines
+// simply queue their updates without ever blocking on route sends.
+//
+// When `inline` is true (we are called from the goroutine that queued the
+// update, which could be a client's readLoop, the JS meta apply loop, etc.),
+// only the first batch is sent from this goroutine. If updates keep being
+// queued - a sign of contention - draining continues in a separate goroutine
+// so that the caller is not held up doing route sends.
+func (s *Server) sendPendingRouteInterestUpdates(acc *Account, inline bool) {
+	for rounds := 0; ; rounds++ {
+		acc.mu.Lock()
+		if len(acc.rup) == 0 {
+			acc.rupa = false
+			acc.mu.Unlock()
+			return
+		}
+		if inline && rounds == 1 {
+			acc.mu.Unlock()
+			if !s.startGoRoutine(func() {
+				defer s.grWG.Done()
+				s.sendPendingRouteInterestUpdates(acc, false)
+			}) {
+				// We are shutting down.
+				acc.mu.Lock()
+				acc.rupa = false
+				acc.mu.Unlock()
+			}
+			return
+		}
+		batch := acc.rup
+		acc.rup = nil
 		acc.mu.Unlock()
-		return
-	} else if n > 0 {
-		lws[key] = n
-	}
-	acc.mu.Unlock()
 
-	// Snapshot into array
-	subs := []*subscription{sub}
+		// Gather the routes. This must be done before resolving the updates
+		// below: a route that registers from this point on will get the
+		// latest state as part of its initial snapshot of the route map
+		// (see sendSubsToRoute), so it must not be sent a possibly older
+		// resolved value.
+		var _routes [32]*client
+		routes, trace := s.gatherAccountRoutes(acc, _routes[:0])
 
-	// Deliver to all routes.
-	for _, route := range routes {
-		route.mu.Lock()
-		// Note that queue unsubs where n > 0 are still
-		// subscribes with a smaller weight.
-		route.sendRouteSubOrUnSubProtos(subs, n > 0, trace, route.importFilter)
-		route.mu.Unlock()
+		// Resolve each update against the current route map state, in order.
+		// Redundant updates for a given key collapse here: only changes from
+		// what was last sent are kept.
+		send := batch[:0]
+		acc.mu.Lock()
+		if rm, lws := acc.rm, acc.lws; rm != nil {
+			for _, up := range batch {
+				n := rm[up.key]
+				// Check the last sent value. If same, then a previous update
+				// already sent it and we can skip this one. Otherwise update.
+				if ls, ok := lws[up.key]; ok && ls == n {
+					continue
+				} else if n > 0 {
+					lws[up.key] = n
+				}
+				up.n = n
+				send = append(send, up)
+			}
+		}
+		acc.mu.Unlock()
+
+		if len(send) == 0 {
+			continue
+		}
+
+		// If we are sending a queue sub, make a copy and place in the queue
+		// weight, so that we don't race with the original subscription.
+		for i, up := range send {
+			if len(up.sub.queue) > 0 {
+				up.sub.client.mu.Lock()
+				nsub := *up.sub
+				up.sub.client.mu.Unlock()
+				nsub.qw = up.n
+				send[i].sub = &nsub
+			}
+		}
+
+		// Deliver the whole batch to each route. Note that queue unsubs
+		// where n > 0 are still subscribes with a smaller weight.
+		for _, route := range routes {
+			route.mu.Lock()
+			route.sendRouteInterestUpdateProtos(send, trace, route.importFilter)
+			route.mu.Unlock()
+		}
 	}
 }
 
