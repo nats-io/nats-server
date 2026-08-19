@@ -5962,46 +5962,12 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		upToSeq = state.LastSeq
 	}
 
-	seqs, err := store.MultiLastSeqs(req.MultiLastFor, upToSeq, maxAllowedResponses)
-	if err != nil {
-		var hdr []byte
-		if err == ErrTooManyResults {
-			hdr = []byte("NATS/1.0 413 Too Many Results\r\n\r\n")
-		} else {
-			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %v\r\n\r\n", err))
-		}
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-		return
-	}
-	if len(seqs) == 0 {
-		hdr := []byte("NATS/1.0 404 No Results\r\n\r\n")
-		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-		return
-	}
-
-	np, lseq, sentBytes, sent := uint64(len(seqs)), uint64(0), 0, 0
-	for _, seq := range seqs {
-		if seq < req.Seq {
-			if np > 0 {
-				np--
-			}
-			continue
-		}
-		var svp StoreMsg
-		sm, err := store.LoadMsg(seq, &svp)
-		if err != nil {
-			hdr := []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
-			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-			return
-		}
-
+	var lseq uint64
+	var sentBytes, sent int
+	total, np, err := store.MultiLastMsgs(req.MultiLastFor, req.Seq, upToSeq, maxAllowedResponses, func(sm *StoreMsg, np uint64) bool {
 		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
 
-		// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
-		if np > 0 {
-			np--
-		}
 		if len(hdr) == 0 {
 			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		} else {
@@ -6020,12 +5986,33 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		// Check if we have exceeded max bytes.
 		sentBytes += len(sm.subj) + len(sm.hdr) + len(sm.msg)
 		if sentBytes >= mb {
-			break
+			return false
 		}
 		sent++
 		if req.Batch > 0 && sent >= req.Batch {
-			break
+			return false
 		}
+		return true
+	})
+	if err != nil {
+		var hdr []byte
+		switch {
+		case err == ErrTooManyResults:
+			hdr = []byte("NATS/1.0 413 Too Many Results\r\n\r\n")
+		case total > 0:
+			// A resolved message failed to load. Errors are folded into a 404
+			// regardless of cause, so internal errors don't leak to clients.
+			hdr = []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
+		default:
+			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %v\r\n\r\n", err))
+		}
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
+	}
+	if total == 0 {
+		hdr := []byte("NATS/1.0 404 No Results\r\n\r\n")
+		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+		return
 	}
 
 	// Send out EOB
