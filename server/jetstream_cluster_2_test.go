@@ -6799,13 +6799,15 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	// second will not have any index state or raft to tell it what is first sequence.
 	nsl = c.restartServer(nsl)
 	c.checkClusterFormed()
-	c.waitOnServerCurrent(nsl)
+	c.waitOnStreamCurrent(nsl, "$G", "TEST")
 
 	// Now clear raft WAL.
 	mset, err := nsl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	// Snapshot could already be done during shutdown. If so, snapshotting again will not be available.
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	err = node.InstallSnapshot(mset.stateSnapshot(), false)
 	if err != nil {
 		require_Error(t, err, errNoSnapAvailable)
 	}
@@ -6813,7 +6815,7 @@ func TestJetStreamClusterStreamResetOnExpirationDuringPeerDownAndRestartWithLead
 	nsl.Shutdown()
 	nsl = c.restartServer(nsl)
 	c.checkClusterFormed()
-	c.waitOnServerCurrent(nsl)
+	c.waitOnStreamCurrent(nsl, "$G", "TEST")
 
 	// We will now check this server directly.
 	mset, err = nsl.GlobalAccount().lookupStream("TEST")
