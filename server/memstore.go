@@ -825,6 +825,9 @@ func (ms *memStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (ms *memStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(ms.cfg.Subjects) {
 		return false
 	}

@@ -1476,3 +1476,75 @@ func TestStoreNumPendingLastPerSubjectExcludeOvercount(t *testing.T) {
 		},
 	)
 }
+
+// Resolving last sequences for many subjects whose last messages are spread
+// over the whole stream. For the filestore a small block size spreads them
+// across many blocks: WholeStream can resolve via each subject's last block,
+// Bounded must walk the blocks backwards from maxSeq.
+func Benchmark_StoreMultiLastSeqsManyBlocks(b *testing.B) {
+	const (
+		numSubjects = 1_000
+		msgsPerSubj = 100
+	)
+
+	run := func(b *testing.B, fs StreamStore) {
+		// Store each subject's messages contiguously so the per-subject last
+		// messages land spread out over the whole stream.
+		msg := []byte("ok")
+		for i := range numSubjects {
+			subj := fmt.Sprintf("foo.%d", i)
+			for range msgsPerSubj {
+				_, _, err := fs.StoreMsg(subj, nil, msg, 0)
+				require_NoError(b, err)
+			}
+		}
+
+		// A sparse subset of subjects spread over the whole stream. Resolving
+		// via each subject's last block only visits these few blocks, while
+		// the backwards walk must scan nearly every block to find them all.
+		var sparse []string
+		for i := 0; i < numSubjects; i += numSubjects / 10 {
+			sparse = append(sparse, fmt.Sprintf("foo.%d", i))
+		}
+
+		for _, bc := range []struct {
+			name    string
+			filters []string
+			matches int
+			maxSeq  uint64
+		}{
+			{"AllSubjects/WholeStream", []string{">"}, numSubjects, 0},
+			{"AllSubjects/Bounded", []string{">"}, numSubjects, numSubjects*msgsPerSubj - 1},
+			{"SparseSubjects/WholeStream", sparse, len(sparse), 0},
+			{"SparseSubjects/Bounded", sparse, len(sparse), numSubjects*msgsPerSubj - 1},
+		} {
+			b.Run(bc.name, func(b *testing.B) {
+				for range b.N {
+					seqs, err := fs.MultiLastSeqs(bc.filters, bc.maxSeq, -1)
+					require_NoError(b, err)
+					require_Len(b, len(seqs), bc.matches)
+				}
+			})
+		}
+	}
+
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar.*"}}
+
+	b.Run("Memory", func(b *testing.B) {
+		cfg := cfg
+		cfg.Storage = MemoryStorage
+		ms, err := newMemStore(&cfg)
+		require_NoError(b, err)
+		defer ms.Stop()
+		run(b, ms)
+	})
+	b.Run("File", func(b *testing.B) {
+		cfg := cfg
+		cfg.Storage = FileStorage
+		fs, err := newFileStore(
+			FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8192}, cfg)
+		require_NoError(b, err)
+		defer fs.Stop()
+		run(b, fs)
+	})
+}
