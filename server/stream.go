@@ -545,6 +545,13 @@ type stream struct {
 	client *client      // The internal JetStream client.
 	sysc   *client      // The internal JetStream system client.
 
+	// Isolates direct get and msg get reads from writes (ingest, atomic batch
+	// commits, purges and deletes), so those reads never observe a partially
+	// applied atomic batch or rollup. Other read paths (consumer delivery,
+	// mirrors/sources, mset.mu-based info) are sequentially consistent and may
+	// observe a prefix of an inflight batch.
+	isolateMu sync.RWMutex
+
 	// The current last subscription ID for the subscriptions through `client`.
 	// Those subscriptions are for the subjects filters being listened to and captured by the stream.
 	sid atomic.Uint64
@@ -2976,6 +2983,10 @@ func (mset *stream) getCfgName() string {
 
 // Purge will remove all messages from the stream and underlying store based on the request.
 func (mset *stream) purge(preq *JSApiStreamPurgeRequest) (purged uint64, err error) {
+	// Purges mutate message state, so hold the isolation lock like any other
+	// write so direct get requests don't observe a partially applied purge.
+	mset.isolateMu.Lock()
+	defer mset.isolateMu.Unlock()
 	return mset.purgeLocked(preq, true)
 }
 
@@ -3066,6 +3077,9 @@ func (mset *stream) deleteMsg(seq uint64) (bool, error) {
 	if mset.closed.Load() {
 		return false, errStreamClosed
 	}
+	// Deletes mutate message state, so hold the isolation lock like any other write.
+	mset.isolateMu.Lock()
+	defer mset.isolateMu.Unlock()
 	removed, err := mset.store.RemoveMsg(seq)
 	if err != nil {
 		return removed, err
@@ -3081,6 +3095,9 @@ func (mset *stream) eraseMsg(seq uint64) (bool, error) {
 	if mset.closed.Load() {
 		return false, errStreamClosed
 	}
+	// Deletes mutate message state, so hold the isolation lock like any other write.
+	mset.isolateMu.Lock()
+	defer mset.isolateMu.Unlock()
 	removed, err := mset.store.EraseMsg(seq)
 	if err != nil {
 		return removed, err
@@ -5928,7 +5945,7 @@ func (mset *stream) queueInbound(ib *ipQueue[*inMsg], subj, rply string, hdr, ms
 	im.subj, im.rply, im.hdr, im.msg, im.si, im.mt = subj, rply, hdr, msg, si, mt
 	if _, err := ib.push(im); err != nil {
 		im.returnToPool()
-		streamName := mset.cfg.Name
+		streamName := mset.getCfgName()
 		mset.srv.RateLimitWarnf("Dropping messages due to excessive stream ingest rate on '%s' > '%s': %s", mset.acc.Name, streamName, err)
 		if rply != _EMPTY_ {
 			hdr := []byte("NATS/1.0 429 Too Many Requests\r\n\r\n")
@@ -6081,12 +6098,12 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// TODO(dlc) - Make configurable?
 	const maxAllowedResponses = 1024
 
-	// Ensure this read request is isolated and doesn't interleave with writes.
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	store, s := mset.store, mset.srv
+	name := mset.getCfgName()
 
-	// Grab store and name.
-	store, name, s := mset.store, mset.cfg.Name, mset.srv
+	// Ensure this read request is isolated and doesn't interleave with writes.
+	mset.isolateMu.RLock()
+	defer mset.isolateMu.RUnlock()
 
 	// Grab MaxBytes
 	mb := req.MaxBytes
@@ -6099,9 +6116,11 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// If we have UpToTime set get the proper sequence.
 	if req.UpToTime != nil {
 		upToSeq = store.GetSeqFromTime((*req.UpToTime).UTC())
+		var state StreamState
+		store.FastState(&state)
 		// Avoid selecting a first sequence that will take us to before the stream first
 		// sequence, otherwise we can return messages after the supplied UpToTime.
-		if upToSeq <= mset.state().FirstSeq {
+		if upToSeq <= state.FirstSeq {
 			hdr := []byte("NATS/1.0 404 No Results\r\n\r\n")
 			mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			return
@@ -6113,7 +6132,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// If not set, set to the last sequence and remember that for EOB.
 	if upToSeq == 0 {
 		var state StreamState
-		mset.store.FastState(&state)
+		store.FastState(&state)
 		upToSeq = state.LastSeq
 	}
 
@@ -6197,11 +6216,12 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		return
 	}
 
-	// Ensure this read request is isolated and doesn't interleave with writes.
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	store, s := mset.store, mset.srv
+	name := mset.getCfgName()
 
-	store, name, s := mset.store, mset.cfg.Name, mset.srv
+	// Ensure this read request is isolated and doesn't interleave with writes.
+	mset.isolateMu.RLock()
+	defer mset.isolateMu.RUnlock()
 
 	var seq uint64
 	// Lookup start seq if AsOfTime is set.
@@ -6316,7 +6336,9 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	// If batch was requested send EOB.
 	if isBatchRequest {
 		// Update if the stream's last sequence has moved past our validThrough.
-		if mset.lseq > validThrough {
+		var state StreamState
+		store.FastState(&state)
+		if state.LastSeq > validThrough {
 			var err error
 			if np, _, err = store.NumPending(seq, req.NextFor, false); err != nil {
 				return
@@ -6357,11 +6379,13 @@ var (
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
-func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needLock bool) error {
-	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needLock, nil)
+// needIsolation should be false only if the caller already holds isolateMu
+// across a whole atomic batch; mset.mu must NOT be held by the caller.
+func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool) error {
+	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation, nil)
 }
 
-func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needLock bool, fastBatch *FastBatch) (retErr error) {
+func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool, fastBatch *FastBatch) (retErr error) {
 	if mt != nil {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
@@ -6376,10 +6400,13 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// Hold lock while storing the message, and potentially purging as part of a rollup.
 	// If we're writing an atomic batch of multiple messages, the lock is already held.
-	if needLock {
-		mset.mu.Lock()
-		defer mset.mu.Unlock()
+	if needIsolation {
+		mset.isolateMu.Lock()
+		defer mset.isolateMu.Unlock()
 	}
+	// Hold the stream lock for the lifetime of processing a single message.
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
 
 	s, store := mset.srv, mset.store
 
@@ -7466,6 +7493,21 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	storeDir := jsa.storeDir
 	jsa.mu.RUnlock()
 
+	// Parse the batch commit header.
+	var commit, commitEob, commitInvalid bool
+	if c := sliceHeader(JSBatchCommit, hdr); c != nil {
+		commitEob = bytes.Equal(c, []byte("eob"))
+		commitInvalid = !commitEob && !bytes.Equal(c, []byte("1"))
+		commit = true
+	}
+
+	// If not clustered, the commit message runs the consistency checks and
+	// commits straight to the store below, so hold the isolation lock across
+	// that whole section.
+	if !isClustered && commit {
+		mset.isolateMu.Lock()
+		defer mset.isolateMu.Unlock()
+	}
 	mset.mu.Lock()
 	if mset.batches == nil {
 		mset.batches = &batching{}
@@ -7493,7 +7535,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			}
 			size := batchSeq
 			// Don't count the "End Of Batch" marker toward the batch size.
-			if bytes.Equal(sliceHeader(JSBatchCommit, hdr), []byte("eob")) {
+			if commitEob {
 				size--
 			}
 			if size > uint64(maxBatchSize) {
@@ -7543,18 +7585,13 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		batches.atomic[batchId] = b
 	}
 
-	var commit, commitEob bool
-	if c := sliceHeader(JSBatchCommit, hdr); c != nil {
-		commitEob = bytes.Equal(c, []byte("eob"))
-		// Reject the batch if the commit is not recognized.
-		if !commitEob && !bytes.Equal(c, []byte("1")) {
-			b.cleanupLocked(batchId, batches)
-			batches.mu.Unlock()
-			mset.mu.Unlock()
-			err := NewJSAtomicPublishInvalidBatchCommitError()
-			return respondError(err)
-		}
-		commit = true
+	// Reject the batch if the commit is not recognized.
+	if commitInvalid {
+		b.cleanupLocked(batchId, batches)
+		batches.mu.Unlock()
+		mset.mu.Unlock()
+		err := NewJSAtomicPublishInvalidBatchCommitError()
+		return respondError(err)
 	}
 
 	// The required API level can have the batch be rejected. But the header is always removed.
@@ -7760,9 +7797,11 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		mset.clseq, mset.clfs = 0, 0
 		mset.clMu.Unlock()
 
-		// Ensure the whole batch is fully isolated, and reads
-		// can only happen after the full batch is committed.
-		// We keep holding the stream lock.
+		// Ensure the whole batch is fully isolated, and reads can only happen
+		// after the full batch is committed. isolateMu stays held until return
+		// via the defer above, but release mset.mu and batches.mu.
+		mset.mu.Unlock()
+		batches.mu.Unlock()
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			// Use the checked (and possibly rewritten) message from above, not the raw staged
 			// message, so transformations like counter increments and scheduled message
@@ -7777,9 +7816,15 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 					bhdr = genHeader(bhdr, JSBatchCommit, "1")
 				}
 			}
-			_ = mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false)
+			// If errored, assume all subsequent calls will fail too (for example, store is closed).
+			// Don't clean up the batch so that a restart can try to recover it.
+			if err = mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false); err != nil {
+				return err
+			}
 		}
-		mset.mu.Unlock()
+		// Re-acquire for the cleanup below. If a concurrent staging error
+		// already cleaned the batch up, cleanupLocked is a no-op.
+		batches.mu.Lock()
 	} else {
 		term := mset.term
 		mset.mu.Unlock()
