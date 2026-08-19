@@ -30,6 +30,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/server/archive"
 	"github.com/nats-io/nuid"
 )
 
@@ -4151,6 +4153,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		mset *stream
 		err  error
 	}, 1)
+	var restoreFinished atomic.Bool
 	closeWithError := func(err error) {
 		closeOnce.Do(func() {
 			if err != nil {
@@ -4163,7 +4166,24 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 
 	s.startGoRoutine(func() {
 		defer s.grWG.Done()
-		mset, err := acc.RestoreStream(cfg, pr)
+
+		var mset *stream
+		var err error
+
+		// Determine the snapshot format.
+		var consumed bytes.Buffer
+		tee := io.TeeReader(pr, &consumed)
+		sr := s2.NewReader(tee)
+		var preamble [8]byte
+		if _, err = io.ReadFull(sr, preamble[:]); err == nil {
+			replay := io.MultiReader(&consumed, pr)
+			if bytes.Equal(preamble[:], []byte(archive.MagicBytes)) {
+				mset, err = acc.RestoreStreamV2(cfg, replay)
+			} else {
+				mset, err = acc.RestoreStream(cfg, replay)
+			}
+		}
+		restoreFinished.Store(true)
 		if err != nil {
 			pr.CloseWithError(err)
 		} else {
@@ -4211,6 +4231,11 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		activeQ.push(0)
 
 		if _, err := pw.Write(msg); err != nil {
+			if restoreFinished.Load() {
+				activeQ.push(len(msg))
+				s.sendInternalAccountMsg(acc, reply, nil)
+				return
+			}
 			closeWithError(err)
 			sub.client.processUnsub(sub.sid)
 			var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
@@ -4291,6 +4316,11 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 					s.resourcesExceededError(cfg.Storage)
 				}
 				resp.Error = NewJSStreamRestoreError(err, Unless(err))
+				s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
+					friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start))
+			} else if mset == nil {
+				err = fmt.Errorf("restore for stream '%s > %s' did not create a stream", acc.Name, streamName)
+				resp.Error = NewJSStreamRestoreError(err)
 				s.Warnf("Restore failed for %s for stream '%s > %s' in %v",
 					friendlyBytes(int64(total)), acc.Name, streamName, end.Sub(start))
 			} else {
@@ -4460,13 +4490,13 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		})
 
 		// Now do the real streaming.
-		if err := s.streamSnapshot(acc, mset, sr, &req); err != nil {
-			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
-			return
-		}
-
+		err = s.streamSnapshot(acc, mset, sr, &req)
 		end := time.Now().UTC()
 
+		var errStr string
+		if err != nil {
+			errStr = err.Error()
+		}
 		s.publishAdvisory(acc, JSAdvisoryStreamSnapshotCompletePre+"."+mset.name(), &JSSnapshotCompleteAdvisory{
 			TypedEvent: TypedEvent{
 				Type: JSSnapshotCompleteAdvisoryType,
@@ -4478,13 +4508,24 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 			End:    end,
 			Client: ci.forAdvisory(),
 			Domain: s.getOpts().JetStreamDomain,
+			Error:  errStr,
 		})
 
-		s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
-			friendlyBytes(int64(sr.State.Bytes)),
-			mset.jsa.account.Name,
-			mset.name(),
-			end.Sub(start))
+		if err != nil {
+			s.Warnf("Snapshot for stream '%s > %s' failed after %v: %s",
+				mset.jsa.account.Name,
+				mset.name(),
+				end.Sub(start),
+				err,
+			)
+		} else {
+			s.Noticef("Completed snapshot of %s for stream '%s > %s' in %v",
+				friendlyBytes(int64(sr.State.Bytes)),
+				mset.jsa.account.Name,
+				mset.name(),
+				end.Sub(start),
+			)
+		}
 	}()
 }
 
@@ -4553,23 +4594,34 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 
 	var hdr []byte
 	chunk := make([]byte, chunkSize)
+	errCh := sr.errCh
+	var snapshotErr error
 	ackTimer := time.NewTimer(snapshotAckTimeout)
 	defer stopAndClearTimer(&ackTimer)
-	for index := 1; ; index++ {
+	// index only incremented when a chunk is actually being sent.
+	for index := 1; ; {
 		select {
 		case <-slots:
 			// A slot has become available.
 		case <-inch:
 			// The receiver appears to have gone away.
+			snapshotErr = errors.New("no interest")
 			hdr = []byte("NATS/1.0 408 No Interest\r\n\r\n")
 			goto done
-		case err := <-sr.errCh:
+		case err, ok := <-errCh:
+			if !ok {
+				// Channel closed normally, e.g. on completion.
+				errCh = nil
+				continue
+			}
 			// The snapshotting goroutine has failed for some reason.
-			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %s\r\n\r\n", err))
+			snapshotErr = err
+			hdr = fmt.Appendf(nil, "NATS/1.0 500 %s\r\n\r\n", err)
 			goto done
 		case <-ackTimer.C:
 			// It's taking a very long time for the receiver to send us acks,
 			// they have probably stalled or there is high loss on the link.
+			snapshotErr = errors.New("no flow response")
 			hdr = []byte("NATS/1.0 408 No Flow Response\r\n\r\n")
 			goto done
 		}
@@ -4579,6 +4631,14 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 			if n > 0 {
 				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0))
 			}
+			select {
+			case err, ok := <-errCh:
+				if ok {
+					snapshotErr = err
+					hdr = fmt.Appendf(nil, "NATS/1.0 500 %s\r\n\r\n", err)
+				}
+			default:
+			}
 			break
 		}
 		ackReply := fmt.Sprintf("%s.%d.%d", ackSubj, len(chunk), index)
@@ -4587,11 +4647,12 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 		}
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, ackReply, nil, chunk, nil, 0))
 		ackTimer.Reset(snapshotAckTimeout)
+		index++
 	}
 
 done:
 	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-	return nil
+	return snapshotErr
 }
 
 // For determining consumer request type.

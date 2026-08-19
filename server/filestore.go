@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -183,6 +184,7 @@ type fileStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
+	recovering  bool        // Timers, schedules, TTLs etc won't fire while set.
 	syncTmr     *time.Timer
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
@@ -394,6 +396,10 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 }
 
 func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (fs *fileStore, err error) {
+	return newFileStoreWithCreatedAndMode(fcfg, cfg, created, prf, oldprf, false)
+}
+
+func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen, recovering bool) (fs *fileStore, err error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -437,16 +443,17 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	dios.release()
 
 	fs = &fileStore{
-		fcfg:   fcfg,
-		dios:   dios,
-		psim:   stree.NewSubjectTree[psi](),
-		bim:    make(map[uint32]*msgBlock),
-		cfg:    FileStreamInfo{Created: created, StreamConfig: cfg},
-		prf:    prf,
-		oldprf: oldprf,
-		qch:    make(chan struct{}),
-		fsld:   make(chan struct{}),
-		srv:    fcfg.srv,
+		fcfg:       fcfg,
+		dios:       dios,
+		psim:       stree.NewSubjectTree[psi](),
+		bim:        make(map[uint32]*msgBlock),
+		cfg:        FileStreamInfo{Created: created, StreamConfig: cfg},
+		prf:        prf,
+		oldprf:     oldprf,
+		qch:        make(chan struct{}),
+		fsld:       make(chan struct{}),
+		srv:        fcfg.srv,
+		recovering: recovering,
 	}
 	fs.syncAlways.Store(fcfg.SyncAlways)
 
@@ -467,6 +474,7 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Only create scheduling data structure if we're going to allow message schedules.
 	if cfg.AllowMsgSchedules {
 		fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+		fs.scheduling.paused = recovering
 	}
 
 	// Set flush in place to AsyncFlush which by default is false.
@@ -2307,6 +2315,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 	}
 
 	fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+	fs.scheduling.paused = fs.recovering
 
 	var schedSeq uint64
 	if err == nil {
@@ -2316,6 +2325,7 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			// Remove the file, and reset collected state (if any).
 			_ = os.Remove(fn)
 			fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+			fs.scheduling.paused = fs.recovering
 		}
 	}
 
@@ -6874,7 +6884,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 }
 
 func (fs *fileStore) startAgeChk() {
-	if fs.ageChk != nil {
+	if fs.recovering || fs.ageChk != nil {
 		return
 	}
 	if fs.cfg.MaxAge != 0 || fs.ttls != nil {
@@ -6884,6 +6894,9 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
+	if fs.recovering {
+		return
+	}
 	// If we're already expiring messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if fs.ageChkRun {
@@ -6967,6 +6980,11 @@ func (fs *fileStore) expireMsgs() {
 	var sm *StoreMsg
 
 	fs.mu.Lock()
+	if fs.recovering {
+		fs.cancelAgeChk()
+		fs.mu.Unlock()
+		return
+	}
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
@@ -7145,7 +7163,7 @@ func (fs *fileStore) runMsgScheduling() {
 	defer fs.mu.Unlock()
 
 	// If scheduling is enabled, but handler isn't set up yet. Try again later.
-	if fs.scheduling == nil {
+	if fs.scheduling == nil || fs.scheduling.paused {
 		return
 	}
 	if fs.pmsgcb == nil {
@@ -9732,6 +9750,27 @@ func (fs *fileStore) ResetState() {
 	}
 }
 
+func (fs *fileStore) Ready() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if !fs.recovering {
+		return
+	}
+	fs.recovering = false
+	var ageDelta int64
+	if fs.cfg.MaxAge > 0 && !fs.state.FirstTime.IsZero() {
+		ageDelta = time.Until(fs.state.FirstTime.Add(fs.cfg.MaxAge)).Nanoseconds()
+		if ageDelta <= 0 {
+			ageDelta = 1
+		}
+	}
+	fs.resetAgeChk(ageDelta)
+	if fs.scheduling != nil {
+		fs.scheduling.paused = false
+		fs.scheduling.resetTimer()
+	}
+}
+
 // Determine time since any last activity, read/load, write or remove.
 func (mb *msgBlock) sinceLastActivity() time.Duration {
 	if mb.closed {
@@ -12173,7 +12212,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan string) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan error) {
 	defer close(errCh)
 	defer w.Close()
 
@@ -12210,8 +12249,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		return nil
 	}
 
-	writeErr := func(err string) {
-		writeFile(errFile, []byte(err))
+	writeErr := func(err error) {
+		writeFile(errFile, []byte(err.Error()))
 		errCh <- err
 	}
 
@@ -12222,7 +12261,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 	meta, err := json.Marshal(fs.cfg)
 	if err != nil {
 		fs.mu.Unlock()
-		writeErr(fmt.Sprintf("Could not gather stream meta file: %v", err))
+		writeErr(fmt.Errorf("could not gather stream meta file: %w", err))
 		return
 	}
 	hh := fs.hh
@@ -12255,7 +12294,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		bbuf, err = mb.loadBlock(bbuf)
 		if err != nil {
 			mb.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
+			writeErr(fmt.Errorf("could not read message block [%d]: %w", mb.index, err))
 			return
 		}
 		// Check for encryption.
@@ -12263,7 +12302,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 			rbek, err := genBlockEncryptionKey(fs.fcfg.Cipher, mb.seed, mb.nonce)
 			if err != nil {
 				mb.mu.Unlock()
-				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
+				writeErr(fmt.Errorf("could not create encryption key for message block [%d]: %w", mb.index, err))
 				return
 			}
 			rbek.XORKeyStream(bbuf, bbuf)
@@ -12271,7 +12310,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		// Check for compression.
 		if bbuf, err = mb.decompressIfNeeded(bbuf); err != nil {
 			mb.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not decompress message block [%d]: %v", mb.index, err))
+			writeErr(fmt.Errorf("could not decompress message block [%d]: %w", mb.index, err))
 			return
 		}
 		mb.mu.Unlock()
@@ -12327,7 +12366,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		meta, err := json.Marshal(o.cfg)
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not gather consumer meta file for %q: %v", o.name, err))
+			writeErr(fmt.Errorf("could not gather consumer meta file for %q: %w", o.name, err))
 			return
 		}
 		o.hh.Reset()
@@ -12339,7 +12378,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		state, err := o.encodeState()
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not encode consumer state for %q: %v", o.name, err))
+			writeErr(fmt.Errorf("could not encode consumer state for %q: %w", o.name, err))
 			return
 		}
 		odirPre := filepath.Join(consumerDir, o.name)
@@ -12402,7 +12441,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	fs.FastState(&state)
 
 	// Stream in separate Go routine.
-	errCh := make(chan string, 1)
+	errCh := make(chan error, 1)
 	go fs.streamSnapshot(pw, includeConsumers, errCh)
 
 	return &SnapshotResult{pr, state, errCh}, nil
@@ -12750,7 +12789,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	// We now allow overrides from a stream being a filestore type and forcing a consumer to be memory store.
 	if cfg.MemoryStorage {
 		// Create directly here.
-		o := &consumerMemStore{ms: fs, cfg: *cfg}
+		o := &consumerMemStore{ms: fs, name: name, cfg: *cfg}
 		if err := fs.AddConsumer(o); err != nil {
 			return nil, err
 		}
@@ -13256,6 +13295,14 @@ func (o *consumerFileStore) encodeState() ([]byte, error) {
 		return nil, err
 	}
 	return encodeConsumerState(state), nil
+}
+
+func (o *consumerFileStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
@@ -13850,6 +13897,19 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 		}
 	}
 	return nil
+}
+
+func (fs *fileStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		fs.cmu.RLock()
+		defer fs.cmu.RUnlock()
+
+		for _, v := range fs.cfs {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////

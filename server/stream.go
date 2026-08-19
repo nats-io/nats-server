@@ -527,8 +527,11 @@ type stream struct {
 	mqch      chan struct{}           // The monitor's quit channel.
 	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
-	closed atomic.Bool // Set to true when stop() is called on the stream.
-	cisrun atomic.Bool // Indicates one checkInterestState is already running.
+	closed        atomic.Bool // Set to true when stop() is called on the stream.
+	cisrun        atomic.Bool // Indicates one checkInterestState is already running.
+	restoring     bool
+	restoreLeader bool
+	restoreTerm   uint64
 
 	// Mirror
 	mirror              *sourceInfo
@@ -734,6 +737,10 @@ func (a *Account) addStream(config *StreamConfig) (*stream, error) {
 	return a.addStreamWithAssignment(config, nil, nil, false, false)
 }
 
+func (a *Account) addStreamForRestore(config *StreamConfig) (*stream, error) {
+	return a.addStreamWithAssignmentAndMode(config, nil, nil, false, false, true)
+}
+
 // recoverStream recovers a stream from disk for the given account.
 func (a *Account) recoverStream(config *StreamConfig) (*stream, error) {
 	return a.addStreamWithAssignment(config, nil, nil, false, true)
@@ -749,6 +756,10 @@ func (a *Account) addStreamPedantic(config *StreamConfig, pedantic bool) (*strea
 }
 
 func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileStoreConfig, sa *streamAssignment, pedantic, recovering bool) (*stream, error) {
+	return a.addStreamWithAssignmentAndMode(config, fsConfig, sa, pedantic, recovering, false)
+}
+
+func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig *FileStoreConfig, sa *streamAssignment, pedantic, recovering, restoring bool) (*stream, error) {
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
 		return nil, err
@@ -939,12 +950,13 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 			ipqLimitByLen[*inMsg](mlen),
 			ipqLimitBySize[*inMsg](msz),
 		),
-		gets:    newIPQueue[*directGetReq](s, qpfx+"direct gets"),
-		qch:     make(chan struct{}),
-		mqch:    make(chan struct{}),
-		uch:     make(chan struct{}, 4),
-		sch:     make(chan struct{}, 1),
-		created: time.Now().UTC(),
+		gets:      newIPQueue[*directGetReq](s, qpfx+"direct gets"),
+		qch:       make(chan struct{}),
+		mqch:      make(chan struct{}),
+		uch:       make(chan struct{}, 4),
+		sch:       make(chan struct{}, 1),
+		created:   time.Now().UTC(),
+		restoring: restoring,
 	}
 
 	// Add created timestamp used for the store, must match that of the stream assignment if it exists.
@@ -1015,7 +1027,7 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 		fsCfg.SyncAlways = false
 		fsCfg.AsyncFlush = true
 	}
-	if err := mset.setupStore(fsCfg); err != nil {
+	if err := mset.setupStore(fsCfg, recovering || restoring); err != nil {
 		mset.stop(true, false)
 		return nil, NewJSStreamStoreFailedError(err)
 	}
@@ -1093,6 +1105,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	jsa.mu.Lock()
 	jsa.streams[cfg.Name] = mset
 	jsa.mu.Unlock()
+	if recovering && !restoring {
+		mset.store.Ready()
+	}
 
 	return mset, nil
 }
@@ -1293,6 +1308,11 @@ func (mset *stream) isLeaderNodeState() bool {
 // TODO(dlc) - Check to see if we can accept being the leader or we should step down.
 func (mset *stream) setLeader(isLeader bool, term uint64) error {
 	mset.mu.Lock()
+	if mset.restoring {
+		mset.restoreLeader, mset.restoreTerm = isLeader, term
+		mset.mu.Unlock()
+		return nil
+	}
 	wasLeader := mset.leader.Swap(isLeader)
 
 	// We can skip the teardown if we were leader before and are still the leader now.
@@ -1356,6 +1376,25 @@ func (mset *stream) setLeader(isLeader bool, term uint64) error {
 	// This is to make sure we process any outstanding acks.
 	mset.checkInterestState()
 
+	return nil
+}
+
+func (mset *stream) completeRestore() error {
+	mset.mu.Lock()
+	if !mset.restoring {
+		mset.mu.Unlock()
+		return nil
+	}
+	mset.restoring = false
+	isLeader, term := mset.restoreLeader, mset.restoreTerm
+	mset.restoreLeader, mset.restoreTerm = false, 0
+	mset.mu.Unlock()
+	if isLeader {
+		if err := mset.setLeader(true, term); err != nil {
+			return err
+		}
+	}
+	mset.store.Ready()
 	return nil
 }
 
@@ -5280,11 +5319,11 @@ func (mset *stream) unsubscribe(sub *subscription) {
 	mset.client.processUnsub(sub.sid)
 }
 
-func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
+func (mset *stream) setupStore(fsCfg *FileStoreConfig, recovering bool) error {
 	mset.mu.Lock()
 	switch mset.cfg.Storage {
 	case MemoryStorage:
-		ms, err := newMemStore(&mset.cfg)
+		ms, err := newMemStoreWithMode(&mset.cfg, recovering)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
@@ -5300,7 +5339,7 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig) error {
 		oldprf := s.jsKeyGen(s.getOpts().JetStreamOldKey, mset.acc.Name)
 		cfg := *fsCfg
 		cfg.srv = s
-		fs, err := newFileStoreWithCreated(cfg, mset.cfg, mset.created, prf, oldprf)
+		fs, err := newFileStoreWithCreatedAndMode(cfg, mset.cfg, mset.created, prf, oldprf, recovering)
 		if err != nil {
 			mset.mu.Unlock()
 			return err
@@ -9156,7 +9195,13 @@ func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers
 		return nil, errStreamClosed
 	}
 	store := mset.store
-	return store.Snapshot(deadline, checkMsgs, includeConsumers)
+	// V2 snapshots intentionally do not run the v1 checkMsgs pre-scan. Unlike
+	// v1's raw file copy, v2 reads each message through LoadNextMsg, which uses
+	// cacheLookup/msgFromBufEx and verifies the per-record checksum when a
+	// freshly loaded cache entry is first read. Corrupt records therefore make
+	// LoadNextMsg fail and abort the snapshot instead of silently entering the
+	// backup.
+	return mset.js.CreateStreamSnapshotV2(store, deadline, includeConsumers, mset.streamAssignment())
 }
 
 const snapsDir = "__snapshots__"

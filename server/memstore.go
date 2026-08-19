@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"iter"
 	"math"
 	"slices"
 	"sync"
@@ -45,7 +46,8 @@ type memStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
-	consumers   int
+	recovering  bool        // Timers, schedules, TTLs etc won't fire while set.
+	consumers   []ConsumerStore
 	receivedAny bool
 	ttls        *thw.HashWheel
 	scheduling  *MsgScheduling
@@ -53,6 +55,10 @@ type memStore struct {
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
+	return newMemStoreWithMode(cfg, false)
+}
+
+func newMemStoreWithMode(cfg *StreamConfig, recovering bool) (*memStore, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config required")
 	}
@@ -60,10 +66,11 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
 	ms := &memStore{
-		msgs: make(map[uint64]*StoreMsg),
-		fss:  stree.NewSubjectTree[SimpleState](),
-		maxp: cfg.MaxMsgsPer,
-		cfg:  *cfg,
+		msgs:       make(map[uint64]*StoreMsg),
+		fss:        stree.NewSubjectTree[SimpleState](),
+		maxp:       cfg.MaxMsgsPer,
+		cfg:        *cfg,
+		recovering: recovering,
 	}
 	// Only create a THW if we're going to allow TTLs.
 	if cfg.AllowMsgTTL {
@@ -71,6 +78,7 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	}
 	if cfg.AllowMsgSchedules {
 		ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
+		ms.scheduling.paused = recovering
 	}
 	if cfg.FirstSeq > 0 {
 		if _, err := ms.purge(cfg.FirstSeq); err != nil {
@@ -171,6 +179,7 @@ func (ms *memStore) recoverTTLState() {
 // Lock should be held.
 func (ms *memStore) recoverMsgSchedulingState() {
 	ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
+	ms.scheduling.paused = ms.recovering
 	if ms.state.Msgs == 0 {
 		return
 	}
@@ -1137,7 +1146,7 @@ func (ms *memStore) enforceBytesLimit() {
 // Will start the age check timer.
 // Lock should be held.
 func (ms *memStore) startAgeChk() {
-	if ms.ageChk != nil {
+	if ms.recovering || ms.ageChk != nil {
 		return
 	}
 	if ms.cfg.MaxAge != 0 || ms.ttls != nil {
@@ -1147,6 +1156,9 @@ func (ms *memStore) startAgeChk() {
 
 // Lock should be held.
 func (ms *memStore) resetAgeChk(delta int64) {
+	if ms.recovering {
+		return
+	}
 	// If we're already expiring messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if ms.ageChkRun {
@@ -1227,6 +1239,11 @@ func (ms *memStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 	ms.mu.Lock()
+	if ms.recovering {
+		ms.cancelAgeChk()
+		ms.mu.Unlock()
+		return
+	}
 	maxAge := int64(ms.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
 	rmcb := ms.rmcb
@@ -1409,7 +1426,7 @@ func (ms *memStore) runMsgScheduling() {
 	defer ms.mu.Unlock()
 
 	// If scheduling is enabled, but handler isn't set up yet. Try again later.
-	if ms.scheduling == nil {
+	if ms.scheduling == nil || ms.scheduling.paused {
 		return
 	}
 	if ms.pmsgcb == nil {
@@ -2251,7 +2268,7 @@ func (ms *memStore) FastState(state *StreamState) {
 			state.NumDeleted = 0
 		}
 	}
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	ms.mu.RUnlock()
 }
@@ -2261,7 +2278,7 @@ func (ms *memStore) State() StreamState {
 	defer ms.mu.Unlock()
 
 	state := ms.state
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	state.Deleted = nil
 
@@ -2308,6 +2325,27 @@ func (ms *memStore) ResetState() {
 	}
 }
 
+func (ms *memStore) Ready() {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if !ms.recovering {
+		return
+	}
+	ms.recovering = false
+	var ageDelta int64
+	if ms.cfg.MaxAge > 0 && !ms.state.FirstTime.IsZero() {
+		ageDelta = time.Until(ms.state.FirstTime.Add(ms.cfg.MaxAge)).Nanoseconds()
+		if ageDelta <= 0 {
+			ageDelta = 1
+		}
+	}
+	ms.resetAgeChk(ageDelta)
+	if ms.scheduling != nil {
+		ms.scheduling.paused = false
+		ms.scheduling.resetTimer()
+	}
+}
+
 // Delete is same as Stop for memory store.
 func (ms *memStore) Delete(_ bool) error {
 	return ms.Stop()
@@ -2345,6 +2383,7 @@ func (ms *memStore) isClosed() bool {
 type consumerMemStore struct {
 	mu     sync.Mutex
 	ms     StreamStore
+	name   string
 	cfg    ConsumerConfig
 	state  ConsumerState
 	closed bool
@@ -2360,25 +2399,41 @@ func (ms *memStore) ConsumerStore(name string, _ time.Time, cfg *ConsumerConfig)
 	if cfg == nil || name == _EMPTY_ {
 		return nil, fmt.Errorf("bad consumer config")
 	}
-	o := &consumerMemStore{ms: ms, cfg: *cfg}
+	o := &consumerMemStore{ms: ms, name: name, cfg: *cfg}
 	ms.AddConsumer(o)
 	return o, nil
 }
 
 func (ms *memStore) AddConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	ms.consumers++
+	ms.consumers = append(ms.consumers, o)
 	ms.mu.Unlock()
 	return nil
 }
 
 func (ms *memStore) RemoveConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	if ms.consumers > 0 {
-		ms.consumers--
+	for i, cfs := range ms.consumers {
+		if o == cfs {
+			ms.consumers = append(ms.consumers[:i], ms.consumers[i+1:]...)
+			break
+		}
 	}
 	ms.mu.Unlock()
 	return nil
+}
+
+func (ms *memStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		ms.mu.RLock()
+		defer ms.mu.RUnlock()
+
+		for _, v := range ms.consumers {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
@@ -2741,6 +2796,14 @@ func (o *consumerMemStore) RemoveRedeliveredBelow(seq uint64) {
 			delete(o.state.Redelivered, s)
 		}
 	}
+}
+
+func (o *consumerMemStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
 }
 
 func (o *consumerMemStore) UpdateConfig(cfg *ConsumerConfig) error {

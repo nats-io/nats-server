@@ -2816,6 +2816,14 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if rresp.Error != nil {
 		t.Fatalf("Got an unexpected error response: %+v", rresp.Error)
 	}
+	pa, err := js.Publish("foo", []byte("OK"))
+	if err != nil {
+		t.Fatalf("Unexpected publish error after restore: %v", err)
+	}
+	if pa.Sequence != uint64(toSend+1) {
+		t.Fatalf("Expected sequence %d after restore, got %d", toSend+1, pa.Sequence)
+	}
+	toSend++
 
 	si, err := js.StreamInfo("TEST")
 	if err != nil {
@@ -2838,10 +2846,13 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	// nil out timestamp for better comparison
-	nci.Delivered.Last, ci.Delivered.Last = nil, nil
-	if nci.Delivered != ci.Delivered {
-		t.Fatalf("Delivered states do not match %+v vs %+v", nci.Delivered, ci.Delivered)
+	// Cluster consumer info does not include the sparse pending state, so the
+	// restore conservatively rolls delivery back to the ack floor.
+	nci.Delivered.Last = nil
+	wantDelivered := ci.AckFloor
+	wantDelivered.Last = nil
+	if nci.Delivered != wantDelivered {
+		t.Fatalf("Delivered state does not match ack floor %+v vs %+v", nci.Delivered, wantDelivered)
 	}
 	nci.AckFloor.Last, ci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
@@ -2849,10 +2860,11 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	}
 
 	// Make sure consumer works.
-	// It should pick up with the next delivery spot, so check for that as first message.
-	// We should have all the messages for first delivery delivered.
-	wantSeq := 101
-	for _, m := range fetchMsgs(t, jsub, 100, 5*time.Second) {
+	// It should pick up immediately after the ack floor and deliver everything
+	// through the current stream tail.
+	wantSeq := int(ci.AckFloor.Stream + 1)
+	toFetch := toSend - int(ci.AckFloor.Stream)
+	for _, m := range fetchMsgs(t, jsub, toFetch, 5*time.Second) {
 		meta, err := m.Metadata()
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -2863,10 +2875,6 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 		require_NoError(t, m.AckSync())
 		wantSeq++
 	}
-
-	// Check that redelivered come in now..
-	redelivered := 50/3 + 1
-	fetchMsgs(t, jsub, redelivered, 15*time.Second)
 
 	// Now make sure the other server was properly caughtup.
 	// Need to call this by hand for now.

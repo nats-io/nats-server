@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math/bits"
 	"os"
 	"strings"
@@ -128,11 +129,13 @@ type StreamStore interface {
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterProcessJetStreamMsg(ProcessJetStreamMsgHandler)
 	UpdateConfig(cfg *StreamConfig) error
+	Ready() // Only needed if store started in recovering mode.
 	Delete(inline bool) error
 	Stop() error
 	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
+	Consumers() iter.Seq[ConsumerStore]
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
 	ResetState()
@@ -200,7 +203,7 @@ type LostStreamData struct {
 type SnapshotResult struct {
 	Reader io.ReadCloser
 	State  StreamState
-	errCh  chan string
+	errCh  chan error
 }
 
 const (
@@ -388,6 +391,7 @@ type ConsumerStore interface {
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error
 	RemoveRedeliveredBelow(seq uint64)
+	GetConfig() *ConsumerConfig
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
 	ForceUpdate(*ConsumerState) error
