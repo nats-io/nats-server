@@ -1359,6 +1359,89 @@ func TestFileStoreMultiLastSeqsAndLoadLastMsgWithLazySubjectState(t *testing.T) 
 	)
 }
 
+func TestStoreMultiLastMsgs(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}},
+		func(t *testing.T, fs StreamStore) {
+			// Three rounds over ten subjects, so every subject has multiple
+			// revisions and the last per subject sits in the final round.
+			// Seqs 1-30, last for foo.<i> is 21+i.
+			for range 3 {
+				for i := range 10 {
+					_, _, err := fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, nil, 0)
+					require_NoError(t, err)
+				}
+			}
+
+			type delivery struct {
+				seq uint64
+				np  uint64
+			}
+			load := func(filters []string, minSeq, maxSeq uint64, maxAllowed, stopAfter int) ([]delivery, uint64, uint64, error) {
+				var msgs []delivery
+				total, np, err := fs.MultiLastMsgs(filters, minSeq, maxSeq, maxAllowed, func(sm *StoreMsg, np uint64) bool {
+					msgs = append(msgs, delivery{sm.seq, np})
+					return stopAfter == 0 || len(msgs) < stopAfter
+				})
+				return msgs, total, np, err
+			}
+
+			// Whole stream delivers the last message per subject in ascending
+			// sequence order, with np counting down the remaining messages.
+			msgs, total, np, err := load([]string{"foo.*"}, 0, 0, -1, 0)
+			require_NoError(t, err)
+			require_Equal(t, total, 10)
+			require_Equal(t, np, 0)
+			require_Len(t, len(msgs), 10)
+			for i, d := range msgs {
+				require_Equal(t, d.seq, uint64(21+i))
+				require_Equal(t, d.np, uint64(9-i))
+			}
+
+			// minSeq skips lower sequences but still accounts for them in np.
+			msgs, total, np, err = load([]string{"foo.*"}, 26, 0, -1, 0)
+			require_NoError(t, err)
+			require_Equal(t, total, 10)
+			require_Equal(t, np, 0)
+			require_Len(t, len(msgs), 5)
+			for i, d := range msgs {
+				require_Equal(t, d.seq, uint64(26+i))
+				require_Equal(t, d.np, uint64(4-i))
+			}
+
+			// maxSeq resolves the last message per subject at or below it,
+			// stepping back to an earlier round where needed.
+			msgs, total, np, err = load([]string{"foo.*"}, 0, 25, -1, 0)
+			require_NoError(t, err)
+			require_Equal(t, total, 10)
+			require_Equal(t, np, 0)
+			require_Len(t, len(msgs), 10)
+			for i, d := range msgs {
+				require_Equal(t, d.seq, uint64(16+i))
+			}
+
+			// Stopping the callback early keeps np at the remaining count.
+			msgs, total, np, err = load([]string{"foo.*"}, 0, 0, -1, 3)
+			require_NoError(t, err)
+			require_Equal(t, total, 10)
+			require_Equal(t, np, 7)
+			require_Len(t, len(msgs), 3)
+
+			// Exceeding maxAllowed errors without delivering anything.
+			msgs, _, _, err = load([]string{"foo.*"}, 0, 0, 5, 0)
+			require_Error(t, err, ErrTooManyResults)
+			require_Len(t, len(msgs), 0)
+
+			// No matches.
+			msgs, total, _, err = load([]string{"bar.>"}, 0, 0, -1, 0)
+			require_NoError(t, err)
+			require_Equal(t, total, 0)
+			require_Len(t, len(msgs), 0)
+		},
+	)
+}
+
 func TestStoreNumPendingLastPerSubjectExcludeOvercount(t *testing.T) {
 	testAllStoreAllPermutations(
 		t, false,
