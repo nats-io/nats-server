@@ -192,6 +192,10 @@ type raftGroup struct {
 	Desired *desiredRaftGroup `json:"desired,omitempty"`
 	// Internal
 	node RaftNode
+	// migration reports what the group leader is currently doing to move this group
+	// toward its desired state. Local to the group leader and not replicated: only
+	// the leader drives the migration, and only the leader answers INFO requests.
+	migration *DesiredClusterInfoStatus
 }
 
 // desiredGroupPlacement specifies the desired peer set.
@@ -205,7 +209,12 @@ type desiredRaftGroup struct {
 	Cluster   string   `json:"cluster,omitempty"`
 	Preferred string   `json:"preferred,omitempty"`
 
+	// ScaleDown marks this desired state as a scale down. The Peers field is the
+	// total set that can be scaled down from.
 	ScaleDown bool `json:"scale_down,omitempty"`
+
+	// Move marks this desired state as retargeting placement.
+	Move bool `json:"move,omitempty"`
 
 	// Removed are peers an operator peer-removed from this group. A group that
 	// can't reach quorum may only evict what's recorded here.
@@ -250,6 +259,27 @@ func (sa *streamAssignment) legacyMoveOrigin() *desiredRaftGroupOrigin {
 	}
 }
 
+// desiredOrigin returns the origin to roll back to, either recorded on the desired
+// state or reconstructed from a legacy move. Nil if there's nothing to roll back to.
+func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
+	if sa == nil || sa.Group == nil {
+		return nil
+	}
+	if sa.Group.Desired != nil {
+		return sa.Group.Desired.Origin
+	}
+	return sa.legacyMoveOrigin()
+}
+
+// moveInFlight returns whether a move is still converging, including one that was
+// started before the upgrade to desired state.
+func (sa *streamAssignment) moveInFlight() bool {
+	if sa == nil || sa.Group == nil {
+		return false
+	}
+	return (sa.Group.Desired != nil && sa.Group.Desired.Move) || sa.legacyMoveOrigin() != nil
+}
+
 // withDesired returns a copy of rg with target expressed as the desired state.
 // target MUST already be a copy or fresh group, as it's directly referenced.
 func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
@@ -274,6 +304,8 @@ func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
 		Preferred: target.Preferred,
 	}
 	if rg.Desired != nil {
+		// Must preserve whether an in-flight move is being retargeted.
+		ng.Desired.Move = rg.Desired.Move
 		// Must preserve the prior origin (if any).
 		if rg.Desired.Origin != nil {
 			origin := *rg.Desired.Origin
@@ -381,6 +413,10 @@ func (rg *raftGroup) withRetentionChange(osa *streamAssignment, newRetention Ret
 		}
 		// Must always register desired state.
 		rg = osa.Group.withDesired(rg)
+		// A legacy move absorbed into desired state must keep counting as a move in flight.
+		if osa.legacyMoveOrigin() != nil {
+			rg.Desired.Move = true
+		}
 	}
 	// Desired state MUST always have an origin recorded, or it can't be rolled back or canceled.
 	rg.populateOrigin(osa)
@@ -3855,6 +3891,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			mmt.Stop()
 			mmt, mmtc = nil, nil
 		}
+		// Don't leave a stale status behind for a migration that's done or abandoned.
+		js.setMigrationStatus(mset.raftGroup(), nil)
 	}
 	defer stopMigrationMonitoring()
 
@@ -4167,7 +4205,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
-			js.runStreamMigration(mset, sa, n, leaderTerm)
+			status := js.runStreamMigration(mset, sa, n, leaderTerm)
+			// Resolve after determining the status, so that we don't set it on a stale group.
+			js.setMigrationStatus(mset.raftGroup(), status)
 
 		case err := <-restoreDoneCh:
 			// We have completed a restore from snapshot on this server. The stream assignment has
@@ -4294,123 +4334,161 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 }
 
-// Migrate a stream from peer set A to peer set B. Returns true when migration is done.
-func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64) {
-	if leaderTerm == 0 {
-		return
-	}
-	ourPeerId, cc, s := n.ID(), js.cluster, js.srv
-
-	// Store whether any peers are currently being caught up, in which case they're
-	// not current yet and we need to wait before removing peers.
-	catchups := mset.catchupPeers()
-
-	js.mu.RLock()
-	// We are shutting down.
-	if cc == nil || cc.meta == nil {
-		js.mu.RUnlock()
-		return
-	}
-	if sa == nil || sa.Group == nil {
-		js.mu.RUnlock()
-		return
-	}
-	// Sanity-check: we're still the leader.
-	if !n.Leader() {
-		js.mu.RUnlock()
-		return
-	}
-	meta := cc.meta
-	accName, streamName, replicas := sa.Client.serviceAccount(), sa.Config.Name, sa.Config.Replicas
-
-	update := desiredAssignmentUpdate{Term: leaderTerm}
-	sendMetaUpdate := func() {
-		reconcile := &streamAssignmentReconcile{Account: accName, Stream: streamName, desiredAssignmentUpdate: update}
-		s.sendInternalMsgLocked(streamAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
-	}
-
-	// If desired state is missing, inform the meta leader to create desired state.
-	// Or, if the recorded leader term isn't ours, then get that updated first.
-	desired := sa.Group.Desired
+// desiredSnapshot copies the group's desired state, so it stays usable after the
+// JetStream lock is released. needDesired is true if desired state is missing or was
+// recorded under another leader term, and the meta leader must record it first.
+// Lock should be held.
+func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers []string, needDesired bool) {
+	desired := rg.Desired
 	if desired != nil {
-		update.ID = desired.ID
+		// MUST copy the peers, the assignment can be updated once we release.
+		id, scaleDown, peers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
 	}
-	if desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm {
-		js.mu.RUnlock()
-		sendMetaUpdate()
-		return
-	}
+	needDesired = desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm
+	return id, scaleDown, peers, needDesired
+}
 
-	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	if n.NeedSnapshot() {
-		js.mu.RUnlock()
-		if err := mset.flushAllPending(); err == nil {
-			n.InstallSnapshot(mset.stateSnapshot(), true)
-		}
-		return
+// peerIDs returns the IDs of the given peers.
+func peerIDs(peers []*Peer) []string {
+	ids := make([]string, 0, len(peers))
+	for _, p := range peers {
+		ids = append(ids, p.ID)
 	}
-	// If a membership change is in progress, we just wait for it to clear.
-	if n.MembershipChangeInProgress() {
-		js.mu.RUnlock()
-		return
-	}
+	return ids
+}
 
-	actual := n.Peers()
-	actualPeers := make([]string, 0, len(actual))
-	for _, p := range actual {
-		actualPeers = append(actualPeers, p.ID)
-	}
-	desiredPeers := desired.Peers
-
-	// A raft member that is not current member or no longer part of the meta group,
-	// has been evicted from the cluster, e.g. by a server peer-remove. It can't take
-	// part in this migration, so remove it from the group right away rather than
-	// waiting for the rest of the migration to complete.
-	current, metaPeers := copyStrings(sa.Group.Peers), meta.PeerNames()
+// removeEvictedPeers removes a raft member that is not a current member or no
+// longer part of the meta group, it has been evicted from the cluster, e.g. by a
+// server peer-remove. It can't take part in a migration, so remove it from the
+// group right away rather than waiting for the rest of the migration to complete.
+// Returns a status if we've acted, and the migration must wait for the next cycle.
+func (s *Server) removeEvictedPeers(n, meta RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) *DesiredClusterInfoStatus {
+	metaPeers := meta.PeerNames()
 	var evicted []string
 	for _, peer := range actualPeers {
 		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
 			evicted = append(evicted, peer)
 		}
 	}
-	if len(evicted) > 0 {
-		// Remove evicted peers one at a time, the leader last so leadership stays
-		// stable throughout. Step down and perform a leader transfer if we'd remove
-		// ourselves, preferring a successor that is already in the desired peer set.
-		remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
-		if remove == ourPeerId {
-			preferred := s.selectStepDownPreferred(ourPeerId, actual, desiredPeers)
-			js.mu.RUnlock()
-			n.StepDown(preferred)
-		} else {
-			js.mu.RUnlock()
-			n.ProposeRemovePeer(remove)
-		}
-		return
+	if len(evicted) == 0 {
+		return nil
 	}
+	// Remove evicted peers one at a time, the leader last so leadership stays
+	// stable throughout. Step down and perform a leader transfer if we'd remove
+	// ourselves, preferring a successor that is already in the desired peer set.
+	ourPeerId := n.ID()
+	remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
+	if remove == ourPeerId {
+		err := n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, desiredPeers))
+		return mstat(MigrationStatusMembership, "stepping down, evicted from group").withErr(err)
+	}
+	err := n.ProposeRemovePeer(remove)
+	name := s.serverNameForNode(remove)
+	if name == _EMPTY_ {
+		name = fmt.Sprintf("with id %s", remove)
+	}
+	return mstat(MigrationStatusMembership, "removing evicted peer %s", name).withErr(err)
+}
 
-	// Extend the actual peer set through the log, but only if it's part of the desired set.
+// extendPeerSet extends the actual peer set through the log, but only with peers
+// that are part of the desired set.
+// Returns a status if we've acted, and the migration must wait for the next cycle.
+func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) *DesiredClusterInfoStatus {
 	var candidates []string
 	for _, peer := range current {
 		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
 			candidates = append(candidates, peer)
 		}
 	}
-	if len(candidates) > 0 {
-		add := s.selectPeerToAdd(n, ourPeerId, actual, candidates)
+	if len(candidates) == 0 {
+		return nil
+	}
+	add := s.selectPeerToAdd(n, n.ID(), actual, candidates)
+	if add == _EMPTY_ {
+		return mstat(MigrationStatusQuorum, "waiting for quorum to add peer")
+	}
+	err := n.ProposeAddPeer(add)
+	name := s.serverNameForNode(add)
+	if name == _EMPTY_ {
+		name = fmt.Sprintf("with id %s", add)
+	}
+	return mstat(MigrationStatusMembership, "adding peer %s", name).withErr(err)
+}
+
+// Migrate a stream from peer set A to peer set B.
+func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64) *DesiredClusterInfoStatus {
+	// Sanity-check: we're still the leader.
+	if leaderTerm == 0 || !n.Leader() {
+		return nil
+	}
+	ourPeerId, s := n.ID(), js.srv
+
+	// Store whether any peers are currently being caught up, in which case they're
+	// not current yet and we need to wait before removing peers.
+	catchups := mset.catchupPeers()
+
+	// Snapshot the assignment state we need up front, so the Raft reads below don't
+	// contend for Raft locks while holding the JetStream lock.
+	js.mu.RLock()
+	cc := js.cluster
+	// We are shutting down.
+	if cc == nil || cc.meta == nil {
 		js.mu.RUnlock()
-		if add != _EMPTY_ {
-			n.ProposeAddPeer(add)
+		return mstat(MigrationStatusUnavailable, "shutting down")
+	}
+	if sa == nil || sa.Group == nil {
+		js.mu.RUnlock()
+		return mstat(MigrationStatusUnavailable, "no stream assignment")
+	}
+	meta := cc.meta
+	accName, streamName, replicas := sa.Client.serviceAccount(), sa.Config.Name, sa.Config.Replicas
+	current := copyStrings(sa.Group.Peers)
+	desiredID, desiredScaleDown, desiredPeers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
+	js.mu.RUnlock()
+
+	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
+	sendMetaUpdate := func() {
+		reconcile := &streamAssignmentReconcile{Account: accName, Stream: streamName, desiredAssignmentUpdate: update}
+		s.sendInternalMsgLocked(streamAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
+	}
+	if needDesired {
+		sendMetaUpdate()
+		return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
+	}
+	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
+	if n.NeedSnapshot() {
+		if err := mset.flushAllPending(); err != nil {
+			if errors.Is(err, ErrStoreClosed) {
+				return mstat(MigrationStatusUnavailable, "shutting down")
+			}
+			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		return
+		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
+			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
+		}
+		return mstat(MigrationStatusSnapshot, "installing snapshot")
+	}
+	// If a membership change is in progress, we just wait for it to clear.
+	if n.MembershipChangeInProgress() {
+		return mstat(MigrationStatusMembership, "waiting for membership change to commit")
 	}
 
+	actual := n.Peers()
+	actualPeers := peerIDs(actual)
+
+	// Remove any peers that have been evicted from the cluster.
+	if status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers); status != nil {
+		return status
+	}
+	// Extend the actual peer set through the log.
+	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers); status != nil {
+		return status
+	}
 	// If scaling down, we need to select where to.
-	if desired.ScaleDown {
-		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desired.Peers, replicas)
-		js.mu.RUnlock()
+	if desiredScaleDown {
+		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desiredPeers, replicas)
 		sendMetaUpdate()
-		return
+		return mstat(MigrationStatusMeta, "selecting peers to scale down to")
 	}
 
 	// Add peers in our desired peer set.
@@ -4429,9 +4507,8 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 		}
 		update.MetaPeers = combined
-		js.mu.RUnlock()
 		sendMetaUpdate()
-		return
+		return mstat(MigrationStatusMeta, "expanding assignment with desired peers")
 	}
 
 	slices.Sort(current)
@@ -4448,7 +4525,18 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 	// If the peer sets are an exact match, we can remove a peer.
 	if len(remaining) > 0 && exactMatch {
-		// First need to check on any consumers and make sure they have moved properly before scaling down ourselves.
+		// Removing a peer is destructive, so re-validate our snapshot against the
+		// assignment before acting on it. While we hold the lock, look up the live
+		// assignment and also check on any consumers and make sure they have moved
+		// properly before scaling down ourselves.
+		js.mu.RLock()
+		sa = js.streamAssignment(accName, streamName)
+		if sa == nil || sa.Group == nil || sa.Group.Desired == nil || sa.Group.Desired.ID != desiredID {
+			// The desired state moved on under us, reassess on the next cycle.
+			js.mu.RUnlock()
+			return mstat(MigrationStatusMeta, "desired state changed, reassessing")
+		}
+		var blockedBy string
 		for name, c := range sa.consumers {
 			if c.unsupported != nil {
 				continue
@@ -4456,13 +4544,20 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			for _, peer := range c.Group.Peers {
 				// If we have peers still in the old set block.
 				if !slices.Contains(desiredPeers, peer) {
-					s.Debugf("Scale down of '%s > %s' blocked by consumer '%s'", sa.Client.serviceAccount(), sa.Config.Name, name)
-					js.mu.RUnlock()
-					// We need to wait but still nudge the meta leader since it might need to remap consumers.
-					sendMetaUpdate()
-					return
+					blockedBy = name
+					break
 				}
 			}
+			if blockedBy != _EMPTY_ {
+				break
+			}
+		}
+		js.mu.RUnlock()
+		if blockedBy != _EMPTY_ {
+			s.Debugf("Scale down of '%s > %s' blocked by consumer '%s'", accName, streamName, blockedBy)
+			// We need to wait but still nudge the meta leader since it might need to remap consumers.
+			sendMetaUpdate()
+			return mstat(MigrationStatusBlocked, "waiting for consumer '%s' to migrate", blockedBy)
 		}
 
 		// Remove old peers one at a time, the leader selected last.
@@ -4483,41 +4578,60 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 		}
 		if quorum := (len(actual)-1)/2 + 1; currentCount < quorum {
-			js.mu.RUnlock()
-			return
+			return mstat(MigrationStatusCatchup, "waiting for peers to catch up")
 		}
 		// If we have current desired peers, and we're not a desired peer ourselves, step down.
 		if len(currentDesired) > 0 && !slices.Contains(desiredPeers, ourPeerId) {
 			// If desired peers are still catching up, we wait for a quorum of them to complete for now.
 			if quorum := len(desiredPeers)/2 + 1; len(currentDesired) < quorum {
-				js.mu.RUnlock()
-				return
+				return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
 			}
 			preferred := s.selectStepDownPreferred(ourPeerId, actual, currentDesired)
-			js.mu.RUnlock()
-			if preferred != _EMPTY_ {
-				n.StepDown(preferred)
+			if preferred == _EMPTY_ {
+				return mstat(MigrationStatusMembership, "waiting for a desired peer to step down to")
 			}
-			return
+			err := n.StepDown(preferred)
+			name := s.serverNameForNode(preferred)
+			if name == _EMPTY_ {
+				name = fmt.Sprintf("peer with id %s", preferred)
+			}
+			return mstat(MigrationStatusMembership, "stepping down to %s", name).withErr(err)
 		}
 
-		js.mu.RUnlock()
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
 		if remove != ourPeerId {
-			n.ProposeRemovePeer(remove)
-		} else {
-			n.StepDown()
+			err := n.ProposeRemovePeer(remove)
+			name := s.serverNameForNode(remove)
+			if name == _EMPTY_ {
+				name = fmt.Sprintf("with id %s", remove)
+			}
+			return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
 		}
-		return
+		err := n.StepDown()
+		return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 	}
 
 	// We're done.
 	update.MetaPeers = actualPeers
 	update.PeersMatch = exactMatch
-	js.mu.RUnlock()
 	sendMetaUpdate()
+	if !exactMatch {
+		return mstat(MigrationStatusMeta, "waiting for peer set to settle")
+	}
+	return nil
+}
+
+// setMigrationStatus records what the group leader is currently doing to converge
+// this group toward its desired state, so it can be reported through clusterInfo.
+func (js *jetStream) setMigrationStatus(rg *raftGroup, status *DesiredClusterInfoStatus) {
+	if js == nil || rg == nil {
+		return
+	}
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	rg.migration = status
 }
 
 // Determine if we are migrating
@@ -4541,13 +4655,14 @@ func (mset *stream) isMigrating() bool {
 	if sa.Group.Desired != nil {
 		return true
 	}
-	// The sign of migration is if our group peer count != configured replica count.
-	if sa.Config.Replicas != len(sa.Group.Peers) {
+	// Without desired state, more peers than replicas is a legacy move left to finish.
+	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
+	if len(sa.Group.Peers) > sa.Config.Replicas {
 		return true
 	}
 	// Final sanity check is that the actual peer set equals the one in the assignment.
 	peers := sa.Group.node.PeerNames()
-	if sa.Config.Replicas != len(peers) {
+	if len(peers) > sa.Config.Replicas {
 		return true
 	}
 	for _, peer := range sa.Group.Peers {
@@ -5384,7 +5499,15 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term
 	s, account, err := js.srv, sa.Client.serviceAccount(), sa.err
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	hasResponded := sa.markResponded()
+	// A migration status is only valid for the leader and term that wrote it.
+	clearMigration := sa.Group.migration != nil
 	js.mu.RUnlock()
+
+	if clearMigration {
+		js.mu.Lock()
+		sa.Group.migration = nil
+		js.mu.Unlock()
+	}
 
 	streamName := mset.name()
 
@@ -5649,6 +5772,7 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 			// Copy over private existing state from former SA.
 			if sa.Group != nil {
 				sa.Group.node = osa.Group.node
+				sa.Group.migration = osa.Group.migration
 			}
 			sa.consumers = osa.consumers
 			if osa.hasResponded() {
@@ -5772,6 +5896,7 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	// Copy over private existing state from former SA.
 	if sa.Group != nil {
 		sa.Group.node = osa.Group.node
+		sa.Group.migration = osa.Group.migration
 	}
 	sa.consumers = osa.consumers
 	sa.err = osa.err
@@ -6525,6 +6650,7 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		// Copy over private existing state from former CA.
 		if ca.Group != nil {
 			ca.Group.node = oca.Group.node
+			ca.Group.migration = oca.Group.migration
 		}
 		if oca.hasResponded() {
 			ca.markResponded()
@@ -7417,6 +7543,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			mmt.Stop()
 			mmt, mmtc = nil, nil
 		}
+		// Don't leave a stale status behind for a migration that's done or abandoned.
+		js.setMigrationStatus(o.raftGroup(), nil)
 	}
 	defer stopMigrationMonitoring()
 
@@ -7543,7 +7671,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			}
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
-			js.runConsumerMigration(o, ca, n, leaderTerm)
+			status := js.runConsumerMigration(o, ca, n, leaderTerm)
+			// Resolve after determining the status, so that we don't set it on a stale group.
+			js.setMigrationStatus(o.raftGroup(), status)
 
 		case <-t.C:
 			// Start forcing snapshots if they failed previously.
@@ -7553,27 +7683,26 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	}
 }
 
-// Migrate a consumer from peer set A to peer set B. Returns true when migration is done.
-func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n RaftNode, leaderTerm uint64) {
-	if leaderTerm == 0 {
-		return
+// Migrate a consumer from peer set A to peer set B.
+func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n RaftNode, leaderTerm uint64) *DesiredClusterInfoStatus {
+	// Sanity-check: we're still the leader.
+	if leaderTerm == 0 || !n.Leader() {
+		return nil
 	}
-	ourPeerId, cc, s := n.ID(), js.cluster, js.srv
+	ourPeerId, s := n.ID(), js.srv
 
+	// Snapshot the assignment state we need up front, so the Raft reads below don't
+	// contend for Raft locks while holding the JetStream lock.
 	js.mu.RLock()
+	cc := js.cluster
 	// We are shutting down.
 	if cc == nil || cc.meta == nil {
 		js.mu.RUnlock()
-		return
+		return mstat(MigrationStatusUnavailable, "shutting down")
 	}
 	if ca == nil || ca.Group == nil {
 		js.mu.RUnlock()
-		return
-	}
-	// Sanity-check: we're still the leader.
-	if !n.Leader() {
-		js.mu.RUnlock()
-		return
+		return mstat(MigrationStatusUnavailable, "no consumer assignment")
 	}
 	meta := cc.meta
 	accName, streamName, consumerName := ca.Client.serviceAccount(), ca.Stream, ca.Name
@@ -7581,99 +7710,60 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	osa := js.streamAssignment(accName, streamName)
 	if osa == nil {
 		js.mu.RUnlock()
-		return
+		return mstat(MigrationStatusUnavailable, "no stream assignment")
 	}
 
 	replicas := ca.Config.replicas(osa.Config)
+	// MUST copy, the stream assignment can be updated once we release below.
+	streamPeers := copyStrings(osa.Group.Peers)
+	current := copyStrings(ca.Group.Peers)
+	desiredID, desiredScaleDown, desiredPeers, needDesired := ca.Group.desiredSnapshot(leaderTerm)
+	js.mu.RUnlock()
 
-	update := desiredAssignmentUpdate{Term: leaderTerm}
+	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
 	sendMetaUpdate := func() {
 		reconcile := &consumerAssignmentReconcile{Account: accName, Stream: streamName, Consumer: consumerName, desiredAssignmentUpdate: update}
 		s.sendInternalMsgLocked(consumerAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
 	}
-
-	// If desired state is missing, inform the meta leader to create desired state.
-	// Or, if the recorded leader term isn't ours, then get that updated first.
-	desired := ca.Group.Desired
-	if desired != nil {
-		update.ID = desired.ID
-	}
-	if desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm {
-		js.mu.RUnlock()
+	if needDesired {
 		sendMetaUpdate()
-		return
+		return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
 	}
-
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
-		js.mu.RUnlock()
-		if snap, err := o.store.EncodedState(); err == nil {
-			n.InstallSnapshot(snap, true)
+		snap, err := o.store.EncodedState()
+		if err != nil {
+			if errors.Is(err, ErrStoreClosed) {
+				return mstat(MigrationStatusUnavailable, "shutting down")
+			}
+			return mstat(MigrationStatusSnapshot, "waiting to encode state for snapshot").withErr(err)
 		}
-		return
+		if err := n.InstallSnapshot(snap, true); err != nil {
+			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
+		}
+		return mstat(MigrationStatusSnapshot, "installing snapshot")
 	}
 	// If a membership change is in progress, we just wait for it to clear.
 	if n.MembershipChangeInProgress() {
-		js.mu.RUnlock()
-		return
+		return mstat(MigrationStatusMembership, "waiting for membership change to commit")
 	}
 
 	actual := n.Peers()
-	actualPeers := make([]string, 0, len(actual))
-	for _, p := range actual {
-		actualPeers = append(actualPeers, p.ID)
-	}
-	desiredPeers := desired.Peers
+	actualPeers := peerIDs(actual)
 
-	// A raft member that is not current member or no longer part of the meta group,
-	// has been evicted from the cluster, e.g. by a server peer-remove. It can't take
-	// part in this migration, so remove it from the group right away rather than
-	// waiting for the rest of the migration to complete.
-	current, metaPeers := copyStrings(ca.Group.Peers), meta.PeerNames()
-	var evicted []string
-	for _, peer := range actualPeers {
-		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
-			evicted = append(evicted, peer)
-		}
+	// Remove any peers that have been evicted from the cluster.
+	if status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers); status != nil {
+		return status
 	}
-	if len(evicted) > 0 {
-		// Remove evicted peers one at a time, the leader last so leadership stays
-		// stable throughout. Step down and perform a leader transfer if we'd remove
-		// ourselves, preferring a successor that is already in the desired peer set.
-		remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
-		if remove == ourPeerId {
-			preferred := s.selectStepDownPreferred(ourPeerId, actual, desiredPeers)
-			js.mu.RUnlock()
-			n.StepDown(preferred)
-		} else {
-			js.mu.RUnlock()
-			n.ProposeRemovePeer(remove)
-		}
-		return
+	// Extend the actual peer set through the log.
+	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers); status != nil {
+		return status
 	}
-
-	// Extend the actual peer set through the log, but only if it's part of the desired set.
-	var candidates []string
-	for _, peer := range current {
-		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
-			candidates = append(candidates, peer)
-		}
-	}
-	if len(candidates) > 0 {
-		add := s.selectPeerToAdd(n, ourPeerId, actual, candidates)
-		js.mu.RUnlock()
-		if add != _EMPTY_ {
-			n.ProposeAddPeer(add)
-		}
-		return
-	}
-
 	// If scaling down, we need to select where to.
-	if desired.ScaleDown {
-		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desired.Peers, replicas)
-		js.mu.RUnlock()
+	if desiredScaleDown {
+		update.ScaleDownPeers = s.selectScaleDownPeers(ourPeerId, actual, desiredPeers, replicas)
 		sendMetaUpdate()
-		return
+		return mstat(MigrationStatusMeta, "selecting peers to scale down to")
 	}
 
 	// Add peers in our desired peer set.
@@ -7692,19 +7782,17 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			if slices.Contains(current, peer) {
 				continue
 			}
-			if !slices.Contains(osa.Group.Peers, peer) {
+			if !slices.Contains(streamPeers, peer) {
 				continue
 			}
 			combined = append(combined, peer)
 		}
 		if len(combined) == len(current) {
-			js.mu.RUnlock()
-			return
+			return mstat(MigrationStatusBlocked, "waiting for stream to migrate first")
 		}
 		update.MetaPeers = combined
-		js.mu.RUnlock()
 		sendMetaUpdate()
-		return
+		return mstat(MigrationStatusMeta, "expanding assignment with desired peers")
 	}
 
 	slices.Sort(current)
@@ -7726,20 +7814,25 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		// member is already in the desired peer set so any successor works.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
 		if remove == ourPeerId {
-			js.mu.RUnlock()
-			n.StepDown()
-		} else {
-			js.mu.RUnlock()
-			n.ProposeRemovePeer(remove)
+			err := n.StepDown()
+			return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 		}
-		return
+		err := n.ProposeRemovePeer(remove)
+		name := s.serverNameForNode(remove)
+		if name == _EMPTY_ {
+			name = fmt.Sprintf("with id %s", remove)
+		}
+		return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
 	}
 
 	// We're done.
 	update.MetaPeers = actualPeers
 	update.PeersMatch = exactMatch
-	js.mu.RUnlock()
 	sendMetaUpdate()
+	if !exactMatch {
+		return mstat(MigrationStatusMeta, "waiting for peer set to settle")
+	}
+	return nil
 }
 
 // Determine if we are migrating
@@ -7767,13 +7860,14 @@ func (o *consumer) isMigrating() bool {
 	if ca.Group.Desired != nil {
 		return true
 	}
-	// The sign of migration is if our group peer count != configured replica count.
-	if replicas != len(ca.Group.Peers) {
+	// Without desired state, more peers than replicas is a legacy move left to finish.
+	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
+	if len(ca.Group.Peers) > replicas {
 		return true
 	}
 	// Final sanity check is that the actual peer set equals the one in the assignment.
 	peers := ca.Group.node.PeerNames()
-	if replicas != len(peers) {
+	if len(peers) > replicas {
 		return true
 	}
 	for _, peer := range ca.Group.Peers {
@@ -8128,7 +8222,15 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 	s, account, err := js.srv, ca.Client.serviceAccount(), ca.err
 	client, subject, reply, streamName, consumerName, sourcing := ca.Client, ca.Subject, ca.Reply, ca.Stream, ca.Name, ca.Config.Sourcing
 	hasResponded := ca.markResponded()
+	// A migration status is only valid for the leader and term that wrote it.
+	clearMigration := ca.Group.migration != nil
 	js.mu.RUnlock()
+
+	if clearMigration {
+		js.mu.Lock()
+		ca.Group.migration = nil
+		js.mu.Unlock()
+	}
 
 	acc, _ := s.LookupAccount(account)
 	if acc == nil {
@@ -8609,12 +8711,16 @@ func (rg *raftGroup) reconcileDesiredState(reconcile desiredAssignmentUpdate, re
 		}
 		ng := rg.copyGroup()
 		newPeers := rg.Peers
-		if len(newPeers) > replicas {
+		// An over-replicated peer set is a legacy move being converted into
+		// desired state, it must keep counting as a move in flight.
+		legacyMove := len(newPeers) > replicas
+		if legacyMove {
 			newPeers = newPeers[len(newPeers)-replicas:]
 		}
 		ng.Peers = newPeers
 		ng = rg.withDesired(ng)
 		ng.Desired.Term = reconcile.Term
+		ng.Desired.Move = legacyMove
 		return ng
 	}
 
@@ -9051,6 +9157,9 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 	// Preserve how the group is meant to converge.
 	if d := sa.Group.Desired; d != nil {
 		csa.Group.Desired.ScaleDown = d.ScaleDown
+	} else if sa.legacyMoveOrigin() != nil {
+		// A legacy move absorbed into desired state must keep counting as a move in flight.
+		csa.Group.Desired.Move = true
 	}
 	if remove {
 		removeFrom := func(from []string) []string {
@@ -9879,6 +9988,49 @@ func sysRequest[T any](s *Server, subjFormat string, args ...any) (*T, error) {
 	}
 }
 
+// jsClusteredStreamCancelMoveLocked proposes a rollback of the stream's in-flight desired
+// state to its recorded origin. The caller MUST have verified an origin exists, via
+// desiredOrigin. The client is responded to once the rollback proposal applies.
+// Lock should be held.
+func (s *Server) jsClusteredStreamCancelMoveLocked(osa *streamAssignment, accName, reply string) {
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil || cc.meta == nil {
+		return
+	}
+	origin := osa.desiredOrigin()
+	if origin == nil {
+		return
+	}
+	// A rollback of a move still counts as a move in flight, it must keep blocking other
+	// moves and scales until it completes. Must capture before the group is retargeted.
+	moveInFlight := osa.moveInFlight()
+
+	csa := osa.copyGroup()
+	// Need to respond to the client that cancels.
+	csa.Reply = reply
+	// Revert replicas, placement and retention in the config immediately.
+	csa.Config = osa.Config.clone()
+	csa.Config.Replicas = origin.Replicas
+	csa.Config.Placement = origin.Placement.clone()
+	if origin.Retention != nil {
+		csa.Config.Retention = *origin.Retention
+	}
+	// Move back to the initial peer set via desired state.
+	csa.Group.Peers = copyStrings(origin.Peers)
+	csa.Group.Cluster = origin.Cluster
+	csa.Group = osa.Group.withDesired(csa.Group)
+	csa.Group.Desired.Move = moveInFlight
+	// withDesired only carries over a prior origin, a legacy move has none yet.
+	// Record it, so the rollback reports the same target while it converges.
+	if csa.Group.Desired.Origin == nil {
+		csa.Group.Desired.Origin = origin
+	}
+	if err := cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(csa)); err != nil {
+		return
+	}
+	cc.trackInflightStreamProposal(accName, csa, false)
+}
+
 func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, subject, reply string, rmsg []byte, cfg *StreamConfig, pedantic bool) {
 	js := s.getJetStream()
 	if js == nil {
@@ -9986,11 +10138,34 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 	// Check for replica changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
 
-	// A move or scale retargets the desired peer set, so only one can be inflight at a time.
-	// Otherwise, peers of the abandoned target could accumulate in the assignment unbounded.
-	// A legacy move counts as well, it is inflight but not expressed as desired state yet.
-	// A retention change is allowed, it does not adjust the peer set.
-	if (isMoveRequest || isReplicaChange) && (osa.Group.Desired != nil || osa.legacyMoveOrigin() != nil) {
+	// Combining a move and a scale in a single update is not allowed.
+	if isMoveRequest && isReplicaChange {
+		resp.Error = NewJSStreamMoveAndScaleError()
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+		return
+	}
+
+	// A move retargets the desired peer set, so only one can be inflight at a time.
+	// Otherwise, peers of the abandoned target could accumulate in the assignment
+	// unbounded. A move can't combine with any other inflight reconfiguration across
+	// requests either, a scale and a retention change both converge through desired
+	// state. A legacy move counts as well, it is inflight but not expressed as desired
+	// state yet.
+	moveInFlight := osa.moveInFlight()
+	if isMoveRequest {
+		if moveInFlight {
+			resp.Error = NewJSStreamMoveInProgressError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
+		if osa.Group.Desired != nil {
+			resp.Error = NewJSStreamReconfigureInProgressError()
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+			return
+		}
+	} else if isReplicaChange && moveInFlight {
+		// A scale can't combine with an inflight move either. Scales may freely stack
+		// onto an inflight scale or retention change, but not with a move.
 		resp.Error = NewJSStreamMoveInProgressError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -10025,6 +10200,7 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 			rg.Cluster = peerSetCluster
 		}
 		rg = osa.Group.withDesired(rg)
+		rg.Desired.Move = true
 	} else if isReplicaChange {
 		currentPeers := rg.Peers
 		if osa.Group.Desired != nil {
@@ -12437,6 +12613,15 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		if !d.ScaleDown {
 			desiredPeers = copyStrings(d.Peers)
 		}
+	}
+	// The group leader can have a status before desired state exists, most importantly
+	// when it's still requesting it from the meta leader. Report that on its own.
+	if status := rg.migration; status != nil {
+		if desired == nil {
+			desired = &DesiredClusterInfo{}
+		}
+		cp := *status
+		desired.Status = &cp
 	}
 	js.mu.RUnlock()
 

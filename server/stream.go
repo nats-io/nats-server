@@ -385,6 +385,7 @@ type DesiredClusterInfo struct {
 	Name     string                    `json:"name,omitempty"`
 	Replicas []*PeerInfo               `json:"replicas,omitempty"`
 	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
+	Status   *DesiredClusterInfoStatus `json:"status,omitempty"`
 }
 
 type DesiredClusterInfoOrigin struct {
@@ -394,6 +395,56 @@ type DesiredClusterInfoOrigin struct {
 	Placement *Placement `json:"placement,omitempty"`
 	// When changing between retention policies, this retention remains active until unset.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
+}
+
+// MigrationStatusType classifies a migration status by what has to change for the
+// migration to advance, so it can be matched on without parsing the status line.
+type MigrationStatusType string
+
+const (
+	MigrationStatusMeta        MigrationStatusType = "meta"        // The meta leader must record or advance desired state.
+	MigrationStatusMembership  MigrationStatusType = "membership"  // A proposed membership change must commit.
+	MigrationStatusSnapshot    MigrationStatusType = "snapshot"    // A snapshot must be installed.
+	MigrationStatusCatchup     MigrationStatusType = "catchup"     // Peers must become store-current.
+	MigrationStatusQuorum      MigrationStatusType = "quorum"      // More peers must come online before we can act without losing quorum.
+	MigrationStatusBlocked     MigrationStatusType = "blocked"     // Another asset must move first, i.e. the stream/consumer ordering constraint.
+	MigrationStatusUnavailable MigrationStatusType = "unavailable" // Nothing to do here, we're shutting down, or the assignment is gone.
+)
+
+type DesiredClusterInfoStatus struct {
+	// Description is a short status line describing what the group leader is currently
+	// doing to move this group toward its desired state, or what it's waiting on.
+	Description string `json:"description"`
+	// Type classifies Description by what has to change for the migration to
+	// advance, so it can be matched on without parsing the status line.
+	Type MigrationStatusType `json:"type"`
+	// Err is the underlying failure behind this status, if it had one. Only set
+	// for faults that persist across cycles, never for races that resolve themselves.
+	Err string `json:"err,omitempty"`
+}
+
+// mstat builds a migration status of the given type. The line is a short, stable
+// phrase; keep it matchable by leaving anything unbounded to Err.
+func mstat(t MigrationStatusType, format string, args ...any) *DesiredClusterInfoStatus {
+	if len(args) == 0 {
+		return &DesiredClusterInfoStatus{Type: t, Description: format}
+	}
+	return &DesiredClusterInfoStatus{Type: t, Description: fmt.Sprintf(format, args...)}
+}
+
+// withErr attaches the underlying failure, unless it's one that resolves itself on
+// the next cycle. Those would flap in and out of the status for no good reason.
+func (status *DesiredClusterInfoStatus) withErr(err error) *DesiredClusterInfoStatus {
+	if err == nil ||
+		errors.Is(err, ErrStoreClosed) ||
+		errors.Is(err, errNotLeader) ||
+		errors.Is(err, errNodeClosed) ||
+		errors.Is(err, errMembershipChange) ||
+		errors.Is(err, errNoSnapAvailable) {
+		return status
+	}
+	status.Err = err.Error()
+	return status
 }
 
 // PeerInfo shows information about all the peers in the cluster that
