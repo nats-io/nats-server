@@ -3373,6 +3373,26 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	return true
 }
 
+// Returns the maximum number of bytes we can safely
+// send in a single message.
+func (n *raft) maxBatchSize() int {
+	maxPayload := MAX_PAYLOAD_SIZE
+	if opts := n.s.getOpts(); opts.MaxPayload > 0 {
+		maxPayload = int(opts.MaxPayload)
+	}
+	n.RLock()
+	acc := n.t.Account()
+	n.RUnlock()
+	if acc != nil {
+		acc.mu.RLock()
+		if acc.mpay > 0 {
+			maxPayload = min(maxPayload, int(acc.mpay))
+		}
+		acc.mu.RUnlock()
+	}
+	return maxPayload - MAX_CONTROL_LINE_SIZE
+}
+
 func (n *raft) runAsLeader() {
 	if n.State() == Closed {
 		return
@@ -3426,11 +3446,12 @@ func (n *raft) runAsLeader() {
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
-			const maxBatch = 256 * 1024
+			maxBatch := n.maxBatchSize()
 			const maxEntries = 4096 // larger batches showed no benefit
+			const batchBaseLen = appendEntryBaseLen + binary.MaxVarintLen64
 			var entries []*Entry
 
-			es, sz := n.prop.pop(), 0
+			es, sz := n.prop.pop(), batchBaseLen
 			for _, b := range es {
 				if b.term != term {
 					continue
@@ -3439,9 +3460,14 @@ func (n *raft) runAsLeader() {
 					n.sendMembershipChange(b.Entry)
 					continue
 				}
+				entrySize := len(b.Data) + 1 + 4 // Encoded type and size.
+				if len(entries) > 0 && sz+entrySize > maxBatch {
+					n.sendAppendEntry(entries)
+					sz, entries = batchBaseLen, nil
+				}
 				entries = append(entries, b.Entry)
 				// Increment size.
-				sz += len(b.Data) + 1
+				sz += entrySize
 				// If below thresholds go ahead and send.
 				if sz < maxBatch && len(entries) < maxEntries {
 					continue
@@ -3450,7 +3476,7 @@ func (n *raft) runAsLeader() {
 				// Reset our sz and entries.
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
-				sz, entries = 0, nil
+				sz, entries = batchBaseLen, nil
 			}
 			if len(entries) > 0 {
 				n.sendAppendEntry(entries)

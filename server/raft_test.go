@@ -171,6 +171,48 @@ func TestNRGAppendEntryDecodeTruncatedEntryLength(t *testing.T) {
 	require_Error(t, err, errBadAppendEntry)
 }
 
+func TestNRGMaxBatchSize(t *testing.T) {
+	const (
+		serverMaxPayload  = 64 * 1024
+		accountMaxPayload = 32 * 1024
+		ownerMaxPayload   = 16 * 1024
+	)
+
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	opts := n.s.getOpts().Clone()
+	opts.MaxPayload = serverMaxPayload
+	n.s.setOpts(opts)
+
+	owner, err := n.s.LookupAccount(n.accName)
+	require_NoError(t, err)
+	traffic := n.t.Account()
+	require_NotNil(t, traffic)
+	require_NotEqual(t, owner, traffic)
+	owner.mu.Lock()
+	owner.mpay = ownerMaxPayload
+	owner.mu.Unlock()
+	traffic.mu.Lock()
+	traffic.mpay = accountMaxPayload
+	traffic.mu.Unlock()
+
+	// The transport account, rather than the asset owner, constrains Raft traffic.
+	require_Equal(t, n.maxBatchSize(), accountMaxPayload-MAX_CONTROL_LINE_SIZE)
+
+	// A larger account limit must not override the server-wide limit.
+	traffic.mu.Lock()
+	traffic.mpay = serverMaxPayload * 2
+	traffic.mu.Unlock()
+	require_Equal(t, n.maxBatchSize(), serverMaxPayload-MAX_CONTROL_LINE_SIZE)
+
+	// Switching the transport account must use the newly selected account's limit.
+	n.Lock()
+	n.t.Reset(owner)
+	n.Unlock()
+	require_Equal(t, n.maxBatchSize(), ownerMaxPayload-MAX_CONTROL_LINE_SIZE)
+}
+
 func TestNRGPeerStateDecodeTruncated(t *testing.T) {
 	ps := &peerState{knownPeers: []string{"12345678", "abcdefgh"}, clusterSize: 2}
 	buf := encodePeerState(ps)
