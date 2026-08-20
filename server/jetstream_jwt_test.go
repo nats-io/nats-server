@@ -1793,6 +1793,122 @@ func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testi
 	require_Equal(t, r3.Consumers, 0)
 }
 
+func TestJetStreamJWTClusteredTieredR3StreamWithMixedReplicaConsumers(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	newUser(t, sysKp)
+
+	accKp, aExpPub := createKey(t)
+	accClaim := jwt.NewAccountClaims(aExpPub)
+	accClaim.Name = "acc"
+	// The R1 tier allows no stream and 2 consumers.
+	accClaim.Limits.JetStreamTieredLimits["R1"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 2, Streams: 0}
+	// The R3 tier allows 1 stream and 3 consumers.
+	accClaim.Limits.JetStreamTieredLimits["R3"] = jwt.JetStreamLimits{DiskStorage: 1100, Consumer: 3, Streams: 1}
+	accJwt := encodeClaim(t, accClaim, aExpPub)
+	accCreds := newUser(t, accKp)
+
+	tmlp := `
+		listen: 127.0.0.1:-1
+		server_name: %s
+		jetstream: {max_mem_store: 256MB, max_file_store: 2GB, store_dir: '%s'}
+		leaf {
+			listen: 127.0.0.1:-1
+		}
+		cluster {
+			name: %s
+			listen: 127.0.0.1:%d
+			routes = [%s]
+		}
+	` + fmt.Sprintf(`
+		operator: %s
+		system_account: %s
+		resolver = MEMORY
+		resolver_preload = {
+			%s : %s
+			%s : %s
+		}
+	`, ojwt, syspub, syspub, sysJwt, aExpPub, accJwt)
+
+	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
+	defer nc.Close()
+
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
+	// Add the one R3 stream the tier allows.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo.*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Add 2 R3 consumers
+	for i := range 2 {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Name:      fmt.Sprintf("R3-%d", i+1),
+			AckPolicy: nats.AckExplicitPolicy,
+			Replicas:  3,
+		})
+		require_NoError(t, err)
+	}
+
+	// Add 1 R1 consumer
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "R1-1",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Add the 3rd R3 consumer (allowed by limits)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "R3-3",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Add the 2nd R1 consumer (allowed by limits)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "R1-2",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Both tiers are full now, so one more consumer of each tier must fail.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "R3-4",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Name:      "R1-3",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
+
+	// Make sure each tier accounts for its own assets.
+	info, err := js.AccountInfo()
+	require_NoError(t, err)
+
+	r1 := info.Tiers["R1"]
+	r3 := info.Tiers["R3"]
+
+	require_Equal(t, r1.Streams, 0)
+	require_Equal(t, r1.Consumers, 2)
+	require_Equal(t, r3.Streams, 1)
+	require_Equal(t, r3.Consumers, 3)
+}
+
 func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	_, syspub := createKey(t)
 	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
