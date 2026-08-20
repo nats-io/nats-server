@@ -196,6 +196,75 @@ type serviceRespEntry struct {
 	msub string
 }
 
+// rrIndexThreshold is the number of outstanding responses sharing a single
+// reply subject above which we build an index for constant time removal.
+// Reply subjects are normally unique per request, so the overwhelming majority
+// of entries stay a one element list and never allocate the index.
+const rrIndexThreshold = 16
+
+// respEntries holds the outstanding response entries for one reply subject.
+// The list is authoritative and unordered; idx, when present, maps a response
+// subject to its position in the list. Once allocated the index is kept for as
+// long as the reply subject has any entry left, since a subject that has been
+// shared once tends to be shared again.
+//
+// This is held by value in importMap.rrMap, so mutating it means writing it
+// back under its key. Add and remove entries through importMap.addRespEntry
+// and importMap.removeRespEntry, which keep that write back in one place,
+// rather than calling the methods below directly.
+type respEntries struct {
+	list []*serviceRespEntry
+	idx  map[string]int
+}
+
+// add appends an entry, building or maintaining the index as needed.
+func (re *respEntries) add(sre *serviceRespEntry) {
+	re.list = append(re.list, sre)
+	if re.idx != nil {
+		re.idx[sre.msub] = len(re.list) - 1
+		return
+	}
+	if len(re.list) > rrIndexThreshold {
+		re.idx = make(map[string]int, len(re.list))
+		for i, e := range re.list {
+			re.idx[e.msub] = i
+		}
+	}
+}
+
+// remove drops the entry for msub, in constant time once indexed.
+func (re *respEntries) remove(msub string) {
+	i := -1
+	if re.idx != nil {
+		var ok bool
+		if i, ok = re.idx[msub]; !ok {
+			return
+		}
+		delete(re.idx, msub)
+	} else {
+		for j, e := range re.list {
+			if e.msub == msub {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			return
+		}
+	}
+	// Swap with the last entry so removal does not shift the whole list.
+	last := len(re.list) - 1
+	if i != last {
+		moved := re.list[last]
+		re.list[i] = moved
+		if re.idx != nil {
+			re.idx[moved.msub] = i
+		}
+	}
+	re.list[last] = nil
+	re.list = re.list[:last]
+}
+
 // ServiceRespType represents the types of service request response types.
 type ServiceRespType uint8
 
@@ -266,7 +335,34 @@ type exportMap struct {
 type importMap struct {
 	streams  []*streamImport
 	services map[string][]*serviceImport
-	rrMap    map[string][]*serviceRespEntry
+	rrMap    map[string]respEntries
+}
+
+// addRespEntry records an outstanding response entry under reply.
+// Lock should be held on the owning account.
+func (im *importMap) addRespEntry(reply string, sre *serviceRespEntry) {
+	if im.rrMap == nil {
+		im.rrMap = make(map[string]respEntries)
+	}
+	re := im.rrMap[reply]
+	re.add(sre)
+	im.rrMap[reply] = re
+}
+
+// removeRespEntry drops the outstanding response entry for msub under reply,
+// dropping the reply subject itself once its last entry goes.
+// Lock should be held on the owning account.
+func (im *importMap) removeRespEntry(reply, msub string) {
+	re, ok := im.rrMap[reply]
+	if !ok {
+		return
+	}
+	re.remove(msub)
+	if len(re.list) == 0 {
+		delete(im.rrMap, reply)
+	} else {
+		im.rrMap[reply] = re
+	}
 }
 
 // NewAccount creates a new unlimited account with the given name.
@@ -1872,12 +1968,7 @@ func (a *Account) removeServiceImport(dstAccName, subject string) {
 // This tracks responses to service requests mappings. This is used for cleanup.
 func (a *Account) addReverseRespMapEntry(acc *Account, reply, from string) {
 	a.mu.Lock()
-	if a.imports.rrMap == nil {
-		a.imports.rrMap = make(map[string][]*serviceRespEntry)
-	}
-	sre := &serviceRespEntry{acc, from}
-	sra := a.imports.rrMap[reply]
-	a.imports.rrMap[reply] = append(sra, sre)
+	a.imports.addRespEntry(reply, &serviceRespEntry{acc, from})
 	a.mu.Unlock()
 }
 
@@ -1957,7 +2048,7 @@ func (a *Account) _checkForReverseEntry(reply string, si *serviceImport, checkIn
 		return
 	}
 
-	if sres := a.imports.rrMap[reply]; sres == nil {
+	if _, ok := a.imports.rrMap[reply]; !ok {
 		a.mu.RUnlock()
 		return
 	}
@@ -1979,22 +2070,18 @@ func (a *Account) _checkForReverseEntry(reply string, si *serviceImport, checkIn
 	// Delete the appropriate entries here based on optional si.
 	a.mu.Lock()
 	// We need a new lookup here because we have released the lock.
-	sres := a.imports.rrMap[reply]
+	var sres []*serviceRespEntry
 	if si == nil {
+		sres = a.imports.rrMap[reply].list
 		delete(a.imports.rrMap, reply)
-	} else if sres != nil {
-		// Find the one we are looking for..
-		for i, sre := range sres {
-			if sre.msub == si.from {
-				sres = append(sres[:i], sres[i+1:]...)
-				break
-			}
-		}
-		if len(sres) > 0 {
-			a.imports.rrMap[si.to] = sres
-		} else {
-			delete(a.imports.rrMap, si.to)
-		}
+	} else {
+		// Constant time once indexed, instead of a linear scan across every
+		// outstanding response that happens to share this reply subject.
+		// This also keys the write back off reply rather than si.to. Every
+		// caller reaches here with si.to equal to reply, so behavior is
+		// unchanged, but the lookup and the write back can no longer drift
+		// apart if that ever stops holding.
+		a.imports.removeRespEntry(reply, si.from)
 	}
 	a.mu.Unlock()
 
