@@ -7432,6 +7432,7 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Wait for some time to let the servers catch each other up. Can't use equality checks here.
 	time.Sleep(500 * time.Millisecond)
