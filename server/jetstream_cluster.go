@@ -9508,7 +9508,8 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
 	}
-	selectedLimits, _, _, apiErr := acc.selectLimits(cfg.replicas(&streamCfg))
+	selectedReplicas := cfg.replicas(&streamCfg)
+	selectedLimits, selectedTier, _, apiErr := acc.selectLimits(selectedReplicas)
 	if apiErr != nil {
 		resp.Error = apiErr
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -9557,26 +9558,30 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// Start with limit on a stream, but if one is defined at the level of the account
 	// and is lower, use that limit.
 	if action == ActionCreate || action == ActionCreateOrUpdate {
-		maxc := sa.Config.MaxConsumers
-		if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
-			maxc = selectedLimits.MaxConsumers
-		}
-		if maxc > 0 {
+		// The stream limit caps every consumer of the stream. The account limit
+		// caps only the consumers of the selected tier, so the two need separate
+		// counts.
+		streamMaxc := sa.Config.MaxConsumers
+		tierMaxc := selectedLimits.MaxConsumers
+		if streamMaxc > 0 || tierMaxc > 0 {
 			// If the consumer name is specified and we think it already exists, then
 			// we're likely updating an existing consumer, so don't count it. Otherwise
 			// we will incorrectly return NewJSMaximumConsumersLimitError for an update.
 			if oname == _EMPTY_ || js.consumerAssignmentOrInflight(acc.Name, stream, oname) == nil {
 				// Don't count direct/sourcing consumers.
-				total := 0
+				var total, tierTotal int
 				for ca := range js.consumerAssignmentsOrInflightSeq(acc.Name, stream) {
 					if ca.unsupported != nil {
 						continue
 					}
 					if ca.Config != nil && !ca.Config.Direct && !ca.Config.Sourcing {
 						total++
+						if selectedTier == _EMPTY_ || isSameTier(ca.Config.replicas(&streamCfg), selectedReplicas) {
+							tierTotal++
+						}
 					}
 				}
-				if total >= maxc {
+				if (streamMaxc > 0 && total >= streamMaxc) || (tierMaxc > 0 && tierTotal >= tierMaxc) {
 					resp.Error = NewJSMaximumConsumersLimitError()
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 					return
