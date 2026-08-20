@@ -1349,6 +1349,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 						acc:           a,
 						srv:           s,
 						cfg:           cfg.ConsumerConfig,
+						direct:        cfg.Direct,
+						sourcing:      cfg.Sourcing,
 						active:        false,
 						stream:        mset.name(),
 						name:          cfg.Name,
