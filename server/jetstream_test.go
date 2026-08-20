@@ -26271,6 +26271,21 @@ func TestJetStreamSourceStreamRecreated(t *testing.T) {
 				} else if n := mset.numConsumers(); n == 0 {
 					return errors.New("no sourcing consumer yet")
 				}
+				// The sourcing stream must also be subscribed on the deliver subject.
+				smset, err := lookupStreamOnLeader("SOURCE")
+				if err != nil {
+					return err
+				}
+				smset.mu.RLock()
+				defer smset.mu.RUnlock()
+				if len(smset.sources) == 0 {
+					return errors.New("no source info yet")
+				}
+				for iname, si := range smset.sources {
+					if si.sip || si.sub == nil {
+						return fmt.Errorf("source %q not wired up yet", iname)
+					}
+				}
 				return nil
 			})
 		}
