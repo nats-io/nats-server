@@ -9894,9 +9894,9 @@ func TestJetStreamDurableProbeShortCircuitsBackoff(t *testing.T) {
 		}
 		t.Run(kind, func(t *testing.T) {
 			// Make every request time out, so we always end up backing off.
-			owt := srcConsumerWaitTime
-			srcConsumerWaitTime = time.Nanosecond
-			defer func() { srcConsumerWaitTime = owt }()
+			owt := srcDurableConsumerWaitTime
+			srcDurableConsumerWaitTime = time.Nanosecond
+			defer func() { srcDurableConsumerWaitTime = owt }()
 
 			s := RunBasicJetStreamServer(t)
 			defer s.Shutdown()

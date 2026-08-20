@@ -3597,6 +3597,10 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 // How long we wait for a response from a consumer create request for a source or mirror.
 var srcConsumerWaitTime = 30 * time.Second
 
+// How long we wait for a response from a consumer reset request for a durable source or
+// mirror. Shorter than a create, since the consumer is only repositioned, not stood up.
+var srcDurableConsumerWaitTime = 5 * time.Second
+
 // Setup our mirror consumer.
 // Lock should be held.
 func (mset *stream) setupMirrorConsumer() error {
@@ -3794,6 +3798,12 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	go func() {
+		// A durable consumer only needs to be reset, so don't wait as long as we would
+		// for a consumer that still has to be created from scratch.
+		timeout := srcConsumerWaitTime
+		if durableDeliverSubject != _EMPTY_ {
+			timeout = srcDurableConsumerWaitTime
+		}
 
 		var retry bool
 		var timedOut bool
@@ -3980,9 +3990,9 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(srcConsumerWaitTime):
+		case <-time.After(timeout):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
+			// We already waited long enough, let's retry now.
 			retry, timedOut = true, true
 		}
 	}()
@@ -4299,6 +4309,12 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	}
 
 	go func() {
+		// A durable consumer only needs to be reset, so don't wait as long as we would
+		// for a consumer that still has to be created from scratch.
+		timeout := srcConsumerWaitTime
+		if durableDeliverSubject != _EMPTY_ {
+			timeout = srcDurableConsumerWaitTime
+		}
 
 		var retry bool
 		var recreate bool
@@ -4488,9 +4504,9 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 				si.sub = sub
 			}
 			mset.mu.Unlock()
-		case <-time.After(srcConsumerWaitTime):
+		case <-time.After(timeout):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
+			// We already waited long enough, let's retry now.
 			retry, timedOut = true, true
 		}
 	}()
