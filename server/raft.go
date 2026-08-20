@@ -263,11 +263,14 @@ type raft struct {
 	quorumPaused bool // Pause replication and quorum participation to prevent log growth during slow applies.
 
 	overrunCount uint64 // Counter of how many times we were overrun, either as follower or as leader.
+
+	fastPathTerm atomic.Uint64 // Term accepting fast path proposals, zero when closed.
 }
 
 type proposedEntry struct {
 	*Entry
 	reply string // Optional, to respond once proposal handled
+	term  uint64 // Raft term in which it was accepted.
 }
 
 // catchupState structure that holds our subscription, and catchup term and index
@@ -926,11 +929,46 @@ func (s *Server) transferRaftLeaders() bool {
 	return didTransfer
 }
 
+// tryFastPathPropose enqueues the given data buffer to the
+// proposal queue, provided that the fast path is open, and that
+// the given term matches the current raft term.
+// Returns true if it was successfully enqueued. False if the
+// caller should fall back to the locking proposal path.
+func (n *raft) tryFastPathPropose(term uint64, data []byte) bool {
+	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader {
+		return false
+	}
+	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_, term))
+	return true
+}
+
+// tryFastPathProposeMulti enqueues the given entries to the
+// proposal queue, provided that the fast path is open, and that
+// the given term matches the current raft term.
+// Returns true if the entries were successfully enqueued. False if the
+// caller should fall back to the locking proposal path.
+func (n *raft) tryFastPathProposeMulti(term uint64, entries []*Entry) bool {
+	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader {
+		return false
+	}
+	_, err := n.prop.pushMany(func(yield func(*proposedEntry) bool) {
+		for _, e := range entries {
+			if !yield(newProposedEntry(e, _EMPTY_, term)) {
+				return
+			}
+		}
+	})
+	return err == nil
+}
+
 // Formal API
 
 // Propose will propose a new entry to the group.
 // This should only be called on the leader.
 func (n *raft) Propose(term uint64, data []byte) error {
+	if n.tryFastPathPropose(term, data) {
+		return nil
+	}
 	n.Lock()
 	defer n.Unlock()
 	return n.proposeLocked(term, data)
@@ -957,13 +995,16 @@ func (n *raft) proposeLocked(term uint64, data []byte) error {
 		n.overrunCount++
 		return errNotLeader
 	}
-	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_))
+	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_, n.term))
 	return nil
 }
 
 // ProposeMulti will propose multiple entries at once.
 // This should only be called on the leader.
 func (n *raft) ProposeMulti(term uint64, entries []*Entry) error {
+	if n.tryFastPathProposeMulti(term, entries) {
+		return nil
+	}
 	n.Lock()
 	defer n.Unlock()
 	// Check state under lock, we might not be leader anymore.
@@ -986,10 +1027,14 @@ func (n *raft) ProposeMulti(term uint64, entries []*Entry) error {
 		n.overrunCount++
 		return errNotLeader
 	}
-	for _, e := range entries {
-		n.prop.push(newProposedEntry(e, _EMPTY_))
-	}
-	return nil
+	_, err := n.prop.pushMany(func(yield func(*proposedEntry) bool) {
+		for _, e := range entries {
+			if !yield(newProposedEntry(e, _EMPTY_, n.term)) {
+				return
+			}
+		}
+	})
+	return err
 }
 
 // isLeaderOverrun returns whether we are overrun and should step down due to continuously increasing
@@ -1045,10 +1090,10 @@ func (n *raft) ProposeAddPeer(peer string) error {
 		n.RUnlock()
 		return errMembershipChange
 	}
-	prop := n.prop
+	prop, term := n.prop, n.term
 	n.RUnlock()
 
-	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_))
+	prop.push(newProposedEntry(newEntry(EntryAddPeer, []byte(peer)), _EMPTY_, term))
 	return nil
 }
 
@@ -1084,10 +1129,10 @@ func (n *raft) ProposeRemovePeer(peer string) error {
 		return errRemoveLastNode
 	}
 
-	prop := n.prop
+	prop, term := n.prop, n.term
 	n.RUnlock()
 
-	prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_))
+	prop.push(newProposedEntry(newEntry(EntryRemovePeer, []byte(peer)), _EMPTY_, term))
 	return nil
 }
 
@@ -2905,16 +2950,16 @@ var pePool = sync.Pool{
 	},
 }
 
-// Create a new proposedEntry.
-func newProposedEntry(entry *Entry, reply string) *proposedEntry {
+// Create a new single proposedEntry tagged with the term in which it was accepted.
+func newProposedEntry(entry *Entry, reply string, term uint64) *proposedEntry {
 	pe := pePool.Get().(*proposedEntry)
-	pe.Entry, pe.reply = entry, reply
+	pe.Entry, pe.reply, pe.term = entry, reply, term
 	return pe
 }
 
 // Will return this proosed entry.
 func (pe *proposedEntry) returnToPool() {
-	pe.Entry, pe.reply = nil, _EMPTY_
+	pe.Entry, pe.reply, pe.term = nil, _EMPTY_, 0
 	pePool.Put(pe)
 }
 
@@ -3168,12 +3213,12 @@ func (n *raft) handleForwardedRemovePeerProposal(sub *subscription, c *client, _
 		n.RUnlock()
 		return
 	}
-	prop := n.prop
+	prop, term := n.prop, n.term
 	n.RUnlock()
 
 	// Need to copy since this is underlying client/route buffer.
 	peer := copyBytes(msg)
-	prop.push(newProposedEntry(newEntry(EntryRemovePeer, peer), reply))
+	prop.push(newProposedEntry(newEntry(EntryRemovePeer, peer), reply, term))
 }
 
 // Called when a peer has forwarded a proposal.
@@ -3195,7 +3240,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		n.RUnlock()
 		return
 	}
-
+	term := n.term
 	if n.isLeaderOverrun() {
 		n.RUnlock()
 		n.Lock()
@@ -3206,7 +3251,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 		if n.State() != Leader || !n.leaderState.Load() {
 			return
 		} else if !n.isLeaderOverrun() {
-			prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
+			prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply, n.term))
 			return
 		}
 		var state StreamState
@@ -3220,7 +3265,7 @@ func (n *raft) handleForwardedProposal(sub *subscription, c *client, _ *Account,
 	// Possible that we could fall through to here from multiple connections but if
 	// one does end up stepping down then the proposal queue gets drained anyway.
 	n.RUnlock()
-	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply))
+	prop.push(newProposedEntry(newEntry(EntryNormal, msg), reply, term))
 }
 
 // Adds peer with the given id to our membership,
@@ -3320,7 +3365,7 @@ func (n *raft) runAsLeader() {
 	}
 
 	n.Lock()
-	psubj, rpsubj := n.psubj, n.rpsubj
+	psubj, rpsubj, term := n.psubj, n.rpsubj, n.term
 
 	// For forwarded proposals, both normal and remove peer proposals.
 	fsub, err := n.subscribe(psubj, n.handleForwardedProposal)
@@ -3368,11 +3413,14 @@ func (n *raft) runAsLeader() {
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
 			const maxBatch = 256 * 1024
-			const maxEntries = 512
+			const maxEntries = 4096 // larger batches showed no benefit
 			var entries []*Entry
 
 			es, sz := n.prop.pop(), 0
 			for _, b := range es {
+				if b.term != term {
+					continue
+				}
 				if b.ChangesMembership() {
 					n.sendMembershipChange(b.Entry)
 					continue
@@ -3395,7 +3443,7 @@ func (n *raft) runAsLeader() {
 			}
 			// Respond to any proposals waiting for a confirmation.
 			for _, pe := range es {
-				if pe.reply != _EMPTY_ {
+				if pe.term == term && pe.reply != _EMPTY_ {
 					n.sendReply(pe.reply, nil)
 				}
 				pe.returnToPool()
@@ -4984,6 +5032,17 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 		n.debug("Not sending append entry, not leader")
 		return errNotLeader
 	}
+
+	// The raft mutex remains held while entries are stored
+	// and sent to followers. If the leader is ready to take
+	// more proposals (no errors, not overrun), allow Propose
+	// and ProposeMulti to enqueue proposals for the current
+	// term without acquiring the raft mutex.
+	if checkLeader && n.werr == nil && !n.isLeaderOverrun() {
+		n.fastPathTerm.Store(n.term)
+		defer n.fastPathTerm.Store(0)
+	}
+
 	ae := n.buildAppendEntry(entries)
 
 	var err error
@@ -5611,6 +5670,8 @@ retry:
 	if pstate == Leader && state != Leader {
 		leadChanged = true
 		n.updateLeadChange(false)
+		// Disable fast path proposals before draining the proposal queue below.
+		n.fastPathTerm.Store(0)
 		// Drain the append entry response and proposal queues.
 		n.resp.drain()
 		n.prop.drain()

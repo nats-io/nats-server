@@ -15,6 +15,7 @@ package server
 
 import (
 	"errors"
+	"iter"
 	"sync"
 	"sync/atomic"
 )
@@ -138,6 +139,53 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 		}
 	}
 	return l + 1, nil
+}
+
+// Add all elements yielded by seq to the queue while holding the queue
+// lock, preventing other producers from pushing interleaving elements.
+// On success, it returns the queue length after adding all yielded elements.
+// If a queue limit is reached, no yielded elements are retained, and it
+// returns the unchanged queue length and the first limit error.
+func (q *ipQueue[T]) pushMany(seq iter.Seq[T]) (int, error) {
+	q.Lock()
+	l, added, start := len(q.elts)-q.pos, 0, len(q.elts)
+	initialSize := q.sz
+	revert := func() {
+		clear(q.elts[start:])
+		q.elts = q.elts[:start]
+		q.sz, added = initialSize, 0
+	}
+	defer func() {
+		q.Unlock()
+		if l == 0 && added > 0 {
+			select {
+			case q.ch <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	for e := range seq {
+		if q.mlen > 0 && l+added == q.mlen {
+			revert()
+			return l, errIPQLenLimitReached
+		}
+		if q.calc != nil {
+			sz := q.calc(e)
+			if q.msz > 0 && q.sz+sz > q.msz {
+				revert()
+				return l, errIPQSizeLimitReached
+			}
+			q.sz += sz
+		}
+		if q.elts == nil {
+			// What comes out of the pool is already of size 0, so no need for [:0].
+			q.elts = *(q.pool.Get().(*[]T))
+		}
+		q.elts = append(q.elts, e)
+		added++
+	}
+	return l + added, nil
 }
 
 // Returns the whole list of elements currently present in the queue,
