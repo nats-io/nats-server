@@ -684,6 +684,12 @@ func (fs *fileStore) unlockAllMsgBlocks() {
 	}
 }
 
+func (fs *fileStore) setCreatedTime(created time.Time) {
+	fs.mu.Lock()
+	fs.cfg.Created = created
+	fs.mu.Unlock()
+}
+
 func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	start := time.Now()
 	defer func() {

@@ -1734,6 +1734,10 @@ func (mset *stream) createdTime() time.Time {
 func (mset *stream) setCreatedTime(created time.Time) {
 	mset.mu.Lock()
 	mset.created = created
+	store := mset.store
+	if fs, ok := store.(*fileStore); ok {
+		fs.setCreatedTime(created)
+	}
 	mset.mu.Unlock()
 }
 
