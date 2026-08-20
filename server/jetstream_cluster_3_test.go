@@ -9886,6 +9886,82 @@ func TestJetStreamClusterDurableStreamMirrorServerManaged(t *testing.T) {
 	}
 }
 
+func TestJetStreamDurableProbeShortCircuitsBackoff(t *testing.T) {
+	for _, mirror := range []bool{false, true} {
+		kind := "Source"
+		if mirror {
+			kind = "Mirror"
+		}
+		t.Run(kind, func(t *testing.T) {
+			// Make every request time out, so we always end up backing off.
+			owt := srcDurableConsumerWaitTime
+			srcDurableConsumerWaitTime = time.Nanosecond
+			defer func() { srcDurableConsumerWaitTime = owt }()
+
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, _ := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "O",
+				Subjects: []string{"foo"},
+				Storage:  FileStorage,
+			})
+			require_NoError(t, err)
+			_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+				Durable:        "C",
+				DeliverSubject: "d",
+				AckPolicy:      AckFlowControl,
+				Heartbeat:      time.Second,
+			}, false)
+			require_NoError(t, err)
+
+			cfg := &StreamConfig{Name: "S", Storage: FileStorage}
+			ss := &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "d"}}
+			if mirror {
+				cfg.Mirror = ss
+			} else {
+				cfg.Sources = []*StreamSource{ss}
+			}
+			_, err = jsStreamCreate(t, nc, cfg)
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("S")
+			require_NoError(t, err)
+
+			// Mirrors and sources share the sourceInfo, and only one of the two is set,
+			// so the rest of the test does not need to care which we are.
+			lastReq := func() time.Time {
+				mset.mu.RLock()
+				defer mset.mu.RUnlock()
+				si := mset.mirror
+				for _, ss := range mset.sources {
+					si = ss
+				}
+				return si.lreq
+			}
+
+			// The consumer is alive and pushing at us, so the probe we put up on each
+			// timeout must keep cutting the backoff short, and must be put back up for
+			// the timeout after that. Without it the next request would be 10s out and
+			// climbing, with it we only wait out the retry throttle.
+			var requests int
+			last := lastReq()
+			checkFor(t, 8*time.Second, 50*time.Millisecond, func() error {
+				if lreq := lastReq(); lreq.After(last) {
+					requests, last = requests+1, lreq
+				}
+				if requests < 2 {
+					return fmt.Errorf("only %d requests, backoff is not being cut short", requests)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamClusterDurableStreamSource(t *testing.T) {
 	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
 		var s *Server

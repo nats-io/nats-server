@@ -2955,7 +2955,7 @@ VALID:
 		}
 		return seq, false, nil
 	}
-	o.resetLocalStartingSeq(seq)
+	recalcPending := o.resetLocalStartingSeq(seq)
 	if o.store != nil {
 		o.store.Reset(seq - 1)
 		// Cleanup messages that lost interest.
@@ -2967,23 +2967,32 @@ VALID:
 				o.mu.Lock()
 			}
 		}
-
-		// Recalculate pending, and re-trigger message delivery.
-		o.streamNumPending()
-		o.signalNewMessages()
-		return seq, true, nil
 	}
-	return seq, false, nil
+	// Recalculate pending, and re-trigger message delivery.
+	if recalcPending {
+		o.streamNumPending()
+	}
+	o.signalNewMessages()
+	return seq, true, nil
 }
 
 // Lock should be held.
-func (o *consumer) resetLocalStartingSeq(seq uint64) {
+func (o *consumer) resetLocalStartingSeq(seq uint64) bool {
+	recalcPending := o.sseq != seq || len(o.pending) > 0
+	// A reset back to the ack floor can be optimized since we know how many were pending.
+	// But only for AckAll/AckFlowControl, since those guarantee no out-of-order acks.
+	if recalcPending && seq == o.asflr+1 && o.isLeader() &&
+		(o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
+		o.npc += int64(len(o.pending))
+		recalcPending = false
+	}
 	o.pending, o.rdc = nil, nil
 	o.rdq = nil
 	o.rdqi.Empty()
 	o.sseq, o.dseq = seq, 1
 	o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	o.ldt, o.lat = time.Time{}, time.Time{}
+	return recalcPending
 }
 
 func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}, term uint64) {

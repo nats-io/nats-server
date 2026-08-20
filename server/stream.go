@@ -3608,6 +3608,10 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 // How long we wait for a response from a consumer create request for a source or mirror.
 var srcConsumerWaitTime = 30 * time.Second
 
+// How long we wait for a response from a consumer reset request for a durable source or
+// mirror. Shorter than a create, since the consumer is only repositioned, not stood up.
+var srcDurableConsumerWaitTime = 5 * time.Second
+
 // Setup our mirror consumer.
 // Lock should be held.
 func (mset *stream) setupMirrorConsumer() error {
@@ -3805,8 +3809,15 @@ func (mset *stream) setupMirrorConsumer() error {
 	}
 
 	go func() {
+		// A durable consumer only needs to be reset, so don't wait as long as we would
+		// for a consumer that still has to be created from scratch.
+		timeout := srcConsumerWaitTime
+		if durableDeliverSubject != _EMPTY_ {
+			timeout = srcDurableConsumerWaitTime
+		}
 
 		var retry bool
+		var timedOut bool
 		defer func() {
 			mset.mu.Lock()
 			// Check that this is still valid and if so, clear the "setup in progress" flag.
@@ -3819,6 +3830,16 @@ func (mset *stream) setupMirrorConsumer() error {
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(mset.mirror)
 					mset.scheduleSetupMirrorConsumerRetry()
+					if timedOut && durableDeliverSubject != _EMPTY_ {
+						mset.startProbeSubscription(mset.mirror, durableDeliverSubject, func() {
+							// Skip if one is already running.
+							if t := mset.mirrorConsumerSetup; t != nil && !t.Stop() {
+								return
+							}
+							mset.mirrorConsumerSetup = nil
+							mset.scheduleSetupMirrorConsumerRetry()
+						})
+					}
 				} else {
 					// Clear on success.
 					mset.mirror.fails = 0
@@ -3980,10 +4001,10 @@ func (mset *stream) setupMirrorConsumer() error {
 			}
 			mset.mu.Unlock()
 			ready.Wait()
-		case <-time.After(srcConsumerWaitTime):
+		case <-time.After(timeout):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
-			retry = true
+			// We already waited long enough, let's retry now.
+			retry, timedOut = true, true
 		}
 	}()
 
@@ -4042,6 +4063,33 @@ func (mset *stream) cancelSourceInfo(si *sourceInfo) {
 		t.Stop()
 		delete(mset.sourceSetupSchedules, si.iname)
 	}
+}
+
+// startProbeSubscription watches a durable consumer's deliver subject after a request for
+// it timed out, and stays up for as long as we are backing off. When we receive a heartbeat
+// or message, we can short-circuit on retrying the reset request.
+// Lock should be held.
+func (mset *stream) startProbeSubscription(si *sourceInfo, deliverSubject string, retry func()) {
+	if si == nil || si.sub != nil || deliverSubject == _EMPTY_ {
+		return
+	}
+	sub, err := mset.subscribeInternal(deliverSubject, func(_ *subscription, _ *client, _ *Account, _, _ string, _ []byte) {
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		// Only short-circuit a backoff we are still in. si.fails is back to zero if we
+		// already did so, and si.sip means a request is in flight that tears us down anyway.
+		if si.sub == nil || si.sip || si.fails == 0 {
+			return
+		}
+		// si.fails only drives the retry backoff, which does not apply to a consumer we
+		// can see is alive, so clear it and ask again now.
+		si.fails = 0
+		retry()
+	})
+	if err != nil {
+		return
+	}
+	si.sub = sub
 }
 
 const sourceConsumerRetryThreshold = 2 * time.Second
@@ -4272,9 +4320,16 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	}
 
 	go func() {
+		// A durable consumer only needs to be reset, so don't wait as long as we would
+		// for a consumer that still has to be created from scratch.
+		timeout := srcConsumerWaitTime
+		if durableDeliverSubject != _EMPTY_ {
+			timeout = srcDurableConsumerWaitTime
+		}
 
 		var retry bool
 		var recreate bool
+		var timedOut bool
 		defer func() {
 			mset.mu.Lock()
 			// Check that this is still valid and if so, clear the "setup in progress" flag.
@@ -4289,6 +4344,19 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 					// Cancel here since we can not do anything with this consumer at this point.
 					mset.cancelSourceInfo(si)
 					mset.setupSourceConsumer(iname, seq, startTime)
+					if timedOut && durableDeliverSubject != _EMPTY_ {
+						mset.startProbeSubscription(si, durableDeliverSubject, func() {
+							// Drop the scheduled retry, we are going again right now.
+							if t, ok := mset.sourceSetupSchedules[iname]; ok {
+								// Skip if one is already running.
+								if !t.Stop() {
+									return
+								}
+								delete(mset.sourceSetupSchedules, iname)
+							}
+							mset.setupSourceConsumer(iname, seq, startTime)
+						})
+					}
 				} else {
 					// Clear on success.
 					si.fails = 0
@@ -4447,10 +4515,10 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 				si.sub = sub
 			}
 			mset.mu.Unlock()
-		case <-time.After(srcConsumerWaitTime):
+		case <-time.After(timeout):
 			mset.unsubscribe(crSub)
-			// We already waited 30 seconds, let's retry now.
-			retry = true
+			// We already waited long enough, let's retry now.
+			retry, timedOut = true, true
 		}
 	}()
 }
