@@ -1096,6 +1096,15 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		fsCfg.SyncAlways = false
 		fsCfg.AsyncFlush = true
 	}
+
+	// If the stream is backed by a Raft log, we can relax
+	// SyncAlways so that we flush and sync whenever a
+	// stream snapshot is created. We can safely recover
+	// from the snapshot and the tail of the log.
+	if fsCfg.SyncAlways && config.Replicas > 1 {
+		fsCfg.SyncOnFlush = true
+	}
+
 	if err := mset.setupStore(fsCfg, recovering || restoring); err != nil {
 		mset.stop(true, false)
 		return nil, NewJSStreamStoreFailedError(err)
@@ -1606,6 +1615,63 @@ func (mset *stream) rebuildDedupe() {
 			mset.lmsgId = msgId
 		}
 	}
+}
+
+// Returns true if the underlying store should use the
+// Raft log for replaying the tail of stream during
+// recovery.
+func (mset *stream) shouldReplayFromWAL() bool {
+	if mset == nil || mset.node == nil || mset.store == nil || mset.store.Type() != FileStorage {
+		return false
+	}
+	fs, ok := mset.store.(*fileStore)
+	if !ok {
+		return false
+	}
+	return fs.syncOnFlush.Load()
+}
+
+// prepareForWALReplay truncates any stream filestore tail past the last
+// sequence of the given snapshot, in preparation of replaying the Raft log.
+func (mset *stream) prepareForWALReplay(snap *StreamReplicatedState) error {
+	if mset == nil || mset.store == nil {
+		return nil
+	}
+
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	var snapSeq, clfs uint64
+	if snap != nil {
+		snapSeq = snap.LastSeq
+		clfs = snap.Failed
+	}
+
+	var state StreamState
+	mset.store.FastState(&state)
+	if state.LastSeq > snapSeq {
+		mset.srv.Debugf("Truncate to snapshot sequence %d", snapSeq)
+		if err := mset.store.Truncate(snapSeq); err != nil {
+			return err
+		}
+		mset.store.FastState(&state)
+	}
+
+	mset.lseq = state.LastSeq
+	mset.setCLFS(clfs)
+
+	mset.ddMu.Lock()
+	if mset.ddtmr != nil {
+		mset.ddtmr.Stop()
+		mset.ddtmr = nil
+	}
+	mset.ddmap = nil
+	mset.ddarr = nil
+	mset.ddindex = 0
+	mset.lmsgId = _EMPTY_
+	mset.rebuildDedupe()
+	mset.ddMu.Unlock()
+	return nil
 }
 
 // Lock should be held.
