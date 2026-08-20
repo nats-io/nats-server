@@ -3759,6 +3759,39 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	require_True(t, n.LastHeardFromPeer("C").IsZero())
 }
 
+func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.state.Store(int32(Leader))
+	require_Equal(t, n.prop.len(), 0)
+
+	// As leader of an unmanaged group, hearing from an unknown peer
+	// proposes adding it to the group automatically.
+	require_NoError(t, n.trackPeer(nats0))
+	require_Equal(t, n.prop.len(), 1)
+	pe, ok := n.prop.popOne()
+	require_True(t, ok)
+	require_Equal(t, pe.Type, EntryAddPeer)
+	require_Equal(t, string(pe.Data), nats0)
+	// Unmanaged groups don't track observed peers.
+	require_Len(t, len(n.observed), 0)
+
+	// As leader of a managed group, the meta layer owns membership.
+	// Hearing from an unknown peer must not propose adding it, only
+	// record it as observed.
+	n.Lock()
+	n.managed = true
+	n.Unlock()
+	require_NoError(t, n.trackPeer(nats1))
+	require_Equal(t, n.prop.len(), 0)
+	require_Len(t, len(n.observed), 1)
+	require_False(t, n.LastHeardFromPeer(nats1).IsZero())
+}
+
 func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
