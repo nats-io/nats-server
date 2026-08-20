@@ -622,6 +622,12 @@ func checkMsgHeadersPreClusteredProposal(
 			}
 			mset.ddMu.Unlock()
 		}
+
+		// Non-sourced messages aren't allowed to have the stream source header.
+		if !sourced && len(sliceHeader(JSStreamSource, hdr)) > 0 {
+			apiErr := NewJSMessageSourceHdrNotAllowedError()
+			return hdr, msg, 0, apiErr, apiErr
+		}
 	}
 
 	// Apply increment for counter.

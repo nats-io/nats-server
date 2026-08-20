@@ -52,6 +52,7 @@ type memStore struct {
 	ttls        *thw.HashWheel
 	scheduling  *MsgScheduling
 	sdm         *SDMMeta
+	sources     map[string]*StreamSourceState
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
@@ -85,6 +86,14 @@ func newMemStoreWithMode(cfg *StreamConfig, recovering bool) (*memStore, error) 
 			return nil, err
 		}
 	}
+	// Seed configured sources (zero sequence == configured but not yet observed),
+	// so storeRawMsg can validate headers against the configured set.
+	if len(cfg.Sources) > 0 {
+		ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			ms.sources[ssi.composeIName()] = &StreamSourceState{}
+		}
+	}
 
 	// Register with access time service.
 	ats.Register()
@@ -113,6 +122,35 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	} else if !cfg.AllowMsgSchedules && ms.scheduling != nil {
 		ms.scheduling = nil
 	}
+
+	// Refresh the source tracking to match the new config.
+	if len(cfg.Sources) == 0 {
+		// If no sources remain, clear.
+		ms.sources = nil
+	} else {
+		// Ensure the map exists even if sources were just added, so storeRawMsg
+		// can validate headers against the configured set.
+		if ms.sources == nil {
+			ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		}
+		sources := make(map[string]struct{}, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			sources[ssi.composeIName()] = struct{}{}
+		}
+		// Remove sources that are tracked but no longer exist.
+		for k := range ms.sources {
+			if _, ok := sources[k]; !ok {
+				delete(ms.sources, k)
+			}
+		}
+		// Seed sources that aren't in the map yet.
+		for k := range sources {
+			if _, ok := ms.sources[k]; !ok {
+				ms.sources[k] = &StreamSourceState{}
+			}
+		}
+	}
+
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
 	ms.enforceBytesLimit()
@@ -330,6 +368,16 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 			scheduler := getMessageScheduler(hdr)
 			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
 				ms.scheduling.update(scheduler, next.UnixNano())
+			}
+		}
+	}
+
+	// Track sources.
+	if len(ms.cfg.Sources) > 0 {
+		if ss := sliceHeader(JSStreamSource, hdr); len(ss) > 0 {
+			_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+			if sss, ok := ms.sources[indexName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
 			}
 		}
 	}
@@ -976,6 +1024,47 @@ func (ms *memStore) subjectsTotalsLocked(filterSubject string) map[string]uint64
 		}
 	})
 	return fst
+}
+
+// ApplySourcesState replaces the tracked sourcing state with the leader's.
+func (ms *memStore) ApplySourcesState(sources map[string]StreamSourceState) {
+	if len(sources) == 0 {
+		return
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.sources == nil {
+		return
+	}
+	clear(ms.sources)
+	for name, ss := range sources {
+		ms.sources[name] = &StreamSourceState{Seq: ss.Seq, Ident: ss.Ident}
+	}
+	for _, ssi := range ms.cfg.Sources {
+		if iname := ssi.composeIName(); ms.sources[iname] == nil {
+			ms.sources[iname] = &StreamSourceState{}
+		}
+	}
+}
+
+// SourcesState return sources keys and their last known state.
+func (ms *memStore) SourcesState() (dst map[string]StreamSourceState) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	if len(ms.sources) == 0 {
+		return nil
+	}
+	// Allocate lazily so that a map containing only seeded (zero) entries returns
+	// nil rather than an empty map; zeros must not leak out of SourcesState.
+	for k, ss := range ms.sources {
+		if ss.Seq > 0 {
+			if dst == nil {
+				dst = make(map[string]StreamSourceState, 1)
+			}
+			dst[k] = *ss
+		}
+	}
+	return dst
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
@@ -2481,9 +2570,12 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (ms *memStore) EncodedStreamState(failed uint64, withSources bool) ([]byte, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+
+	withSources = withSources && len(ms.sources) > 0
+	version := streamStateVersion
 
 	// Quick calculate num deleted.
 	numDeleted := int((ms.state.LastSeq - ms.state.FirstSeq + 1) - ms.state.Msgs)
@@ -2497,17 +2589,49 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		uvarintLen(ms.state.FirstSeq) + uvarintLen(ms.state.LastSeq) +
 		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
+	var numSources uint64
+	var sourcesLen int
+	if withSources {
+		for name, ss := range ms.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			numSources++
+			// Length prefix + source bytes + seq varint +
+			// length prefix + identity bytes.
+			sourcesLen += uvarintLen(uint64(len(name))) + len(name) + uvarintLen(ss.Seq) +
+				uvarintLen(uint64(len(ss.Ident))) + len(ss.Ident)
+		}
+		// Nothing observed yet, then there is nothing to carry.
+		if withSources = numSources > 0; withSources {
+			total += uvarintLen(numSources) + sourcesLen
+			version = streamStateVersionSources
+		}
+	}
 	if numDeleted > 0 {
 		total += ms.dmap.EncodeLen()
 	}
 
 	b := make([]byte, 0, total)
-	b = append(b, streamStateMagic, streamStateVersion)
+	b = append(b, streamStateMagic, version)
 	b = binary.AppendUvarint(b, ms.state.Msgs)
 	b = binary.AppendUvarint(b, ms.state.Bytes)
 	b = binary.AppendUvarint(b, ms.state.FirstSeq)
 	b = binary.AppendUvarint(b, ms.state.LastSeq)
 	b = binary.AppendUvarint(b, failed)
+	if withSources {
+		b = binary.AppendUvarint(b, numSources)
+		for name, ss := range ms.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			b = binary.AppendUvarint(b, uint64(len(name)))
+			b = append(b, name...)
+			b = binary.AppendUvarint(b, ss.Seq)
+			b = binary.AppendUvarint(b, uint64(len(ss.Ident)))
+			b = append(b, ss.Ident...)
+		}
+	}
 	b = binary.AppendUvarint(b, uint64(numDeleted))
 
 	if numDeleted > 0 {

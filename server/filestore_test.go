@@ -10605,7 +10605,13 @@ func TestFileStoreNoPanicOnRecoverTTLWithCorruptBlocks(t *testing.T) {
 		atomic.StoreUint64(&lmb.first.seq, fseq)
 		atomic.StoreUint64(&lmb.last.seq, lseq)
 
-		require_NoError(t, fs.recoverTTLState())
+		// Reset TTL state so recoverPerMessageState actually re-runs TTL
+		// recovery and scans the (corrupted) blocks.
+		fs.mu.Lock()
+		fs.ttls = nil
+		fs.mu.Unlock()
+
+		require_NoError(t, fs.recoverPerMessageState())
 	})
 }
 
@@ -11228,6 +11234,11 @@ func TestFileStoreMessageScheduleRecovered(t *testing.T) {
 		require_Equal(t, ss.FirstSeq, 1)
 		require_Equal(t, ss.LastSeq, 1)
 		require_Equal(t, ss.Msgs, 1)
+
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		require_True(t, fs.scheduling != nil)
+		require_Len(t, len(fs.scheduling.schedules), 1)
 	})
 }
 
@@ -11298,6 +11309,346 @@ func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 			require_Error(t, err, test.err)
 		})
 	}
+}
+
+func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
+	// Build a valid header that claims a given number of source entries.
+	header := func(count uint64) []byte {
+		b := make([]byte, sourcesHeaderLen)
+		b[0] = 1                                    // Magic version
+		binary.LittleEndian.PutUint64(b[1:], count) // Entry count
+		binary.LittleEndian.PutUint64(b[9:], 0)     // High sequence stamp
+		return b
+	}
+	uvi := func(v uint64) []byte {
+		return binary.AppendUvarint(nil, v)
+	}
+
+	for _, test := range []struct {
+		title string
+		buf   []byte
+		err   error
+	}{
+		{title: "ShortHeader", buf: make([]byte, sourcesHeaderLen-1), err: io.ErrShortBuffer},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: errSourcesInvalidVersion},
+		// Claims one entry but the buffer ends right after the header.
+		{title: "TruncatedAtSourceLen", buf: header(1), err: io.ErrUnexpectedEOF},
+		// Has the source length but the source bytes are missing.
+		{title: "TruncatedSource", buf: append(header(1), uvi(5)...), err: io.ErrUnexpectedEOF},
+		// Has the source but the seq varint is missing.
+		{title: "TruncatedSeq", buf: append(append(header(1), uvi(3)...), 'f', 'o', 'o'), err: io.ErrUnexpectedEOF},
+		// Has the source and seq but the identity-length field is missing.
+		{title: "TruncatedAtIdentLen", buf: append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), err: io.ErrUnexpectedEOF},
+		// Has the identity length but the identity bytes are missing.
+		{title: "TruncatedIdent", buf: append(append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), uvi(5)...), err: io.ErrUnexpectedEOF},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs := &fileStore{}
+			_, err := fs.decodeSourcesState(test.buf)
+			require_Error(t, err, test.err)
+		})
+	}
+}
+
+func TestFileStoreSourcesRecovery(t *testing.T) {
+	test := func(t *testing.T, remove bool) {
+		dir := t.TempDir()
+		cfg := StreamConfig{
+			Name:     "SOURCE",
+			Subjects: []string{"foo.*"},
+			Storage:  FileStorage,
+			Sources:  []*StreamSource{{Name: "ORIGIN"}},
+		}
+		fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 256}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+
+		// Store messages carrying a stream-source header so the sources map is populated.
+		// Header format matches genSourceHeader: "<iName> <seq> <source> <dest> <orig> <ident>".
+		const N = 10
+		const ident = "IDENTITY1"
+		for i := 1; i <= N; i++ {
+			hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN %d > > foo.bar %s", i, ident))
+			_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+			require_NoError(t, err)
+		}
+		require_True(t, fs.numMsgBlocks() >= 2)
+
+		// Sanity check the state before restart, last source seq should win.
+		state := fs.SourcesState()
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, N)
+		require_Equal(t, state["ORIGIN > >"].Ident, ident)
+		require_NoError(t, fs.Stop())
+
+		if remove {
+			// Delete the persisted sources state.
+			require_NoError(t, os.Remove(filepath.Join(dir, sourcesStreamStateFile)))
+		}
+
+		fs, err = newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		state = fs.SourcesState()
+		if remove {
+			// Should not recover the sources state if it didn't exist at least partially.
+			require_True(t, state == nil)
+		} else {
+			// Sequence and identity must both survive the restart, otherwise
+			// stream recreation can't be detected.
+			require_NotNil(t, state)
+			require_Equal(t, state["ORIGIN > >"].Seq, N)
+			require_Equal(t, state["ORIGIN > >"].Ident, ident)
+		}
+	}
+
+	t.Run("Normal", func(t *testing.T) { test(t, false) })
+	t.Run("Remove", func(t *testing.T) { test(t, true) })
+}
+
+func TestFileStoreSourcesStaleConfig(t *testing.T) {
+	// Dropping one of several sources must prune its decoded key on recover.
+	t.Run("PruneKeyOnRecover", func(t *testing.T) {
+		dir := t.TempDir()
+		fcfg := FileStoreConfig{StoreDir: dir}
+		cfg := StreamConfig{
+			Name:     "SOURCE",
+			Subjects: []string{"foo.*"},
+			Storage:  FileStorage,
+			Sources:  []*StreamSource{{Name: "ORIGIN1"}, {Name: "ORIGIN2"}},
+		}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+
+		h1 := genHeader(nil, JSStreamSource, "ORIGIN1 1 > > foo.a")
+		_, _, err = fs.StoreMsg("foo.a", h1, nil, 0)
+		require_NoError(t, err)
+		h2 := genHeader(nil, JSStreamSource, "ORIGIN2 1 > > foo.b")
+		_, _, err = fs.StoreMsg("foo.b", h2, nil, 0)
+		require_NoError(t, err)
+
+		state := fs.SourcesState()
+		require_Len(t, len(state), 2)
+
+		// Persist the sources state so the recover path takes the decode (not linear-scan)
+		// branch, which is the one that can carry stale keys.
+		require_NoError(t, fs.writeFullState())
+		require_NoError(t, fs.Stop())
+		_, err = os.Stat(filepath.Join(dir, sourcesStreamStateFile))
+		require_NoError(t, err)
+
+		// Reopen with ORIGIN2 removed from the config. Its decoded key must be pruned.
+		cfg.Sources = []*StreamSource{{Name: "ORIGIN1"}}
+		fs, err = newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		state = fs.SourcesState()
+		require_Len(t, len(state), 1)
+		_, ok := state["ORIGIN1 > >"]
+		require_True(t, ok)
+		_, ok = state["ORIGIN2 > >"]
+		require_False(t, ok)
+	})
+
+	// An index with nothing to record, or whose sources are all gone, must
+	// not linger on disk.
+	t.Run("NoStaleIndexOnDisk", func(t *testing.T) {
+		dir := t.TempDir()
+		fcfg := FileStoreConfig{StoreDir: dir}
+		cfg := StreamConfig{
+			Name:     "SOURCE",
+			Subjects: []string{"foo.*"},
+			Storage:  FileStorage,
+			Sources:  []*StreamSource{{Name: "ORIGIN"}},
+		}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		fn := filepath.Join(dir, sourcesStreamStateFile)
+
+		// Sources are configured but nothing has been observed yet, so the map only
+		// holds seeded (zero) entries. Persisting state must not write an empty index.
+		require_True(t, fs.SourcesState() == nil)
+		require_NoError(t, fs.writeFullState())
+		_, err = os.Stat(fn)
+		require_True(t, os.IsNotExist(err))
+
+		// Observe a source, the index should now be written.
+		hdr := genHeader(nil, JSStreamSource, "ORIGIN 1 > > foo.bar")
+		_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+		require_NoError(t, err)
+		require_NoError(t, fs.writeFullState())
+		_, err = os.Stat(fn)
+		require_NoError(t, err)
+
+		// Drop the sources from the config. recoverPerMessageState (via UpdateConfig)
+		// should prune the now-stale index from disk.
+		ucfg := cfg
+		ucfg.Sources = nil
+		require_NoError(t, fs.UpdateConfig(&ucfg))
+		_, err = os.Stat(fn)
+		require_True(t, os.IsNotExist(err))
+	})
+}
+
+func TestFileStoreSourcesRecoveredFromOutdatedState(t *testing.T) {
+	srcs := []*StreamSource{
+		{Name: "ORIGIN1", FilterSubject: "s1.>"},
+		{Name: "ORIGIN2", FilterSubject: "s2.>"},
+		{Name: "ORIGIN3", FilterSubject: "s3.>"},
+	}
+
+	test := func(t *testing.T, withTTL bool) {
+		dir := t.TempDir()
+		fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 256}
+		cfg := StreamConfig{
+			Name:        "SOURCE",
+			Subjects:    []string{">"},
+			Storage:     FileStorage,
+			Sources:     srcs,
+			AllowMsgTTL: withTTL,
+		}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+
+		// Store an interleaved batch from each source, then persist the sources state.
+		store := func(round int) {
+			for i, src := range srcs {
+				subj := fmt.Sprintf("s%d.x", i+1)
+				hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("%s %d %s > %s", src.Name, round, src.FilterSubject, subj))
+				_, _, err = fs.StoreMsg(subj, hdr, nil, 0)
+				require_NoError(t, err)
+			}
+		}
+		const firstBatch = 15
+		for r := 1; r <= firstBatch; r++ {
+			store(r)
+		}
+		require_NoError(t, fs.writeFullState())
+
+		// Snapshot the now-current (but soon-to-be-outdated) sources state file.
+		fn := filepath.Join(dir, sourcesStreamStateFile)
+		outdated, err := os.ReadFile(fn)
+		require_NoError(t, err)
+
+		// Store a second batch with higher source sequences, then stop.
+		const lastSeq = 30
+		for r := firstBatch + 1; r <= lastSeq; r++ {
+			store(r)
+		}
+		require_True(t, fs.numMsgBlocks() >= 2)
+		require_NoError(t, fs.Stop())
+
+		// Roll the sources state file back to the outdated snapshot, simulating messages
+		// stored after the last flush of the index.
+		require_NoError(t, os.WriteFile(fn, outdated, defaultFilePerms))
+
+		fs, err = newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Each source should be recovered to its latest sequence, not the stale one.
+		state := fs.SourcesState()
+		require_Len(t, len(state), len(srcs))
+		for _, src := range srcs {
+			require_Equal(t, state[src.composeIName()].Seq, lastSeq)
+		}
+	}
+
+	t.Run("BackwardScan", func(t *testing.T) { test(t, false) })
+	t.Run("ForwardScanWithTTL", func(t *testing.T) { test(t, true) })
+}
+
+func TestFileStoreSourcesRecoveredOneMessageAfterFlush(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+
+	store := func(sseq uint64) {
+		hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN %d > > foo.bar", sseq))
+		_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+		require_NoError(t, err)
+	}
+
+	const flushed = 5
+	for i := uint64(1); i <= flushed; i++ {
+		store(i)
+	}
+	require_NoError(t, fs.writeFullState())
+
+	// Snapshot the index as it is right after the flush.
+	fn := filepath.Join(dir, sourcesStreamStateFile)
+	outdated, err := os.ReadFile(fn)
+	require_NoError(t, err)
+
+	// Exactly one message lands after that flush, which is the boundary the
+	// stamp has to get right. If it claims to cover this message the recovery
+	// scan skips it and the source silently resumes from the wrong sequence.
+	const last = flushed + 1
+	store(last)
+	require_NoError(t, fs.Stop())
+	require_NoError(t, os.WriteFile(fn, outdated, defaultFilePerms))
+
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, last)
+}
+
+func TestFileStoreSourcesRecoveredFromPre210Header(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+
+	// A modern header first, purely so an index exists on disk and recovery takes
+	// the scan path rather than bailing out.
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN 1 > > foo.bar")
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.writeFullState())
+
+	fn := filepath.Join(dir, sourcesStreamStateFile)
+	outdated, err := os.ReadFile(fn)
+	require_NoError(t, err)
+
+	// The message that lands after the flush carries a pre-2.10 header, which has
+	// no index name. Only the stream-name fallback in the scan can match it.
+	const last = 9
+	hdr = genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN %d", last))
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+	require_NoError(t, os.WriteFile(fn, outdated, defaultFilePerms))
+
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, last)
 }
 
 func TestFileStoreCorruptedNonOrderedSequences(t *testing.T) {
@@ -15496,4 +15847,87 @@ func Benchmark_FileStoreDeleteMapExists(b *testing.B) {
 		v.Exists(uint64(i%numMsgs) + 1)
 	}
 	b.StopTimer()
+}
+
+func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
+	const iname = "ORIGIN1 > >"
+
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{">"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN1"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN1 5 > > foo.a IDENT1")
+	for range 3 {
+		_, _, err = fs.StoreMsg("foo.a", hdr, nil, 0)
+		require_NoError(t, err)
+	}
+	// Interior delete, so the encoding also carries delete blocks, which are read
+	// to the end of the buffer and so must stay last.
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+
+	// Without the sources, the encoding stays on the version every server accepts.
+	buf, err := fs.EncodedStreamState(7, false)
+	require_NoError(t, err)
+	require_Equal(t, buf[1], streamStateVersion)
+	require_True(t, IsEncodedStreamState(buf))
+
+	ss, err := DecodeStreamState(buf)
+	require_NoError(t, err)
+	require_Equal(t, len(ss.Sources), 0)
+	require_Equal(t, ss.Failed, 7)
+	require_Len(t, len(ss.Deleted), 1)
+
+	// With the sources, the version is bumped and the state round-trips.
+	buf, err = fs.EncodedStreamState(7, true)
+	require_NoError(t, err)
+	require_Equal(t, buf[1], streamStateVersionSources)
+	require_True(t, IsEncodedStreamState(buf))
+
+	ss, err = DecodeStreamState(buf)
+	require_NoError(t, err)
+	require_Equal(t, ss.Failed, 7)
+	require_Len(t, len(ss.Deleted), 1)
+	require_Len(t, len(ss.Sources), 1)
+	require_Equal(t, ss.Sources[iname].Seq, 5)
+	require_Equal(t, ss.Sources[iname].Ident, "IDENT1")
+
+	fs2, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+	require_NoError(t, err)
+	defer fs2.Stop()
+
+	fs2.ApplySourcesState(ss.Sources)
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 5)
+	require_Equal(t, fs2.SourcesState()[iname].Ident, "IDENT1")
+
+	// The leader's view replaces what we had, it is authoritative even when that
+	// means moving an entry back.
+	fs2.ApplySourcesState(map[string]StreamSourceState{iname: {Seq: 2, Ident: "OLD"}})
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 2)
+	require_Equal(t, fs2.SourcesState()[iname].Ident, "OLD")
+
+	// An empty set says nothing, so it leaves what we have alone.
+	fs2.ApplySourcesState(nil)
+	require_Equal(t, fs2.SourcesState()[iname].Seq, 2)
+
+	// Anything the leader no longer tracks is dropped, but a configured source
+	// stays present as not yet observed.
+	fs2.ApplySourcesState(map[string]StreamSourceState{"OTHER > >": {Seq: 9}})
+	require_Equal(t, fs2.SourcesState()["OTHER > >"].Seq, 9)
+	_, ok := fs2.SourcesState()[iname]
+	require_False(t, ok)
+	fs2.mu.RLock()
+	seeded := fs2.sources[iname]
+	fs2.mu.RUnlock()
+	require_NotNil(t, seeded)
+	require_Equal(t, seeded.Seq, 0)
 }

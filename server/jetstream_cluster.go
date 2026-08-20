@@ -11757,7 +11757,10 @@ func (mset *stream) stateSnapshot() []byte {
 func (mset *stream) stateSnapshotLocked() []byte {
 	// Decide if we can support the new style of stream snapshots.
 	if mset.supportsBinarySnapshotLocked() {
-		snap, err := mset.store.EncodedStreamState(mset.getCLFS())
+		// Only include the sourcing state once enabled, a peer that doesn't accept
+		// the encoding rejects the whole snapshot.
+		withSources := mset.srv.getOpts().getFeatureFlag(FeatureFlagJsSnapshotSources)
+		snap, err := mset.store.EncodedStreamState(mset.getCLFS(), withSources)
 		if err != nil {
 			return nil
 		}
@@ -12120,6 +12123,9 @@ var (
 
 // Process a stream snapshot.
 func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (e error) {
+	// Adopt the leader's sourcing state, we can't always derive it locally.
+	mset.store.ApplySourcesState(snap.Sources)
+
 	// Update any deletes, etc.
 	if err := mset.processSnapshotDeletes(snap); err != nil {
 		return err
@@ -12146,6 +12152,10 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 			n.ResumeApply()
 		}
 	}()
+
+	// Adopt the leader's sourcing state, we can't always derive it locally.
+	// Do it at the very end, so we catch up messages first (if any) and apply the snapshot state after.
+	defer mset.store.ApplySourcesState(snap.Sources)
 
 	// Bug that would cause this to be empty on stream update.
 	if subject == _EMPTY_ {

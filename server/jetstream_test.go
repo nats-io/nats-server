@@ -10817,15 +10817,14 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	// fake a message that would have been sourced with pre 2.10
-	msg := nats.NewMsg("A.A")
+	// Fake a message that would have been sourced with pre 2.10, as if it
+	// already existed in B's store from an old server.
+	mset, err := s.globalAccount().lookupStream("B")
+	require_NoError(t, err)
 	// pre 2.10 header format just stream name and sequence number
-	msg.Header.Set(JSStreamSource, "A 1")
-	msg.Data = []byte("OK")
-
-	if _, err := js.PublishMsg(msg); err != nil {
-		t.Fatalf("Unexpected publish error: %v", err)
-	}
+	srcHdr := genHeader(nil, JSStreamSource, "A 1")
+	_, _, err = mset.store.StoreMsg("A.A", srcHdr, []byte("OK"), 0)
+	require_NoError(t, err)
 
 	bConfig.Sources = []*nats.StreamSource{{Name: "A"}}
 	if _, err := js.UpdateStream(&bConfig); err != nil {
@@ -10840,6 +10839,21 @@ func TestJetStreamSourceBasics(t *testing.T) {
 		}
 		return nil
 	})
+
+	// The pre 2.10 sourced message must be honored: B should hold the faked
+	// A.A plus only the newly sourced A.B, not a re-sourced copy of A.A.
+	if m, err := js.GetMsg("B", 1); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if m.Subject != "A.A" {
+		t.Fatalf("Expected subject 'A.A' and got %s", m.Subject)
+	} else if shdr := m.Header.Get(JSStreamSource); shdr != "A 1" {
+		t.Fatalf("Expected pre 2.10 source header 'A 1', got %q", shdr)
+	}
+	if m, err := js.GetMsg("B", 2); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	} else if m.Subject != "A.B" {
+		t.Fatalf("Expected subject 'A.B' and got %s", m.Subject)
+	}
 }
 
 func TestJetStreamSourceWorkingQueueWithLimit(t *testing.T) {
@@ -25038,6 +25052,205 @@ func TestJetStreamDurableStreamSourcesWithUniqueConsumerNames(t *testing.T) {
 	})
 }
 
+func TestJetStreamSourcesState(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+		port := s.getOpts().Port
+		sd := s.JetStreamConfig().StoreDir
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ORIGIN",
+			Storage:  storage,
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+
+		cfg := &nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+		store := mset.Store()
+		state := store.SourcesState()
+		require_True(t, state == nil)
+
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if msgs := store.State().Msgs; msgs != 1 {
+				return fmt.Errorf("expected 1 message, got %d", msgs)
+			}
+			return nil
+		})
+		state = store.SourcesState()
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, 1)
+
+		if storage == nats.FileStorage {
+			s.Shutdown()
+			s = RunJetStreamServerOnPort(port, sd)
+			defer s.Shutdown()
+
+			nc.Close()
+			nc, js = jsClientConnect(t, s)
+			defer nc.Close()
+
+			mset, err = s.globalAccount().lookupStream("SOURCE")
+			require_NoError(t, err)
+			store = mset.Store()
+			state = store.SourcesState()
+			require_NotNil(t, state)
+			require_Equal(t, state["ORIGIN > >"].Seq, 1)
+		}
+
+		cfg.Sources = nil
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		state = store.SourcesState()
+		require_True(t, state == nil)
+	}
+
+	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
+	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
+}
+
+func TestJetStreamSourcesStateStartingSequence(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType, purge bool) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "ORIGIN",
+			Storage:  storage,
+			Subjects: []string{"foo"},
+		})
+		require_NoError(t, err)
+
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+		})
+		require_NoError(t, err)
+
+		const total = 5
+		for range total {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+		store := mset.Store()
+
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if msgs := store.State().Msgs; msgs != total {
+				return fmt.Errorf("expected %d messages, got %d", total, msgs)
+			}
+			return nil
+		})
+
+		origin, err := s.globalAccount().lookupStream("ORIGIN")
+		require_NoError(t, err)
+		ident := origin.identity()
+		require_NotEqual(t, ident, _EMPTY_)
+
+		const iname = "ORIGIN > >"
+		// The source's identity must be tracked alongside its sequence.
+		require_Equal(t, store.SourcesState()[iname].Seq, total)
+		require_Equal(t, store.SourcesState()[iname].Ident, ident)
+
+		if purge {
+			// Purge all destination messages. The tracked source state must survive
+			// this so we can resume rather than start over.
+			_, err = mset.purge(nil)
+			require_NoError(t, err)
+			require_Equal(t, store.State().Msgs, 0)
+			require_Equal(t, store.SourcesState()[iname].Seq, total)
+			require_Equal(t, store.SourcesState()[iname].Ident, ident)
+		}
+
+		// Both sequence and identity must survive the recovery path that runs on
+		// restart and on leader election. Without the identity a recreated origin
+		// goes undetected, and we would resume from a sequence that means nothing
+		// in the new stream.
+		mset.mu.Lock()
+		mset.startingSequenceForSources()
+		si := mset.sources[iname]
+		mset.mu.Unlock()
+
+		require_NotNil(t, si)
+		require_Equal(t, si.sseq, total)
+		require_Equal(t, si.ident, ident)
+	}
+
+	t.Run("File", func(t *testing.T) {
+		t.Run("Fresh", func(t *testing.T) { test(t, nats.FileStorage, false) })
+		t.Run("AfterPurge", func(t *testing.T) { test(t, nats.FileStorage, true) })
+	})
+	t.Run("Memory", func(t *testing.T) {
+		t.Run("Fresh", func(t *testing.T) { test(t, nats.MemoryStorage, false) })
+		t.Run("AfterPurge", func(t *testing.T) { test(t, nats.MemoryStorage, true) })
+	})
+}
+
+func TestJetStreamSourcesStateAddedSourceUsesAdoptedState(t *testing.T) {
+	test := func(t *testing.T, storage nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		cfg := &nats.StreamConfig{
+			Name:    "SOURCE",
+			Storage: storage,
+			Sources: []*nats.StreamSource{{Name: "ORIGIN1"}},
+		}
+		_, err := js.AddStream(cfg)
+		require_NoError(t, err)
+
+		mset, err := s.globalAccount().lookupStream("SOURCE")
+		require_NoError(t, err)
+
+		// Adopt a leader's sourcing state that already covers ORIGIN2, which this
+		// stream's own config doesn't have yet. That is what a replica is left
+		// holding when it installs a snapshot before the meta layer adds the
+		// source, and the store has no messages to derive the position from.
+		mset.store.ApplySourcesState(map[string]StreamSourceState{
+			"ORIGIN2 > >": {Seq: 7, Ident: "IDENT2"},
+		})
+
+		// Adding the source has to reuse that state rather than start over.
+		cfg.Sources = append(cfg.Sources, &nats.StreamSource{Name: "ORIGIN2"})
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		mset.mu.RLock()
+		si := mset.sources["ORIGIN2 > >"]
+		mset.mu.RUnlock()
+
+		require_NotNil(t, si)
+		require_Equal(t, si.sseq, 7)
+		require_Equal(t, si.ident, "IDENT2")
+	}
+
+	t.Run("File", func(t *testing.T) { test(t, nats.FileStorage) })
+	t.Run("Memory", func(t *testing.T) { test(t, nats.MemoryStorage) })
+}
+
 func TestJetStreamClusterInfoDoesNotBlockJSMutex(t *testing.T) {
 	// Use a real raft node with its RWMutex held to simulate a Raft
 	// runloop blocked during vote processing, e.g. by dios. clusterInfo
@@ -26328,4 +26541,36 @@ func TestJetStreamStreamRecoverReplicasNotSupported(t *testing.T) {
 	require_Error(t, err, nats.ErrStreamNotFound)
 	_, err = s.GlobalAccount().lookupStream("TEST")
 	require_Error(t, err, NewJSStreamNotFoundError())
+}
+
+func TestJetStreamSourceHeaderNotAllowedIfNotSourced(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		var s *Server
+		if replicas == 1 {
+			s = RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+		} else {
+			c := createJetStreamClusterExplicit(t, "R3S", replicas)
+			defer c.shutdown()
+			s = c.randomServer()
+		}
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		m := nats.NewMsg("foo")
+		m.Header.Set("Nats-Stream-Source", "bar")
+		_, err = js.PublishMsg(m)
+		require_Error(t, err, NewJSMessageSourceHdrNotAllowedError())
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
