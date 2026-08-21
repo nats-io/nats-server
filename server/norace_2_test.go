@@ -1044,7 +1044,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	// Create 50k messages randomly from 1-100
 	for i := 0; i < 50_000; i++ {
 		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
-		js.PublishAsync(subj, msg)
+		publishAsync(t, js, subj, msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -1053,7 +1053,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	}
 	// Now create a large gap.
 	for i := 0; i < 100_000; i++ {
-		js.PublishAsync("foo.2", msg)
+		publishAsync(t, js, "foo.2", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -1063,7 +1063,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	// Do 50k random again at end.
 	for i := 0; i < 50_000; i++ {
 		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
-		js.PublishAsync(subj, msg)
+		publishAsync(t, js, subj, msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -2453,10 +2453,10 @@ func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
 	// via the max msgs per limit.
 	for i := 0; i < 500_000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		js.PublishAsync(subj, nil)
+		publishAsync(t, js, subj, nil)
 		// Create sequence holes every 100k.
 		if i%100_000 == 0 {
-			js.PublishAsync(subj, nil)
+			publishAsync(t, js, subj, nil)
 		}
 	}
 	select {
@@ -2678,11 +2678,11 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
 	// Load up a bunch of messages for three different subjects.
 	msg := bytes.Repeat([]byte("Z"), 4096)
 	for i := 0; i < 100_000; i++ {
-		js.PublishAsync("foo.foo", msg)
+		publishAsync(t, js, "foo.foo", msg)
 	}
 	for i := 0; i < 5_000; i++ {
-		js.PublishAsync("foo.bar", msg)
-		js.PublishAsync("foo.baz", msg)
+		publishAsync(t, js, "foo.bar", msg)
+		publishAsync(t, js, "foo.baz", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -2800,11 +2800,11 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 	// Load up a bunch of messages for three different subjects.
 	msg := bytes.Repeat([]byte("Z"), 4096)
 	for i := 0; i < 90_000; i++ {
-		js.PublishAsync("foo.foo", msg)
+		publishAsync(t, js, "foo.foo", msg)
 	}
 	for i := 0; i < 5_000; i++ {
-		js.PublishAsync("foo.bar", msg)
-		js.PublishAsync("foo.baz", msg)
+		publishAsync(t, js, "foo.bar", msg)
+		publishAsync(t, js, "foo.baz", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():

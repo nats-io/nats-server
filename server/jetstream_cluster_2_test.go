@@ -7371,7 +7371,7 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	// Now add in 10,000 messages.
 	num := 10_000
 	for i := 0; i < num; i++ {
-		js.PublishAsync("foo", []byte("SNAP"))
+		publishAsync(t, js, "foo", []byte("SNAP"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
