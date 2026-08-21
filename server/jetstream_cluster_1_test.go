@@ -11900,6 +11900,78 @@ func TestJetStreamClusterPrepareForWALReplayDoesNotAdvanceStore(t *testing.T) {
 	require_Equal(t, mset.lastSeq(), 1)
 }
 
+func TestJetStreamClusterWALReplayPreservesFirstSeq(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterSyncAlwaysTempl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	const firstSeq = 1000
+	si, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+		Replicas: 3,
+		FirstSeq: firstSeq,
+	})
+	require_NoError(t, err)
+	require_Equal(t, si.State.FirstSeq, firstSeq)
+	require_Equal(t, si.State.LastSeq, firstSeq-1)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Restart a follower without allowing server shutdown to create its first
+	// snapshot. Its filestore must therefore be recovered from the complete WAL.
+	restartWithoutSnapshot := func(rs *Server) *Server {
+		t.Helper()
+		mset, err := rs.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn := mset.raftNode()
+		require_True(t, mset.shouldReplayFromWAL())
+		_, _, err = rn.LoadLastSnapshot()
+		require_Error(t, err, errNoSnapAvailable)
+
+		rn.Stop()
+		rn.WaitForStop()
+		rs.Shutdown()
+		rs.WaitForShutdown()
+		rs = c.restartServer(rs)
+		c.waitOnStreamCurrent(rs, globalAccountName, "TEST")
+		return rs
+	}
+
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	require_NotNil(t, rs)
+	rs = restartWithoutSnapshot(rs)
+
+	// An empty stream has no WAL entry recording FirstSeq, so make sure recovery preserves it.
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_Equal(t, mset.state().Msgs, 0)
+	require_Equal(t, mset.state().FirstSeq, firstSeq)
+	require_Equal(t, mset.state().LastSeq, firstSeq-1)
+
+	// Repeat with an existing publish to exercise replay at FirstSeq as well.
+	pa, err := js.Publish("foo", []byte("one"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, firstSeq)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	rs = restartWithoutSnapshot(rs)
+	mset, err = rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_Equal(t, mset.state().Msgs, 1)
+	require_Equal(t, mset.state().FirstSeq, firstSeq)
+	require_Equal(t, mset.state().LastSeq, firstSeq)
+
+	// The next publish must continue from the configured first sequence.
+	pa, err = js.Publish("foo", []byte("two"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, firstSeq+1)
+}
+
 type snapshotlessRaftNode struct {
 	RaftNode
 	id string
