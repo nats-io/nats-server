@@ -4112,7 +4112,7 @@ func (n *raft) trackPeer(peer string) error {
 				n.observed = nil
 			}
 		}
-	} else if n.managed && !isRemoved {
+	} else if n.managed {
 		// For managed groups the meta layer can assign peers before they've been
 		// added to our peer set. Track when we hear from them, so the upper layer
 		// can prefer adding peers that are demonstrably up.

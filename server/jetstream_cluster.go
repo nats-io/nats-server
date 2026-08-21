@@ -4559,6 +4559,13 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			js.mu.RUnlock()
 			return mstat(MigrationStatusMeta, "desired state changed, reassessing")
 		}
+		// Peers that were already in the group before this desired state began. They have a
+		// copy of the stream data, which is what lets us shed the surplus before the peers
+		// we're moving to have caught up.
+		var originPeers []string
+		if o := sa.Group.Desired.Origin; o != nil {
+			originPeers = copyStrings(o.Peers)
+		}
 		var blockedBy string
 		for name, c := range sa.consumers {
 			if c.unsupported != nil {
@@ -4586,29 +4593,51 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		// Remove old peers one at a time, the leader selected last.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
 
-		// Only remove a peer if the group left after the removal retains a
-		// store-current majority; otherwise wait for catchups to complete.
-		var currentCount int
+		// Tally up what we can rely on before removing a peer.
+		// - currentDesired: desired peers that are current and caught up. We can only
+		//   transfer leadership to a peer that's current, so it's what we can step down to.
+		// - caughtUpDesired: desired peers that are caught up, they might not all be
+		//   current. We use this where we only need them to have the data.
+		// - copiesAfterRemoval: whether we have sufficient copies of the data after
+		//   having removed the peer, so it's tallied without it.
 		var currentDesired []string
+		var caughtUpDesired, copiesAfterRemoval int
 		for _, p := range actual {
-			if p.Current && p.Lag == 0 && !slices.Contains(catchups, p.ID) {
-				if p.ID != remove {
-					currentCount++
-				}
-				if slices.Contains(desiredPeers, p.ID) {
-					currentDesired = append(currentDesired, p.ID)
-				}
+			inCatchup := slices.Contains(catchups, p.ID)
+			isDesired := slices.Contains(desiredPeers, p.ID)
+			if isDesired && !inCatchup {
+				caughtUpDesired++
+			}
+			if p.Current && !inCatchup && isDesired {
+				currentDesired = append(currentDesired, p.ID)
+			}
+			if p.ID == remove {
+				continue
+			}
+			// A peer has the stream if it was in the group before this desired state
+			// began, or if it was added and has caught up since.
+			if !inCatchup && (slices.Contains(originPeers, p.ID) || p.Current) {
+				copiesAfterRemoval++
 			}
 		}
-		if quorum := (len(actual)-1)/2 + 1; currentCount < quorum {
-			return mstat(MigrationStatusCatchup, "waiting for peers to catch up")
+		// We only need to weigh the peers we're keeping, we already have Raft quorum, or
+		// we couldn't have grown the group to get here. Peers outside the desired set are
+		// on their way out, and we don't want them to block us.
+		if quorum := len(desiredPeers)/2 + 1; caughtUpDesired < quorum {
+			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
+		}
+		// The group left after the removal must still be able to commit.
+		if !s.canRemovePeer(ourPeerId, remove, actual) {
+			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
+		}
+		// Backstop for peers that are neither catching up nor caught up, they're down or
+		// haven't started. Origin peers still have a copy of the data, so this only bites
+		// once we get to removing the last of them.
+		if quorum := len(desiredPeers)/2 + 1; copiesAfterRemoval < quorum {
+			return mstat(MigrationStatusCatchup, "waiting for more peers to catch up")
 		}
 		// If we have current desired peers, and we're not a desired peer ourselves, step down.
 		if len(currentDesired) > 0 && !slices.Contains(desiredPeers, ourPeerId) {
-			// If desired peers are still catching up, we wait for a quorum of them to complete for now.
-			if quorum := len(desiredPeers)/2 + 1; len(currentDesired) < quorum {
-				return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
-			}
 			preferred := s.selectStepDownPreferred(ourPeerId, actual, currentDesired)
 			if preferred == _EMPTY_ {
 				return mstat(MigrationStatusMembership, "waiting for a desired peer to step down to")
@@ -7775,6 +7804,10 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
+		// The group left after the removal must still be able to commit.
+		if !s.canRemovePeer(ourPeerId, remove, actual) {
+			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
+		}
 		if remove == ourPeerId {
 			err := n.StepDown()
 			return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
@@ -10703,6 +10736,25 @@ func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining
 		return _EMPTY_
 	}
 	return sorted[len(sorted)-1]
+}
+
+// canRemovePeer reports whether the group can still commit after removing the
+// given peer. Only current peers we've heard from recently are counted as
+// voters; we always count ourselves. This is the removal counterpart to the
+// quorum check in selectPeerToAdd.
+func (s *Server) canRemovePeer(ourPeerId, remove string, actual []*Peer) bool {
+	cutoff := time.Now().Add(-hbInterval * 3)
+	var voters int
+	for _, p := range actual {
+		if p.ID == remove {
+			continue
+		}
+		heard := p.ID == ourPeerId || (!p.Last.IsZero() && p.Last.After(cutoff))
+		if p.Current && heard {
+			voters++
+		}
+	}
+	return voters >= (len(actual)-1)/2+1
 }
 
 // selectPeerToAdd picks the peer from candidates that is most preferable to

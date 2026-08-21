@@ -3945,10 +3945,11 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	require_Len(t, len(n.observed), 0)
 	require_False(t, n.LastHeardFromPeer("B").IsZero())
 
-	// Removed peers are not observed.
+	// Removed peers are still observed, as otherwise a peer that's removed
+	// and re-added shortly after will stall until the timer expires.
 	n.removed = map[string]time.Time{"C": time.Now()}
 	require_NoError(t, n.trackPeer("C"))
-	require_True(t, n.LastHeardFromPeer("C").IsZero())
+	require_False(t, n.LastHeardFromPeer("C").IsZero())
 }
 
 func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {

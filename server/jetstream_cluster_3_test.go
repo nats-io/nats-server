@@ -14636,3 +14636,119 @@ func TestJetStreamClusterNoResetClusteredStateAfterStreamRemap(t *testing.T) {
 		mset.mu.Unlock()
 	})
 }
+
+// A scale down is an explicit request to shrink the group. Peers being removed do
+// not need the data, so a catchup to them must not hold up the scale down, even
+// when that catchup can't complete on its own.
+func TestJetStreamClusterScaleDownCancelsCatchup(t *testing.T) {
+	// Speed up catchup stall/retry cycles.
+	streamCatchupActivityInterval = 2 * time.Second
+	t.Cleanup(func() {
+		streamCatchupActivityInterval = defaultStreamCatchupActivityInterval
+	})
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	toSend := 1_000
+	for range toSend {
+		_, err = js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	scale := func(r int) {
+		t.Helper()
+		_, err := js.UpdateStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: r,
+		})
+		require_NoError(t, err)
+	}
+	// Waits for the group to settle at R, with every replica store-current.
+	waitReplicas := func(r int) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if si.Cluster == nil {
+				return fmt.Errorf("no cluster info")
+			}
+			if len(si.Cluster.Replicas) != r-1 {
+				return fmt.Errorf("expected %d replicas, got %d", r-1, len(si.Cluster.Replicas))
+			}
+			if si.Config.Replicas != r {
+				return fmt.Errorf("expected R%d config, got R%d", r, si.Config.Replicas)
+			}
+			for _, r := range si.Cluster.Replicas {
+				if !r.Current || r.Lag != 0 {
+					return fmt.Errorf("replica %s not store-current", r.Name)
+				}
+			}
+			return nil
+		})
+	}
+
+	// Exhaust the leader's outbound catchup budget, as if another large catchup
+	// holds all of it, so the new peers can't complete their store catchup.
+	hold := new(int64)
+	sl.gcbAdd(hold, int64(1)<<30)
+
+	// Scale up to R3. The new peers receive a raft snapshot and must pull the
+	// stream data through the (stalled) upper layer catchup.
+	scale(3)
+
+	// Wait for the group to grow with store catchups in flight.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		node := mset.raftNode()
+		if node == nil {
+			return fmt.Errorf("no raft node yet")
+		}
+		if peers := node.PeerNames(); len(peers) != 3 {
+			return fmt.Errorf("expected 3 peers, got %d", len(peers))
+		}
+		if !mset.hasCatchupPeers() {
+			return fmt.Errorf("no store catchups in flight yet")
+		}
+		return nil
+	})
+
+	// Now scale back down to R1 while those catchups can't make progress. This must
+	// complete without releasing the budget, canceling the catchups rather than
+	// waiting on them.
+	scale(1)
+	waitReplicas(1)
+
+	// The catchups must have been canceled.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if mset.hasCatchupPeers() {
+			return fmt.Errorf("still tracking catchup peers")
+		}
+		return nil
+	})
+	require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
+
+	// Release the budget and scale back up. The peers we just canceled must now be
+	// caught up as normal.
+	sl.gcbSubLast(hold)
+	scale(3)
+	waitReplicas(3)
+	require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
+}
