@@ -12059,6 +12059,112 @@ func TestJetStreamClusterPrepareForWALReplayTruncatesStore(t *testing.T) {
 	require_Equal(t, mset.lastSeq(), 2)
 }
 
+func TestJetStreamClusterWALReplayTruncatesDeletedSnapshotSequence(t *testing.T) {
+	const (
+		snapshotLastSeq = uint64(5)
+		finalLastSeq    = uint64(12)
+	)
+
+	// SyncAlways is relaxed to SyncOnFlush for replicated streams, enabling
+	// recovery from the stream snapshot and its retained Raft WAL tail.
+	c := createJetStreamClusterWithTemplate(t, jsClusterSyncAlwaysTempl, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	require_True(t, mset.shouldReplayFromWAL())
+
+	// Ten of these messages fit in 350 bytes, placing sequences 1-10 in the
+	// first block and 11-12 in the next. This leaves sequence 5 as an interior
+	// message in a non-last block that can be compacted safely.
+	fs.mu.Lock()
+	fs.fcfg.BlockSize = 350
+	fs.mu.Unlock()
+
+	for range snapshotLastSeq {
+		_, err = js.Publish("foo", []byte("ok"))
+		require_NoError(t, err)
+	}
+
+	rn := mset.raftNode().(*raft)
+	// Recovery will restore this snapshot and truncate the filestore to its
+	// LastSeq before replaying the operations retained after it.
+	require_NoError(t, rn.InstallSnapshot(mset.stateSnapshot(), false))
+
+	// Delete the snapshot boundary itself, then append later messages so the
+	// retained WAL has a tail to replay after truncation.
+	for _, seq := range []uint64{snapshotLastSeq - 1, snapshotLastSeq} {
+		require_NoError(t, js.DeleteMsg("TEST", seq))
+	}
+	for range finalLastSeq - snapshotLastSeq {
+		_, err = js.Publish("foo", []byte("ok"))
+		require_NoError(t, err)
+	}
+
+	state := mset.state()
+	require_Equal(t, state.Msgs, 10)
+	require_Equal(t, state.LastSeq, finalLastSeq)
+	require_NoError(t, fs.FlushAllPending())
+
+	// Rewrite the first block without its deleted records, leaving sequence 5
+	// represented only by a delete marker.
+	smb := fs.selectMsgBlock(snapshotLastSeq)
+	require_NotNil(t, smb)
+	require_True(t, smb != fs.lmb)
+	smb.mu.Lock()
+	err = smb.compact()
+	smb.mu.Unlock()
+	require_NoError(t, err)
+
+	snapIndex, snapData, err := rn.LoadLastSnapshot()
+	require_NoError(t, err)
+	snap, err := decodeStreamSnapshot(snapData)
+	require_NoError(t, err)
+	require_Equal(t, snap.LastSeq, snapshotLastSeq)
+	index, _, _ := rn.Progress()
+	require_True(t, index > snapIndex)
+
+	// Stop the Raft group before the server so shutdown cannot replace the old
+	// snapshot. Restart must truncate the store and replay the retained WAL tail.
+	rn.Stop()
+	rn.WaitForStop()
+	sl.Shutdown()
+	sl.WaitForShutdown()
+	sl = c.restartServer(sl)
+	c.waitOnStreamCurrent(sl, globalAccountName, "TEST")
+
+	mset, err = sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	// Wait for the expected final last sequence.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state = mset.store.State()
+		if state.LastSeq != finalLastSeq {
+			return fmt.Errorf("stream replay at sequence %d", state.LastSeq)
+		}
+		return nil
+	})
+	require_Equal(t, state.Msgs, 10)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, finalLastSeq)
+	require_Len(t, len(state.Deleted), 2)
+	require_Equal(t, state.Deleted[0], snapshotLastSeq-1)
+	require_Equal(t, state.Deleted[1], snapshotLastSeq)
+	require_True(t, mset.isMonitorRunning())
+}
+
 func TestJetStreamClusterAsyncFlushFileStoreFlushOnSnapshot(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
