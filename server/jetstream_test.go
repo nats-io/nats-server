@@ -20755,10 +20755,15 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	resume := o.lss.resume
 	o.mu.RUnlock()
 
+	// The publishes above are randomly distributed, so it's possible that not every
+	// subject was published to. Use the skiplist length so we don't wait on messages
+	// that were never published.
+	expected := len(pending)
+
 	// Now fetch the messages from the consumer.
 	ps, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test", "test_consumer"))
 	require_NoError(t, err)
-	for range subjects {
+	for range expected {
 		msgs, err := ps.Fetch(1)
 		require_NoError(t, err)
 		for _, msg := range msgs {
