@@ -205,7 +205,8 @@ type raftGroup struct {
 // desiredGroupPlacement specifies the desired peer set.
 // A stream or consumer raftGroup can be scaled or moved safely based on this desired state.
 type desiredRaftGroup struct {
-	ID string `json:"id"`
+	Created time.Time `json:"created"`
+	ID      string    `json:"id"`
 	// Term is the raft term of the group leader driving this desired state. It acts as a
 	// fencing token; reconcile requests from older leadership terms are rejected.
 	Term      uint64   `json:"term,omitempty"`
@@ -305,21 +306,21 @@ func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
 		// Don't carry a stale preferred into the desired group.
 		target.Preferred = _EMPTY_
 	}
-	var term uint64
-	if target.Desired != nil {
-		term = target.Desired.Term
-	}
 	ng := rg.copyGroup()
 	ng.Name = target.Name
 	ng.Desired = &desiredRaftGroup{
+		Created:   time.Now().UTC(),
 		ID:        nuid.Next(),
-		Term:      term,
+		Term:      0,
 		Peers:     target.Peers,
 		Cluster:   target.Cluster,
 		Preferred: target.Preferred,
 	}
 	if rg.Desired != nil {
-		// Must preserve whether an in-flight move is being retargeted.
+		// Must preserve the original created timestamp, term,
+		// and whether an in-flight move is being retargeted.
+		ng.Desired.Created = rg.Desired.Created
+		ng.Desired.Term = rg.Desired.Term
 		ng.Desired.Move = rg.Desired.Move
 		// Must preserve the prior origin (if any).
 		if rg.Desired.Origin != nil {
@@ -12900,7 +12901,8 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	)
 	if d := rg.Desired; d != nil {
 		desired = &DesiredClusterInfo{
-			Name: d.Cluster,
+			Created: d.Created,
+			Name:    d.Cluster,
 		}
 		// If desired state can be rolled back, include what can be rolled back to.
 		// Must copy, the origin is owned by the meta layer but reported without its lock.

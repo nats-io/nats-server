@@ -382,6 +382,7 @@ type ClusterInfo struct {
 // DesiredClusterInfo shows information of the desired set of servers
 // that should make up the stream or consumer.
 type DesiredClusterInfo struct {
+	Created  time.Time                 `json:"created"`
 	Name     string                    `json:"name,omitempty"`
 	Replicas []*PeerInfo               `json:"replicas,omitempty"`
 	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`

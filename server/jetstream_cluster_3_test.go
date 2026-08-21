@@ -13226,6 +13226,60 @@ func TestJetStreamClusterDesiredStateCarriesRemoved(t *testing.T) {
 	require_False(t, slices.Contains(rg.Desired.Removed, c))
 }
 
+func TestJetStreamClusterDesiredStatePreservedOnRetarget(t *testing.T) {
+	const a, b, c, d = "A", "B", "C", "D"
+
+	created := time.Now().UTC().Add(-time.Hour)
+	origin := &desiredRaftGroupOrigin{Peers: []string{a, b, c}, Cluster: "C1", Replicas: 3}
+
+	rg := &raftGroup{
+		Name:  "G",
+		Peers: []string{a, b, c},
+		Desired: &desiredRaftGroup{
+			ID:      "ID",
+			Peers:   []string{a, c, d},
+			Created: created,
+			Term:    7,
+			Move:    true,
+			Origin:  origin,
+		},
+	}
+	ng := rg.withDesired(&raftGroup{Name: "G", Peers: []string{a, c, d}})
+
+	// Reconciliation has been ongoing since the first desired state, so the clock must not
+	// restart, or the elapsed time reported for the migration resets on every retarget.
+	require_True(t, ng.Desired.Created.Equal(created))
+	// The leader already driving keeps its term, so it can act on the new desired state
+	// without waiting for its term to be re-recorded. Dropping to zero would also lower the
+	// fence that keeps a stale leader from acting.
+	require_Equal(t, ng.Desired.Term, 7)
+	// A move that is retargeted is still a move in flight.
+	require_True(t, ng.Desired.Move)
+	// The origin is what a cancel rolls back to, and must survive as a copy rather than be
+	// shared with the group we replaced.
+	require_NotNil(t, ng.Desired.Origin)
+	require_Equal(t, ng.Desired.Origin.Cluster, "C1")
+	require_Equal(t, ng.Desired.Origin.Replicas, 3)
+	require_NotEqual(t, ng.Desired.Origin, rg.Desired.Origin)
+	// It is new desired state though, so it gets its own identity and the group leader knows
+	// to reassess against it.
+	require_NotEqual(t, ng.Desired.ID, _EMPTY_)
+	require_NotEqual(t, ng.Desired.ID, "ID")
+	// And none of this may have mutated the group we replaced.
+	require_True(t, rg.Desired.Created.Equal(created))
+	require_Equal(t, rg.Desired.Term, 7)
+	require_Equal(t, rg.Desired.ID, "ID")
+
+	// A group entering desired state for the first time starts its own clock, with nobody
+	// driving it yet and nothing to roll back to.
+	fresh := &raftGroup{Name: "G", Peers: []string{a, b, c}}
+	ng = fresh.withDesired(&raftGroup{Name: "G", Peers: []string{a, b, d}})
+	require_False(t, ng.Desired.Created.IsZero())
+	require_Equal(t, ng.Desired.Term, 0)
+	require_False(t, ng.Desired.Move)
+	require_True(t, ng.Desired.Origin == nil)
+}
+
 // A consumer already scaling down can hold a peer-removed peer only in its actual
 // peer set, with its desired peers untouched by the removal. Remapping must still
 // record that removal, or the group could never evict the peer and stay leaderless
