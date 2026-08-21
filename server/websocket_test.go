@@ -2193,8 +2193,15 @@ func testWSCreateClient(t testing.TB, compress, web bool, host string, port int)
 		t.Fatalf("Error sending message: %v", err)
 	}
 	// Wait for the PONG
-	if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+	msg := testWSReadFrame(t, br)
+	if !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
 		t.Fatalf("Expected PONG, got %s", msg)
+	}
+	// An async INFO is sent that's not always part of the same frame. Consume it here.
+	if !bytes.Contains(msg, []byte("INFO ")) {
+		if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("INFO ")) {
+			t.Fatalf("Expected INFO, got %s", msg)
+		}
 	}
 	return wsc, br
 }
