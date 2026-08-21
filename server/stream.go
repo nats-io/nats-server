@@ -1646,6 +1646,8 @@ func (mset *stream) prepareForWALReplay(snap *StreamReplicatedState) error {
 	if snap != nil {
 		snapSeq = snap.LastSeq
 		clfs = snap.Failed
+	} else if mset.cfg.FirstSeq > 0 {
+		snapSeq = mset.cfg.FirstSeq - 1
 	}
 
 	var state StreamState
