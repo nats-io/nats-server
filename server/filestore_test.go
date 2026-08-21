@@ -1144,6 +1144,113 @@ func TestFileStoreStreamTruncate(t *testing.T) {
 	})
 }
 
+func TestFileStoreStreamTruncateDeletedSequence(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		// Place sequences 1-10 in the first block and 11-12 in the next.
+		fcfg.BlockSize = 350
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 12 {
+			_, _, err := fs.StoreMsg("foo", nil, []byte("ok"), 0)
+			require_NoError(t, err)
+		}
+
+		// Delete and compact the truncation point
+		for _, seq := range []uint64{4, 5} {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+		const truncateSeq = uint64(5)
+		smb := fs.selectMsgBlock(truncateSeq)
+		require_NotNil(t, smb)
+		require_True(t, smb != fs.lmb)
+		smb.mu.Lock()
+		require_NoError(t, smb.compact())
+		smb.finishedWithCache()
+		smb.mu.Unlock()
+
+		// Preserve the deleted truncation point as the logical LastSeq.
+		require_NoError(t, fs.Truncate(truncateSeq))
+		expected := fs.State()
+		require_Equal(t, expected.Msgs, 3)
+		require_Equal(t, expected.FirstSeq, 1)
+		require_Equal(t, expected.LastSeq, truncateSeq)
+		require_True(t, reflect.DeepEqual(expected.Deleted, []uint64{4, 5}))
+
+		for seq := uint64(1); seq <= 3; seq++ {
+			_, err := fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
+		}
+		for seq := uint64(4); seq <= 5; seq++ {
+			_, err := fs.LoadMsg(seq, nil)
+			require_Error(t, err, ErrStoreMsgNotFound, errDeletedMsg)
+		}
+		for seq := uint64(6); seq <= 12; seq++ {
+			_, err := fs.LoadMsg(seq, nil)
+			require_Error(t, err, ErrStoreEOF)
+		}
+
+		// Recover without index.db to verify that blocks are complete.
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		require_True(t, reflect.DeepEqual(fs.State(), expected))
+	})
+}
+
+func TestFileStoreStreamTruncateDeletedWithCompactedPrefix(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 120
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Store 9 messages, creating 3 blocks
+		// [1,2,3], [4,5,6], [7,8,9]
+		for range 9 {
+			_, _, err := fs.StoreMsg("foo", nil, []byte("ok"), 0)
+			require_NoError(t, err)
+		}
+
+		// Remove messages 4 and 5, and compact
+		for _, seq := range []uint64{4, 5} {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+
+		smb := fs.selectMsgBlock(4)
+		require_NotNil(t, smb)
+		smb.mu.Lock()
+		require_NoError(t, smb.compact())
+		smb.mu.Unlock()
+
+		// With no prior message in the selected block, Truncate(5) removes the block.
+		const truncateSeq = uint64(5)
+		require_NoError(t, fs.Truncate(truncateSeq))
+		fs.mu.RLock()
+		removed := !slices.Contains(fs.blks, smb)
+		fs.mu.RUnlock()
+		require_True(t, removed)
+
+		state := fs.State()
+		require_Equal(t, state.Msgs, 3)
+		require_Equal(t, state.FirstSeq, uint64(1))
+		require_Equal(t, state.LastSeq, truncateSeq)
+		require_True(t, reflect.DeepEqual(state.Deleted, []uint64{4, 5}))
+	})
+}
+
 func TestFileStoreRemovePartialRecovery(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}

@@ -11228,17 +11228,15 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 
 	var hasLsm bool
 	var lastTime int64
+	var lsm StoreMsg
 	smb := fs.selectMsgBlock(seq)
 	if smb != nil {
-		smb.mu.Lock()
-		lsm, _, err := smb.fetchMsgNoCopyLocked(seq, nil)
-		if lsm != nil {
+		_, _, err := smb.prevMatching(fwcs, true, seq, &lsm)
+		if err == nil && lsm.seq == seq {
 			hasLsm = true
 			lastTime = lsm.ts
 		}
-		smb.finishedWithCache()
-		smb.mu.Unlock()
-		if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
+		if err != nil && err != ErrStoreMsgNotFound {
 			fs.mu.Unlock()
 			return err
 		}
@@ -11358,7 +11356,7 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 		}
 
 		// Truncate our selected message block.
-		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
+		nmsgs, nbytes, err := smb.truncate(lsm.seq, lsm.ts)
 		if err != nil {
 			smb.mu.Unlock()
 			fs.mu.Unlock()
