@@ -7809,10 +7809,10 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	checkNumFilter := func(expected int) {
 		t.Helper()
 		mset.mu.RLock()
-		nf := mset.numFilter
+		nf := int(mset.csl.Count())
 		mset.mu.RUnlock()
 		if nf != expected {
-			t.Fatalf("Expected stream's numFilter to be %d, got %d", expected, nf)
+			t.Fatalf("Expected stream's filters to be %d, got %d", expected, nf)
 		}
 	}
 
@@ -7826,7 +7826,7 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// and expect that numFilter reports correctly.
+	// and expect that it reports correctly.
 	checkNumFilter(0)
 }
 
@@ -13238,4 +13238,152 @@ func TestJetStreamConsumerFlowControlResetOnLeaderChange(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerStore(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	// Existing durable consumer registered under "dur" with an on-disk store.
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	cfs, ok := o.store.(*consumerFileStore)
+	require_True(t, ok)
+	odir := cfs.odir
+	require_NotEqual(t, odir, _EMPTY_)
+
+	// Sanity: the existing consumer's store directory exists.
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+
+	// Trigger the collision path. Since the consumer already exists, this should error.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit},
+		"dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err, NewJSConsumerNameExistError())
+
+	// The existing consumer should still be registered, and its store directory intact.
+	require_Equal(t, mset.lookupConsumer("dur"), o)
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+}
+
+func TestJetStreamConsumerFailedRecoverStateDoesNotLeakInternalClients(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	sys := s.SystemAccount()
+
+	// Stream stays empty, so its last sequence is 0 while the recovered consumer below
+	// has a much higher delivered sequence: this drives the reconcile path.
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Set up a consumer store whose delivered sequence is far ahead of the stream.
+	cfg := &ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit}
+	cs, err := mset.store.ConsumerStore("dur", time.Now().UTC(), cfg)
+	require_NoError(t, err)
+	odir := cs.(*consumerFileStore).odir // Capture before stop.
+	require_NoError(t, cs.ForceUpdate(&ConsumerState{
+		Delivered: SequencePair{Consumer: 100, Stream: 100},
+		AckFloor:  SequencePair{Consumer: 100, Stream: 100},
+	}))
+	require_NoError(t, cs.Stop())
+
+	// Make the store directory read-only so the reconcile fails.
+	require_NoError(t, os.Chmod(odir, 0o500))
+	defer os.Chmod(odir, 0o700) // restore before Shutdown cleans up
+
+	numClients := func(a *Account) int {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		return len(a.clients)
+	}
+	accBefore, sysBefore := numClients(acc), numClients(sys)
+
+	// Trigger recovery multiple times to exploit if internal clients are leaked.
+	const iters = 20
+	for range iters {
+		_, err = mset.addConsumerWithAssignment(cfg, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "error creating store for consumer")
+	}
+
+	// Validate that no internal clients were leaked.
+	const tolerance = 5
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if d := numClients(acc) - accBefore; d > tolerance {
+			return fmt.Errorf("account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		if d := numClients(sys) - sysBefore; d > tolerance {
+			return fmt.Errorf("system account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerCreateNameTooLongDoesNotDeleteObsStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// A stream literally named "obs".
+	acc := s.globalAccount()
+	obs, err := acc.addStream(&StreamConfig{Name: "obs", Subjects: []string{"obs.>"}, Storage: FileStorage})
+	require_NoError(t, err)
+	fs, ok := obs.store.(*fileStore)
+	require_True(t, ok)
+	obsDir := fs.fcfg.StoreDir
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Durable name longer than the limit: rejected before the consumer is registered.
+	_, err = mset.addConsumer(&ConsumerConfig{Durable: strings.Repeat("a", JSMaxNameLen+1), AckPolicy: AckExplicit})
+	require_Error(t, err)
+
+	// The unrelated "obs" stream's directory must still exist.
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+}
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerQueues(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	// A pull consumer registers two queues in the server's ipQueues map.
+	ackKey, reqKey := o.ackMsgs.name, o.nextMsgReqs.name
+	if _, ok := s.ipQueues.Load(ackKey); !ok {
+		t.Fatal("precondition: existing consumer ackMsgs queue not registered")
+	}
+
+	// Trigger the name collision path.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit}, "dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err)
+
+	// The existing registry entries must still be present and still point at its queues.
+	v, ok := s.ipQueues.Load(ackKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*jsAckMsg]), o.ackMsgs)
+	v, ok = s.ipQueues.Load(reqKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*nextMsgReq]), o.nextMsgReqs)
 }
