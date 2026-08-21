@@ -2257,3 +2257,16 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 	}
 	return streamLeader.State, nil
 }
+
+// publishAsync publishes a message asynchronously, retrying if we're stalled
+// on async publishes.
+func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byte) nats.PubAckFuture {
+	t.Helper()
+	for {
+		pubAck, err := js.PublishAsync(subj, msg)
+		if err == nil {
+			return pubAck
+		}
+		require_Error(t, err, nats.ErrTooManyStalledMsgs)
+	}
+}
