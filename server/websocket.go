@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -969,6 +970,66 @@ func (s *Server) wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsUpgradeRe
 	return &wsUpgradeResult{conn: conn, ws: ws, kind: kind}, nil
 }
 
+// HandleWsUpgrade upgrades an HTTP connection to a NATS websocket
+// client, MQTT-over-websocket client, or leafnode connection, based on
+// the request path. The handler is intended for embedded use cases in
+// which the application already runs an HTTP server and wants to route
+// a path to NATS without binding a separate websocket listener.
+//
+// Leafnode connections are accepted only when the server has a
+// leafnode port configured; otherwise the connection is closed and the
+// rejection is logged at error level.
+//
+// Errors during the upgrade are logged on the server; the response
+// itself is written by wsUpgrade before this returns.
+//
+// Returns 503 Service Unavailable when the server is not currently
+// accepting connections: before Start() completes, during shutdown, or
+// while in lame duck mode. The built-in listener cannot reach these
+// states because its mux is only wired up after the server is running
+// and the listener is closed on lame duck / shutdown, but an
+// externally-mounted handler stays reachable. Without this gate
+// wsUpgrade would send 101 Switching Protocols and createWSClient /
+// createMQTTClient would then bail out on !isRunning() / s.ldm without
+// closing the connection, leaving the peer with an orphaned half-open
+// socket until its TCP timeout.
+//
+// Returns 501 Not Implemented when the binary was built with a Go
+// version whose FIPS-140 mode forbids SHA-1, since wsUpgrade would
+// otherwise panic in wsAcceptKey. This makes embedded mounts safe to
+// reach with a default WebsocketOpts that skips config-time validation.
+func (s *Server) HandleWsUpgrade(w http.ResponseWriter, r *http.Request) {
+	if !s.isRunning() || s.isLameDuckMode() {
+		http.Error(w, "server not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if !wsAllowedFIPS() {
+		http.Error(w, "websocket: cannot be used in FIPS-140 mode when built with this Go version", http.StatusNotImplemented)
+		return
+	}
+	res, err := s.wsUpgrade(w, r)
+	if err != nil {
+		s.Errorf(err.Error())
+		return
+	}
+	switch res.kind {
+	case CLIENT:
+		s.createWSClient(res.conn, res.ws)
+	case MQTT:
+		s.createMQTTClient(res.conn, res.ws)
+	case LEAF:
+		if s.getOpts().LeafNode.Port == 0 {
+			s.Errorf("Not configured to accept leaf node connections")
+			// Silently close for now. If we want to send an error back, we would
+			// need to create the leafnode client anyway, so that is handling websocket
+			// frames, then send the error to the remote.
+			res.conn.Close()
+			return
+		}
+		s.createLeafNode(res.conn, nil, nil, res.ws)
+	}
+}
+
 // Returns true if the header named `name` contains a token with value `value`.
 func wsHeaderContains(header http.Header, name string, value string) bool {
 	for _, s := range header[name] {
@@ -1122,18 +1183,36 @@ func wsMakeChallengeKey() (string, error) {
 // Validate the websocket related options.
 func validateWebsocketOptions(o *Options) error {
 	wo := &o.Websocket
-	// If no port is defined, we don't care about other options
-	if wo.Port == 0 {
+	// If no websocket option has been configured, the user has not opted
+	// into websockets at all (neither via a listener nor by mounting
+	// HandleWsUpgrade), so skip validation entirely. In particular this
+	// avoids tripping the FIPS guard below for deployments that do not
+	// use websockets on Go <=1.25 FIPS builds.
+	if reflect.DeepEqual(*wo, WebsocketOpts{}) {
 		return nil
 	}
+	// Listener-specific checks apply only when a websocket port is configured.
+	if wo.Port != 0 {
+		// Enforce TLS... unless NoTLS is set to true.
+		if wo.TLSConfig == nil && !wo.NoTLS {
+			return errors.New("websocket requires TLS configuration")
+		}
+		if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
+			return fmt.Errorf("websocket: %v", err)
+		}
+	}
+	// FIPS applies to any opted-in websocket configuration. HandleWsUpgrade
+	// calls wsUpgrade -> wsAcceptKey, which on Go <=1.25 uses sha1.New()
+	// without fips140.WithoutEnforcement and panics under FIPS-strict mode,
+	// so embedded callers must be rejected at config validation rather
+	// than crash at first upgrade.
 	if !wsAllowedFIPS() {
 		return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
 	}
-	// Enforce TLS... unless NoTLS is set to true.
-	if wo.TLSConfig == nil && !wo.NoTLS {
-		return errors.New("websocket requires TLS configuration")
-	}
-	// Make sure that allowed origins, if specified, can be parsed.
+	// The remaining options also apply to HandleWsUpgrade (embedded use),
+	// so they are validated regardless of whether a listener will be bound,
+	// to avoid silently weakening origin policy when wsSetOriginOptions
+	// later skips malformed entries with only a log line.
 	for _, ao := range wo.AllowedOrigins {
 		u, err := url.ParseRequestURI(ao)
 		if err != nil {
@@ -1170,9 +1249,6 @@ func validateWebsocketOptions(o *Options) error {
 		if len(o.TrustedOperators) == 0 && len(o.TrustedKeys) == 0 {
 			return fmt.Errorf("trusted operators or trusted keys configuration is required for JWT authentication via cookie %q", wo.JWTCookie)
 		}
-	}
-	if err := validatePinnedCerts(wo.TLSPinnedCerts); err != nil {
-		return fmt.Errorf("websocket: %v", err)
 	}
 
 	// Check for invalid headers here.
@@ -1250,6 +1326,20 @@ func (s *Server) wsConfigAuth(opts *WebsocketOpts) {
 	ws.authOverride = opts.Username != _EMPTY_ || opts.Token != _EMPTY_ || opts.NoAuthUser != _EMPTY_
 }
 
+// initWebsocketOptions populates the websocket origin and headers options
+// on s. It is invoked once by NewServer before Start() makes the server
+// reachable, so that HandleWsUpgrade callers in an application-owned HTTP
+// server (for which startWebsocketServer is skipped when Websocket.Port == 0)
+// get same_origin enforcement, the allowed_origins set, and any configured
+// upgrade headers. The listener path does not re-run this: re-running after
+// Start() has set running=true would race with concurrent embedded upgrades
+// that read s.websocket.rawHeaders without holding s.websocket.mu.
+func (s *Server) initWebsocketOptions() {
+	o := &s.getOpts().Websocket
+	s.wsSetOriginOptions(o)
+	s.wsSetHeadersOptions(o)
+}
+
 func (s *Server) startWebsocketServer() {
 	if s.isShuttingDown() {
 		return
@@ -1257,9 +1347,6 @@ func (s *Server) startWebsocketServer() {
 
 	sopts := s.getOpts()
 	o := &sopts.Websocket
-
-	s.wsSetOriginOptions(o)
-	s.wsSetHeadersOptions(o)
 
 	var hl net.Listener
 	var proto string
@@ -1320,31 +1407,8 @@ func (s *Server) startWebsocketServer() {
 		s.mu.Unlock()
 		return
 	}
-	hasLeaf := sopts.LeafNode.Port != 0
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		res, err := s.wsUpgrade(w, r)
-		if err != nil {
-			s.Errorf(err.Error())
-			return
-		}
-		switch res.kind {
-		case CLIENT:
-			s.createWSClient(res.conn, res.ws)
-		case MQTT:
-			s.createMQTTClient(res.conn, res.ws)
-		case LEAF:
-			if !hasLeaf {
-				s.Errorf("Not configured to accept leaf node connections")
-				// Silently close for now. If we want to send an error back, we would
-				// need to create the leafnode client anyway, so that is handling websocket
-				// frames, then send the error to the remote.
-				res.conn.Close()
-				return
-			}
-			s.createLeafNode(res.conn, nil, nil, res.ws)
-		}
-	})
+	mux.HandleFunc("/", s.HandleWsUpgrade)
 	hs := &http.Server{
 		Addr:        hp,
 		Handler:     mux,
