@@ -1621,7 +1621,7 @@ func (mset *stream) rebuildDedupe() {
 // Raft log for replaying the tail of stream during
 // recovery.
 func (mset *stream) shouldReplayFromWAL() bool {
-	if mset == nil || mset.node == nil || mset.store == nil || mset.store.Type() != FileStorage {
+	if mset == nil || mset.raftNode() == nil || mset.store.Type() != FileStorage {
 		return false
 	}
 	fs, ok := mset.store.(*fileStore)
@@ -1634,7 +1634,7 @@ func (mset *stream) shouldReplayFromWAL() bool {
 // prepareForWALReplay truncates any stream filestore tail past the last
 // sequence of the given snapshot, in preparation of replaying the Raft log.
 func (mset *stream) prepareForWALReplay(snap *StreamReplicatedState) error {
-	if mset == nil || mset.store == nil {
+	if mset == nil {
 		return nil
 	}
 
