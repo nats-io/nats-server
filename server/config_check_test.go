@@ -145,7 +145,7 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			err:       errors.New(`Unknown field name "denied" parsing subject permissions, only 'allow' or 'deny' are permitted`),
+			err:       errors.New(`Unknown field name "denied" parsing subject permissions, only 'allow', 'deny', or 'no_wildcards' are permitted`),
 			errorLine: 7,
 			errorPos:  9,
 		},
@@ -163,7 +163,7 @@ func TestConfigCheck(t *testing.T) {
 		  }
 		}
 		`,
-			err:       errors.New(`Unknown field name "allowed" parsing subject permissions, only 'allow' or 'deny' are permitted`),
+			err:       errors.New(`Unknown field name "allowed" parsing subject permissions, only 'allow', 'deny', or 'no_wildcards' are permitted`),
 			errorLine: 7,
 			errorPos:  9,
 		},
