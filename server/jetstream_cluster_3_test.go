@@ -6445,7 +6445,7 @@ func TestJetStreamClusterLimitsBasedStreamFileStoreDesync(t *testing.T) {
 Setup:
 	for {
 		select {
-		case err = <-errCh:
+		case <-errCh:
 			errCount++
 			if errCount >= 20_000 {
 				// Stop both producing and consuming.

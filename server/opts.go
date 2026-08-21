@@ -5812,11 +5812,10 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	// It will determine the cipher suites that we prefer.
 	// FIXME(dlc) change if ARM based.
 	config := tls.Config{
-		MinVersion:               tls.VersionTLS12,
-		CipherSuites:             tc.Ciphers,
-		PreferServerCipherSuites: true,
-		CurvePreferences:         tc.CurvePreferences,
-		InsecureSkipVerify:       tc.Insecure,
+		MinVersion:         tls.VersionTLS12,
+		CipherSuites:       tc.Ciphers,
+		CurvePreferences:   tc.CurvePreferences,
+		InsecureSkipVerify: tc.Insecure,
 	}
 
 	switch {
@@ -6363,9 +6362,8 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 
 	// Process signal control.
 	if signal != _EMPTY_ {
-		if err := processSignal(signal); err != nil {
-			return nil, err
-		}
+		// processSignal always either returns an error or calls os.Exit(0).
+		return nil, processSignal(signal)
 	}
 
 	// Parse config if given
