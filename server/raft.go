@@ -5759,6 +5759,14 @@ func (n *raft) switchToCandidate() {
 		return
 	}
 
+	// For managed groups the meta layer can assign us before the group leader has
+	// added us to the peer set. Do not campaign while we're not a member ourselves.
+	if n.managed && n.peers[n.id] == nil {
+		n.updateLeader(noLeader)
+		n.resetElect(minElectionTimeout)
+		return
+	}
+
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
 	} else {

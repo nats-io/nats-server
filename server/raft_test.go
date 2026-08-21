@@ -3759,6 +3759,39 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	require_True(t, n.LastHeardFromPeer("C").IsZero())
 }
 
+func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.state.Store(int32(Leader))
+	require_Equal(t, n.prop.len(), 0)
+
+	// As leader of an unmanaged group, hearing from an unknown peer
+	// proposes adding it to the group automatically.
+	require_NoError(t, n.trackPeer(nats0))
+	require_Equal(t, n.prop.len(), 1)
+	pe, ok := n.prop.popOne()
+	require_True(t, ok)
+	require_Equal(t, pe.Type, EntryAddPeer)
+	require_Equal(t, string(pe.Data), nats0)
+	// Unmanaged groups don't track observed peers.
+	require_Len(t, len(n.observed), 0)
+
+	// As leader of a managed group, the meta layer owns membership.
+	// Hearing from an unknown peer must not propose adding it, only
+	// record it as observed.
+	n.Lock()
+	n.managed = true
+	n.Unlock()
+	require_NoError(t, n.trackPeer(nats1))
+	require_Equal(t, n.prop.len(), 0)
+	require_Len(t, len(n.observed), 1)
+	require_False(t, n.LastHeardFromPeer(nats1).IsZero())
+}
+
 func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -6777,6 +6810,51 @@ func TestNRGDontSwitchToCandidateWithInflightSelfMembershipChange(t *testing.T) 
 	require_True(t, n.membChange == nil)
 
 	// Now that we're a settled member again, we can campaign.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+}
+
+func TestNRGDontSwitchToCandidateAsManagedNodeOutsidePeerSet(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// The meta layer can assign us to a group before the group leader has added
+	// us to the peer set. Simulate the leader's peer state overwriting our
+	// bootstrap peer set with a committed membership that excludes us.
+	n.Lock()
+	n.managed = true
+	n.processPeerState(&peerState{[]string{nats0}, 1, n.extSt})
+	n.Unlock()
+	_, ok := n.peers[n.id]
+	require_False(t, ok)
+
+	// We must not become a candidate while we're not in our own peer set, otherwise
+	// we could become leader outside the peer set and stall membership changes.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Follower)
+
+	// Receive the leader's peer state that adds us as a committed member.
+	n.Lock()
+	n.processPeerState(&peerState{[]string{nats0, n.id}, 2, n.extSt})
+	n.Unlock()
+	_, ok = n.peers[n.id]
+	require_True(t, ok)
+
+	// Now that we're a member, we can campaign.
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+
+	// An unmanaged group doesn't have meta-assigned members, a node outside
+	// the peer set must still be able to campaign there.
+	n.switchToFollower(noLeader)
+	n.Lock()
+	n.managed = false
+	n.processPeerState(&peerState{[]string{nats0}, 1, n.extSt})
+	n.Unlock()
+	_, ok = n.peers[n.id]
+	require_False(t, ok)
 	n.switchToCandidate()
 	require_Equal(t, n.State(), Candidate)
 }

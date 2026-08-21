@@ -12797,7 +12797,11 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
 			continue
 		}
-		ci.Replicas = append(ci.Replicas, generatePeer(peer))
+		pi := generatePeer(peer)
+		// We know the peer is part of the assignment, but if we have a Raft node it
+		// wasn't reported as one of its peers, so it hasn't joined the group (yet).
+		pi.Pending = n != nil
+		ci.Replicas = append(ci.Replicas, pi)
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...

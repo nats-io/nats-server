@@ -7432,6 +7432,7 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Wait for some time to let the servers catch each other up. Can't use equality checks here.
 	time.Sleep(500 * time.Millisecond)
@@ -14139,6 +14140,53 @@ func TestJetStreamClusterMetaReplicasInJsz(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterPendingPeersReportedInClusterInfo(t *testing.T) {
+	js := &jetStream{srv: &Server{}}
+
+	peerInfo := func(ci *ClusterInfo, peer string) *PeerInfo {
+		t.Helper()
+		for _, pi := range ci.Replicas {
+			if pi.Peer == peer {
+				return pi
+			}
+		}
+		t.Fatalf("peer %q not reported in cluster info", peer)
+		return nil
+	}
+
+	// The assignment has scaled up to three peers, but only "a" has joined the
+	// Raft group so far. The peers that are only known from the assignment must
+	// be distinguishable from the one that's an actual peer of the group.
+	rg := &raftGroup{
+		Name:  "test",
+		Peers: []string{"a", "b", "c"},
+		node:  &raft{peers: map[string]*lps{"a": {}}},
+	}
+	ci := js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	require_False(t, peerInfo(ci, "a").Pending)
+	require_True(t, peerInfo(ci, "b").Pending)
+	require_True(t, peerInfo(ci, "c").Pending)
+
+	// Once they've all joined the group nothing is pending anymore.
+	rg.node = &raft{peers: map[string]*lps{"a": {}, "b": {}, "c": {}}}
+	ci = js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	for _, pi := range ci.Replicas {
+		require_False(t, pi.Pending)
+	}
+
+	// Without a Raft node we have no knowledge of group membership, so we can't
+	// claim any of the assigned peers are pending.
+	rg.node = nil
+	rg.Desired = &desiredRaftGroup{ID: "id", Cluster: "C1", Peers: []string{"a", "b", "c"}}
+	ci = js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	for _, pi := range ci.Replicas {
+		require_False(t, pi.Pending)
+	}
 }
 
 func TestJetStreamClusterMigrationStatusReportedInClusterInfo(t *testing.T) {

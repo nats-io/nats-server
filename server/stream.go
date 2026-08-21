@@ -456,6 +456,7 @@ type PeerInfo struct {
 	Active  time.Duration `json:"active"`            // Active is the timestamp it was last active
 	Lag     uint64        `json:"lag,omitempty"`     // Lag is how many operations behind it is
 	Peer    string        `json:"peer"`              // Peer is the unique ID for the peer
+	Pending bool          `json:"pending,omitempty"` // Pending indicates the peer is part of the assignment, but is not a peer of the Raft group (yet)
 	// For migrations.
 	cluster string
 }
