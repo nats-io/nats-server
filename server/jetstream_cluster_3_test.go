@@ -14120,6 +14120,192 @@ func TestJetStreamClusterMetaRescueSingleSurvivor(t *testing.T) {
 	require_NoError(t, err)
 }
 
+// A two-node meta cluster that permanently loses one node needs the rescue API
+// to regain a meta leader, after which a peer-remove reconciles the assets down
+// onto the survivor. The stream must stay available throughout as a single peer,
+// and once the lost server returns both the meta group and the stream must take
+// it back on their own.
+func TestJetStreamClusterMetaRescueTwoNodeRecovery(t *testing.T) {
+	lqi := lostQuorumInterval
+	lostQuorumInterval = 2 * time.Second
+	defer func() { lostQuorumInterval = lqi }()
+	// So the returning server can rejoin the meta peer set without waiting
+	// out the full removal timeout.
+	prt := peerRemoveTimeout
+	peerRemoveTimeout = 2 * time.Second
+	defer func() { peerRemoveTimeout = prt }()
+
+	c := createJetStreamClusterExplicit(t, "R2S", 2)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 2})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("foo", []byte("hello"))
+		require_NoError(t, err)
+	}
+	nc.Close()
+
+	// Lose one of the two nodes, which takes quorum with it. Keep the first
+	// server, it seeds the routes the restarted server rejoins through.
+	survivor, dead := c.servers[0], c.servers[1]
+	deadName := dead.Name()
+
+	// Remember the R2 group, it gets renamed once the stream converges onto the
+	// single surviving peer.
+	sjs := survivor.getJetStream()
+	sjs.mu.RLock()
+	origGroup := sjs.streamAssignment(globalAccountName, "TEST").Group.Name
+	sjs.mu.RUnlock()
+
+	dead.Shutdown()
+	dead.WaitForShutdown()
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		if leader := survivor.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+			return fmt.Errorf("survivor still sees meta leader %q", leader)
+		}
+		return nil
+	})
+
+	// Make sure the stream becomes leaderless as well, so it'll need to perform
+	// the leaderless eviction after peer-remove.
+	mset, err := survivor.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	err = mset.raftNode().StepDown()
+	require_True(t, err == nil || err == errNotLeader)
+
+	nc, err = nats.Connect(survivor.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// Rescue the meta group so the survivor can elect itself.
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 1})
+	require_NoError(t, err)
+	rmsg, err := nc.Request(JSApiMetaRescue, req, time.Second)
+	require_NoError(t, err)
+	var rescueResp JSApiMetaRescueResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &rescueResp))
+	require_True(t, rescueResp.Error == nil)
+	require_Equal(t, rescueResp.PrevQuorum, 2)
+	require_Equal(t, rescueResp.NewQuorum, 1)
+	c.waitOnLeader()
+
+	// Peer-remove the lost server, which clears the rescue and reconciles the
+	// stream down onto the survivor.
+	removeReq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: deadName})
+	require_NoError(t, err)
+	rmsg, err = nc.Request(JSApiRemoveServer, removeReq, time.Second)
+	require_NoError(t, err)
+	var removeResp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &removeResp))
+	require_True(t, removeResp.Error == nil)
+	require_True(t, removeResp.Success)
+	nc.Close()
+
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if cs := meta.ClusterSize(); cs != 1 {
+			return fmt.Errorf("expected meta cluster size 1, got %d", cs)
+		}
+		if meta.InRescue() {
+			return fmt.Errorf("expected rescue to be stopped")
+		}
+		return nil
+	})
+
+	// The group is renamed once it converges onto the single peer, and the stream
+	// is restarted under the new group. That is where it used to be left without
+	// a leader, so wait for the rename to land before checking it is usable.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		js := survivor.getJetStream()
+		js.mu.RLock()
+		defer js.mu.RUnlock()
+		sa := js.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("no stream assignment")
+		}
+		if len(sa.Group.Peers) != 1 || sa.Group.Desired != nil {
+			return fmt.Errorf("stream has not converged onto a single peer yet, peers %+v", sa.Group.Peers)
+		}
+		if sa.Group.Name == origGroup {
+			return fmt.Errorf("stream group has not been renamed yet, still %q", origGroup)
+		}
+		return nil
+	})
+
+	// The stream must be usable again on the survivor alone. It stays configured
+	// as R2, it is only under-replicated until the lost server comes back.
+	nc, js = jsClientConnect(t, survivor)
+	defer nc.Close()
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil || si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("no stream leader")
+		}
+		if len(si.Cluster.Replicas) != 0 {
+			return fmt.Errorf("expected no replicas, got %d", len(si.Cluster.Replicas))
+		}
+		if si.Config.Replicas != 2 {
+			return fmt.Errorf("expected the stream to stay configured as R2, got R%d", si.Config.Replicas)
+		}
+		if si.State.Msgs != 5 {
+			return fmt.Errorf("expected 5 messages, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+	_, err = js.Publish("foo", []byte("after-recovery"))
+	require_NoError(t, err)
+
+	// Now the lost server comes back, under the same name and with its old state.
+	c.restartServer(dead)
+	c.checkClusterFormed()
+
+	// The meta group must take it back into the peer set.
+	c.waitOnPeerCount(2)
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if cs := meta.ClusterSize(); cs != 2 {
+			return fmt.Errorf("expected meta cluster size 2, got %d", cs)
+		}
+		if qn := meta.QuorumNeeded(); qn != 2 {
+			return fmt.Errorf("expected quorum 2, got %d", qn)
+		}
+		return nil
+	})
+
+	// And the stream must heal back up to its configured replica count.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil || si.Cluster.Leader == _EMPTY_ {
+			return fmt.Errorf("no stream leader")
+		}
+		if len(si.Cluster.Replicas) != 1 {
+			return fmt.Errorf("expected 1 replica, got %d", len(si.Cluster.Replicas))
+		}
+		if !si.Cluster.Replicas[0].Current {
+			return fmt.Errorf("replica %q is not current", si.Cluster.Replicas[0].Name)
+		}
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 6 {
+			return fmt.Errorf("expected 6 messages, got %d", state.Msgs)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterMetaReplicasInJsz(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

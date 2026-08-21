@@ -3446,6 +3446,8 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 		return nil, NewJSClusterNotActiveError()
 	}
 
+	// While a desired state is pending the group keeps a node even at a single peer, so
+	// scaling down doesn't lose the Raft term a newer server resumes the migration from.
 	// If this is a single peer raft group or we are not a member return.
 	if (rg.Desired == nil && len(rg.Peers) <= 1) || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.
@@ -4636,7 +4638,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 	// Before publishing a stable R1 assignment, make the store independently durable
 	// because applying the assignment will remove the Raft node and its WAL.
-	if exactMatch && replicas == 1 {
+	if exactMatch && len(current) == 1 {
 		if err := mset.flushForScaleDown(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
@@ -5908,7 +5910,8 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	sa.err = osa.err
 
 	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
-	if sa.Config.Replicas == 1 && sa.Group.node != nil && sa.Group.Desired == nil {
+	// Note the group can converge onto one peer without the config scaling down based on peer-removes.
+	if len(sa.Group.Peers) == 1 && sa.Group.node != nil && sa.Group.Desired == nil {
 		sa.Group.node = nil
 	}
 
@@ -6018,6 +6021,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	s, rg, desired := js.srv, sa.Group, sa.Group.Desired
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning, numReplicas := osa.Group.node != nil, len(rg.Peers)
+	// A remap below clears alreadyRunning, but we must still know whether we were
+	// running clustered before, or we'd skip the cleanup we owe on a downgrade.
+	wasRunning := alreadyRunning
 	wasClustered := len(osa.Group.Peers) > 1 || osa.Group.Desired != nil
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
@@ -6076,7 +6082,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			if !started {
 				mset.monitorWg.Done()
 			}
-		} else if numReplicas == 1 && desired == nil && alreadyRunning {
+		} else if numReplicas == 1 && desired == nil && wasRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
 			mset.stopMonitoring()
