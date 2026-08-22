@@ -218,6 +218,22 @@ func TestConvenientNumbers(t *testing.T) {
 	test(t, easynum, ex)
 }
 
+func TestConvenientNumbersInvalidSuffix(t *testing.T) {
+	if _, err := Parse("foo = 1kbb"); err == nil {
+		t.Fatal("Expected err for invalid number suffix")
+	} else if !strings.Contains(err.Error(), "invalid integer suffix") {
+		t.Fatalf("Expected invalid integer suffix error, got %q", err)
+	}
+}
+
+func TestConvenientNumbersOverflow(t *testing.T) {
+	if _, err := Parse("foo = 9223372036854775807k"); err == nil {
+		t.Fatal("Expected err for integer overflow")
+	} else if !strings.Contains(err.Error(), "out of the range") {
+		t.Fatalf("Expected out of range error, got %q", err)
+	}
+}
+
 func TestParseFileWithChecksDigestPreservesConfigKeyUsedAsVariable(t *testing.T) {
 	confFile := filepath.Join(t.TempDir(), "nats.conf")
 	if err := os.WriteFile(confFile, []byte(`
