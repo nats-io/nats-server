@@ -19282,6 +19282,54 @@ func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
 	}
 }
 
+func TestJetStreamSourceInfoExposesHighestSourcedSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORIGIN",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "SOURCE",
+		Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "SOURCE"), nil, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamInfoResponse
+		require_NoError(t, json.Unmarshal(rm.Data, &resp))
+		if resp.Error != nil {
+			return resp.Error
+		}
+		si := resp.StreamInfo
+		if len(si.Sources) != 1 {
+			return fmt.Errorf("expected 1 source, got %d", len(si.Sources))
+		} else if si.State.Msgs != 3 {
+			return fmt.Errorf("expected 3 msgs, got %d", si.State.Msgs)
+		}
+		src := si.Sources[0]
+		if src.Name != "ORIGIN" {
+			return fmt.Errorf("expected source name to be ORIGIN, got %q", src.Name)
+		} else if src.Seq != 3 {
+			return fmt.Errorf("expected highest sourced seq of 3, got %d", src.Seq)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamRateLimitHighStreamIngest(t *testing.T) {
 	cfgFmt := []byte(fmt.Sprintf(`
         jetstream: {

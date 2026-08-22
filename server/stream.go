@@ -466,6 +466,7 @@ type StreamSourceInfo struct {
 	Name              string                   `json:"name"`
 	External          *ExternalStream          `json:"external,omitempty"`
 	Lag               uint64                   `json:"lag"`
+	Seq               uint64                   `json:"seq,omitempty"`
 	Active            time.Duration            `json:"active"`
 	Error             *ApiError                `json:"error,omitempty"`
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
@@ -3214,7 +3215,7 @@ func (mset *stream) sourceInfo(si *sourceInfo) *StreamSourceInfo {
 		return nil
 	}
 
-	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Error: si.err, FilterSubject: si.sf}
+	var ssi = StreamSourceInfo{Name: si.name, Lag: si.lag, Seq: si.sseq, Error: si.err, FilterSubject: si.sf}
 
 	trConfigs := make([]SubjectTransformConfig, len(si.sfs))
 	for i := range si.sfs {
