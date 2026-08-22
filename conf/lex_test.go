@@ -531,6 +531,14 @@ func TestVariableValues(t *testing.T) {
 	}
 	lx = lex("foo $bar")
 	expect(t, lx, expectedItems)
+
+	expectedItems = []item{
+		{itemKey, "foo", 1, 0},
+		{itemVariable, "bar", 1, 8},
+		{itemEOF, "", 1, 0},
+	}
+	lx = lex("foo = ${bar}")
+	expect(t, lx, expectedItems)
 }
 
 func TestArrays(t *testing.T) {
@@ -708,6 +716,22 @@ func TestNestedMaps(t *testing.T) {
 	}
 
 	lx := lex(nestedMap)
+	expect(t, lx, expectedItems)
+}
+
+func TestSimpleMapWithVariable(t *testing.T) {
+	expectedItems := []item{
+		{itemKey, "foo", 1, 0},
+		{itemMapStart, "", 1, 7},
+		{itemKey, "ip", 1, 7},
+		{itemVariable, "IP", 1, 12},
+		{itemKey, "port", 1, 17},
+		{itemVariable, "PORT", 1, 26},
+		{itemMapEnd, "", 1, 32},
+		{itemEOF, "", 1, 0},
+	}
+
+	lx := lex("foo = {ip=${IP}, port = ${PORT}}")
 	expect(t, lx, expectedItems)
 }
 
