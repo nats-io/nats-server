@@ -8328,6 +8328,27 @@ func TestJetStreamProgrammaticMaxStoreAndMaxMemory(t *testing.T) {
 	}
 }
 
+func TestJetStreamDiskAvailableAccountsForExistingStoreUsage(t *testing.T) {
+	dir := t.TempDir()
+
+	// Baseline: no JetStream data written yet.
+	before := diskAvailable(dir)
+	require_True(t, before > 0)
+
+	// Simulate JetStream having already written data into its own store
+	// directory across a previous run.
+	data := make([]byte, 50*1024*1024) // 50MB
+	require_NoError(t, os.WriteFile(filepath.Join(dir, "existing.blk"), data, 0644))
+
+	after := diskAvailable(dir)
+
+	// Before the fix, `after` drops by roughly 75% of the 50MB we just wrote,
+	// since existing JetStream usage was never added back before the 75%
+	// calculation. After the fix, that usage is added back, so `after`
+	// should stay roughly level with `before` rather than shrinking.
+	require_True(t, after >= before-(1024*1024)) // small slack for rounding/fs overhead
+}
+
 func TestJetStreamDynConfigBothPositive(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
