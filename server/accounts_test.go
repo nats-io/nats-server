@@ -4194,6 +4194,135 @@ func TestAccountServiceImportReplyDroppedAcrossClusterRoutes(t *testing.T) {
 	}
 }
 
+func TestAccountServiceImportDeliveredToStreamImportOfOtherAccount(t *testing.T) {
+	// A pushes into B via a service import, C receives what lands in B via
+	// a stream import. On a single server the message used to be dropped
+	// because service-imported messages skipped all stream import shadow
+	// subscriptions, even those of an account that cannot create a cycle.
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			A {
+				users = [{ user: a, password: a }]
+				imports = [{ service: { account: B, subject: "req.>" } }]
+			}
+			B {
+				users = [{ user: b, password: b }]
+				exports = [
+					{ service: "req.>" }
+					{ stream: "req.>" }
+				]
+			}
+			C {
+				users = [{ user: c, password: c }]
+				imports = [{ stream: { account: B, subject: "req.>" } }]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Subscriber in C, via the stream import from B.
+	ncC := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "c"))
+	defer ncC.Close()
+	subC := natsSubSync(t, ncC, "req.>")
+	natsFlush(t, ncC)
+
+	// Control subscriber directly in B.
+	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncB.Close()
+	subB := natsSubSync(t, ncB, "req.>")
+	natsFlush(t, ncB)
+
+	// Publisher in A, into B via the service import.
+	ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncA.Close()
+	natsPub(t, ncA, "req.test", []byte("hello"))
+	natsFlush(t, ncA)
+
+	// The subscriber in B sees the service-imported message.
+	msg := natsNexMsg(t, subB, time.Second)
+	require_Equal(t, string(msg.Data), "hello")
+	// The subscriber in C must receive it through the stream import, same
+	// as it already does when publisher and subscriber are on different
+	// servers of a cluster.
+	msg = natsNexMsg(t, subC, time.Second)
+	require_Equal(t, string(msg.Data), "hello")
+}
+
+func TestAccountChainedServiceImportDeliveredOnceToStreamImports(t *testing.T) {
+	// A imports svc from B, B implements it by importing from C, and B
+	// also stream-imports svc from C. Accounts already on the import path
+	// must not get a second copy through their stream import shadow subs,
+	// while an unrelated account D still receives the message.
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			A {
+				users = [{ user: a, password: a }]
+				imports = [{ service: { account: B, subject: "svc" } }]
+			}
+			B {
+				users = [{ user: b, password: b }]
+				exports = [{ service: "svc" }]
+				imports = [
+					{ service: { account: C, subject: "svc" } }
+					{ stream: { account: C, subject: "svc" } }
+				]
+			}
+			C {
+				users = [{ user: c, password: c }]
+				exports = [
+					{ service: "svc" }
+					{ stream: "svc" }
+				]
+			}
+			D {
+				users = [{ user: d, password: d }]
+				imports = [{ stream: { account: C, subject: "svc" } }]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Subscriber in B, receives on the first hop and must not get a second
+	// copy through its shadow sub in C.
+	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncB.Close()
+	subB := natsSubSync(t, ncB, "svc")
+	natsFlush(t, ncB)
+
+	// Responder in C.
+	ncC := natsConnect(t, s.ClientURL(), nats.UserInfo("c", "c"))
+	defer ncC.Close()
+	subC := natsSubSync(t, ncC, "svc")
+	natsFlush(t, ncC)
+
+	// Subscriber in D, via the stream import from C.
+	ncD := natsConnect(t, s.ClientURL(), nats.UserInfo("d", "d"))
+	defer ncD.Close()
+	subD := natsSubSync(t, ncD, "svc")
+	natsFlush(t, ncD)
+
+	ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncA.Close()
+	natsPub(t, ncA, "svc", []byte("hi"))
+	natsFlush(t, ncA)
+
+	natsNexMsg(t, subC, time.Second)
+	natsNexMsg(t, subB, time.Second)
+	natsNexMsg(t, subD, time.Second)
+	// Nothing should be left over, subscribers in B and C in particular
+	// must not see a duplicate from B's stream import of C.
+	time.Sleep(100 * time.Millisecond)
+	for _, sub := range []*nats.Subscription{subB, subC, subD} {
+		if n, _, _ := sub.Pending(); n != 0 {
+			t.Fatalf("expected no extra copies, got %d", n)
+		}
+	}
+}
+
 func TestStreamActivationExpiredNoMatchDoesNotInvalidate(t *testing.T) {
 	// Account performing the import.
 	a := NewAccount("importer")
