@@ -1133,12 +1133,17 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 
 	var wg sync.WaitGroup
 
+	// Cap inflight consumer create requests to prevent timeout on slower CI machines.
+	inflight := make(chan struct{}, 50)
+
 	for i := 0; i < numConsumers; i++ {
 		cname := fmt.Sprintf("CONS-%d", i+1)
 		consumers = append(consumers, cname)
 		wg.Add(1)
+		inflight <- struct{}{}
 		go func() {
 			defer wg.Done()
+			defer func() { <-inflight }()
 			_, err := js.PullSubscribe("foo.>", cname, nats.BindStream("TEST"))
 			require_NoError(t, err)
 		}()
@@ -1161,12 +1166,17 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 	numStreams := 200
 	streams := make([]string, 0, numStreams)
 
+	// Cap number of inflight stream request creates.
+	sinflight := make(chan struct{}, 25)
+
 	for i := 0; i < numStreams; i++ {
 		sname := fmt.Sprintf("TEST-%d", i+1)
 		streams = append(streams, sname)
 		wg.Add(1)
+		sinflight <- struct{}{}
 		go func() {
 			defer wg.Done()
+			defer func() { <-sinflight }()
 			_, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
 			require_NoError(t, err)
 		}()
