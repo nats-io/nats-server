@@ -6492,6 +6492,195 @@ func TestJetStreamTieredLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamAssetLimits(t *testing.T) {
+	storeDir := t.TempDir()
+	confFmt := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				max_streams_total: %d
+				max_consumers_total: %d
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(confFmt, storeDir, 2, 2)))
+	s, _ := RunServerWithConfig(conf)
+	defer func() { s.Shutdown() }()
+
+	nc, js := jsClientConnect(t, s)
+
+	// Create streams and consumers up to the limit of 2 each.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"S1.>"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Both limits are now reached, so creating more is rejected.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Updating or idempotently recreating existing assets does not add new
+	// ones and must still be allowed while at the limit.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>"}})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>", "S2b.>"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Restart with both limits lowered to 1. Recovery must repopulate the totals from the
+	// existing assets, so creating new ones is still rejected even though we exceed the limit.
+	s.Shutdown()
+	conf = createConfFile(t, []byte(fmt.Sprintf(confFmt, storeDir, 1, 1)))
+	s, _ = RunServerWithConfig(conf)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, name := range []string{"S1", "S2"} {
+			if _, err = js.StreamInfo(name); err != nil {
+				return err
+			}
+		}
+		for _, dur := range []string{"C1", "C2"} {
+			if _, err = js.ConsumerInfo("S1", dur); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	// Ephemerals are new consumers as well.
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Existing assets can still be idempotently recreated and updated, even while
+	// above the lowered limit, since that doesn't add new assets.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>", "S2b.>"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>", "S2c.>"}})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 10})
+	require_NoError(t, err)
+}
+
+func TestJetStreamAssetLimitsAccountDisableEnable(t *testing.T) {
+	storeDir := t.TempDir()
+	confFmt := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				max_streams_total: 2
+				max_consumers_total: 2
+			}
+		}
+		accounts: {
+			A: { %s users: [{user: a, password: pwd}] }
+			SYS: { users: [{user: sys, password: pwd}] }
+		}
+		system_account: SYS
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(confFmt, storeDir, "jetstream: enabled,")))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	readTotals := func() (int32, int32) {
+		t.Helper()
+		sjs := s.getJetStream()
+		require_NotNil(t, sjs)
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		return sjs.totalStreams, sjs.totalConsumers
+	}
+	requireTotals := func(streams, consumers int32) {
+		t.Helper()
+		ts, tc := readTotals()
+		require_Equal(t, ts, streams)
+		require_Equal(t, tc, consumers)
+	}
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+	defer nc.Close()
+
+	// Create streams and consumers up to the limit of 2 each.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"S1.>"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"S2.>"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	requireTotals(2, 2)
+
+	// Reload with JetStream disabled for the account. The streams are stopped and
+	// unregistered, which must be reflected in the system-wide totals.
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confFmt, storeDir, "")))
+	require_NoError(t, s.Reload())
+	requireTotals(0, 0)
+
+	// Re-enable JetStream for the account, which recovers the assets and
+	// repopulates the totals. They must not be counted twice.
+	changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(confFmt, storeDir, "jetstream: enabled,")))
+	require_NoError(t, s.Reload())
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, name := range []string{"S1", "S2"} {
+			if _, err = js.StreamInfo(name); err != nil {
+				return err
+			}
+		}
+		for _, dur := range []string{"C1", "C2"} {
+			if _, err = js.ConsumerInfo("S1", dur); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	requireTotals(2, 2)
+
+	// We are exactly at the limit again, so creating more is rejected.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Deleting an asset must free up room for a new one. If the totals were
+	// inflated by the disable/enable cycle this would still be rejected.
+	require_NoError(t, js.DeleteStream("S2"))
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}})
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteConsumer("S1", "C2"))
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	requireTotals(2, 2)
+}
+
 type obsi struct {
 	cfg ConsumerConfig
 	ack int

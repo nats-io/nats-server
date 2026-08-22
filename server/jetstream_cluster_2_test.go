@@ -9456,6 +9456,103 @@ func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T
 	}
 }
 
+var jsClusterAssetLimitsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		max_mem_store: 2GB
+		max_file_store: 2GB
+		store_dir: '%s'
+		limits: {
+			max_streams_total: 2
+			max_consumers_total: 2
+		}
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+func TestJetStreamClusterAssetLimits(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterAssetLimitsTempl, "ALT", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+
+	// Create streams and consumers up to the limit of 2 each.
+	for _, name := range []string{"S1", "S2"} {
+		_, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name + ".>"}, Replicas: 3})
+		require_NoError(t, err)
+	}
+	for _, dur := range []string{"C1", "C2"} {
+		_, err := js.AddConsumer("S1", &nats.ConsumerConfig{Durable: dur, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	// Both limits are now reached, so creating more is rejected.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}, Replicas: 3})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	nc.Close()
+
+	// Restart the cluster with both limits lowered to 1. Recovery must repopulate the totals
+	// from the existing assets, so creating new ones is still rejected.
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+	for _, o := range c.opts {
+		o.JetStreamLimits.MaxStreamsTotal = 1
+		o.JetStreamLimits.MaxConsumersTotal = 1
+	}
+	c.restartAllSamePorts()
+	c.waitOnAllCurrent()
+
+	// The existing assets must recover, repopulating the totals.
+	for _, name := range []string{"S1", "S2"} {
+		c.waitOnStreamLeader(globalAccountName, name)
+	}
+	for _, dur := range []string{"C1", "C2"} {
+		c.waitOnConsumerLeader(globalAccountName, "S1", dur)
+	}
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, name := range []string{"S1", "S2"} {
+		_, err = js.StreamInfo(name)
+		require_NoError(t, err)
+	}
+	for _, dur := range []string{"C1", "C2"} {
+		_, err = js.ConsumerInfo("S1", dur)
+		require_NoError(t, err)
+	}
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S3", Subjects: []string{"S3.>"}, Replicas: 3})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum number of streams reached")
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Existing assets can still be idempotently recreated and updated, even while
+	// above the lowered limit, since that doesn't add new assets.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"S1.>"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"S1.>", "S1b.>"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S1", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.

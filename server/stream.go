@@ -926,6 +926,14 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 			js.mu.RUnlock()
 			return nil, err
 		}
+		// For a standalone server, enforce the system-wide total streams limit.
+		if singleServerMode {
+			maxStreams := s.getOpts().JetStreamLimits.MaxStreamsTotal
+			if maxStreams > 0 && int(js.totalStreams) >= maxStreams {
+				js.mu.RUnlock()
+				return nil, NewJSMaximumStreamsLimitError()
+			}
+		}
 		js.mu.RUnlock()
 		jsa.mu.Lock()
 	}
@@ -1185,6 +1193,13 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 	jsa.mu.Unlock()
 	if recovering && !restoring {
 		mset.store.Ready()
+	}
+
+	// Register with our global last, but only for a standalone server.
+	if !recovering && singleServerMode {
+		js.mu.Lock()
+		js.totalStreams++
+		js.mu.Unlock()
 	}
 
 	return mset, nil
@@ -8740,6 +8755,7 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 
 	// Remove from our account map first.
 	jsa.mu.Lock()
+	_, wasRegistered := jsa.streams[name]
 	// Preserve in the account if it's marked offline, to have it remain queryable.
 	if deleteFlag || offlineReason == _EMPTY_ {
 		delete(jsa.streams, name)
@@ -8790,6 +8806,8 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	for _, o := range mset.consumers {
 		obs = append(obs, o)
 	}
+	// Capture the limitable consumer count to adjust the system-wide total if a standalone server.
+	limitableConsumers := int32(mset.numLimitableConsumers())
 	// Preserve the consumers if it's marked offline, to have them remain queryable.
 	if deleteFlag || offlineReason == _EMPTY_ {
 		mset.clsMu.Lock()
@@ -8919,6 +8937,15 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 			os.Remove(filepath.Join(accDir, streamsDir))
 			os.Remove(accDir)
 		}()
+
+		// For a standalone server, adjust the total stream and consumer counters.
+		singleServerMode := !mset.srv.JetStreamIsClustered() && mset.srv.standAloneMode()
+		if singleServerMode && wasRegistered {
+			js.mu.Lock()
+			js.totalStreams--
+			js.totalConsumers -= limitableConsumers
+			js.mu.Unlock()
+		}
 	} else if store != nil {
 		// Ignore errors.
 		store.Stop()

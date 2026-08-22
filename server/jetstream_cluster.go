@@ -9868,6 +9868,19 @@ func (js *jetStream) jsClusteredStreamLimitsCheck(acc *Account, cfg *StreamConfi
 	if selectedLimits.MaxStreams > 0 && numStreams >= selectedLimits.MaxStreams {
 		return NewJSMaximumStreamsLimitError()
 	}
+	// Enforce the system-wide total streams limit across all accounts.
+	// Don't count the stream toward the limit if it already exists (idempotent update).
+	if maxStreams := js.srv.getOpts().JetStreamLimits.MaxStreamsTotal; maxStreams > 0 &&
+		(cfg == nil || js.streamAssignmentOrInflight(acc.Name, cfg.Name) == nil) {
+		// TODO(mvv): can optimize and use js.totalStreams once no meta.ForwardProposal calls exist
+		var total int
+		for range js.streamAssignmentsOrInflightSeqAllAccounts() {
+			total++
+		}
+		if total >= maxStreams {
+			return NewJSMaximumStreamsLimitError()
+		}
+	}
 	// Check for account limits here before proposing.
 	if err := js.checkAccountLimits(selectedLimits, tier, cfg, reservations); err != nil {
 		return NewJSStreamLimitsError(err, Unless(err))
@@ -11261,6 +11274,31 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 					}
 				}
 				if (streamMaxc > 0 && total >= streamMaxc) || (tierMaxc > 0 && tierTotal >= tierMaxc) {
+					resp.Error = NewJSMaximumConsumersLimitError()
+					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+					return
+				}
+			}
+		}
+
+		// Enforce the system-wide total consumers limit across all accounts.
+		// Don't count direct/sourcing consumers.
+		if maxConsumers := s.getOpts().JetStreamLimits.MaxConsumersTotal; maxConsumers > 0 && !cfg.Direct && !cfg.Sourcing {
+			// Don't block idempotent updates of an existing consumer.
+			if oname == _EMPTY_ || js.consumerAssignmentOrInflight(acc.Name, stream, oname) == nil {
+				// TODO(mvv): can optimize and use js.totalConsumers once no meta.ForwardProposal calls exist
+				var total int
+				for accName, sa := range js.streamAssignmentsOrInflightSeqAllAccounts() {
+					if sa.Config == nil {
+						continue
+					}
+					for ca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
+						if ca.Config != nil && !ca.Config.Direct && !ca.Config.Sourcing {
+							total++
+						}
+					}
+				}
+				if total >= maxConsumers {
 					resp.Error = NewJSMaximumConsumersLimitError()
 					s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 					return
