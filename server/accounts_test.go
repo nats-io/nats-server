@@ -1557,6 +1557,53 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	}
 }
 
+func TestServiceImportRequestInfoRespectsMaxPayload(t *testing.T) {
+	opts := defaultServerOptions
+	opts.MaxPayload = 64
+	s := New(&opts)
+	defer s.Shutdown()
+
+	serviceAcc, err := s.RegisterAccount("$service")
+	require_NoError(t, err)
+	callerAcc, err := s.RegisterAccount("$caller")
+	require_NoError(t, err)
+	require_NoError(t, serviceAcc.AddServiceExport("svc.remote", nil))
+	require_NoError(t, callerAcc.AddServiceImport(serviceAcc, "svc.local", "svc.remote"))
+
+	delivered := make(chan int, 1)
+	sub, err := serviceAcc.subscribeInternalEx(
+		"svc.remote",
+		func(_ *subscription, c *client, _ *Account, _, _ string, _ []byte) {
+			delivered <- c.pa.size
+		},
+		false,
+	)
+	require_NoError(t, err)
+	defer serviceAcc.unsubscribeInternal(sub)
+
+	caller, crCaller, _ := newClientForServer(s)
+	defer caller.close()
+	require_NoError(t, caller.registerWithAccount(callerAcc))
+
+	payload := strings.Repeat("a", int(opts.MaxPayload)-1)
+	proto := fmt.Sprintf("PUB svc.local reply %d\r\n%s\r\n", len(payload), payload)
+	require_NoError(t, caller.parse([]byte(proto)))
+
+	select {
+	case size := <-delivered:
+		if size <= int(opts.MaxPayload) {
+			t.Fatalf("Expected test message to exceed max_payload after import, got %d", size)
+		}
+		t.Fatalf("Expected oversized service import request to be suppressed, got %d", size)
+	default:
+	}
+
+	require_NoError(t, caller.parse([]byte("PING\r\n")))
+	line, err := crCaller.ReadString('\n')
+	require_NoError(t, err)
+	require_Equal(t, line, "PONG\r\n")
+}
+
 // Make sure the AddStreamExport function is additive if called multiple times.
 func TestAddStreamExport(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
