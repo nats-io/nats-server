@@ -13248,16 +13248,17 @@ func TestJetStreamConsumerFailedRecoverStateDoesNotLeakInternalClients(t *testin
 	cfg := &ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit}
 	cs, err := mset.store.ConsumerStore("dur", time.Now().UTC(), cfg)
 	require_NoError(t, err)
-	odir := cs.(*consumerFileStore).odir // Capture before stop.
+	ifn := cs.(*consumerFileStore).ifn // Capture before stop.
 	require_NoError(t, cs.ForceUpdate(&ConsumerState{
 		Delivered: SequencePair{Consumer: 100, Stream: 100},
 		AckFloor:  SequencePair{Consumer: 100, Stream: 100},
 	}))
 	require_NoError(t, cs.Stop())
 
-	// Make the store directory read-only so the reconcile fails.
-	require_NoError(t, os.Chmod(odir, 0o500))
-	defer os.Chmod(odir, 0o700) // restore before Shutdown cleans up
+	// Make a directory where the state file's temporary write target lives
+	// (during writeAtomically) so that it fails with EISDIR when opening it.
+	// This fails even when the tests run as root (usually in container envs).
+	require_NoError(t, os.Mkdir(ifn+".tmp", defaultDirPerms))
 
 	numClients := func(a *Account) int {
 		a.mu.RLock()
