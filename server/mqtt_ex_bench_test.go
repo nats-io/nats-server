@@ -90,6 +90,7 @@ func BenchmarkXMQTT(b *testing.B) {
 
 func (bc mqttBenchContext) runAll(b *testing.B) {
 	bc.benchmarkPub(b)
+	bc.benchmarkPubPipelined(b)
 	bc.benchmarkPubRetained(b)
 	bc.benchmarkPubSub(b)
 	bc.benchmarkSubRet(b)
@@ -108,6 +109,31 @@ func (bc mqttBenchContext) benchmarkPub(b *testing.B) {
 				"--messages", strconv.Itoa(b.N),
 				"--size", strconv.Itoa(bc.MessageSize),
 				"--publishers", strconv.Itoa(bc.Publishers),
+				"--mps", "0", // no rate throttle
+			)
+		})
+	})
+}
+
+// makes a copy of bc
+//
+// Like PUB, but with up to 256 messages in flight: measures per-connection
+// throughput rather than round-trip latency.
+func (bc mqttBenchContext) benchmarkPubPipelined(b *testing.B) {
+	m := mqttBenchDefaultMatrix.
+		NoSubscribers().
+		NoTopics().
+		QOS1Only()
+
+	b.Run("PUBX", func(b *testing.B) {
+		m.runMatrix(b, bc, func(b *testing.B, bc *mqttBenchContext) {
+			bc.runAndReport(b, "pub",
+				"--qos", strconv.Itoa(bc.QOS),
+				"--messages", strconv.Itoa(b.N),
+				"--size", strconv.Itoa(bc.MessageSize),
+				"--publishers", strconv.Itoa(bc.Publishers),
+				"--mps", "0", // no rate throttle
+				"--pipeline", "256",
 			)
 		})
 	})
