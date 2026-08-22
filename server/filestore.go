@@ -9581,6 +9581,25 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
 				// We should not do this at all if we are already on the last block.
 				if i == bi && i < len(fs.blks)-1 {
+					// If by chance the FSS of the next block is loaded, then we can do a cheap intersect
+					// of its FSS, rather than consulting the entire PSIM in checkSkipFirstBlockMulti.
+					var foundInNext bool
+					if nmb := fs.blks[i+1]; nmb != nil {
+						nmb.mu.RLock()
+						if !nmb.fssNotLoaded() {
+							stree.IntersectGSL(nmb.fss, sl, func(subject []byte, val *SimpleState) bool {
+								foundInNext = true
+								return false
+							})
+						}
+						nmb.mu.RUnlock()
+					}
+					if foundInNext {
+						if expireOk {
+							mb.tryForceExpireCache()
+						}
+						continue
+					}
 					nbi, err := fs.checkSkipFirstBlockMulti(sl, bi)
 					// Nothing available.
 					if err == ErrStoreEOF {
