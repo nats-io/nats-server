@@ -1903,6 +1903,142 @@ func TestRouteSaveTLSName(t *testing.T) {
 	checkClusterFormed(t, s1, s2, s3)
 }
 
+func TestRouteTLSNameBackupRestoreOnHostnameError(t *testing.T) {
+	c1Conf := createConfFile(t, []byte(`
+		port: -1
+		cluster {
+			name: "abc"
+			port: -1
+			pool_size: -1
+			tls {
+				cert_file: '../test/configs/certs/server-noip.pem'
+				key_file: '../test/configs/certs/server-key-noip.pem'
+				ca_file: '../test/configs/certs/ca.pem'
+			}
+		}
+	`))
+	s1, o1 := RunServerWithConfig(c1Conf)
+	defer s1.Shutdown()
+
+	tmpl := `
+	port: -1
+	cluster {
+		name: "abc"
+		port: -1
+		pool_size: -1
+		routes: ["nats://%s:%d"]
+		tls {
+			cert_file: '../test/configs/certs/server-noip.pem'
+			key_file: '../test/configs/certs/server-key-noip.pem'
+			ca_file: '../test/configs/certs/ca.pem'
+		}
+	}
+	`
+	c2Conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "localhost", o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(c2Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	s2.mu.RLock()
+	savedTLSName := s2.routeTLSName
+	savedTLSLastName := s2.routeTLSLastName
+	s2.mu.RUnlock()
+	if savedTLSName != "localhost" {
+		t.Fatalf("routeTLSName should be 'localhost', got %q", savedTLSName)
+	}
+	if savedTLSLastName != "localhost" {
+		t.Fatalf("routeTLSLastName should be 'localhost', got %q", savedTLSLastName)
+	}
+
+	// Reload config to use IP-based route URLs. The explicit route is now an
+	// IP, so saveRouteTLSName won't update routeTLSName or routeTLSLastName.
+	// The saved "localhost" from the initial config is still in both fields.
+	reloadUpdateConfig(t, s2, c2Conf, fmt.Sprintf(tmpl, "127.0.0.1", o1.Cluster.Port))
+
+	// Close implicit routes to trigger reconnection via gossip.
+	// The gossip URL uses an IP, so routeTLSName ("localhost") is used as
+	// the TLS ServerName. The certificate has "localhost" as a DNS SAN,
+	// so the handshake succeeds and the cluster reforms.
+	s2.mu.RLock()
+	s2.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		if r.route.routeType == Implicit {
+			r.nc.Close()
+		}
+		r.mu.Unlock()
+	})
+	s2.mu.RUnlock()
+
+	checkClusterFormed(t, s1, s2)
+
+	// After successful reconnect, routeTLSName should still be "localhost".
+	s2.mu.RLock()
+	savedTLSName = s2.routeTLSName
+	savedTLSLastName = s2.routeTLSLastName
+	s2.mu.RUnlock()
+	if savedTLSName != "localhost" {
+		t.Fatalf("routeTLSName should still be 'localhost', got %q", savedTLSName)
+	}
+	if savedTLSLastName != "localhost" {
+		t.Fatalf("routeTLSLastName should still be 'localhost', got %q", savedTLSLastName)
+	}
+
+	// Now clear routeTLSName to simulate a HostnameError having cleared it.
+	// On the next reconnect attempt via gossip (IP URL), the server should
+	// restore routeTLSName from routeTLSLastName, giving the hostname one
+	// more chance before falling back to the IP.
+	s2.mu.Lock()
+	s2.routeTLSName = _EMPTY_
+	s2.mu.Unlock()
+
+	// Set a logger to capture the TLS handshake error.
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	s2.SetLogger(l, false, false)
+
+	// Close all routes on s2 to trigger reconnection attempts.
+	s2.mu.RLock()
+	s2.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		r.nc.Close()
+		r.mu.Unlock()
+	})
+	s2.mu.RUnlock()
+
+	// Wait for a TLS handshake error. Since routeTLSName is empty, the IP
+	// will be used as ServerName, which fails against the DNS-only certificate.
+	// The backup restore should then set routeTLSName = "localhost" for the
+	// next attempt, allowing the cluster to reform.
+	select {
+	case <-l.errCh:
+		// Got the expected TLS error.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Did not get the expected TLS handshake error")
+	}
+
+	// After the error, routeTLSName should be restored from the backup.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		s2.mu.RLock()
+		name := s2.routeTLSName
+		s2.mu.RUnlock()
+		if name != "localhost" {
+			return fmt.Errorf("routeTLSName should be 'localhost' (restored from backup), got %q", name)
+		}
+		return nil
+	})
+
+	// The cluster should now be able to reform using the restored hostname.
+	checkClusterFormed(t, s1, s2)
+
+	// The backup should be consumed after the restore.
+	s2.mu.RLock()
+	savedTLSLastName = s2.routeTLSLastName
+	s2.mu.RUnlock()
+	if savedTLSLastName != _EMPTY_ {
+		t.Fatalf("routeTLSLastName should be consumed (empty), got %q", savedTLSLastName)
+	}
+}
+
 func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		port: -1
