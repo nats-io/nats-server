@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	// Allow dynamic profiling.
@@ -1156,6 +1157,24 @@ func validatePinnedCerts(pinned PinnedCertSet) error {
 }
 
 func validateOptions(o *Options) error {
+	if o.Socket != _EMPTY_ {
+		if o.Port != 0 {
+			return fmt.Errorf("cannot configure both a network port (%d) and a unix domain socket (%s)", o.Port, o.Socket)
+		}
+
+		// Unix socket paths are strictly limited by the OS kernel (usually 104 or 108 chars max)
+		if len(o.Socket) > 104 {
+			return fmt.Errorf("unix socket path %q is too long (max 104 characters)", o.Socket)
+		}
+
+		// Ensure the parent directory exists so we can actually create the file
+		parentDir := filepath.Dir(o.Socket)
+		if info, err := os.Stat(parentDir); err != nil {
+			return fmt.Errorf("parent directory for socket %q does not exist: %v", o.Socket, err)
+		} else if !info.IsDir() {
+			return fmt.Errorf("parent path %q for socket is not a directory", parentDir)
+		}
+	}
 	if o.LameDuckDuration > 0 && o.LameDuckGracePeriod >= o.LameDuckDuration {
 		return fmt.Errorf("lame duck grace period (%v) should be strictly lower than lame duck duration (%v)",
 			o.LameDuckGracePeriod, o.LameDuckDuration)
@@ -2789,16 +2808,29 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 
 	// Setup state that can enable shutdown
 	s.mu.Lock()
-	hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
-	l, e := s.getServerListener(hp)
+	var l net.Listener
+	var e error
+
+	if opts.Socket != _EMPTY_ {
+		l, e = s.getUnixListener(opts.Socket)
+		if e == nil {
+			s.Noticef("Listening for client connections on %s", opts.Socket)
+		}
+	} else {
+		hp := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
+		l, e = s.getServerListener(hp)
+		if e == nil {
+			s.Noticef("Listening for client connections on %s",
+				net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
+		}
+	}
+
 	s.listenerErr = e
 	if e != nil {
 		s.mu.Unlock()
-		s.Fatalf("Error listening on port: %s, %q", hp, e)
+		s.Fatalf("Error listening on: %v", e)
 		return
 	}
-	s.Noticef("Listening for client connections on %s",
-		net.JoinHostPort(opts.Host, strconv.Itoa(l.Addr().(*net.TCPAddr).Port)))
 
 	// Alert if PROXY protocol is enabled
 	if opts.ProxyProtocol {
@@ -2818,11 +2850,14 @@ func (s *Server) AcceptLoop(clr chan struct{}) {
 		if tlsHandshakeFirstOnly {
 			s.Warnf("Clients that are not using \"TLS Handshake First\" option will fail to connect")
 		}
+		if opts.Socket != _EMPTY_ {
+			s.Warnf("TLS is configured on a Unix Domain Socket. This is redundant and will negatively impact performance.")
+		}
 	}
 
 	// If server was started with RANDOM_PORT (-1), opts.Port would be equal
 	// to 0 at the beginning this function. So we need to get the actual port
-	if opts.Port == 0 {
+	if opts.Port == 0 && opts.Socket == _EMPTY_ {
 		// Write resolved port back to options.
 		opts.Port = l.Addr().(*net.TCPAddr).Port
 	}
@@ -2924,6 +2959,14 @@ func (s *Server) setInfoHostPort() error {
 	// port (if option was originally set to RANDOM), even during a config
 	// reload. So use of s.opts.Port is safe.
 	opts := s.getOpts()
+
+	// Explicitly mark the INFO block as a Unix socket
+	if opts.Socket != _EMPTY_ {
+		s.info.Host = "unix"
+		s.info.Port = 0
+		return nil
+	}
+
 	if opts.ClientAdvertise != _EMPTY_ {
 		h, p, err := parseHostPort(opts.ClientAdvertise, opts.Port)
 		if err != nil {
@@ -3243,6 +3286,32 @@ func (c *tlsMixConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
+func (s *Server) getUnixListener(socketPath string) (net.Listener, error) {
+	if s.listener != nil {
+		return s.listener, s.listenerErr
+	}
+
+	// Connect-to-Test: Clean up stale sockets from unexpected crashes
+	if info, err := os.Stat(socketPath); err == nil {
+		// Ensure we are only deleting a socket file!
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("file %s exists and is not a socket", socketPath)
+		}
+		if conn, err := net.Dial("unix", socketPath); err == nil {
+			conn.Close()
+			return nil, fmt.Errorf("socket %s already in use by another running server", socketPath)
+		} else if !errors.Is(err, syscall.ECONNREFUSED) {
+			// CRITICAL: If the error is Permission Denied, or anything other than
+			// Connection Refused, it might be a live socket we can't access. Do NOT delete!
+			return nil, fmt.Errorf("socket %s exists and cannot be safely verified as stale: %v", socketPath, err)
+		}
+		// File exists, is a socket, and connection was explicitly refused; it's a dead socket. Remove it.
+		os.Remove(socketPath)
+	}
+
+	return net.Listen("unix", socketPath)
+}
+
 func (s *Server) createClient(conn net.Conn) *client {
 	return s.createClientEx(conn, false)
 }
@@ -3316,6 +3385,12 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 	// Initialize
 	c.initClient()
+
+	// Ensure UDS clients are cleanly identified in monitoring
+	if _, ok := conn.RemoteAddr().(*net.UnixAddr); ok {
+		c.host = "unix"
+		c.port = 0
+	}
 
 	c.Debugf("Client connection created")
 
@@ -4126,6 +4201,13 @@ func (s *Server) closedClients() []*closedClient {
 func (s *Server) getClientConnectURLs() []string {
 	// Snapshot server options.
 	opts := s.getOpts()
+
+	// If we are strictly on a Unix socket, do not advertise it.
+	// Unix sockets are local to the machine and unusable by remote cluster members.
+	if opts.Socket != _EMPTY_ {
+		return nil
+	}
+
 	// Ignore error here since we know that if there is client advertise, the
 	// parseHostPort is correct because we did it right before calling this
 	// function in Server.New().
@@ -4215,28 +4297,33 @@ func (s *Server) getNonLocalIPsIfHostIsIPAny(host string, all bool) (bool, []str
 // if the ip is not specified, attempt to resolve it
 func resolveHostPorts(addr net.Listener) []string {
 	hostPorts := make([]string, 0)
-	hp := addr.Addr().(*net.TCPAddr)
-	port := strconv.Itoa(hp.Port)
-	if hp.IP.IsUnspecified() {
-		var ip net.IP
-		ifaces, _ := net.Interfaces()
-		for _, i := range ifaces {
-			addrs, _ := i.Addrs()
-			for _, addr := range addrs {
-				switch v := addr.(type) {
-				case *net.IPNet:
-					ip = v.IP
-					hostPorts = append(hostPorts, net.JoinHostPort(ip.String(), port))
-				case *net.IPAddr:
-					ip = v.IP
-					hostPorts = append(hostPorts, net.JoinHostPort(ip.String(), port))
-				default:
-					continue
+
+	switch hp := addr.Addr().(type) {
+	case *net.UnixAddr:
+		hostPorts = append(hostPorts, hp.Name)
+	case *net.TCPAddr:
+		port := strconv.Itoa(hp.Port)
+		if hp.IP.IsUnspecified() {
+			var ip net.IP
+			ifaces, _ := net.Interfaces()
+			for _, i := range ifaces {
+				addrs, _ := i.Addrs()
+				for _, addr := range addrs {
+					switch v := addr.(type) {
+					case *net.IPNet:
+						ip = v.IP
+						hostPorts = append(hostPorts, net.JoinHostPort(ip.String(), port))
+					case *net.IPAddr:
+						ip = v.IP
+						hostPorts = append(hostPorts, net.JoinHostPort(ip.String(), port))
+					default:
+						continue
+					}
 				}
 			}
+		} else {
+			hostPorts = append(hostPorts, net.JoinHostPort(hp.IP.String(), port))
 		}
-	} else {
-		hostPorts = append(hostPorts, net.JoinHostPort(hp.IP.String(), port))
 	}
 	return hostPorts
 }
@@ -4458,6 +4545,7 @@ func (s *Server) lameDuckMode() {
 	s.listener = nil
 	expected += s.closeWebsocketServer()
 	s.ldmCh = make(chan bool, expected)
+
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
 	// For tests, we want the grace period to be in some cases bigger

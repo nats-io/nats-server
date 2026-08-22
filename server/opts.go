@@ -414,6 +414,7 @@ type Options struct {
 	ServerName      string `json:"server_name"`
 	Host            string `json:"addr"`
 	Port            int    `json:"port"`
+	Socket          string `json:"socket,omitempty"`
 	DontListen      bool   `json:"dont_listen"`
 	ClientAdvertise string `json:"-"`
 	Trace           bool   `json:"-"`
@@ -1153,6 +1154,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ClientAdvertise = v.(string)
 	case "port":
 		o.Port = int(v.(int64))
+	case "socket":
+		o.Socket = v.(string)
 	case "server_name":
 		sn := v.(string)
 		if strings.Contains(sn, " ") {
@@ -5900,6 +5903,11 @@ func MergeOptions(fileOpts, flagOpts *Options) *Options {
 
 	if flagOpts.Port != 0 {
 		opts.Port = flagOpts.Port
+		opts.Socket = _EMPTY_ // Clear socket if CLI explicitly sets port
+	}
+	if flagOpts.Socket != _EMPTY_ {
+		opts.Socket = flagOpts.Socket
+		opts.Port = 0 // Clear port if CLI explicitly sets socket
 	}
 	if flagOpts.Host != _EMPTY_ {
 		opts.Host = flagOpts.Host
@@ -6004,9 +6012,10 @@ func setBaselineOptions(opts *Options) {
 		// Default to same bind from server if left undefined
 		opts.HTTPHost = opts.Host
 	}
-	if opts.Port == 0 {
+	// Only assign the default TCP port if no Unix Socket is requested
+	if opts.Port == 0 && opts.Socket == _EMPTY_ {
 		opts.Port = DEFAULT_PORT
-	} else if opts.Port == RANDOM_PORT {
+	} else if opts.Port == RANDOM_PORT && opts.Socket == _EMPTY_ {
 		// Choose randomly inside of net.Listen
 		opts.Port = 0
 	}
@@ -6221,6 +6230,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.BoolVar(&showHelp, "help", false, "Show this message.")
 	fs.IntVar(&opts.Port, "port", 0, "Port to listen on.")
 	fs.IntVar(&opts.Port, "p", 0, "Port to listen on.")
+	fs.StringVar(&opts.Socket, "socket", _EMPTY_, "Unix Domain Socket path to listen on.")
 	fs.StringVar(&opts.ServerName, "n", _EMPTY_, "Server name.")
 	fs.StringVar(&opts.ServerName, "name", _EMPTY_, "Server name.")
 	fs.StringVar(&opts.ServerName, "server_name", _EMPTY_, "Server name.")
