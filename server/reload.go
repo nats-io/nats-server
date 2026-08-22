@@ -1873,6 +1873,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			} else {
 				newOpts.JetStreamConcurrentIOs = oldValue.(int)
 			}
+		case "jetstreamforwardadvisories":
+			// Allowed at runtime; read live via getOpts() when advisories are
+			// emitted, so the change takes effect immediately with no further work.
 		case "websocket":
 			// Similar to gateways
 			tmpOld := oldValue.(WebsocketOpts)
