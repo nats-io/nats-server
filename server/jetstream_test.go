@@ -8376,6 +8376,62 @@ func TestJetStreamConfigExplicitZeroLimits(t *testing.T) {
 	require_Equal(t, jsc.MaxStore, 0)
 }
 
+func TestJetStreamDynamicMaxStoreNoRegressionOnRestart(t *testing.T) {
+	// Persistent store dir so stream data survives the restart.
+	sd := t.TempDir()
+
+	// Dynamic mode: max_file_store: -1 means "derive the limit from available disk".
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+                listen: 127.0.0.1:-1
+                jetstream: {max_mem_store: -1, max_file_store: -1, store_dir: %q}
+        `, sd)))
+
+	// --- First boot ---
+	s, _ := RunServerWithConfig(conf)
+
+	nc, js := jsClientConnect(t, s)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"TEST"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	// Write a few MB so JetStream consumes real disk space.
+	msg := make([]byte, 1024)
+	for i := range msg {
+		msg[i] = byte(i)
+	}
+	for i := 0; i < 4000; i++ {
+		_, err := js.Publish("TEST", msg)
+		require_NoError(t, err)
+	}
+
+	// Reported on-disk usage of the stream (used to size the assertion tolerance below).
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	usedBytes := int64(si.State.Bytes)
+
+	// Capture the dynamic limit on first boot.
+	firstMaxStore := s.JetStreamConfig().MaxStore
+	require_True(t, firstMaxStore > 0)
+
+	nc.Close()
+	s.Shutdown()
+
+	// --- Restart with the same store dir ---
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	secondMaxStore := s.JetStreamConfig().MaxStore
+
+	// Before the fix the dynamic limit was recomputed from current free disk only,
+	// so it shrank by ~75% of usage after restart. With the fix the limit reflects
+	// 75% of (free + used) and stays stable, so it must not drop by that amount.
+	require_True(t, secondMaxStore >= firstMaxStore-usedBytes/2)
+}
+
 // From 2.2.2 to 2.2.3 we fixed a bug that would not consistently place a jetstream directory
 // under the store directory configured. However there were some cases where the directory was
 // created that way and therefore 2.2.3 would start and not recognize the existing accounts,
