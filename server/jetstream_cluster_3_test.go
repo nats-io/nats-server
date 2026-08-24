@@ -1544,14 +1544,22 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	require_NoError(t, err)
 
 	// Check state directly.
-	mset.mu.Lock()
-	var state StreamState
-	mset.store.FastState(&state)
-	mset.mu.Unlock()
-
-	require_Equal(t, state.Msgs, 100)
-	require_Equal(t, state.FirstSeq, 1)
-	require_Equal(t, state.LastSeq, 100)
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		var state StreamState
+		mset.store.FastState(&state)
+		if state.Msgs != 100 {
+			return fmt.Errorf("expected 100 msgs, got %d", state.Msgs)
+		}
+		if state.FirstSeq != 1 {
+			return fmt.Errorf("expected first sequence 1, got %d", state.FirstSeq)
+		}
+		if state.LastSeq != 100 {
+			return fmt.Errorf("expected last sequence 100, got %d", state.LastSeq)
+		}
+		return nil
+	})
 }
 
 // In addition to test above, if streams were attempted to be created in parallel
