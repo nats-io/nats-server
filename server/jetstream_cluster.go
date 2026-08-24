@@ -4263,6 +4263,8 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				} else {
 					removed, err = mset.eraseMsg(md.Seq)
 				}
+				// Only respond for deletes that originated from a client request.
+				isClientReq := md.Client != nil
 
 				var isLeader bool
 				if node := mset.raftNode(); node != nil && node.Leader() {
@@ -4270,7 +4272,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				if err == ErrStoreEOF {
-					if isLeader && !isRecovering {
+					if isClientReq && isLeader && !isRecovering {
 						var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 						resp.Error = NewJSStreamMsgDeleteFailedError(err, Unless(err))
 						s.sendAPIErrResponse(md.Client, mset.account(), md.Subject, md.Reply, _EMPTY_, s.jsonResponse(resp))
@@ -4283,7 +4285,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						md.Seq, md.Client.serviceAccount(), md.Stream, err)
 				}
 
-				if isLeader && !isRecovering {
+				if isClientReq && isLeader && !isRecovering {
 					var resp = JSApiMsgDeleteResponse{ApiResponse: ApiResponse{Type: JSApiMsgDeleteResponseType}}
 					if err != nil {
 						resp.Error = NewJSStreamMsgDeleteFailedError(err, Unless(err))
