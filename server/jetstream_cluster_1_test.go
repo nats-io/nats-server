@@ -11604,7 +11604,7 @@ func TestJetStreamClusterDontReviveRemovedStream(t *testing.T) {
 	})
 
 	// Simulating the stream was catching up and is resetting after timing out.
-	require_True(t, mset.resetClusteredState(nil))
+	require_True(t, mset.resetClusteredState(mset.raftNode(), nil))
 
 	// Allow for some time here, mset.resetClusteredState might
 	// spin up a goroutine if it's resetting the stream.
