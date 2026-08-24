@@ -2359,6 +2359,10 @@ const (
 	raftRemovePeerSubj = "$NRG.RP.%s"
 	raftReply          = "$NRG.R.%s"
 	raftCatchupReply   = "$NRG.CR.%s"
+	// Catchup progress replies happen in their own subject space for
+	// flow control to the leader, but not counting toward quorum.
+	raftCatchupProgressReply = "$NRG.CP.%s"
+	raftCatchupProgressPre   = "$NRG.CP."
 )
 
 // Lock should be held (due to use of random generator)
@@ -2370,6 +2374,17 @@ func (n *raft) newCatchupInbox() string {
 		l /= base
 	}
 	return fmt.Sprintf(raftCatchupReply, b[:])
+}
+
+// Lock should be held (due to use of random generator)
+func (n *raft) newCatchupProgressInbox() string {
+	var b [replySuffixLen]byte
+	rn := fastrand.Uint64()
+	for i, l := 0, rn; i < len(b); i++ {
+		b[i] = digits[l%base]
+		l /= base
+	}
+	return fmt.Sprintf(raftCatchupProgressReply, b[:])
 }
 
 func (n *raft) newInbox() string {
@@ -3356,17 +3371,32 @@ func (n *raft) loadFirstEntry() (ae *appendEntry, err error) {
 }
 
 func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64]) {
-	n.RLock()
-	s, reply := n.s, n.areply
+	n.Lock()
+	s := n.s
 	peer, subj, term, pterm, last := ar.peer, ar.reply, n.term, n.pterm, n.pindex
 	leader := n.State() == Leader // Grab while holding lock, to not race.
-	n.RUnlock()
+	// Catchup progress responses for flow control happen on its own subscription,
+	// not counting toward quorum.
+	reply := n.newCatchupProgressInbox()
+	psub, err := n.subscribe(reply, func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
+		if pr := decodeAppendEntryResponse(msg); pr != nil {
+			n.trackPeer(pr.peer)
+			if pr.success && pr.peer == peer {
+				indexUpdatesQ.push(pr.index)
+			}
+			arPool.Put(pr)
+		}
+	})
+	n.Unlock()
 
 	defer s.grWG.Done()
 	defer arPool.Put(ar)
 
 	defer func() {
 		n.Lock()
+		if psub != nil {
+			n.unsubscribe(psub)
+		}
 		// Only remove our own progress entry.
 		if q, ok := n.progress[peer]; ok && q == indexUpdatesQ {
 			delete(n.progress, peer)
@@ -3384,6 +3414,11 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 		indexUpdatesQ.unregister()
 	}()
 
+	if err != nil {
+		// Without the progress subscription, there's no flow control, so catchup would stall.
+		n.warn("Canceling catchup for %q, could not subscribe to progress inbox: %v", peer, err)
+		return
+	}
 	if !leader {
 		n.debug("Canceling catchup for %q, not leader anymore", peer)
 		return
@@ -3748,11 +3783,6 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 	// Update peer's last index.
 	if ps != nil && ar.index > ps.li {
 		ps.li = ar.index
-	}
-
-	// If we are tracking this peer as a catchup follower, update that here.
-	if indexUpdateQ := n.progress[ar.peer]; indexUpdateQ != nil {
-		indexUpdateQ.push(ar.index)
 	}
 
 	// Ignore items already committed, or skip if this is not about an entry that matches our current term.
@@ -4236,6 +4266,9 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	// Is this a new entry? New entries will be delivered on the append entry
 	// sub, rather than a catch-up sub.
 	isNew := sub != nil && sub == n.aesub
+	// Entries arriving on any other subscription are catchup entries being streamed
+	// to our dedicated catchup inbox.
+	isCatchup := sub != nil && !isNew
 
 	// If we are/were catching up ignore old catchup subs, but only if catching up from an older server
 	// that doesn't send the leader term when catching up or if we would truncate as a result.
@@ -4593,11 +4626,12 @@ CONTINUE:
 		}
 	}
 
-	// Only ever respond to new entries.
-	// Never respond to catchup messages, because providing quorum based on this is unsafe.
 	// The only way for the leader to receive "success" MUST be through this path.
+	// Only new entries are allowed to provide quorum, since providing quorum based
+	// on catchup is unsafe. Catchup entries are acked through here, but only on a
+	// dedicated progress inbox.
 	var ar *appendEntryResponse
-	if sub != nil && isNew {
+	if isNew || (isCatchup && strings.HasPrefix(aeReply, raftCatchupProgressPre)) {
 		ar = newAppendEntryResponse(n.pterm, n.pindex, n.id, true)
 	}
 	n.Unlock()

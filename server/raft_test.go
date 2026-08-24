@@ -2847,6 +2847,198 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
+func TestNRGCatchupAcksProgressWhenGivenProgressInbox(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeReply := "$TEST"
+	progressReply := fmt.Sprintf(raftCatchupProgressReply, "test")
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	psub, err := nc.SubscribeSync(progressReply)
+	require_NoError(t, err)
+	defer psub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// Timeline
+	aeMissedMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: progressReply})
+	ae := appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries, reply: aeReply}
+	aeCatchupTrigger := encode(t, &ae)
+
+	// Simulate we missed all messages up to this point.
+	n.processAppendEntry(aeCatchupTrigger, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	// Should reply we require catchup.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar := decodeAppendEntryResponse(msg.Data)
+	require_False(t, ar.success)
+	require_True(t, strings.HasPrefix(msg.Reply, "$NRG.CR"))
+
+	// A catchup entry that carries a dedicated progress inbox MUST be acked, that
+	// response is what lets the leader move its send window forward. Without it the
+	// leader can only ever have one window in flight before it gives up and stalls.
+	n.processAppendEntry(aeMissedMsg, n.catchup.sub)
+	msg, err = psub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar = decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, 1)
+	require_True(t, ar.success)
+
+	// It must NOT also show up on the general append entry inbox, since that is the
+	// path that feeds quorum.
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestNRGCatchupSendsProgressInboxAndRefillsWindow(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.Unlock()
+
+	// Entries large enough that only a handful fit in the leader's 2MB send window,
+	// so catching this log up must span several windows.
+	const (
+		entrySize  = 512 * 1024
+		numEntries = 12
+	)
+	entries := []*Entry{newEntry(EntryNormal, make([]byte, entrySize))}
+
+	// Fill our WAL, so we have something to catch a follower up on.
+	for i := range numEntries {
+		pterm := uint64(1)
+		if i == 0 {
+			pterm = 0
+		}
+		ae := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: pterm, pindex: uint64(i), entries: entries})
+		n.processAppendEntry(ae, n.aesub)
+	}
+	require_Equal(t, n.pindex, numEntries)
+
+	catchupSubj := "$TEST.catchup"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(catchupSubj)
+	require_NoError(t, err)
+	defer sub.Drain()
+	sub.SetPendingLimits(-1, -1)
+	require_NoError(t, nc.Flush())
+
+	n.switchToLeader()
+
+	// Pretend we haven't heard from the follower in a while. It's the only other peer,
+	// so as far as we're concerned right now we've lost quorum.
+	n.Lock()
+	n.lsut = time.Time{}
+	n.peers[nats1].ts = time.Now().Add(-2 * lostQuorumInterval)
+	n.Unlock()
+	require_True(t, n.lostQuorum())
+
+	// Ask to be caught up from the very beginning.
+	ar := newAppendEntryResponse(0, 0, nats1, false)
+	ar.reply = catchupSubj
+	n.catchupFollower(ar)
+
+	// Act as the follower. Every catchup entry is acknowledged on the reply subject
+	// the leader handed us, which is what refills its send window.
+	var received int
+	for received < numEntries {
+		msg, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Only received %d of %d catchup entries before stalling: %v", received, numEntries, err)
+		}
+		// The leader must point catchup responses at a dedicated progress inbox, never
+		// at its general append entry inbox, so they can't be counted towards quorum.
+		require_True(t, strings.HasPrefix(msg.Reply, raftCatchupProgressPre))
+
+		cae, err := decodeAppendEntry(msg.Data, nil, msg.Reply)
+		require_NoError(t, err)
+		received++
+
+		par := newAppendEntryResponse(cae.term, cae.pindex+1, nats1, true)
+		require_NoError(t, nc.Publish(msg.Reply, par.encode(nil)))
+		require_NoError(t, nc.Flush())
+		arPool.Put(par)
+
+		// These acks don't go through processAppendEntryResponse, but they must still
+		// count as having heard from the peer. Otherwise, a catchup outlasting
+		// lostQuorumInterval makes us step down, while the follower is responding to us.
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if n.lostQuorum() {
+				return errors.New("should not have lost quorum, peer is acking catchup progress")
+			}
+			return nil
+		})
+	}
+}
+
+func TestNRGCatchupLargeEntriesProgressesAcrossWindows(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// The leader keeps at most maxOutstanding (2MB) of catchup entries in flight, so
+	// entries this large mean a catchup spans many send windows. A window can only be
+	// refilled once the follower reports progress on what it already received.
+	const (
+		entrySize  = 512 * 1024
+		numEntries = 64
+	)
+
+	// Take a follower down so it misses everything that follows.
+	follower := rg.nonLeader().(*stateAdder)
+	follower.stop()
+
+	leader := rg.leader().(*stateAdder)
+	for range numEntries {
+		data := make([]byte, entrySize)
+		binary.PutVarint(data, 1)
+		leader.propose(data)
+	}
+	rg.waitOnTotal(t, numEntries)
+
+	// Bring it back with an empty log, it must now be caught up from scratch.
+	follower.restart()
+
+	// Without working catchup flow control the leader pushes one 2MB window and then
+	// stalls out for a couple of seconds before the follower re-requests, which for a
+	// log this size takes the better part of a minute.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		var err error
+		for _, sm := range rg {
+			asm := sm.(*stateAdder)
+			if total := asm.total(); total != numEntries {
+				err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d",
+					asm.server(), total, numEntries))
+			}
+		}
+		return err
+	})
+}
+
 func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
