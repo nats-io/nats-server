@@ -6526,6 +6526,67 @@ func TestNRGSnapshotCheckpointNodeClosed(t *testing.T) {
 	}
 }
 
+func TestNRGDrainAndReplaySnapshotNodeClosed(t *testing.T) {
+	for _, test := range []struct {
+		title  string
+		close  func(n *raft)
+		replay bool
+	}{
+		{title: "Stop", close: func(n *raft) { n.Stop() }, replay: true},
+		{title: "Delete", close: func(n *raft) { n.Delete() }, replay: false},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			// Create a sample entry, the content doesn't matter, just that it's stored.
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+
+			nats0 := "S1Nunr6R" // "nats-0"
+
+			// Timeline, the second message ups the pterm so we can snapshot on the first.
+			aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+			aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+			aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+			n.processAppendEntry(aeMsg1, n.aesub)
+			n.processAppendEntry(aeHeartbeat, n.aesub)
+			require_Equal(t, n.commit, 1)
+			n.Applied(1)
+			n.processAppendEntry(aeMsg2, n.aesub)
+
+			// Snapshot, so we have something to replay.
+			require_NoError(t, n.InstallSnapshot(nil, false))
+			require_True(t, n.snapfile != _EMPTY_)
+			sfile := n.snapfile
+			sdata, err := os.ReadFile(sfile)
+			require_NoError(t, err)
+
+			test.close(n)
+
+			if test.replay {
+				require_True(t, n.snapfile != _EMPTY_)
+				require_True(t, n.DrainAndReplaySnapshot())
+				return
+			}
+
+			// Delete must not leave us pointing at a file it just removed.
+			require_Equal(t, n.snapfile, _EMPTY_)
+			require_False(t, n.DrainAndReplaySnapshot())
+
+			// Snapshot filenames are only "snap.<term>.<index>", so a later
+			// incarnation of a same-named group can recreate this exact path.
+			// Even then a deleted node must refuse to replay, or we'd adopt
+			// another generation's state.
+			require_NoError(t, os.MkdirAll(filepath.Dir(sfile), defaultDirPerms))
+			require_NoError(t, os.WriteFile(sfile, sdata, defaultFilePerms))
+			n.snapfile = sfile
+			require_False(t, n.DrainAndReplaySnapshot())
+		})
+	}
+}
+
 func TestNRGInstallSnapshotForce(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

@@ -1462,6 +1462,10 @@ func (n *raft) ResumeApply() {
 func (n *raft) DrainAndReplaySnapshot() bool {
 	n.Lock()
 	defer n.Unlock()
+	// If the node was deleted, we can't replay the snapshot.
+	if n.deleted {
+		return false
+	}
 	snap, err := n.loadLastSnapshot()
 	if err != nil {
 		return false
@@ -2492,6 +2496,7 @@ func (n *raft) Delete() {
 		wal.Delete(false)
 	}
 	os.RemoveAll(n.sd)
+	n.snapfile = _EMPTY_
 	n.debug("Deleted")
 }
 
