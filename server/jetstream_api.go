@@ -643,6 +643,20 @@ type JSApiStreamRemovePeerResponse struct {
 
 const JSApiStreamRemovePeerResponseType = "io.nats.jetstream.api.v1.stream_remove_peer_response"
 
+// JSApiStreamEvacuatePeerRequest is the required evacuate peer request.
+type JSApiStreamEvacuatePeerRequest struct {
+	// Server name or peer ID of the peer to be evacuated.
+	Peer string `json:"peer"`
+}
+
+// JSApiStreamEvacuatePeerResponse is the response to an evacuate peer request.
+type JSApiStreamEvacuatePeerResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiStreamEvacuatePeerResponseType = "io.nats.jetstream.api.v1.stream_evacuate_peer_response"
+
 // JSApiStreamLeaderStepDownResponse is the response to a leader stepdown request.
 type JSApiStreamLeaderStepDownResponse struct {
 	ApiResponse
@@ -688,6 +702,23 @@ type JSApiMetaServerRemoveResponse struct {
 }
 
 const JSApiMetaServerRemoveResponseType = "io.nats.jetstream.api.v1.meta_server_remove_response"
+
+// JSApiMetaServerEvacuateRequest will evacuate a peer from the meta group.
+type JSApiMetaServerEvacuateRequest struct {
+	// Server name of the peer to be evacuated.
+	Server string `json:"peer,omitempty"`
+	// Peer ID of the peer to be evacuated. If specified this is used
+	// instead of the server name.
+	Peer string `json:"peer_id,omitempty"`
+}
+
+// JSApiMetaServerEvacuateResponse is the response to a peer evacuation request in the meta group.
+type JSApiMetaServerEvacuateResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiMetaServerEvacuateResponseType = "io.nats.jetstream.api.v1.meta_server_evacuate_response"
 
 // JSApiMetaRescueRequest will unsafely lower the meta group's quorum requirement
 // on the receiving server for disaster recovery.
@@ -2475,17 +2506,44 @@ func (s *Server) jsStreamCancelMoveRequest(_ *subscription, c *client, _ *Accoun
 	s.jsClusteredStreamCancelMoveLocked(osa, acc.Name, reply)
 }
 
+// streamRemapPeerRequest is implemented by the stream remove and evacuate peer
+// requests. They are distinct models carrying the same content.
+type streamRemapPeerRequest interface {
+	// peer returns the server name or peer ID the request targets.
+	peer() string
+}
+
+func (r *JSApiStreamRemovePeerRequest) peer() string   { return r.Peer }
+func (r *JSApiStreamEvacuatePeerRequest) peer() string { return r.Peer }
+
+// streamRemapPeerResponse is implemented by the stream remove and evacuate peer
+// responses. They are distinct models carrying the same content.
+type streamRemapPeerResponse interface {
+	setError(err *ApiError)
+	setSuccess()
+}
+
+func (r *JSApiStreamRemovePeerResponse) setError(err *ApiError) { r.Error = err }
+func (r *JSApiStreamRemovePeerResponse) setSuccess()            { r.Success = true }
+
+func (r *JSApiStreamEvacuatePeerResponse) setError(err *ApiError) { r.Error = err }
+func (r *JSApiStreamEvacuatePeerResponse) setSuccess()            { r.Success = true }
+
 // Request to remove a peer from a clustered stream.
 func (s *Server) jsStreamRemovePeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	s.jsStreamRemapPeerRequest(nil, c, nil, subject, reply, rmsg, true)
+	req := &JSApiStreamRemovePeerRequest{}
+	resp := &JSApiStreamRemovePeerResponse{ApiResponse: ApiResponse{Type: JSApiStreamRemovePeerResponseType}}
+	s.jsStreamRemapPeerRequest(nil, c, nil, subject, reply, rmsg, req, resp, true)
 }
 
 // Request to evacuate a peer from a clustered stream.
 func (s *Server) jsStreamEvacuatePeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
-	s.jsStreamRemapPeerRequest(nil, c, nil, subject, reply, rmsg, false)
+	req := &JSApiStreamEvacuatePeerRequest{}
+	resp := &JSApiStreamEvacuatePeerResponse{ApiResponse: ApiResponse{Type: JSApiStreamEvacuatePeerResponseType}}
+	s.jsStreamRemapPeerRequest(nil, c, nil, subject, reply, rmsg, req, resp, false)
 }
 
-func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte, remove bool) {
+func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte, req streamRemapPeerRequest, resp streamRemapPeerResponse, remove bool) {
 	if c == nil || !s.JetStreamEnabled() {
 		return
 	}
@@ -2498,12 +2556,10 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 	// Have extra token for this one.
 	name := tokenAt(subject, 6)
 
-	var resp = JSApiStreamRemovePeerResponse{ApiResponse: ApiResponse{Type: JSApiStreamRemovePeerResponseType}}
-
 	// If we are not in clustered mode this is a failed request.
 	if !s.JetStreamIsClustered() {
-		resp.Error = NewJSClusterRequiredError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSClusterRequiredError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
@@ -2513,8 +2569,8 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 		return
 	}
 	if js.isLeaderless() {
-		resp.Error = NewJSClusterNotAvailError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSClusterNotAvailError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
@@ -2528,40 +2584,39 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 	}
 
 	if errorOnRequiredApiLevel(hdr) {
-		resp.Error = NewJSRequiredApiLevelError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSRequiredApiLevelError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
 	if hasJS, doErr := acc.checkJetStream(); !hasJS {
 		if doErr {
-			resp.Error = NewJSNotEnabledForAccountError()
-			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+			resp.setError(NewJSNotEnabledForAccountError())
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		}
 		return
 	}
 	if isEmptyRequest(msg) {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSBadRequestError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
-	var req JSApiStreamRemovePeerRequest
-	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
-		resp.Error = NewJSInvalidJSONError(err)
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if err := s.unmarshalRequest(c, acc, subject, msg, req); err != nil {
+		resp.setError(NewJSInvalidJSONError(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
-	if req.Peer == _EMPTY_ {
-		resp.Error = NewJSBadRequestError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+	if req.peer() == _EMPTY_ {
+		resp.setError(NewJSBadRequestError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
 	if sa == nil {
 		// No stream present.
-		resp.Error = NewJSStreamNotFoundError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSStreamNotFoundError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
@@ -2573,28 +2628,28 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 
 	// Check to see if we are a member of the group.
 	// Peer here is either a peer ID or a server name, convert to node name.
-	nodeName := getHash(req.Peer)
+	nodeName := getHash(req.peer())
 	isMember := isGroupMember(nodeName)
 	if !isMember {
-		nodeName = req.Peer
+		nodeName = req.peer()
 		isMember = isGroupMember(nodeName)
 	}
 
 	// Make sure we are a member.
 	if !isMember {
-		resp.Error = NewJSClusterPeerNotMemberError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSClusterPeerNotMemberError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
 	// If we are here we have a valid peer member set for removal.
 	if !js.removePeerFromStreamLocked(sa, nodeName, peerRemoval{remove: remove, requireReplicas: true}) {
-		resp.Error = NewJSPeerRemapError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		resp.setError(NewJSPeerRemapError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return
 	}
 
-	resp.Success = true
+	resp.setSuccess()
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 }
 
@@ -2728,7 +2783,7 @@ func (s *Server) jsLeaderServerEvacuateRequest(sub *subscription, c *client, _ *
 		return
 	}
 
-	var resp = JSApiMetaServerRemoveResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerRemoveResponseType}}
+	var resp = JSApiMetaServerEvacuateResponse{ApiResponse: ApiResponse{Type: JSApiMetaServerEvacuateResponseType}}
 	if errorOnRequiredApiLevel(hdr) {
 		resp.Error = NewJSRequiredApiLevelError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -2741,7 +2796,7 @@ func (s *Server) jsLeaderServerEvacuateRequest(sub *subscription, c *client, _ *
 		return
 	}
 
-	var req JSApiMetaServerRemoveRequest
+	var req JSApiMetaServerEvacuateRequest
 	if err := s.unmarshalRequest(c, acc, subject, msg, &req); err != nil {
 		resp.Error = NewJSInvalidJSONError(err)
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

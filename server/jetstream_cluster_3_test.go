@@ -2127,11 +2127,11 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 	// eligible replacement, so go through the server scoped endpoint which is best effort.
 	snc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
 	defer snc.Close()
-	ereq, err := json.Marshal(JSApiMetaServerRemoveRequest{Server: osi.Cluster.Replicas[0].Name})
+	ereq, err := json.Marshal(JSApiMetaServerEvacuateRequest{Server: osi.Cluster.Replicas[0].Name})
 	require_NoError(t, err)
 	emsg, err := snc.Request(JSApiEvacuateServer, ereq, time.Second*10)
 	require_NoError(t, err)
-	var eresp JSApiMetaServerRemoveResponse
+	var eresp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(emsg.Data, &eresp))
 	require_True(t, eresp.Success)
 

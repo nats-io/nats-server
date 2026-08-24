@@ -3794,11 +3794,11 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentOnMetaLeaderChange(t *t
 
 	// Evacuate one of the stream's peers, no replacement can be selected for it. The
 	// server is going away, so this is applied even though the stream is left short.
-	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Peer: member.Node()})
+	jsreq, err := json.Marshal(&JSApiMetaServerEvacuateRequest{Peer: member.Node()})
 	require_NoError(t, err)
 	rmsg, err := snc.Request(JSApiEvacuateServer, jsreq, 5*time.Second)
 	require_NoError(t, err)
-	var resp JSApiMetaServerRemoveResponse
+	var resp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
 	require_True(t, resp.Success)
 
@@ -3890,11 +3890,11 @@ func TestJetStreamClusterPeerRemovalAndStreamReassignmentOnNewServer(t *testing.
 	}
 	require_NotNil(t, member)
 
-	jsreq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Peer: member.Node()})
+	jsreq, err := json.Marshal(&JSApiMetaServerEvacuateRequest{Peer: member.Node()})
 	require_NoError(t, err)
 	rmsg, err := snc.Request(JSApiEvacuateServer, jsreq, 5*time.Second)
 	require_NoError(t, err)
-	var resp JSApiMetaServerRemoveResponse
+	var resp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
 	require_True(t, resp.Success)
 
@@ -4810,11 +4810,11 @@ func TestJetStreamClusterEvacuateExclusionNotClearedByNoOpMigration(t *testing.T
 	require_NotNil(t, member)
 	target := member.Node()
 
-	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: target})
+	b, err := json.Marshal(JSApiMetaServerEvacuateRequest{Peer: target})
 	require_NoError(t, err)
 	msg, err := snc.Request(JSApiEvacuateServer, b, 10*time.Second)
 	require_NoError(t, err)
-	var resp JSApiMetaServerRemoveResponse
+	var resp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(msg.Data, &resp))
 	require_True(t, resp.Success)
 
@@ -4936,11 +4936,11 @@ func TestJetStreamClusterEvacuateExclusionClearedByReplicaDecrease(t *testing.T)
 	require_NotNil(t, member)
 	target := member.Node()
 
-	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: target})
+	b, err := json.Marshal(JSApiMetaServerEvacuateRequest{Peer: target})
 	require_NoError(t, err)
 	msg, err := snc.Request(JSApiEvacuateServer, b, 10*time.Second)
 	require_NoError(t, err)
-	var resp JSApiMetaServerRemoveResponse
+	var resp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(msg.Data, &resp))
 	require_True(t, resp.Success)
 
@@ -15930,11 +15930,11 @@ func TestJetStreamClusterStreamAddPeerConsumerRemap(t *testing.T) {
 	snc, _ := jsClientConnect(t, c.randomServer(), nats.UserInfo("admin", "s3cr3t!"))
 	defer snc.Close()
 
-	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Server: toRemove})
+	b, err := json.Marshal(JSApiMetaServerEvacuateRequest{Server: toRemove})
 	require_NoError(t, err)
 	msg, err := snc.Request(JSApiEvacuateServer, b, 5*time.Second)
 	require_NoError(t, err)
-	var resp JSApiMetaServerRemoveResponse
+	var resp JSApiMetaServerEvacuateResponse
 	require_NoError(t, json.Unmarshal(msg.Data, &resp))
 	// The peer could not be replaced, but the server is going away so it is still
 	// taken out of the stream.
