@@ -4153,6 +4153,16 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						// Otherwise, all entries are used.
 						entries = bce.Entries
 					}
+					clearAndUnlock := func() {
+						// Make sure to return remaining entries to the pool on an error.
+						for _, nce := range batch.entries[j:] {
+							nce.ReturnToPool()
+						}
+						// Important to clear, otherwise we could return the entries to the pool multiple times.
+						batch.clearBatchStateLocked()
+						batch.mu.Unlock()
+						mset.mu.Unlock()
+					}
 					for _, entry := range entries {
 						// Non-normal entries (e.g. EntryCatchup) can be buffered but must be ignored.
 						if entry.Type != EntryNormal {
@@ -4160,19 +4170,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 						}
 						_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 						if err != nil {
-							batch.mu.Unlock()
-							mset.mu.Unlock()
+							clearAndUnlock()
 							panic(err.Error())
 						}
 						if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
-							// Make sure to return remaining entries to the pool on an error.
-							for _, nce := range batch.entries[j:] {
-								nce.ReturnToPool()
-							}
-							// Important to clear, otherwise we could return the entries to the pool multiple times.
-							batch.clearBatchStateLocked()
-							batch.mu.Unlock()
-							mset.mu.Unlock()
+							clearAndUnlock()
 							return 0, err
 						}
 					}
@@ -4186,6 +4188,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					// Get all entries up to and including the current one.
 					entries = ce.Entries[:i+1]
 				}
+				clearAndUnlock := func() {
+					// Important to clear, otherwise we could return the entries to the pool multiple times.
+					batch.clearBatchStateLocked()
+					batch.mu.Unlock()
+					mset.mu.Unlock()
+				}
 				// Process remaining entries in the current entry.
 				for _, entry := range entries {
 					// Non-normal entries (e.g. EntryCatchup) can be buffered but must be ignored.
@@ -4194,15 +4202,11 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					}
 					_, _, op, buf, err = decodeBatchMsg(entry.Data[1:])
 					if err != nil {
-						batch.mu.Unlock()
-						mset.mu.Unlock()
+						clearAndUnlock()
 						panic(err.Error())
 					}
 					if err = js.applyStreamMsgOp(mset, op, buf, isRecovering, false); err != nil {
-						// Important to clear, otherwise we could return the entries to the pool multiple times.
-						batch.clearBatchStateLocked()
-						batch.mu.Unlock()
-						mset.mu.Unlock()
+						clearAndUnlock()
 						return 0, err
 					}
 				}
