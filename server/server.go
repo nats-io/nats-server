@@ -142,6 +142,7 @@ type Info struct {
 	Export        *SubjectPermission `json:"export,omitempty"`
 	LNOC          bool               `json:"lnoc,omitempty"`
 	LNOCU         bool               `json:"lnocu,omitempty"`
+	LN            bool               `json:"ln,omitempty"`              // Support for LS+/LS- leaf interest using a sentinel origin cluster, implies LNOC+LNOCU
 	InfoOnConnect bool               `json:"info_on_connect,omitempty"` // When true the server will respond to CONNECT with an INFO
 	RoutePoolSize int                `json:"route_pool_size,omitempty"`
 	RoutePoolIdx  int                `json:"route_pool_idx,omitempty"`
@@ -1128,6 +1129,13 @@ func validateCluster(o *Options) error {
 		}
 		// Set this here so we do not consider it dynamic.
 		o.Cluster.Name = o.Gateway.Name
+	}
+	clusterName := o.Cluster.Name
+	if clusterName == _EMPTY_ && len(o.LeafNode.Remotes) > 0 && o.Cluster.Port == 0 {
+		clusterName = o.ServerName
+	}
+	if clusterName == leafNoOriginCluster {
+		return ErrClusterNameReserved
 	}
 	if l := len(o.Cluster.PinnedAccounts); l > 0 {
 		if o.Cluster.PoolSize < 0 {
