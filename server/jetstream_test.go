@@ -25225,3 +25225,71 @@ func TestJetStreamRemoveConsumerOnlyRemovesMatchingInstance(t *testing.T) {
 	require_Equal(t, mset.csl.Count(), 0)
 	require_Len(t, len(mset.cList), 0)
 }
+
+// https://github.com/nats-io/nats-server/issues/8322
+func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
+	sd := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q}
+		accounts {
+			A { jetstream: {max_store: %d}, users: [{user: a, password: p}] }
+			$SYS { users: [{user: admin, password: s3cr3t!}] }
+		}
+	`
+	// Start out with no meaningful account limit so we can lay down some data.
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, -1)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	before := s.JetStreamConfig().MaxStore
+	require_True(t, before > 0)
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("a", "p"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage})
+	require_NoError(t, err)
+
+	// Fill enough of the disk that an available disk space calculation would notice.
+	const (
+		msgSize = 128 * 1024
+		numMsgs = 512
+		written = msgSize * numMsgs
+	)
+	msg := make([]byte, msgSize)
+	for range numMsgs {
+		_, err = js.Publish("TEST", msg)
+		require_NoError(t, err)
+	}
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Pick a limit that fits what the server allowed on the first boot, but not
+	// what a free-space-only recomputation would allow now that we wrote data.
+	limit := before - written/4
+	require_True(t, limit > 0)
+
+	// Start by hand, RunServerWithConfig panics when JetStream fails to enable.
+	conf = createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, limit)))
+	s, err = NewServer(LoadConfig(conf))
+	require_NoError(t, err)
+	defer s.Shutdown()
+	s.Start()
+
+	// An account limit that was valid on the previous boot must not stop us from
+	// coming back up, the data it covers is already on disk.
+	if err := s.readyForConnections(5 * time.Second); err != nil || !s.JetStreamEnabled() {
+		t.Fatalf("JetStream failed to start with an account limit of %v, %v was available before",
+			friendlyBytes(limit), friendlyBytes(before))
+	}
+
+	// Allow slack for other activity on the same volume, but the limit must not
+	// have dropped by anything close to what we just wrote.
+	after := s.JetStreamConfig().MaxStore
+	if slack := int64(written / 4); before-after > slack {
+		t.Fatalf("Dynamic max store shrank after writing %v: before %v, after %v",
+			friendlyBytes(int64(written)), friendlyBytes(before), friendlyBytes(after))
+	}
+}
