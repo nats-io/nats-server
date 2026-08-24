@@ -8331,3 +8331,195 @@ func TestNRGRescueQuorumEmptyVotesRequireRescue(t *testing.T) {
 	n.runAsCandidate()
 	require_NotEqual(t, n.State(), Leader)
 }
+
+func TestNRGEntryBytesEstimate(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	defer n.Unlock()
+
+	const largeEntryBytes = 512 * 1024
+	for _, test := range []struct {
+		name     string
+		pindex   uint64
+		papplied uint64
+		bytes    uint64
+		entries  uint64
+		expected uint64
+	}{
+		{"no entries in the wal", 0, 0, 0, 100, 0},
+		{"no bytes in the wal", 1000, 0, 0, 100, 0},
+		{"pindex equals papplied", 1000, 1000, 1024, 100, 0},
+		{"large entries", 1000, 0, 1000 * largeEntryBytes, 100, 100 * largeEntryBytes},
+		{"small entries", 1000, 0, 1000 * 1024, 100, 100 * 1024},
+		{"offset by papplied", 1500, 500, 1000 * largeEntryBytes, 100, 100 * largeEntryBytes},
+		{"asking for more than we hold", 1000, 0, 1000 * largeEntryBytes, 2000, 2000 * largeEntryBytes},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n.pindex, n.papplied, n.bytes = test.pindex, test.papplied, test.bytes
+			require_Equal(t, n.entryBytes(test.entries), test.expected)
+		})
+	}
+}
+
+func TestNRGOverrunUsesBytesWhenEntryCountIsLow(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	defer n.Unlock()
+
+	// A backlog of large entries. The entry count stays two orders of magnitude
+	// below the count threshold the whole time, so only the byte threshold can
+	// catch this.
+	const largeEntryBytes = 512 * 1024
+	setAverage := func(entries, avg uint64) {
+		n.papplied, n.pindex, n.bytes = 0, entries, entries*avg
+	}
+
+	// 2500 entries of 512KiB is ~1.22GB, over pauseQuorumBytes.
+	setAverage(2500, largeEntryBytes)
+	require_True(t, 2500 < uint64(pauseQuorumThreshold))
+	require_True(t, n.overrun(2500, pauseQuorumThreshold, pauseQuorumBytes))
+
+	// 900 entries of 512KiB is ~460MB, under pauseQuorumBytes.
+	setAverage(900, largeEntryBytes)
+	require_False(t, n.overrun(900, pauseQuorumThreshold, pauseQuorumBytes))
+
+	// The entry count path must still work for small entries.
+	setAverage(2500, 1024)
+	require_False(t, n.overrun(2500, pauseQuorumThreshold, pauseQuorumBytes))
+	setAverage(pauseQuorumThreshold+1, 1024)
+	require_True(t, n.overrun(pauseQuorumThreshold+1, pauseQuorumThreshold, pauseQuorumBytes))
+}
+
+func TestNRGLeaderOverrunOnLargeEntries(t *testing.T) {
+	const largeEntryBytes = 512 * 1024
+	for _, test := range []struct {
+		name     string
+		lagging  string // which counter lags behind
+		expected bool
+		avg      uint64
+	}{
+		{"uncommitted large entries", "commit", true, largeEntryBytes},
+		{"uncommitted small entries", "commit", false, 1024},
+		{"unapplied large entries", "applied", true, largeEntryBytes},
+		{"unapplied small entries", "applied", false, 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			n.Lock()
+			defer n.Unlock()
+
+			// 2500 entries is far below pauseQuorumThreshold, so whether we are
+			// overrun depends entirely on the byte estimate.
+			const entries = 2500
+			n.papplied, n.pindex, n.bytes = 0, entries, entries*test.avg
+			if test.lagging == "commit" {
+				// We are not getting quorum from our followers.
+				n.commit, n.applied = 0, 0
+			} else {
+				// We are committing but too slow to apply.
+				n.commit, n.applied = entries, 0
+			}
+
+			require_Equal(t, n.isLeaderOverrun(), test.expected)
+		})
+	}
+}
+
+func TestNRGCachePendingEntryBoundedByBytes(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		payloadSize int
+		inserts     int
+		capped      bool
+	}{
+		// Large entries: the cache fills up to paeDropBytes and stops
+		// there, nowhere near paeDropThreshold.
+		{"large entries stop at the byte cap", 512 * 1024, 1000, true},
+		// Small entries: 1000 of them is ~1MB, so nothing is dropped.
+		{"small entries are all cached", 1024, 1000, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			entries := []*Entry{newEntry(EntryNormal, make([]byte, test.payloadSize))}
+			ae := encode(t, &appendEntry{leader: "S1Nunr6R", term: 1, entries: entries})
+
+			n.Lock()
+			defer n.Unlock()
+
+			sz := n.entryStoreSize(ae)
+			require_True(t, sz > 0)
+
+			// We stop caching once we'd go over paeDropBytes.
+			expected := test.inserts
+			if test.capped {
+				expected = int((paeDropBytes + sz - 1) / sz)
+			}
+
+			// A long history of entries that were applied but not snapshotted yet
+			// must not dilute what we account for, only what's cached counts.
+			n.papplied, n.bytes = 0, 100*1024*1024
+
+			for i := 1; i <= test.inserts; i++ {
+				n.pindex = uint64(i)
+				n.cachePendingEntry(ae)
+			}
+
+			require_Len(t, len(n.pae), expected)
+			// Whatever we dropped, it was not because of the entry count.
+			require_True(t, len(n.pae) < paeDropThreshold)
+			// We must account for exactly what we've cached.
+			require_Equal(t, n.paeBytes, uint64(len(n.pae))*sz)
+		})
+	}
+}
+
+func TestNRGCachePendingEntryBytesAccounting(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	newAE := func(index uint64, payload int) *appendEntry {
+		entries := []*Entry{newEntry(EntryNormal, make([]byte, payload))}
+		return encode(t, &appendEntry{leader: nats0, term: 1, pterm: 1, pindex: index - 1, entries: entries})
+	}
+
+	n.Lock()
+	defer n.Unlock()
+
+	large := newAE(3, 4*1024)
+	ssz, lsz := n.entryStoreSize(newAE(1, 128)), n.entryStoreSize(large)
+	require_True(t, lsz > ssz)
+
+	// Cache a couple of entries.
+	for i := uint64(1); i <= 3; i++ {
+		n.pindex = i
+		n.cachePendingEntry(newAE(i, 128))
+	}
+	require_Len(t, len(n.pae), 3)
+	require_Equal(t, n.paeBytes, 3*ssz)
+
+	// Re-caching an index with a different value must not account for it twice.
+	n.pindex = 3
+	n.cachePendingEntry(large)
+	require_Len(t, len(n.pae), 3)
+	require_Equal(t, n.paeBytes, 2*ssz+lsz)
+
+	// Truncating must remove the bytes of the entries the WAL no longer has.
+	n.pterm, n.pindex = 1, 3
+	n.truncateWAL(1, 2)
+	require_Len(t, len(n.pae), 2)
+	require_Equal(t, n.paeBytes, 2*ssz)
+
+	// Resetting the cache clears our accounting.
+	n.resetPendingEntries()
+	require_Len(t, len(n.pae), 0)
+	require_Equal(t, n.paeBytes, 0)
+}
