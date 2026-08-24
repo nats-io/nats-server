@@ -3526,7 +3526,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				// Too many retries while processing snapshot is considered a cluster reset.
 				// If a leader is temporarily unavailable we shouldn't blow away our state.
 				require_True(t, isClusterResetErr(errCatchupTooManyRetries))
-				mset.resetClusteredState(errCatchupTooManyRetries)
+				mset.resetClusteredState(mset.raftNode(), errCatchupTooManyRetries)
 			},
 		},
 		{
@@ -3549,7 +3549,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				err := mset.processSnapshot(&snap, appliedIndex)
 				require_True(t, errors.Is(err, errCatchupAbortedNoLeader))
 				require_True(t, isClusterResetErr(err))
-				mset.resetClusteredState(err)
+				mset.resetClusteredState(mset.raftNode(), err)
 			},
 		},
 	}
@@ -3709,7 +3709,7 @@ func TestJetStreamClusterConsumerDesyncAfterErrorDuringStreamCatchup(t *testing.
 	require_NoError(t, err)
 
 	// Run error condition.
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 
 	// Consumer leader stays offline, we only start the server with missing stream/consumer data.
 	// We expect that the reset server must not allow the outdated server to become leader, as that would result in desync.
@@ -3870,7 +3870,7 @@ func TestJetStreamClusterReservedResourcesAccountingAfterClusterReset(t *testing
 			require_NotNil(t, sa)
 			require_Equal(t, rn, saGroupNode)
 
-			require_True(t, mset.resetClusteredState(clusterResetErr))
+			require_True(t, mset.resetClusteredState(mset.raftNode(), clusterResetErr))
 
 			checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
 				sjs.mu.RLock()
@@ -8686,7 +8686,7 @@ func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 		t.Fatalf("expected errBadEntryOp from applyMetaEntries, got %v", err)
 	}
 	ce := &CommittedEntry{Entries: empty}
-	if _, err := js.applyStreamEntries(&stream{}, ce, false, nil); err != errBadEntryOp {
+	if _, err := js.applyStreamEntries(&stream{}, nil, ce, false, nil); err != errBadEntryOp {
 		t.Fatalf("expected errBadEntryOp from applyStreamEntries, got %v", err)
 	}
 	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {
