@@ -178,9 +178,10 @@ type raft struct {
 	qn    int             // Number of nodes needed to establish quorum
 	peers map[string]*lps // Other peers in the Raft group
 
-	removed map[string]time.Time           // Peers that were removed from the group
-	acks    map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
-	pae     map[uint64]*appendEntry        // Pending append entries
+	removed  map[string]time.Time           // Peers that were removed from the group
+	acks     map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
+	pae      map[uint64]*appendEntry        // Pending append entries
+	paeBytes uint64                         // Total byte size of the pending append entries in pae
 
 	elect  *time.Timer // Election timer, normally accessed via electTimer
 	etlr   time.Time   // Election timer last reset time, for unit tests only
@@ -981,10 +982,28 @@ func (n *raft) isLeaderOverrun() bool {
 	// We only do this past a high threshold to protect ourselves.
 	// Worst-case we'll have 2x the threshold, once in uncommitted and once in unapplied entries.
 	// Either the number of uncommitted entries is over the threshold: we're not getting quorum from our followers.
-	uncommittedThreshold := n.pindex > commit && n.pindex-commit > pauseQuorumThreshold
+	uncommittedThreshold := n.pindex > commit && n.overrun(n.pindex-commit, pauseQuorumThreshold, pauseQuorumBytes)
 	// Or, the number of in-memory committed but not yet applied entries is over the threshold: we're slow to apply.
-	unappliedThreshold := commit > applied && commit-applied > pauseQuorumThreshold
+	unappliedThreshold := commit > applied && n.overrun(commit-applied, pauseQuorumThreshold, pauseQuorumBytes)
 	return uncommittedThreshold || unappliedThreshold
+}
+
+// entryBytes estimates the byte size of the given number of entries, based on the
+// average size of the entries we are currently holding in our WAL.
+// Lock should be held.
+func (n *raft) entryBytes(entries uint64) uint64 {
+	msgs := n.pindex - n.papplied
+	if msgs == 0 || n.bytes == 0 {
+		return 0
+	}
+	return entries * n.bytes / msgs
+}
+
+// overrun returns whether the given number of entries is over either the entry count
+// threshold or the estimated byte threshold.
+// Lock should be held.
+func (n *raft) overrun(entries, maxEntries, maxBytes uint64) bool {
+	return entries > maxEntries || n.entryBytes(entries) > maxBytes
 }
 
 // ForwardProposal will forward the proposal to the leader if known.
@@ -1397,8 +1416,8 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	}
 
 	// If installing a snapshot past our commits, clear the cache.
-	if snap.lastIndex > n.commit && len(n.pae) > 0 {
-		n.pae = make(map[uint64]*appendEntry)
+	if snap.lastIndex > n.commit {
+		n.resetPendingEntries()
 	}
 
 	var state StreamState
@@ -3600,7 +3619,14 @@ func (n *raft) applyCommit(index uint64) error {
 			return errEntryLoadFailed
 		}
 	} else {
-		defer delete(n.pae, index)
+		// Size it now, the buffer is cleared below.
+		sz := n.entryStoreSize(ae)
+		defer func() {
+			if _, ok := n.pae[index]; ok {
+				n.paeBytes -= sz
+				delete(n.pae, index)
+			}
+		}()
 	}
 
 	n.commit = index
@@ -4049,12 +4075,11 @@ func (n *raft) truncateWAL(term, index uint64) {
 
 	// Invalidate cached entries the WAL no longer has.
 	if index == 0 {
-		if len(n.pae) > 0 {
-			n.pae = make(map[uint64]*appendEntry)
-		}
+		n.resetPendingEntries()
 	} else {
-		for k := range n.pae {
+		for k, ae := range n.pae {
 			if k > index {
+				n.paeBytes -= n.entryStoreSize(ae)
 				delete(n.pae, k)
 			}
 		}
@@ -4299,7 +4324,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 	if sub != nil && (commit > applied || n.quorumPaused) {
 		diff := commit - applied
 		if n.quorumPaused {
-			if diff > paeWarnThreshold {
+			if n.overrun(diff, paeWarnThreshold, paeWarnBytes) {
 				if catchingUp {
 					n.cancelCatchup()
 				}
@@ -4312,7 +4337,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			var state StreamState
 			n.wal.FastState(&state)
 			n.warn("Quorum resumed: commit %d, applied %d, WAL size %s", commit, applied, friendlyBytes(state.Bytes))
-		} else if diff > pauseQuorumThreshold {
+		} else if n.overrun(diff, pauseQuorumThreshold, pauseQuorumBytes) {
 			// It takes a while until we reach the pause threshold, but once we do we enter a "cooldown period".
 			n.quorumPaused = true
 			n.overrunCount++
@@ -4743,13 +4768,7 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 		return errEntryStoreFailed
 	}
 
-	var sz uint64
-	if n.wtype == FileStorage {
-		sz = fileStoreMsgSize(_EMPTY_, nil, ae.buf)
-	} else {
-		sz = memStoreMsgSize(_EMPTY_, nil, ae.buf)
-	}
-	n.bytes += sz
+	n.bytes += n.entryStoreSize(ae)
 	n.pterm = ae.term
 	n.pindex = seq
 	return nil
@@ -4757,9 +4776,15 @@ func (n *raft) storeToWAL(ae *appendEntry) error {
 
 const (
 	pauseQuorumThreshold = 100_000
-	paeDropThreshold     = 20_000
-	paeWarnThreshold     = 10_000
-	paeWarnModulo        = 5_000
+	pauseQuorumBytes     = 1 * 1024 * 1024 * 1024 // 1GB
+
+	paeDropThreshold = 20_000
+	paeDropBytes     = 256 * 1024 * 1024 // 256MB
+
+	paeWarnThreshold   = 10_000
+	paeWarnModulo      = 5_000
+	paeWarnBytes       = 128 * 1024 * 1024 // 128MB
+	paeWarnBytesModulo = 32 * 1024 * 1024  // 32MB
 )
 
 func (n *raft) sendAppendEntry(entries []*Entry) {
@@ -4808,16 +4833,46 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 // cachePendingEntry saves append entries in memory for faster processing during applyCommit.
 // Only save so many however to avoid memory bloat.
 func (n *raft) cachePendingEntry(ae *appendEntry) {
-	if l := len(n.pae); l < paeDropThreshold {
-		n.pae[n.pindex], l = ae, l+1
-		if l >= paeWarnThreshold && l%paeWarnModulo == 0 {
-			n.warn("%d append entries pending", len(n.pae))
-		}
-	} else {
-		// Invalidate cache entry at this index, we might have
-		// stored it previously with a different value.
+	// Invalidate any cache entry at this index, we might have
+	// stored it previously with a different value.
+	if pae, ok := n.pae[n.pindex]; ok {
+		n.paeBytes -= n.entryStoreSize(pae)
 		delete(n.pae, n.pindex)
 	}
+	if l := uint64(len(n.pae)); l < paeDropThreshold && n.paeBytes < paeDropBytes {
+		prev := n.paeBytes
+		n.pae[n.pindex], l = ae, l+1
+		n.paeBytes += n.entryStoreSize(ae)
+		if l >= paeWarnThreshold && l%paeWarnModulo == 0 {
+			n.warn("%d append entries pending", len(n.pae))
+		} else if b := n.paeBytes; b >= paeWarnBytes {
+			// Only log on transition past another paeWarnBytesModulo.
+			if b/paeWarnBytesModulo != prev/paeWarnBytesModulo {
+				n.warn("%d append entries pending, %s", l, friendlyBytes(b))
+			}
+		}
+	}
+}
+
+// entryStoreSize returns the byte size of the given append entry as stored in our WAL.
+// Lock should be held.
+func (n *raft) entryStoreSize(ae *appendEntry) uint64 {
+	if ae == nil || ae.buf == nil {
+		return 0
+	}
+	if n.wtype == FileStorage {
+		return fileStoreMsgSize(_EMPTY_, nil, ae.buf)
+	}
+	return memStoreMsgSize(_EMPTY_, nil, ae.buf)
+}
+
+// resetPendingEntries clears our append entry cache.
+// Lock should be held.
+func (n *raft) resetPendingEntries() {
+	if len(n.pae) > 0 {
+		n.pae = make(map[uint64]*appendEntry)
+	}
+	n.paeBytes = 0
 }
 
 type extensionState uint16
@@ -5376,9 +5431,7 @@ retry:
 	} else if state == Leader && pstate != Leader {
 		// Don't updateLeadChange here, it will be done in switchToLeader or after initial messages are applied.
 		leadChanged = true
-		if len(n.pae) > 0 {
-			n.pae = make(map[uint64]*appendEntry)
-		}
+		n.resetPendingEntries()
 	}
 
 	n.writeTermVote()
