@@ -30,7 +30,7 @@ func TestStdLogger(t *testing.T) {
 
 	flags := logger.logger.Flags()
 	if flags != 0 {
-		t.Fatalf("Expected %q, received %q\n", 0, flags)
+		t.Fatalf("Expected %v, received %v\n", 0, flags)
 	}
 
 	if logger.debug {
