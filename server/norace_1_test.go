@@ -7764,10 +7764,24 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		t.Fatalf("Did not receive completion signal")
 	}
 
+	// Publish acknowledgements come from the stream leader and do not mean that
+	// the consumer leader, which is reached through the slow route, has caught up.
+	// Wait until it sees all messages before issuing a time-bounded pull request.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("EVENTS", "D")
+		if err != nil {
+			return err
+		}
+		if ci.NumPending != uint64(numToSend) {
+			return fmt.Errorf("expected %d pending messages, got %d", numToSend, ci.NumPending)
+		}
+		return nil
+	})
+
 	// Now make sure we can pull messages since we have not acked.
 	// The bug is that the acks arrive on S1 faster then the messages but we want to
 	// make sure we do not remove prematurely.
-	msgs, err := sub.Fetch(100, nats.MaxWait(time.Second))
+	msgs, err := sub.Fetch(100, nats.MaxWait(5*time.Second))
 	require_NoError(t, err)
 	require_Len(t, len(msgs), 100)
 	for _, m := range msgs {
@@ -7807,7 +7821,7 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		return nil
 	})
 
-	msgs, err = sub.Fetch(900, nats.MaxWait(time.Second))
+	msgs, err = sub.Fetch(900, nats.MaxWait(5*time.Second))
 	require_NoError(t, err)
 	require_Len(t, len(msgs), 900)
 	for _, m := range msgs {
