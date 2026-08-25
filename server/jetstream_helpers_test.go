@@ -2183,6 +2183,12 @@ func copyDir(t *testing.T, dst, src string) error {
 		if err != nil {
 			return err
 		}
+		// A purge moves msgs to __msgs__ and removes that directory
+		// asynchronously. It is disposable and may disappear while walking a
+		// live store, so do not include it in the copy.
+		if d.IsDir() && d.Name() == purgeDir {
+			return fs.SkipDir
+		}
 		newPath := path.Join(dst, p)
 		if d.IsDir() {
 			return os.MkdirAll(newPath, defaultDirPerms)
