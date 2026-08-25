@@ -1885,7 +1885,7 @@ func (c *client) flushOutbound() bool {
 	// If we've written everything but the underlying array of our working
 	// buffer has grown excessively then free it — the GC will tidy it up
 	// and we can allocate a new one next time.
-	if len(c.out.wnb) == 0 && cap(c.out.wnb) > nbPoolSizeLarge*8 {
+	if len(c.out.wnb) == 0 && cap(c.out.wnb) > nbMaxVectorSize {
 		c.out.wnb = nil
 	}
 

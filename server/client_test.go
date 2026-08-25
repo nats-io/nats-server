@@ -2577,6 +2577,54 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 	}
 }
 
+func TestFlushOutboundFreesExcessiveWorkingBuffer(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = MAX_PENDING_SIZE
+	s := &Server{opts: opts}
+
+	fakeConn := &testConnWritePartial{}
+	c := &client{srv: s, nc: fakeConn}
+	c.initClient()
+
+	// Helper that queues n separate chunks, each filling a small pool
+	// buffer exactly, so that "nb" ends up with n entries, and then
+	// flushes until everything has been written out.
+	queueAndFlush := func(n int) {
+		t.Helper()
+		payload := make([]byte, nbPoolSizeSmall)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := 0; i < n; i++ {
+			c.queueOutbound(payload)
+		}
+		if len(c.out.nb) != n {
+			t.Fatalf("Expected %d queued buffers, got %d", n, len(c.out.nb))
+		}
+		for c.out.pb > 0 {
+			c.flushOutbound()
+		}
+	}
+
+	// A modest flush should retain the working buffer for reuse.
+	queueAndFlush(10)
+	c.mu.Lock()
+	retained := c.out.wnb != nil
+	c.mu.Unlock()
+	if !retained {
+		t.Fatalf("Expected the working buffer to be retained for reuse")
+	}
+
+	// Growing the working buffer beyond a full writev batch of entries
+	// should cause it to be freed once everything has been written.
+	queueAndFlush(nbMaxVectorSize + 100)
+	c.mu.Lock()
+	freed := c.out.wnb == nil
+	c.mu.Unlock()
+	if !freed {
+		t.Fatalf("Expected the excessively grown working buffer to be freed")
+	}
+}
+
 type captureNoticeLogger struct {
 	DummyLogger
 	notices []string
