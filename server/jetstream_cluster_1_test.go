@@ -7292,7 +7292,7 @@ func TestJetStreamClusterSourcesFilteringAndUpdating(t *testing.T) {
 	// check the 'backfill' of messages on "foo" that were published while the source was inactive
 	checkSync(400, 400)
 
-	// causes startingSequenceForSources() to be called
+	// causes resetSourceInfo() to be called
 	nc.Close()
 	c.stopAll()
 	c.restartAll()

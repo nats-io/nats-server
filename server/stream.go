@@ -466,6 +466,7 @@ type StreamSourceInfo struct {
 	Name              string                   `json:"name"`
 	External          *ExternalStream          `json:"external,omitempty"`
 	Lag               uint64                   `json:"lag"`
+	Seq               uint64                   `json:"seq,omitempty"`
 	Active            time.Duration            `json:"active"`
 	Error             *ApiError                `json:"error,omitempty"`
 	FilterSubject     string                   `json:"filter_subject,omitempty"`
@@ -3216,9 +3217,22 @@ func (mset *stream) isMirror() bool {
 func (mset *stream) sourcesInfo() (sis []*StreamSourceInfo) {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
+	// Use the persisted source state for the sequences, si.sseq can be ahead of what's stored.
+	var sourcesState map[string]StreamSourceState
+	if mset.store != nil {
+		sourcesState = mset.store.SourcesState()
+	}
 	sis = make([]*StreamSourceInfo, 0, len(mset.sources))
 	for _, si := range mset.sources {
-		sis = append(sis, mset.sourceInfo(si))
+		ssi := mset.sourceInfo(si)
+		if ssi == nil {
+			continue
+		}
+		// Only report the sequence if the persisted state belongs to the same identity (if known).
+		if sss, ok := sourcesState[si.iname]; ok && !si.rc && (sss.Ident == _EMPTY_ || si.ident == sss.Ident) {
+			ssi.Seq = sss.Seq
+		}
+		sis = append(sis, ssi)
 	}
 	return sis
 }
@@ -5022,12 +5036,21 @@ func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
 	}
 }
 
-// Resets the SourceInfo for all the sources
+// Resets the SourceInfo for all the sources, seeding each with the
+// persisted starting sequence and identity.
 // lock should be held.
 func (mset *stream) resetSourceInfo() {
 	// Reset if needed.
 	mset.stopSourceConsumers()
 	mset.sources = make(map[string]*sourceInfo)
+
+	// The store contains an index of the source state, use it here without doing lookups ourselves.
+	// Seed the source infos with it right away, the actual consumer setup can be delayed and until
+	// then we'd otherwise have no idea how far we've sourced already.
+	var sourcesState map[string]StreamSourceState
+	if mset.store != nil {
+		sourcesState = mset.store.SourcesState()
+	}
 
 	for _, ssi := range mset.cfg.Sources {
 		if ssi.iname == _EMPTY_ {
@@ -5051,36 +5074,10 @@ func (mset *stream) resetSourceInfo() {
 			}
 			si = &sourceInfo{name: ssi.Name, iname: ssi.iname, sfs: sfs, trs: trs}
 		}
-		mset.sources[ssi.iname] = si
-	}
-}
-
-// This will do a reverse scan on startup or leader election
-// searching for the starting sequence number.
-// This can be slow in degenerative cases.
-// Lock should be held.
-func (mset *stream) startingSequenceForSources() {
-	if len(mset.cfg.Sources) == 0 {
-		return
-	}
-
-	// Always reset here.
-	mset.resetSourceInfo()
-
-	// The store contains an index of the source state, use it here without doing lookups ourselves.
-	sourcesState := mset.store.SourcesState()
-	for _, src := range mset.cfg.Sources {
-		iName := src.composeIName()
-		if si, ok := mset.sources[iName]; ok {
-			if sss, ok := sourcesState[iName]; ok {
-				si.sseq = sss.Seq
-				si.dseq = 0
-				si.ident, si.rc = sss.Ident, false
-			} else {
-				// If it doesn't exist, only reset the delivery sequence.
-				si.dseq = 0
-			}
+		if sss, ok := sourcesState[ssi.iname]; ok {
+			si.sseq, si.ident = sss.Seq, sss.Ident
 		}
+		mset.sources[ssi.iname] = si
 	}
 }
 
@@ -5102,7 +5099,7 @@ func (mset *stream) setupSourceConsumers() error {
 		return nil
 	}
 
-	mset.startingSequenceForSources()
+	mset.resetSourceInfo()
 
 	// Setup our consumers at the proper starting position.
 	for _, ssi := range mset.cfg.Sources {
