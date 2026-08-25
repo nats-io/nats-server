@@ -1422,7 +1422,7 @@ func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
 	if n.State() == Closed {
 		return nil, errNodeClosed
 	}
-	if n.snapshotting {
+	if !force && n.snapshotting {
 		return nil, errSnapInProgress
 	}
 
