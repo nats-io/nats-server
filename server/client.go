@@ -4839,15 +4839,18 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 		return false
 	}
 	// Detect cycles and ignore (return) when we detect one.
+	// Note that this and the captures below read si.se, which can be updated
+	// concurrently by configureAccounts() while options are being reloaded
+	// (see #8499), so this is done under the account lock (RLock).
+	acc.mu.RLock()
 	if len(c.pa.psi) > 0 {
 		for i := len(c.pa.psi) - 1; i >= 0; i-- {
 			if psi := c.pa.psi[i]; psi.se == si.se {
+				acc.mu.RUnlock()
 				return false
 			}
 		}
 	}
-
-	acc.mu.RLock()
 	var checkJS bool
 	shouldReturn := si.invalid || acc.sl == nil
 	if !shouldReturn && !isResponse && si.to == jsAllAPI {
@@ -4858,14 +4861,31 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	siAcc := si.acc
 	allowTrace := si.atrc
 	isMsgTraceResp := isResponse && si.mt != nil
+	// Capture si.se under the account lock. configureAccounts() updates this
+	// field under the importing account's lock, so reading it under RLock is
+	// safe. The service export's .acc field (read below) is updated by the
+	// exporting account's configureAccounts() under the exporting account's
+	// lock, so we must read it under that lock.
+	siSe := si.se
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
 	// However the GetNext for consumers and DirectGet for streams are a no-op and causes buildups of service imports,
 	// response service imports and rrMap entries which all will need to simply expire.
 	// TODO(dlc) - Come up with something better.
-	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
+	if shouldReturn {
 		return false
+	}
+	if checkJS && siSe != nil {
+		// siSe.acc is updated by configureAccounts() under the exporting
+		// account's lock (siAcc), so read it under that lock.
+		var viaSysAcc bool
+		siAcc.mu.RLock()
+		viaSysAcc = siSe.acc == c.srv.SystemAccount()
+		siAcc.mu.RUnlock()
+		if viaSysAcc {
+			return false
+		}
 	}
 
 	mt, traceOnly := c.isMsgTraceEnabled()
