@@ -825,6 +825,9 @@ func (ms *memStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (ms *memStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(ms.cfg.Subjects) {
 		return false
 	}
@@ -845,7 +848,11 @@ func (ms *memStore) filterIsAll(filters []string) bool {
 func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	return ms.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+}
 
+// Write lock should be held, for recalculateForSubj.
+func (ms *memStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	if len(ms.msgs) == 0 {
 		return nil, nil
 	}
@@ -895,6 +902,39 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 	}
 	slices.Sort(seqs)
 	return seqs, nil
+}
+
+// MultiLastMsgs delivers the last message per subject matching the filters,
+// up to maxSeq and skipping sequences below minSeq, in ascending sequence
+// order through cb, all within a single read section so the batch is a
+// point-in-time snapshot of the store.
+func (ms *memStore) MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	seqs, err := ms.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+	if err != nil || len(seqs) == 0 {
+		return 0, 0, err
+	}
+	total := uint64(len(seqs))
+	np := total
+	for _, seq := range seqs {
+		if np > 0 {
+			np--
+		}
+		if seq < minSeq {
+			continue
+		}
+		var svp StoreMsg
+		sm, err := ms.loadMsgLocked(seq, &svp, false)
+		if err != nil {
+			return total, np, err
+		}
+		if !cb(sm, np) {
+			break
+		}
+	}
+	return total, np, nil
 }
 
 // SubjectsTotals return message totals per subject.

@@ -116,6 +116,7 @@ type StreamStore interface {
 	SubjectsTotals(filterSubject string) map[string]uint64
 	AllLastSeqs() ([]uint64, error)
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
+	MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error)
 	SubjectForSeq(seq uint64) (string, error)
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error)
 	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error)

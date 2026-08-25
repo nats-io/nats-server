@@ -1178,7 +1178,7 @@ func TestWSCheckOrigin(t *testing.T) {
 		{"same origin bad scheme explicit port", sameOrigin, allowedListEmpty, "host.com:443", true, "http://host.com:443", "not same origin"},
 		{"same origin bad scheme", sameOrigin, allowedListEmpty, "host.com", true, "http://host.com", "not same origin"},
 		{"same origin bad uri", sameOrigin, allowedListEmpty, "host.com", false, "@@@://invalid:url:1234", "invalid URI"},
-		{"same origin bad url", sameOrigin, allowedListEmpty, "host.com", false, "http://invalid:url:1234", "too many colons"},
+		{"same origin bad url", sameOrigin, allowedListEmpty, "host.com", false, "http://invalid:url:1234", "invalid port"},
 		{"same origin bad req host", sameOrigin, allowedListEmpty, "invalid:url:1234", false, "http://host.com", "too many colons"},
 		{"no origin same origin ignored", sameOrigin, allowedListEmpty, "", false, "", ""},
 		{"no origin list ignored", sameOrigin, someList, "", false, "", ""},
@@ -2193,8 +2193,15 @@ func testWSCreateClient(t testing.TB, compress, web bool, host string, port int)
 		t.Fatalf("Error sending message: %v", err)
 	}
 	// Wait for the PONG
-	if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
+	msg := testWSReadFrame(t, br)
+	if !bytes.HasPrefix(msg, []byte("PONG\r\n")) {
 		t.Fatalf("Expected PONG, got %s", msg)
+	}
+	// An async INFO is sent that's not always part of the same frame. Consume it here.
+	if !bytes.Contains(msg, []byte("INFO ")) {
+		if msg := testWSReadFrame(t, br); !bytes.HasPrefix(msg, []byte("INFO ")) {
+			t.Fatalf("Expected INFO, got %s", msg)
+		}
 	}
 	return wsc, br
 }

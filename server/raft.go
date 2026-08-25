@@ -151,6 +151,9 @@ func (state RaftState) String() string {
 
 type raft struct {
 	sync.RWMutex
+	// Serializes writing snapshot files, since async snapshots are written with the Raft lock released.
+	// MUST be acquired while already holding the Raft lock. But the Raft lock may then be released.
+	snapLock sync.Mutex
 
 	created time.Time      // Time that the group was created
 	accName string         // Account name of the asset this raft group is for
@@ -1373,7 +1376,10 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	sn := fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex)
 	sfile := filepath.Join(snapDir, sn)
 
-	if err := writeFileWithSync(n.dios, sfile, n.encodeSnapshot(snap), defaultFilePerms); err != nil {
+	n.snapLock.Lock()
+	err := writeFileWithSync(n.dios, sfile, n.encodeSnapshot(snap), defaultFilePerms)
+	n.snapLock.Unlock()
+	if err != nil {
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
 		return err
@@ -1416,7 +1422,7 @@ func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
 	if n.State() == Closed {
 		return nil, errNodeClosed
 	}
-	if n.snapshotting {
+	if !force && n.snapshotting {
 		return nil, errSnapInProgress
 	}
 
@@ -1566,13 +1572,18 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 	}
 	encoded := n.encodeSnapshot(snap)
 
+	// Before releasing the Raft lock, we acquire the snapshot lock to make
+	// sure snapshot writes remain serial.
+	n.snapLock.Lock()
 	// Unlock while writing.
 	n.Unlock()
 	err := writeFileWithSync(n.dios, c.snapFile, encoded, defaultFilePerms)
+	n.snapLock.Unlock()
 	n.Lock()
 	// On any failure path, drop the file we just wrote so it doesn't get
 	// picked up by setupLastSnapshot on restart. Skip the remove if it's the
-	// snapshot already adopted into n.snapfile for this term/applied.
+	// snapshot already adopted into n.snapfile for this term/applied, a direct
+	// install that was serialized after our write will have overwritten it.
 	if closed := n.State() == Closed; closed || !n.snapshotting || err != nil {
 		if c.snapFile != n.snapfile {
 			os.Remove(c.snapFile)
@@ -4191,6 +4202,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.debug("Received append entry in candidate state from %q, converting to follower", ae.leader)
 			n.stepdownLocked(ae.leader)
+			n.updateLeadChange(false)
 		}
 	}
 

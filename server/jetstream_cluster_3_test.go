@@ -1544,14 +1544,22 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	require_NoError(t, err)
 
 	// Check state directly.
-	mset.mu.Lock()
-	var state StreamState
-	mset.store.FastState(&state)
-	mset.mu.Unlock()
-
-	require_Equal(t, state.Msgs, 100)
-	require_Equal(t, state.FirstSeq, 1)
-	require_Equal(t, state.LastSeq, 100)
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		var state StreamState
+		mset.store.FastState(&state)
+		if state.Msgs != 100 {
+			return fmt.Errorf("expected 100 msgs, got %d", state.Msgs)
+		}
+		if state.FirstSeq != 1 {
+			return fmt.Errorf("expected first sequence 1, got %d", state.FirstSeq)
+		}
+		if state.LastSeq != 100 {
+			return fmt.Errorf("expected last sequence 100, got %d", state.LastSeq)
+		}
+		return nil
+	})
 }
 
 // In addition to test above, if streams were attempted to be created in parallel
@@ -6516,7 +6524,7 @@ func TestJetStreamClusterLimitsBasedStreamFileStoreDesync(t *testing.T) {
 Setup:
 	for {
 		select {
-		case err = <-errCh:
+		case <-errCh:
 			errCount++
 			if errCount >= 20_000 {
 				// Stop both producing and consuming.
@@ -10898,7 +10906,8 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	replay := newCommittedEntry(1, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 100, Num: 401})),
 	})
-	_, err = sjs.applyStreamEntries(mset, replay, false)
+	batch := &batchApply{}
+	_, err = sjs.applyStreamEntries(mset, replay, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 1000)
 
@@ -10912,7 +10921,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr := newCommittedEntry(2, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1001, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false)
+	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2000)
 	mset.store.FastState(&after)
@@ -10922,7 +10931,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr = newCommittedEntry(3, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1501, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false)
+	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2500)
 	mset.store.FastState(&after)

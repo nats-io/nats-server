@@ -411,7 +411,7 @@ func TestMonitorHandleVarz(t *testing.T) {
 			t.Fatalf("JS limits not set")
 		}
 		if v.JetStream.Limits.MaxHAAssets != 1000 {
-			t.Fatalf("Expected 1000 max_ha_assets got %q", v.JetStream.Limits.MaxHAAssets)
+			t.Fatalf("Expected 1000 max_ha_assets got %v", v.JetStream.Limits.MaxHAAssets)
 		}
 	}
 }

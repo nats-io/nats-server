@@ -476,6 +476,8 @@ type consumer struct {
 	maxdc             uint64
 	waiting           *waitQueue
 	cfg               ConsumerConfig
+	direct            bool // Immutable, enforced by checkNewConsumerConfig. Read without o.mu.
+	sourcing          bool // Immutable, enforced by checkNewConsumerConfig. Read without o.mu.
 	ici               *ConsumerInfo
 	store             ConsumerStore
 	active            bool
@@ -1184,6 +1186,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		client:    s.createInternalJetStreamClient(),
 		sysc:      s.createInternalJetStreamClient(),
 		cfg:       *config,
+		direct:    config.Direct,
+		sourcing:  config.Sourcing,
 		dsubj:     config.DeliverSubject,
 		outq:      mset.outq,
 		active:    true,
@@ -1213,7 +1217,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 	if isDurableConsumer(config) {
 		if len(config.Durable) > JSMaxNameLen {
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			// Release the temporary consumer we built; it was never registered.
+			_ = o.stop()
 			return nil, NewJSConsumerNameTooLongError(JSMaxNameLen)
 		}
 		o.name = config.Durable
@@ -1233,16 +1238,6 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			config.Name = o.name
 		}
 	}
-	// Create ackMsgs queue now that we have a consumer name
-	o.ackMsgs = newIPQueue[*jsAckMsg](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, cfg.Name))
-
-	// Create our request waiting queue.
-	if o.isPullMode() {
-		o.waiting = newWaitQueue(config.MaxWaiting)
-		// Create our internal queue for next msg requests.
-		o.nextMsgReqs = newIPQueue[*nextMsgReq](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' pull requests", accName, o.name, cfg.Name))
-	}
-
 	// already under lock, mset.Name() would deadlock
 	o.stream = cfg.Name
 	o.ackEventT = JSMetricConsumerAckPre + "." + o.stream + "." + o.name
@@ -1251,8 +1246,34 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 
 	if !isValidAssetName(o.name) {
 		mset.mu.Unlock()
-		o.deleteWithoutAdvisory()
+		// Release the temporary consumer we built; it was never registered.
+		_ = o.stop()
 		return nil, NewJSConsumerBadDurableNameError()
+	}
+
+	// Check if we already have this one registered.
+	if eo, ok := mset.consumers[o.name]; ok {
+		mset.mu.Unlock()
+		if !o.isDurable() || !o.isPushMode() {
+			_ = o.stop()
+			return nil, NewJSConsumerNameExistError()
+		}
+		// If we are here we have already registered this durable. If it is still active that is an error.
+		if eo.isActive() {
+			_ = o.stop()
+			return nil, NewJSConsumerExistingActiveError()
+		}
+		// Since we are here this means we have a potentially new durable so we should update here.
+		// Check that configs are the same.
+		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
+			_ = o.stop()
+			return nil, NewJSConsumerReplacementWithDifferentNameError()
+		}
+		// Once we are here we have a replacement push-based durable.
+		eo.updateDeliverSubject(o.cfg.DeliverSubject)
+		// Release the temporary consumer we built; it was never registered.
+		_ = o.stop()
+		return eo, nil
 	}
 
 	// Setup our storage if not a direct consumer.
@@ -1260,7 +1281,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		store, err := mset.store.ConsumerStore(o.name, o.created, config)
 		if err != nil {
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			// Store creation failed, so just cleanup.
+			_ = o.stop()
 			return nil, NewJSConsumerStoreFailedError(err)
 		}
 		o.store = store
@@ -1330,6 +1352,8 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 			if err != nil {
 				s.Errorf("JetStream consumer '%s > %s > %s' errored while updating state: %v", o.acc.Name, o.stream, o.name, err)
 				mset.mu.Unlock()
+				// Release the temporary consumer we built; it was never registered.
+				_ = o.stop()
 				return nil, NewJSConsumerStoreFailedError(err)
 			}
 		}
@@ -1337,37 +1361,26 @@ func (mset *stream) addConsumerWithAssignment(config *ConsumerConfig, oname stri
 		// Clustered non-direct consumers defer this to setLeader so the
 		// expensive store scans don't block the meta apply goroutine.
 		if err := o.selectStartingSeqNo(); err != nil {
+			// Delete our store while holding the stream lock, so a concurrent create
+			// for the same name cannot have registered and be sharing this on-disk
+			// directory. Then release the rest of the consumer non-destructively.
+			if o.store != nil {
+				_ = o.store.Delete()
+				o.store = nil
+			}
 			mset.mu.Unlock()
-			o.deleteWithoutAdvisory()
+			_ = o.stop()
 			return nil, err
 		}
 	}
 
-	// Now register with mset and create the ack subscription.
-	// Check if we already have this one registered.
-	if eo, ok := mset.consumers[o.name]; ok {
-		mset.mu.Unlock()
-		if !o.isDurable() || !o.isPushMode() {
-			o.name = _EMPTY_ // Prevent removal since same name.
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerNameExistError()
-		}
-		// If we are here we have already registered this durable. If it is still active that is an error.
-		if eo.isActive() {
-			o.name = _EMPTY_ // Prevent removal since same name.
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerExistingActiveError()
-		}
-		// Since we are here this means we have a potentially new durable so we should update here.
-		// Check that configs are the same.
-		if !configsEqualSansDelivery(o.cfg, eo.cfg) {
-			o.name = _EMPTY_ // Prevent removal since same name.
-			o.deleteWithoutAdvisory()
-			return nil, NewJSConsumerReplacementWithDifferentNameError()
-		}
-		// Once we are here we have a replacement push-based durable.
-		eo.updateDeliverSubject(o.cfg.DeliverSubject)
-		return eo, nil
+	// Create ackMsgs queue now that we have a consumer name
+	o.ackMsgs = newIPQueue[*jsAckMsg](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' ackMsgs", accName, o.name, cfg.Name))
+
+	// Create our request waiting queue.
+	if o.isPullMode() {
+		o.waiting = newWaitQueue(config.MaxWaiting)
+		o.nextMsgReqs = newIPQueue[*nextMsgReq](s, fmt.Sprintf("[ACC:%s] consumer '%s' on stream '%s' pull requests", accName, o.name, cfg.Name))
 	}
 
 	// Set up the ack subscription for this consumer. Will use wildcard for all acks.
@@ -1670,6 +1683,8 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 	o.resetPendingDeliveries()
 	// Reset num pending, these are only authoritative on the leader.
 	o.npc, o.npf = 0, 0
+	// Reset flow control accounting.
+	o.pbytes, o.fcsz, o.fcid = 0, 0, _EMPTY_
 	// ok if they are nil, we protect inside unsubscribe()
 	o.unsubscribe(o.ackSubOld)
 	o.unsubscribe(o.ackSub)
@@ -2235,7 +2250,7 @@ func (o *consumer) deleteNotActive() {
 	}
 
 	s, js := o.mset.srv, o.srv.js.Load()
-	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.cfg.Direct
+	acc, stream, name, isDirect := o.acc.Name, o.stream, o.name, o.direct
 	// Capture our own view of the assignment while we still hold the lock.
 	ca := o.ca
 	var qch, cqch chan struct{}
@@ -2473,6 +2488,14 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 	}
 	if cfg.MemoryStorage != ncfg.MemoryStorage {
 		return errors.New("storage type can not be updated")
+	}
+	// Direct and Sourcing classify the consumer for its whole lifetime, which the
+	// stream relies on when walking its consumer list, so they can not change.
+	if cfg.Direct != ncfg.Direct {
+		return errors.New("direct can not be updated")
+	}
+	if cfg.Sourcing != ncfg.Sourcing {
+		return errors.New("sourcing can not be updated")
 	}
 	if cfg.OptStartSeq != ncfg.OptStartSeq {
 		return errors.New("start sequence can not be updated")
@@ -5698,7 +5721,7 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 
 	// If we are ack none and mset is interest only we should make sure stream removes interest.
 	if ap == AckNone && rp != LimitsPolicy {
-		if mset != nil && mset.ackq != nil && (o.node == nil || o.cfg.Direct) {
+		if mset != nil && mset.ackq != nil && (o.node == nil || o.direct) {
 			mset.ackq.push(seq)
 		} else {
 			o.updateAcks(dseq, seq, _EMPTY_)

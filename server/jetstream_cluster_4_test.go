@@ -8686,7 +8686,7 @@ func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 		t.Fatalf("expected errBadEntryOp from applyMetaEntries, got %v", err)
 	}
 	ce := &CommittedEntry{Entries: empty}
-	if _, err := js.applyStreamEntries(&stream{}, ce, false); err != errBadEntryOp {
+	if _, err := js.applyStreamEntries(&stream{}, ce, false, nil); err != errBadEntryOp {
 		t.Fatalf("expected errBadEntryOp from applyStreamEntries, got %v", err)
 	}
 	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {

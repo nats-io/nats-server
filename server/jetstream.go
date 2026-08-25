@@ -50,6 +50,11 @@ type JetStreamConfig struct {
 	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
 	UniqueTag    string        `json:"unique_tag,omitempty"`    // UniqueTag is the unique tag assigned to this instance
 	Strict       bool          `json:"strict,omitempty"`        // Strict indicates if strict JSON parsing is performed
+
+	// maxStorePending is set when MaxStore was derived from the available disk
+	// space rather than configured, and has not been adjusted yet for the space
+	// that recovered streams already occupy. See finalizeDynamicMaxStore.
+	maxStorePending bool
 }
 
 // Statistics about JetStream for this server.
@@ -516,6 +521,10 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		return err
 	}
 
+	// All file based streams have been recovered, so we now know how much of
+	// the disk we already occupy and can settle on a dynamic limit.
+	js.finalizeDynamicMaxStore()
+
 	// If we are in clustered mode go ahead and start the meta controller.
 	if !standAlone || canExtend {
 		if err := s.enableJetStreamClustering(); err != nil {
@@ -529,6 +538,30 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	js.setStarted()
 
 	return nil
+}
+
+// finalizeDynamicMaxStore settles a dynamic max store limit once all file based
+// streams have been recovered. diskAvailable only reports free space, so add back
+// what we occupy ourselves to keep the limit stable across restarts.
+func (js *jetStream) finalizeDynamicMaxStore() {
+	js.mu.Lock()
+	if !js.config.maxStorePending {
+		js.mu.Unlock()
+		return
+	}
+	// From here on the limit is real and can be enforced, see sufficientResources.
+	js.config.maxStorePending = false
+	recovered := atomic.LoadInt64(&js.storeUsed)
+	if recovered <= 0 {
+		js.mu.Unlock()
+		return
+	}
+	// diskAvailable is already scaled down to 75% of what is free, so scale the
+	// recovered bytes the same way before adding them back.
+	maxStore := addSaturate(js.config.MaxStore, recovered/4*3)
+	js.config.MaxStore = maxStore
+	atomic.StoreInt64(&js.storeMax, maxStore)
+	js.mu.Unlock()
 }
 
 const jsNoExtend = "no_extend"
@@ -1325,6 +1358,8 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 						acc:           a,
 						srv:           s,
 						cfg:           cfg.ConsumerConfig,
+						direct:        cfg.Direct,
+						sourcing:      cfg.Sourcing,
 						active:        false,
 						stream:        mset.name(),
 						name:          cfg.Name,
@@ -2619,7 +2654,9 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	if js.memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if js.storeReserved+totalMaxStore > js.config.MaxStore {
+	// A dynamic limit is still provisional until recovery has run.
+	recovering := js.config.maxStorePending
+	if !recovering && js.storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2639,7 +2676,7 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	if memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if storeReserved+totalMaxStore > js.config.MaxStore {
+	if !recovering && storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2724,6 +2761,7 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 		jsc.MaxStore = maxStore
 	} else {
 		jsc.MaxStore = diskAvailable(jsc.StoreDir)
+		jsc.maxStorePending = true
 	}
 
 	if maxMem > 0 || (opts.maxMemSet && maxMem == 0) {

@@ -6780,6 +6780,45 @@ func TestJetStreamUpdateStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer func() { s.Shutdown() }()
+
+	nc, js := jsClientConnect(t, s)
+	defer func() { nc.Close() }()
+	si, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage})
+	require_NoError(t, err)
+	created := si.Created
+
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	time.Sleep(10 * time.Millisecond)
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if !si.Created.Equal(created) {
+		t.Fatalf("Expected created time %v after restart, got %v", created, si.Created)
+	}
+
+	cfg := si.Config
+	cfg.MaxMsgs = 1
+	_, err = js.UpdateStream(&cfg)
+	require_NoError(t, err)
+	nc.Close()
+	s.Shutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	if !si.Created.Equal(created) {
+		t.Fatalf("Expected created time %v after restart and update, got %v", created, si.Created)
+	}
+}
+
 func TestJetStreamDeleteMsg(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -20716,10 +20755,15 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	resume := o.lss.resume
 	o.mu.RUnlock()
 
+	// The publishes above are randomly distributed, so it's possible that not every
+	// subject was published to. Use the skiplist length so we don't wait on messages
+	// that were never published.
+	expected := len(pending)
+
 	// Now fetch the messages from the consumer.
 	ps, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test", "test_consumer"))
 	require_NoError(t, err)
-	for range subjects {
+	for range expected {
 		msgs, err := ps.Fetch(1)
 		require_NoError(t, err)
 		for _, msg := range msgs {
@@ -25055,5 +25099,197 @@ func TestJetStreamSourceConsumerCreatePoisonedReply(t *testing.T) {
 				return nil
 			})
 		})
+	}
+}
+
+func TestJetStreamStreamUpdateReplicasNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Creating a replicated stream is not supported while non-clustered.
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_Error(t, err, NewJSStreamReplicasNotSupportedError())
+
+	cfg.Replicas = 1
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+
+	// Scaling up using an update must be rejected as well, otherwise the stream
+	// would report itself as replicated while it can't be, and it would not be
+	// recovered from disk after a restart.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSStreamReplicasNotSupportedError())
+
+	// The update must not have been applied.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+
+	// Unrelated updates must still be allowed.
+	cfg.Replicas = 1
+	cfg.Subjects = append(cfg.Subjects, "bar")
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 1)
+	require_Equal(t, len(si.Config.Subjects), 2)
+}
+
+func TestJetStreamStreamRecoverReplicasNotSupported(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	// Simulate a config stored by a server that still allowed updating to R>1
+	// while non-clustered. Can't go through the API, that's rejected now.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	cfg := mset.config()
+	cfg.Replicas = 3
+	mset.mu.RLock()
+	store := mset.store
+	mset.mu.RUnlock()
+	require_NoError(t, store.UpdateConfig(&cfg))
+
+	// Restart.
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Must not be loaded, R>1 is not supported while non-clustered.
+	_, err = js.StreamInfo("TEST")
+	require_Error(t, err, nats.ErrStreamNotFound)
+	_, err = s.GlobalAccount().lookupStream("TEST")
+	require_Error(t, err, NewJSStreamNotFoundError())
+}
+
+func TestJetStreamSetConsumerIgnoresDuplicateName(t *testing.T) {
+	mset := &stream{consumers: make(map[string]*consumer)}
+
+	first := &consumer{name: "dur", subjf: []*subjectFilter{{subject: "foo"}}}
+	first.cfg.FilterSubject = "foo"
+	mset.setConsumer(first)
+	require_Equal(t, mset.consumers["dur"], first)
+	require_Equal(t, mset.csl.Count(), 1)
+	require_Len(t, len(mset.cList), 1)
+
+	// A different object trying to register under the same name must be ignored.
+	dup := &consumer{name: "dur", subjf: []*subjectFilter{{subject: "foo"}}}
+	dup.cfg.FilterSubject = "foo"
+	mset.setConsumer(dup)
+
+	require_Equal(t, mset.consumers["dur"], first) // not overwritten
+	require_Equal(t, mset.csl.Count(), 1)          // not double-counted
+	require_Len(t, len(mset.cList), 1)             // no duplicate entry
+	require_Equal(t, mset.cList[0], first)
+}
+
+func TestJetStreamRemoveConsumerOnlyRemovesMatchingInstance(t *testing.T) {
+	mset := &stream{consumers: make(map[string]*consumer)}
+
+	good := &consumer{name: "dur", subjf: []*subjectFilter{{subject: "foo"}}}
+	good.cfg.FilterSubject = "foo"
+	mset.setConsumer(good)
+	require_Equal(t, mset.csl.Count(), 1)
+	require_Len(t, len(mset.cList), 1)
+
+	// A stale object left over from a failed create: same name, different identity.
+	stale := &consumer{name: "dur"}
+	stale.cfg.FilterSubject = "foo"
+	mset.removeConsumer(stale)
+
+	require_Equal(t, mset.consumers["dur"], good) // valid consumer survives
+	require_Equal(t, mset.csl.Count(), 1)
+	require_Len(t, len(mset.cList), 1)
+	require_Equal(t, mset.cList[0], good)
+
+	// Removing the registered consumer must still work.
+	mset.removeConsumer(good)
+	_, ok := mset.consumers["dur"]
+	require_True(t, !ok)
+	require_Equal(t, mset.csl.Count(), 0)
+	require_Len(t, len(mset.cList), 0)
+}
+
+// https://github.com/nats-io/nats-server/issues/8322
+func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
+	sd := t.TempDir()
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q}
+		accounts {
+			A { jetstream: {max_store: %d}, users: [{user: a, password: p}] }
+			$SYS { users: [{user: admin, password: s3cr3t!}] }
+		}
+	`
+	// Start out with no meaningful account limit so we can lay down some data.
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, -1)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	before := s.JetStreamConfig().MaxStore
+	require_True(t, before > 0)
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("a", "p"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage})
+	require_NoError(t, err)
+
+	// Fill enough of the disk that an available disk space calculation would notice.
+	const (
+		msgSize = 128 * 1024
+		numMsgs = 512
+		written = msgSize * numMsgs
+	)
+	msg := make([]byte, msgSize)
+	for range numMsgs {
+		_, err = js.Publish("TEST", msg)
+		require_NoError(t, err)
+	}
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	// Pick a limit that fits what the server allowed on the first boot, but not
+	// what a free-space-only recomputation would allow now that we wrote data.
+	limit := before - written/4
+	require_True(t, limit > 0)
+
+	// Start by hand, RunServerWithConfig panics when JetStream fails to enable.
+	conf = createConfFile(t, []byte(fmt.Sprintf(tmpl, sd, limit)))
+	s, err = NewServer(LoadConfig(conf))
+	require_NoError(t, err)
+	defer s.Shutdown()
+	s.Start()
+
+	// An account limit that was valid on the previous boot must not stop us from
+	// coming back up, the data it covers is already on disk.
+	if err := s.readyForConnections(5 * time.Second); err != nil || !s.JetStreamEnabled() {
+		t.Fatalf("JetStream failed to start with an account limit of %v, %v was available before",
+			friendlyBytes(limit), friendlyBytes(before))
+	}
+
+	// Allow slack for other activity on the same volume, but the limit must not
+	// have dropped by anything close to what we just wrote.
+	after := s.JetStreamConfig().MaxStore
+	if slack := int64(written / 4); before-after > slack {
+		t.Fatalf("Dynamic max store shrank after writing %v: before %v, after %v",
+			friendlyBytes(int64(written)), friendlyBytes(before), friendlyBytes(after))
 	}
 }

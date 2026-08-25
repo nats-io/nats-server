@@ -736,10 +736,8 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NoError(t, err)
 		mset.mu.RLock()
 		batches := mset.batches
-		batch := mset.batchApply
 		mset.mu.RUnlock()
 		require_True(t, batches == nil)
-		require_True(t, batch == nil)
 
 		// Enabling doesn't need to populate the batching state.
 		cfg.AllowAtomicPublish = true
@@ -747,10 +745,8 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NoError(t, err)
 		mset.mu.RLock()
 		batches = mset.batches
-		batch = mset.batchApply
 		mset.mu.RUnlock()
 		require_True(t, batches == nil)
-		require_True(t, batch == nil)
 
 		// Publish a partial batch that needs to be cleaned up.
 		m := nats.NewMsg("foo")
@@ -766,10 +762,8 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 
 		mset.mu.RLock()
 		batches = mset.batches
-		batch = mset.batchApply
 		mset.mu.RUnlock()
 		require_NotNil(t, batches)
-		require_NotNil(t, batch)
 		batches.mu.Lock()
 		groups := len(batches.atomic)
 		b := batches.atomic["uuid"]
@@ -778,7 +772,6 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 		require_NotNil(t, b)
 		store := b.store
 		require_Equal(t, store.State().Msgs, 1)
-		clfs := mset.getCLFS()
 
 		// Should fully clean up the in-progress batch.
 		switch mode {
@@ -818,59 +811,12 @@ func TestJetStreamAtomicBatchPublishCleanup(t *testing.T) {
 			}
 			return nil
 		})
-		// Should clean up the batch apply state.
-		if mode == Disable || mode == Delete {
-			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-				mset.mu.RLock()
-				batch = mset.batchApply
-				mset.mu.RUnlock()
-				nclfs := mset.getCLFS()
-				if batch != nil {
-					return fmt.Errorf("expected no batch apply")
-				}
-				if clfs != nclfs {
-					return fmt.Errorf("expected no change in CLFS")
-				}
-				return nil
-			})
-		}
 	}
 
 	t.Run("Disable", func(t *testing.T) { test(t, Disable) })
 	t.Run("StepDown", func(t *testing.T) { test(t, StepDown) })
 	t.Run("Delete", func(t *testing.T) { test(t, Delete) })
 	t.Run("Commit", func(t *testing.T) { test(t, Commit) })
-}
-
-func TestJetStreamAtomicBatchDeleteBatchApplyStateNoDoublePut(t *testing.T) {
-	mset := &stream{}
-	batch := &batchApply{
-		id:         "test-batch",
-		count:      3,
-		entryStart: 5,
-		maxApplied: 42,
-		entries:    []*CommittedEntry{{Index: 1}, {Index: 2}, {Index: 3}},
-	}
-	mset.batchApply = batch
-
-	mset.mu.Lock()
-	mset.deleteBatchApplyState()
-	mset.mu.Unlock()
-
-	require_True(t, mset.batchApply == nil)
-
-	batch.mu.Lock()
-	require_True(t, batch.entries == nil)
-	require_Equal(t, batch.id, _EMPTY_)
-	require_Equal(t, batch.count, uint64(0))
-	require_Equal(t, batch.entryStart, 0)
-	require_Equal(t, batch.maxApplied, uint64(0))
-
-	// Count was zeroed above, so the reject path must not bump clfs.
-	preCLFS := mset.clfs
-	batch.rejectBatchStateLocked(mset)
-	batch.mu.Unlock()
-	require_Equal(t, mset.clfs, preCLFS)
 }
 
 func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
@@ -3204,15 +3150,10 @@ func TestJetStreamAtomicBatchPublishPartialBatchInSharedAppendEntry(t *testing.T
 			newEntry(EntryNormal, esm1),
 			newEntry(EntryNormal, esm2),
 		})
-		_, err = js.applyStreamEntries(mset, ce, false)
+		batch := &batchApply{}
+		_, err = js.applyStreamEntries(mset, ce, false, batch)
 		require_NoError(t, err)
-
-		mset.mu.RLock()
-		batch := mset.batchApply
-		mset.mu.RUnlock()
-		batch.mu.Lock()
 		entryStart, maxApplied := batch.entryStart, batch.maxApplied
-		batch.mu.Unlock()
 
 		if !commit {
 			require_Equal(t, entryStart, 1)
@@ -3263,24 +3204,18 @@ func TestJetStreamAtomicBatchPublishCatchupMarkerMidBatch(t *testing.T) {
 	hdr1 = genHeader(hdr1, "Nats-Batch-Sequence", "1")
 	esm1 := encodeStreamMsgAllowCompressAndBatch("foo", _EMPTY_, hdr1, []byte("hello"), 0, ts, false, "uuid", 1, false)
 	ce1 := newCommittedEntry(1, []*Entry{newEntry(EntryNormal, esm1)})
-	_, err = js.applyStreamEntries(mset, ce1, false)
+	batch := &batchApply{}
+	_, err = js.applyStreamEntries(mset, ce1, false, batch)
 	require_NoError(t, err)
 
 	// Confirm the batch is in progress.
-	mset.mu.RLock()
-	batch := mset.batchApply
-	mset.mu.RUnlock()
-	require_NotNil(t, batch)
-	batch.mu.Lock()
-	inProgress := batch.id != _EMPTY_
-	batch.mu.Unlock()
-	require_True(t, inProgress)
+	require_True(t, batch.id != _EMPTY_)
 
 	// 2) A Raft-level catchup starts mid-batch. This pushes a marker entry with
 	//    Type==EntryCatchup and Data==nil (see raft.sendCatchupSignal). The
 	//    in-progress batch must remain intact and buffer this marker.
 	catchupCE := newCommittedEntry(0, []*Entry{{EntryCatchup, nil}})
-	_, err = js.applyStreamEntries(mset, catchupCE, false)
+	_, err = js.applyStreamEntries(mset, catchupCE, false, batch)
 	require_NoError(t, err)
 
 	// 3) Apply the batch commit (seq 2). The replay loop must skip the buffered
@@ -3296,10 +3231,9 @@ func TestJetStreamAtomicBatchPublishCatchupMarkerMidBatch(t *testing.T) {
 	var panicked any
 	func() {
 		defer func() { panicked = recover() }()
-		_, err = js.applyStreamEntries(mset, ce2, false)
+		_, err = js.applyStreamEntries(mset, ce2, false, batch)
 	}()
 	if panicked != nil {
-		batch.mu.Unlock()
 		mset.mu.Unlock()
 		t.Fatalf("applyStreamEntries panicked committing a batch with a buffered EntryCatchup entry: %v", panicked)
 	}
@@ -3343,23 +3277,26 @@ func TestJetStreamAtomicBatchPublishRejectPartialBatchOnLeaderChange(t *testing.
 
 	// Wait for all servers to have received and populated the partial batch.
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		var pindexMax uint64
 		for _, s := range c.servers {
 			mset2, err := s.globalAccount().lookupStream("TEST")
 			if err != nil {
 				return err
 			}
-			mset2.mu.RLock()
-			batch := mset2.batchApply
-			mset2.mu.RUnlock()
-			if batch == nil {
-				return fmt.Errorf("expected batch to be set")
+			rn := mset2.raftNode().(*raft)
+			rn.RLock()
+			prop, pindex, processed := rn.prop.len(), rn.pindex, rn.processed
+			rn.RUnlock()
+			if prop > 0 {
+				return fmt.Errorf("still has inflight proposals")
+			} else if pindex != processed {
+				return fmt.Errorf("pindex %d != processed %d", pindex, processed)
+			} else if pindexMax == 0 {
+				pindexMax = pindex
+			} else if pindex != pindexMax {
+				return fmt.Errorf("pindex %d != max %d", pindex, pindexMax)
 			}
-			batch.mu.Lock()
-			count := batch.count
-			batch.mu.Unlock()
-			if count != 10 {
-				return fmt.Errorf("expected batch count to be 10, got: %d", count)
-			}
+
 		}
 		return nil
 	})

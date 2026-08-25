@@ -16,6 +16,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -674,6 +675,12 @@ func (fs *fileStore) unlockAllMsgBlocks() {
 	for _, mb := range fs.blks {
 		mb.mu.Unlock()
 	}
+}
+
+func (fs *fileStore) setCreatedTime(created time.Time) {
+	fs.mu.Lock()
+	fs.cfg.Created = created
+	fs.mu.Unlock()
 }
 
 func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
@@ -3858,6 +3865,9 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (fs *fileStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(fs.cfg.Subjects) {
 		return false
 	}
@@ -3878,7 +3888,11 @@ func (fs *fileStore) filterIsAll(filters []string) bool {
 func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+}
 
+// Lock should be held.
+func (fs *fileStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil, nil
 	}
@@ -3931,6 +3945,17 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 	// Collect all sequences needed.
 	seqs := make([]uint64, 0, len(subs))
+
+	// If covering the whole stream, check fast path of visiting only last blocks.
+	if maxSeq >= fs.state.LastSeq {
+		if maxAllowed > 0 && len(subs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+		if err := fs.multiLastSeqsByLastBlockLocked(subs, &seqs); err != nil {
+			return nil, err
+		}
+	}
+
 	for i, lnf := lastBlkIndex, false; i >= 0; i-- {
 		if len(subs) == 0 {
 			break
@@ -4013,6 +4038,107 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 	}
 	slices.Sort(seqs)
 	return seqs, nil
+}
+
+// MultiLastMsgs delivers the last message per subject matching the filters,
+// up to maxSeq and skipping sequences below minSeq, in ascending sequence
+// order through cb, all within a single read section so the batch is a
+// point-in-time snapshot of the store.
+func (fs *fileStore) MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	seqs, err := fs.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+	if err != nil || len(seqs) == 0 {
+		return 0, 0, err
+	}
+	total := uint64(len(seqs))
+	np := total
+	for _, seq := range seqs {
+		if np > 0 {
+			np--
+		}
+		if seq < minSeq {
+			continue
+		}
+		var svp StoreMsg
+		sm, err := fs.msgForSeqLocked(seq, &svp, false)
+		if err != nil {
+			return total, np, err
+		}
+		if !cb(sm, np) {
+			break
+		}
+	}
+	return total, np, nil
+}
+
+// multiLastSeqsByLastBlockLocked resolves last sequences via each subject's
+// last block (psi.lblk), moving resolved subjects from subs into seqs and
+// leaving unresolved ones (e.g. stale lblk) in subs for the caller.
+// Lock should be held.
+func (fs *fileStore) multiLastSeqsByLastBlockLocked(subs map[string]*psi, seqs *[]uint64) error {
+	// Sort requested subjects by their last block so each block is visited
+	// once and in order, one flat slice instead of per-block map bookkeeping.
+	type lblkSubj struct {
+		lblk uint32
+		subj string
+		info *psi
+	}
+	pairs := make([]lblkSubj, 0, len(subs))
+	for subj, info := range subs {
+		pairs = append(pairs, lblkSubj{info.lblk, subj, info})
+	}
+	slices.SortFunc(pairs, func(a, b lblkSubj) int {
+		return cmp.Compare(a.lblk, b.lblk)
+	})
+
+	var unresolved []lblkSubj
+	for i := 0; i < len(pairs); {
+		blkIdx := pairs[i].lblk
+		j := i + 1
+		for j < len(pairs) && pairs[j].lblk == blkIdx {
+			j++
+		}
+		mb := fs.bim[blkIdx]
+		if mb == nil {
+			unresolved = append(unresolved, pairs[i:j]...)
+			i = j
+			continue
+		}
+		mb.mu.Lock()
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			mb.mu.Unlock()
+			return err
+		}
+		for ; i < j; i++ {
+			subj := pairs[i].subj
+			ss, ok := mb.fss.Find(stringToBytes(subj))
+			if !ok || ss == nil {
+				unresolved = append(unresolved, pairs[i])
+				continue
+			}
+			// Check if we need to recalculate. We only care about the last sequence.
+			if ss.lastNeedsUpdate {
+				if err := mb.recalculateForSubj(subj, ss); err != nil {
+					mb.mu.Unlock()
+					return err
+				}
+			}
+			*seqs = append(*seqs, ss.Last)
+		}
+		mb.mu.Unlock()
+	}
+
+	// Shrink subs down to only the unresolved subjects, clearing wholesale
+	// rather than deleting per resolved subject.
+	if len(unresolved) < len(subs) {
+		clear(subs)
+		for _, p := range unresolved {
+			subs[p.subj] = p.info
+		}
+	}
+	return nil
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
@@ -6255,20 +6381,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	mb.fs.dios.acquire()
-	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
-	mb.fs.dios.release()
-	if err != nil {
-		_ = os.Remove(mfn)
-		return err
-	}
-	if err := os.Rename(mfn, mb.mfn); err != nil {
-		_ = os.Remove(mfn)
+	sync := mb.syncAlways
+	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
 	}
 
-	// Make sure to sync
-	mb.needSync = true
+	// Make sure to sync if we have not done so yet
+	mb.needSync = !sync
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
@@ -7833,6 +7952,35 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 	return nil
 }
 
+// Lock should be held.
+func (mb *msgBlock) syncFile() error {
+	mb.fs.dios.acquire()
+	defer mb.fs.dios.release()
+	fd, didOpen := mb.mfd, false
+	if fd == nil {
+		var err error
+		fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		didOpen = true
+	}
+	if err := fd.Sync(); err != nil {
+		// Close fd if we opened it, but ignore its error since sync takes precedence.
+		if didOpen {
+			_ = fd.Close()
+		}
+		return err
+	}
+	if didOpen {
+		return fd.Close()
+	}
+	return nil
+}
+
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
 	if fs.isClosed() {
@@ -7858,6 +8006,7 @@ func (fs *fileStore) syncBlocks() {
 	var fsDmap *interiorDeletes
 
 	var markDirty bool
+	var needDirSync bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -7928,12 +8077,14 @@ func (fs *fileStore) syncBlocks() {
 			err := mb.compactWithFloor(firstSeq, fsDmap)
 			// If this compact removed all raw bytes due to tombstone cleanup, schedule to remove.
 			shouldRemove := mb.rbytes == 0
+			needSync = mb.needSync
 			mb.mu.Unlock()
 			fs.mu.RUnlock()
 			if err != nil {
 				storeFsWerr(err)
 				continue
 			}
+			needDirSync = needDirSync || needSync || shouldRemove
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
 			//  it above which we would prefer to be a readlock such that other lookups can occur while compacting this block.
@@ -7962,43 +8113,23 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we need to sync this block.
 		if needSync {
 			mb.mu.Lock()
-			var fd *os.File
-			var err error
-			var didOpen bool
-			if mb.mfd != nil {
-				fd = mb.mfd
-			} else {
-				fs.dios.acquire()
-				fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-				fs.dios.release()
-				didOpen = true
-				if err != nil && !os.IsNotExist(err) {
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
-			}
-			// If we have an fd.
-			if fd != nil {
-				if err = fd.Sync(); err != nil {
-					// Close fd if we opened it, but ignore its error since sync takes precedence.
-					if didOpen {
-						_ = fd.Close()
-					}
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
-				// If we opened the file close the fd.
-				if didOpen {
-					if err = fd.Close(); err != nil {
-						mb.mu.Unlock()
-						storeFsWerr(err)
-						continue
-					}
-				}
+			err := mb.syncFile()
+			if err == nil {
+				mb.needSync = false
 			}
 			mb.mu.Unlock()
+			if err != nil {
+				storeFsWerr(err)
+				continue
+			}
+		}
+	}
+	if needDirSync && canFsyncDirectories {
+		fs.dios.acquire()
+		err := syncDir(filepath.Join(fs.fcfg.StoreDir, msgDir))
+		fs.dios.release()
+		if err != nil {
+			storeFsWerr(err)
 		}
 	}
 
@@ -13959,7 +14090,10 @@ func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.
 const canFsyncDirectories = runtime.GOOS != "windows"
 
 func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
-	tmp := name + ".tmp"
+	return writeAtomicallyWithTemp(dios, name+".tmp", name, data, perm, sync)
+}
+
+func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if sync {
 		flags = flags | os.O_SYNC
@@ -13987,7 +14121,7 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14013,7 +14147,7 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 		return err
 	}
 	if canFsyncDirectories {
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14021,10 +14155,10 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 }
 
 // Dios should already be held.
-func syncDir(name string) error {
+func syncDir(path string) error {
 	var d *os.File
 	var err error
-	if d, err = os.Open(filepath.Dir(name)); err != nil {
+	if d, err = os.Open(path); err != nil {
 		return err
 	}
 	if err = d.Sync(); err != nil {

@@ -35,15 +35,21 @@ The "clsMu" lock protects the consumer list on a stream, used for signalling con
 
     stream -> clsMu
 
-The "clMu", "ddMu" and "batchMu" locks protect clustered, dedupe and batch state respectively.
-The stream lock (`mset.mu`) is optional, but if holding "clMu", "ddMu" or "batchMu",
+The "clMu" and "ddMu" locks protect clustered and dedupe state respectively.
+The stream lock (`mset.mu`) is optional, but if holding "clMu" or "ddMu",
 locking the stream lock afterward would violate locking order.
 
     stream -> clMu
-    stream -> batchMu -> clMu
     stream -> clMu -> ddMu
 
 The "mset.batches.mu" lock protects the batching state without needing to hold the stream lock.
 If "clMu" is used to commit a batch, it should only be acquired while already holding the batch lock.
 
     stream -> mset.batches.mu -> clMu
+
+The "isolateMu" lock isolates direct get and msg get reads from writes, so those reads do not
+observe partially applied rollups or atomic batches. Other read paths (consumer delivery,
+mirrors/sources, info requests, etc.) are sequentially consistent and may observe a prefix of
+an inflight batch. It must be acquired before the stream lock, never while holding it.
+
+    isolateMu -> stream

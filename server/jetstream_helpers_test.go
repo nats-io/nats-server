@@ -49,7 +49,7 @@ func init() {
 	hbInterval = 50 * time.Millisecond
 	minElectionTimeout = 1500 * time.Millisecond
 	maxElectionTimeout = 3500 * time.Millisecond
-	lostQuorumInterval = 2 * time.Second
+	lostQuorumInterval = 5 * time.Second
 	lostQuorumCheck = 4 * hbInterval
 
 	// For statz and jetstream placement speedups as well.
@@ -2256,4 +2256,17 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 		return StreamState{}, errors.Join(errs...)
 	}
 	return streamLeader.State, nil
+}
+
+// publishAsync publishes a message asynchronously, retrying if we're stalled
+// on async publishes.
+func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byte) nats.PubAckFuture {
+	t.Helper()
+	for {
+		pubAck, err := js.PublishAsync(subj, msg)
+		if err == nil {
+			return pubAck
+		}
+		require_Error(t, err, nats.ErrTooManyStalledMsgs)
+	}
 }
