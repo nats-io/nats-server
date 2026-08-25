@@ -448,6 +448,19 @@ func TestNoRaceGatewayNoMissingReplies(t *testing.T) {
 	waitForInboundGateways(t, sa1, 1, time.Second)
 	checkClusterFormed(t, sb1, sb2)
 
+	// The requestor relies on the reply subject being mapped to a $GNR
+	// routed reply, which only happens while the subscription on the reply
+	// subject is still "recent" (recSubExp, 2sec by default). Each iteration
+	// below creates the subscription, then possibly waits up to a second for
+	// the interest to show up on B2 before sending the request, so on a
+	// loaded machine the window can lapse and the reply would then be
+	// delivered to the queue sub on A instead. Give it plenty of room.
+	for _, s := range []*Server{sb1, sb2} {
+		s.gateway.pasi.Lock()
+		s.gateway.recSubExp = 30 * time.Second
+		s.gateway.pasi.Unlock()
+	}
+
 	a1URL := fmt.Sprintf("nats://%s:%d", oa1.Host, oa1.Port)
 	a2URL := fmt.Sprintf("nats://%s:%d", oa2.Host, oa2.Port)
 	b1URL := fmt.Sprintf("nats://%s:%d", ob1.Host, ob1.Port)
