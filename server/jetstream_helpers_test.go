@@ -2189,6 +2189,13 @@ func copyDir(t *testing.T, dst, src string) error {
 		if d.IsDir() && d.Name() == purgeDir {
 			return fs.SkipDir
 		}
+		// Atomic writes use .tmp files that are renamed into place when complete.
+		if strings.HasSuffix(d.Name(), blkTmpSuffix) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		newPath := path.Join(dst, p)
 		if d.IsDir() {
 			return os.MkdirAll(newPath, defaultDirPerms)
