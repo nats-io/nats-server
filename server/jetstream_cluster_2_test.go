@@ -5596,7 +5596,18 @@ func TestJetStreamClusterMemoryConsumerCompactVsSnapshot(t *testing.T) {
 
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		ci, err := js.ConsumerInfo("test", "d")
-		require_NoError(t, err)
+		if err != nil {
+			return err
+		}
+		// The restarted server can be assigned the consumer but not have created
+		// its Raft node yet, in which case it answers with defaults and no cluster
+		// info. Retry until we get an answer from the consumer leader.
+		if ci.Cluster == nil {
+			return errors.New("no cluster info")
+		}
+		if len(ci.Cluster.Replicas) != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d", len(ci.Cluster.Replicas))
+		}
 		for _, r := range ci.Cluster.Replicas {
 			if !r.Current || r.Lag != 0 {
 				return fmt.Errorf("Replica not current: %+v", r)
