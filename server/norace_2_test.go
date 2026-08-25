@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/json"
 	"errors"
@@ -837,6 +838,63 @@ func TestNoRaceFileStoreLargeMsgsAndFirstMatching(t *testing.T) {
 
 func TestNoRaceWSNoCorruptionWithFrameSizeLimit(t *testing.T) {
 	testWSNoCorruptionWithFrameSizeLimit(t, 50000)
+}
+
+func TestNoRaceWSCompressionGrownBufferRecycling(t *testing.T) {
+	opts := testWSOptions()
+	opts.MaxPending = MAX_PENDING_SIZE
+	s := &Server{opts: opts}
+	c := &client{srv: s, ws: &websocket{compress: true}}
+	c.initClient()
+
+	// Incompressible payload filling the medium pool bucket exactly, so
+	// that the flate output (payload + block overhead) is guaranteed to
+	// outgrow the pooled buffer seeding the compression bytes.Buffer.
+	payload := make([]byte, nbPoolSizeMedium)
+	rnd := uint32(1)
+	for i := range payload {
+		rnd = rnd*1664525 + 1013904223
+		payload[i] = byte(rnd >> 24)
+	}
+
+	// Confirm the payload no longer fits the bucket once compressed.
+	var cb bytes.Buffer
+	cw, _ := flate.NewWriter(&cb, flate.BestSpeed)
+	cw.Write(payload)
+	cw.Flush()
+	if cb.Len() <= nbPoolSizeMedium {
+		t.Fatalf("Expected compressed payload to exceed %v bytes, got %v", nbPoolSizeMedium, cb.Len())
+	}
+
+	nbSlice := make(net.Buffers, 1)
+	collapse := func() {
+		c.mu.Lock()
+		data := nbPoolGet(len(payload))
+		data = append(data, payload...)
+		nbSlice[0] = data
+		c.out.nb = nbSlice
+		c.out.pb = int64(len(payload))
+		c.ws.fs = 0
+
+		// calls c.wsCollapsePtoNB internally.
+		bufs, _ := c.collapsePtoNB()
+		for _, buf := range bufs {
+			nbPoolPut(buf)
+		}
+		c.out.nb = nil
+		c.mu.Unlock()
+	}
+	// Populate the pool and initialize the compressor.
+	for i := 0; i < 10; i++ {
+		collapse()
+	}
+
+	// Growing the bytes.Buffer beyond the seeded pool buffer costs a few
+	// allocations per iteration but the seed itself must be returned to the pool.
+	allocs := testing.AllocsPerRun(500, collapse)
+	if allocs > 3 {
+		t.Fatalf("Too many allocs per iteration (%.1f); the compression seed buffer is likely not recycled", allocs)
+	}
 }
 
 func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
