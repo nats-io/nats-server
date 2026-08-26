@@ -122,7 +122,7 @@ func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
 		return
 	}
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
-	var raw [16][]byte
+	var raw [32][]byte
 	parts := genParts(filter, raw[:0])
 	var _pre [256]byte
 	t.match(t.root, parts, _pre[:0], func(subject []byte, val *T) bool {
@@ -140,7 +140,7 @@ func (t *SubjectTree[T]) MatchUntil(filter []byte, cb func(subject []byte, val *
 		return true
 	}
 	// We need to break this up into chunks based on wildcards, either pwc '*' or fwc '>'.
-	var raw [16][]byte
+	var raw [32][]byte
 	parts := genParts(filter, raw[:0])
 	var _pre [256]byte
 	return t.match(t.root, parts, _pre[:0], cb)
@@ -322,7 +322,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 	}
 
 	for n != nil {
-		nparts, matched := n.matchParts(parts)
+		nparts, matched := matchParts(parts, n.path())
 		// Check if we did not match.
 		if !matched {
 			return true

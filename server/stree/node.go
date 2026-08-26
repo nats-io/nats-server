@@ -24,7 +24,6 @@ type node interface {
 	isFull() bool
 	grow() node
 	shrink() node
-	matchParts(parts [][]byte) ([][]byte, bool)
 	kind() string
 	iter(f func(node) bool)
 	children() []node
@@ -46,8 +45,3 @@ func (n *meta) setPrefix(pre []byte) {
 
 func (n *meta) numChildren() uint16 { return n.size }
 func (n *meta) path() string        { return n.prefix }
-
-// Will match parts against our prefix.
-func (n *meta) matchParts(parts [][]byte) ([][]byte, bool) {
-	return matchParts(parts, n.prefix)
-}
