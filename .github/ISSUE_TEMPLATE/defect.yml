@@ -45,3 +45,10 @@ body:
       description: Provide as many concrete steps to reproduce the defect. Please also include stream info and consumer info if this issue is JetStream-related.
     validations:
       required: false
+  - type: checkboxes
+    id: no-ai-meat-proxy
+    attributes:
+      label: Submission acknowledgment
+      options:
+        - label: I am a human being writing in my own words and not an AI agent. I will not use an AI agent to communicate on my behalf in this issue, either directly or via copy-paste.
+          required: true

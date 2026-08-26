@@ -33,6 +33,12 @@ A good pull request includes:
 - No more commits than necessary. Sometimes having multiple commits is useful for telling a story or isolating changes from one another, but please squash down any unnecessary commits that may just be for clean-up, comments or small changes.
 - No additional external dependencies that aren't absolutely essential. Please do everything you can to avoid pulling in additional libraries/dependencies into `go.mod` as we will be very critical of these.
 
+### AI Policy
+
+We are happy to accept AI-assisted contributions, but we are not happy to talk to your AI agent during the process. When submitting an issue or a pull request, communicate with us in your own words and [do not meat-proxy](https://nomeatproxy.com). If we wanted to talk to an AI, we can do it ourselves! If you are submitting code, we expect you to understand how the code works and that it has been appropriately tested, even if an AI has written or reviewed it.
+
+We also use AI review tools for pull requests, but it is always a human that makes the final decision on whether or not to accept it, so please engage faithfully during the code review process.
+
 ### Sign-off
 
 In order to accept a contribution, you will first need to certify that the contribution is your original work and that you license the work to the project under the [Apache-2.0 license](https://github.com/nats-io/nats-server/blob/main/LICENSE).
