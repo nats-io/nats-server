@@ -7901,11 +7901,26 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 
 	// Follower requests a catchup, which starts a catchup run that blocks
 	// waiting for index updates after sending up to 2MB of entries.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("$NRG.CR.TEST.1")
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
 	n.catchupFollower(&appendEntryResponse{term: 1, index: 0, peer: nats1, reply: "$NRG.CR.TEST.1"})
 	n.RLock()
 	q1 := n.progress[nats1]
 	n.RUnlock()
 	require_True(t, q1 != nil)
+
+	// Grab the progress inbox of the first run, its subscription going away is
+	// how we know the run's deferred cleanup has completed.
+	pmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	progressInbox := pmsg.Reply
+	require_True(t, strings.HasPrefix(progressInbox, "$NRG.CP."))
 
 	// Wait for the first run to consume the initial index update, so we know
 	// it has started and captured its view of the last index (4) before we
@@ -7932,11 +7947,9 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	require_True(t, q2 != nil)
 	require_True(t, q1 != q2)
 
-	// Wait for the first run's deferred cleanup. On exit it proposes adding
-	// the (unknown) peer, which is observable on the proposal queue since the
-	// run loop isn't started in this test.
-	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if n.prop.len() == 0 {
+	// Wait for the first run's deferred cleanup, which unsubscribes its progress inbox.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if r := n.s.SystemAccount().sl.Match(progressInbox); len(r.psubs) > 0 {
 			return errors.New("first catchup run still active")
 		}
 		return nil
@@ -7949,6 +7962,71 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	q := n.progress[nats1]
 	n.RUnlock()
 	require_True(t, q == q2)
+}
+
+func TestNRGCatchupDoesNotAddPeerOnCompletion(t *testing.T) {
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	for _, test := range []struct {
+		title   string
+		prepare func(n *raft)
+	}{
+		{
+			title: "Managed",
+			// The meta layer owns membership, the group must never add peers itself.
+			prepare: func(n *raft) { n.managed = true },
+		},
+		{
+			title: "Removed",
+			// The peer was just removed, catching it up must not bring it back.
+			prepare: func(n *raft) { n.removed = map[string]time.Time{nats1: time.Now()} },
+		},
+		{
+			title: "Unmanaged",
+			// Even here the catchup itself doesn't add, hearing from the peer does.
+			prepare: func(n *raft) {},
+		},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			// Create a sample entry, the content doesn't matter, just that it's stored.
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+			aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+			require_NoError(t, n.storeToWAL(aeMsg))
+
+			n.Lock()
+			test.prepare(n)
+			n.term = 1
+			n.Unlock()
+			n.switchToLeader()
+
+			// The run loop isn't started in this test, so proposals stay observable.
+			n.prop.drain()
+
+			// Catch up a peer that is not a member of the group. The catchup has the
+			// whole WAL available, so it runs to completion on its own.
+			n.catchupFollower(&appendEntryResponse{term: 1, index: 0, peer: nats1, reply: "$NRG.CR.TEST.1"})
+			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				n.RLock()
+				defer n.RUnlock()
+				if n.progress[nats1] != nil {
+					return errors.New("catchup still running")
+				}
+				return nil
+			})
+
+			// Finishing the catchup must not have proposed the peer into the group.
+			require_Equal(t, n.prop.len(), 0)
+			n.RLock()
+			_, isPeer := n.peers[nats1]
+			n.RUnlock()
+			require_False(t, isPeer)
+		})
+	}
 }
 
 func TestNRGCatchupFollowerNoWaitGroupLeakWhenGoRoutineFails(t *testing.T) {
