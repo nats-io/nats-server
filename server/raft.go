@@ -3592,7 +3592,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 	}
 	n.debug("Running catchup for %q [%d:%d] to [%d:%d]", peer, ar.term, ar.index, pterm, last)
 
-	const maxOutstanding = 2 * 1024 * 1024 // 2MB for now.
+	const maxOutstanding = 64 * 1024 * 1024 // widen to avoid a catchup livelock under sustained write load (see #8519)
 	next, total, om := uint64(0), 0, make(map[uint64]int)
 
 	sendNext := func() bool {
