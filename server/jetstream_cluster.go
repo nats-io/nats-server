@@ -3479,7 +3479,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				}
 
 				// Apply our entries.
-				if maxApplied, err := js.applyStreamEntries(mset, ce, isRecovering, batch); err == nil {
+				if maxApplied, err := js.applyStreamEntries(mset, n, ce, isRecovering, batch); err == nil {
 					// Update our applied.
 					if maxApplied > 0 {
 						// Indicate we've processed (but not applied) everything up to this point.
@@ -3507,12 +3507,20 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 						// instead of fully resetting the state. Resetting the clustered state may result in
 						// race conditions and should only be used as a last effort attempt.
 						if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries || err == errAlreadyLeader {
-							if node := mset.raftNode(); node != nil && node.DrainAndReplaySnapshot() {
+							if n.DrainAndReplaySnapshot() {
 								break
+							} else if n.IsDeleted() {
+								// The only reason we can't replay is our node being deleted, which
+								// means the meta layer is deliberately tearing this monitor down.
+								// Don't fall through to a reset, that would resurrect this group.
+								s.Warnf("Will not reset stream '%s > %s', raft group %q was removed",
+									accName, sa.Config.Name, n.Group())
+								aq.recycle(&ces)
+								return
 							}
 						}
 						// We will attempt to reset our cluster state.
-						if mset.resetClusteredState(err) {
+						if mset.resetClusteredState(n, err) {
 							aq.recycle(&ces)
 							return
 						}
@@ -3901,7 +3909,7 @@ func (mset *stream) isMigrating() bool {
 }
 
 // resetClusteredState is called when a clustered stream had an error (e.g sequence mismatch, bad snapshot) and needs to be reset.
-func (mset *stream) resetClusteredState(err error) bool {
+func (mset *stream) resetClusteredState(n RaftNode, err error) bool {
 	mset.mu.RLock()
 	s, js, jsa, sa, acc, node, name := mset.srv, mset.js, mset.jsa, mset.sa, mset.acc, mset.node, mset.nameLocked(false)
 	stype, tierName, replicas := mset.cfg.Storage, mset.tier, mset.cfg.Replicas
@@ -3909,8 +3917,20 @@ func (mset *stream) resetClusteredState(err error) bool {
 
 	// The stream might already be deleted and not assigned to us anymore.
 	// In any case, don't revive the stream if it's already closed.
-	if mset.closed.Load() || (node != nil && node.IsDeleted()) {
+	// A nil node means it was removed out from underneath us, which only happens
+	// when the meta layer is deliberately tearing this monitor down.
+	if mset.closed.Load() || node == nil || node.IsDeleted() {
 		s.Warnf("Will not reset stream '%s > %s', stream is closed", acc, mset.name())
+		// Explicitly returning true here, we want the outside to break out of the monitoring loop as well.
+		return true
+	}
+
+	// The node we were monitoring is no longer this stream's node. The meta layer has
+	// remapped us into a different group and is tearing this monitor down, so resetting
+	// here would resurrect a group that has already been replaced.
+	if n != nil && n != node {
+		s.Warnf("Will not reset stream '%s > %s', raft group %q was replaced by %q",
+			acc, mset.name(), n.Group(), node.Group())
 		// Explicitly returning true here, we want the outside to break out of the monitoring loop as well.
 		return true
 	}
@@ -3922,9 +3942,7 @@ func (mset *stream) resetClusteredState(err error) bool {
 	})
 
 	// Stepdown regardless if we are the leader here.
-	if node != nil {
-		node.StepDown()
-	}
+	node.StepDown()
 
 	// If we detect we are shutting down just return.
 	if js != nil && js.isShuttingDown() {
@@ -3944,14 +3962,12 @@ func (mset *stream) resetClusteredState(err error) bool {
 		return false
 	}
 
-	if node != nil {
-		if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
-			// Don't delete all state, could've just been temporarily unable to reach the leader.
-			node.Stop()
-		} else {
-			// We delete our raft state. Will recreate.
-			node.Delete()
-		}
+	if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries {
+		// Don't delete all state, could've just been temporarily unable to reach the leader.
+		node.Stop()
+	} else {
+		// We delete our raft state. Will recreate.
+		node.Delete()
 	}
 
 	// Preserve our current state and messages unless we have a first sequence mismatch.
@@ -4011,7 +4027,7 @@ func isControlHdr(hdr []byte) bool {
 
 // Apply our stream entries.
 // Return maximum allowed applied value, if currently inside a batch, zero otherwise.
-func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool, batch *batchApply) (uint64, error) {
+func (js *jetStream) applyStreamEntries(mset *stream, n RaftNode, ce *CommittedEntry, isRecovering bool, batch *batchApply) (uint64, error) {
 	for i, e := range ce.Entries {
 		// Ignore if lower-level catchup is started.
 		// We don't need to optimize during this, all entries are handled as normal.
@@ -4356,7 +4372,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 					s, accName, streamName := mset.srv, mset.acc.GetName(), mset.cfg.Name
 					mset.mu.RUnlock()
 					s.Warnf("Detected bad stream state, resetting '%s > %s'", accName, streamName)
-					mset.resetClusteredState(err)
+					mset.resetClusteredState(n, err)
 				}
 			}
 

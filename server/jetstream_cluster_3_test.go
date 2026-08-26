@@ -5354,7 +5354,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	mset, err := acc.lookupStream("TEST1")
 	require_NoError(t, err)
 	// NRG only
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 	// Need to re-lookup this stream since we will recreate from reset above.
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
@@ -5362,7 +5362,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 		return err
 	})
 	// Now NRG and Stream state itself.
-	mset.resetClusteredState(errFirstSequenceMismatch)
+	mset.resetClusteredState(mset.raftNode(), errFirstSequenceMismatch)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
 	// Now test server restart
@@ -5429,7 +5429,7 @@ func TestJetStreamClusterStreamFailTracking(t *testing.T) {
 	mset, err := nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	// Reset raft
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 	time.Sleep(100 * time.Millisecond)
 
 	nl.Shutdown()
@@ -10907,7 +10907,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 100, Num: 401})),
 	})
 	batch := &batchApply{}
-	_, err = sjs.applyStreamEntries(mset, replay, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), replay, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 1000)
 
@@ -10921,7 +10921,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr := newCommittedEntry(2, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1001, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2000)
 	mset.store.FastState(&after)
@@ -10931,7 +10931,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr = newCommittedEntry(3, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1501, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2500)
 	mset.store.FastState(&after)
@@ -11671,5 +11671,78 @@ func TestJetStreamClusterMetaSnapshotIdempotentCreatePreservesStream(t *testing.
 			return fmt.Errorf("stream data lost on idempotent create: %+v", state)
 		}
 		return nil
+	})
+}
+
+// A stream that gets remapped into a new Raft group has its old node removed out from
+// underneath the running monitor. A monitor parked in catchup only surfaces the resulting
+// error afterwards, and must not reset the stream: the meta layer has already moved us to
+// a new group, so a reset would tear the stream down and resurrect the replaced group.
+func TestJetStreamClusterNoResetClusteredStateAfterStreamRemap(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, name := range []string{"TEST", "OTHER"} {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Subjects: []string{name + ".foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	// Use a follower so we don't disturb the stream leader.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// The node this monitor generation owns.
+	n := mset.raftNode()
+	require_NotNil(t, n)
+
+	t.Run("NodeRemoved", func(t *testing.T) {
+		// Simulate processClusterUpdateStream detecting a stream remap: the node is removed
+		// and the monitor is torn down, both while the monitor is parked in catchup.
+		mset.removeNode()
+		mset.stopMonitoring()
+		require_True(t, mset.raftNode() == nil)
+
+		// This is what the parked monitor does once its catchup finally aborts.
+		require_True(t, mset.resetClusteredState(n, errCatchupAbortedNoLeader))
+
+		// The stream must be left intact for the meta layer to converge on, not stopped
+		// and recreated from the now stale stream assignment.
+		time.Sleep(500 * time.Millisecond)
+		require_False(t, mset.closed.Load())
+		nmset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_True(t, nmset == mset)
+	})
+
+	t.Run("NodeReplaced", func(t *testing.T) {
+		// Same remap, but caught after a different node has already been linked in. The
+		// monitor is still stopped from the subtest above, so nothing races us here.
+		other, err := s.globalAccount().lookupStream("OTHER")
+		require_NoError(t, err)
+		replacement := other.raftNode()
+		require_NotNil(t, replacement)
+
+		mset.mu.Lock()
+		mset.node = replacement
+		mset.mu.Unlock()
+
+		// Our generation's node is no longer the stream's node, so we must not reset.
+		require_True(t, mset.resetClusteredState(n, errCatchupAbortedNoLeader))
+
+		time.Sleep(500 * time.Millisecond)
+		require_False(t, mset.closed.Load())
+		require_False(t, other.closed.Load())
+
+		mset.mu.Lock()
+		mset.node = nil
+		mset.mu.Unlock()
 	})
 }

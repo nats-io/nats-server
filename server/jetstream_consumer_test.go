@@ -13343,3 +13343,58 @@ func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerQueues(t *test
 	require_True(t, ok)
 	require_Equal(t, v.(*ipQueue[*nextMsgReq]), o.nextMsgReqs)
 }
+
+func TestJetStreamConsumerDeliveryCountUnderflow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:    "CONSUMER",
+		AckPolicy:  AckExplicit,
+		MaxDeliver: 3,
+	})
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// A failed delivery attempt on a message that was never redelivered must
+	// not fabricate redelivery state for it.
+	o.decDeliveryCount(1)
+	require_True(t, o.rdc == nil)
+	require_Equal(t, o.deliveryCount(1), 1)
+	// Underflow used to report a delivery count of 2^64-1 here, which is
+	// >= any configured MaxDeliver, so the message was immediately treated as
+	// having exhausted its delivery attempts.
+	require_False(t, o.hasMaxDeliveries(1))
+
+	// A failed delivery attempt after a redelivery has to be reversible, all
+	// the way back to no redelivery state at all.
+	require_Equal(t, o.incDeliveryCount(1), 2)
+	require_Equal(t, o.deliveryCount(1), 1)
+	require_Equal(t, o.incDeliveryCount(1), 3)
+	require_Equal(t, o.deliveryCount(1), 2)
+	o.decDeliveryCount(1)
+	require_Equal(t, o.deliveryCount(1), 1)
+	o.decDeliveryCount(1)
+	require_Equal(t, o.deliveryCount(1), 1)
+	_, present := o.rdc[1]
+	require_False(t, present)
+}

@@ -4768,9 +4768,21 @@ func (o *consumer) incDeliveryCount(sseq uint64) uint64 {
 // Lock should be held.
 func (o *consumer) decDeliveryCount(sseq uint64) {
 	if o.rdc == nil {
-		o.rdc = make(map[uint64]uint64)
+		return
 	}
-	o.rdc[sseq] -= 1
+	dc, ok := o.rdc[sseq]
+	if !ok {
+		return
+	}
+	// Mirror incDeliveryCount, which goes from "no entry" to 1 on the first
+	// redelivery. Going back to the initial delivery therefore has to remove
+	// the entry rather than leave a zero behind, since a number of call sites
+	// (needAck, decStreamPending) test for key presence rather than value.
+	if dc > 1 {
+		o.rdc[sseq] = dc - 1
+	} else {
+		delete(o.rdc, sseq)
+	}
 }
 
 // send a delivery exceeded advisory.

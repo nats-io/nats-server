@@ -2847,6 +2847,198 @@ func TestNRGCatchupDontCountTowardQuorum(t *testing.T) {
 	require_Equal(t, msg.Reply, _EMPTY_)
 }
 
+func TestNRGCatchupAcksProgressWhenGivenProgressInbox(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	aeReply := "$TEST"
+	progressReply := fmt.Sprintf(raftCatchupProgressReply, "test")
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(aeReply)
+	require_NoError(t, err)
+	defer sub.Drain()
+	psub, err := nc.SubscribeSync(progressReply)
+	require_NoError(t, err)
+	defer psub.Drain()
+	require_NoError(t, nc.Flush())
+
+	// Timeline
+	aeMissedMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries, reply: progressReply})
+	ae := appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries, reply: aeReply}
+	aeCatchupTrigger := encode(t, &ae)
+
+	// Simulate we missed all messages up to this point.
+	n.processAppendEntry(aeCatchupTrigger, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	// Should reply we require catchup.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar := decodeAppendEntryResponse(msg.Data)
+	require_False(t, ar.success)
+	require_True(t, strings.HasPrefix(msg.Reply, "$NRG.CR"))
+
+	// A catchup entry that carries a dedicated progress inbox MUST be acked, that
+	// response is what lets the leader move its send window forward. Without it the
+	// leader can only ever have one window in flight before it gives up and stalls.
+	n.processAppendEntry(aeMissedMsg, n.catchup.sub)
+	msg, err = psub.NextMsg(time.Second)
+	require_NoError(t, err)
+	ar = decodeAppendEntryResponse(msg.Data)
+	require_Equal(t, ar.index, 1)
+	require_True(t, ar.success)
+
+	// It must NOT also show up on the general append entry inbox, since that is the
+	// path that feeds quorum.
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestNRGCatchupSendsProgressInboxAndRefillsWindow(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	n.Lock()
+	n.addPeer(nats1)
+	n.Unlock()
+
+	// Entries large enough that only a handful fit in the leader's 2MB send window,
+	// so catching this log up must span several windows.
+	const (
+		entrySize  = 512 * 1024
+		numEntries = 12
+	)
+	entries := []*Entry{newEntry(EntryNormal, make([]byte, entrySize))}
+
+	// Fill our WAL, so we have something to catch a follower up on.
+	for i := range numEntries {
+		pterm := uint64(1)
+		if i == 0 {
+			pterm = 0
+		}
+		ae := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: pterm, pindex: uint64(i), entries: entries})
+		n.processAppendEntry(ae, n.aesub)
+	}
+	require_Equal(t, n.pindex, numEntries)
+
+	catchupSubj := "$TEST.catchup"
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync(catchupSubj)
+	require_NoError(t, err)
+	defer sub.Drain()
+	sub.SetPendingLimits(-1, -1)
+	require_NoError(t, nc.Flush())
+
+	n.switchToLeader()
+
+	// Pretend we haven't heard from the follower in a while. It's the only other peer,
+	// so as far as we're concerned right now we've lost quorum.
+	n.Lock()
+	n.lsut = time.Time{}
+	n.peers[nats1].ts = time.Now().Add(-2 * lostQuorumInterval)
+	n.Unlock()
+	require_True(t, n.lostQuorum())
+
+	// Ask to be caught up from the very beginning.
+	ar := newAppendEntryResponse(0, 0, nats1, false)
+	ar.reply = catchupSubj
+	n.catchupFollower(ar)
+
+	// Act as the follower. Every catchup entry is acknowledged on the reply subject
+	// the leader handed us, which is what refills its send window.
+	var received int
+	for received < numEntries {
+		msg, err := sub.NextMsg(time.Second)
+		if err != nil {
+			t.Fatalf("Only received %d of %d catchup entries before stalling: %v", received, numEntries, err)
+		}
+		// The leader must point catchup responses at a dedicated progress inbox, never
+		// at its general append entry inbox, so they can't be counted towards quorum.
+		require_True(t, strings.HasPrefix(msg.Reply, raftCatchupProgressPre))
+
+		cae, err := decodeAppendEntry(msg.Data, nil, msg.Reply)
+		require_NoError(t, err)
+		received++
+
+		par := newAppendEntryResponse(cae.term, cae.pindex+1, nats1, true)
+		require_NoError(t, nc.Publish(msg.Reply, par.encode(nil)))
+		require_NoError(t, nc.Flush())
+		arPool.Put(par)
+
+		// These acks don't go through processAppendEntryResponse, but they must still
+		// count as having heard from the peer. Otherwise, a catchup outlasting
+		// lostQuorumInterval makes us step down, while the follower is responding to us.
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if n.lostQuorum() {
+				return errors.New("should not have lost quorum, peer is acking catchup progress")
+			}
+			return nil
+		})
+	}
+}
+
+func TestNRGCatchupLargeEntriesProgressesAcrossWindows(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	// The leader keeps at most maxOutstanding (2MB) of catchup entries in flight, so
+	// entries this large mean a catchup spans many send windows. A window can only be
+	// refilled once the follower reports progress on what it already received.
+	const (
+		entrySize  = 512 * 1024
+		numEntries = 64
+	)
+
+	// Take a follower down so it misses everything that follows.
+	follower := rg.nonLeader().(*stateAdder)
+	follower.stop()
+
+	leader := rg.leader().(*stateAdder)
+	for range numEntries {
+		data := make([]byte, entrySize)
+		binary.PutVarint(data, 1)
+		leader.propose(data)
+	}
+	rg.waitOnTotal(t, numEntries)
+
+	// Bring it back with an empty log, it must now be caught up from scratch.
+	follower.restart()
+
+	// Without working catchup flow control the leader pushes one 2MB window and then
+	// stalls out for a couple of seconds before the follower re-requests, which for a
+	// log this size takes the better part of a minute.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		var err error
+		for _, sm := range rg {
+			asm := sm.(*stateAdder)
+			if total := asm.total(); total != numEntries {
+				err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d",
+					asm.server(), total, numEntries))
+			}
+		}
+		return err
+	})
+}
+
 func TestNRGIgnoreTrackResponseWhenNotLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -5880,6 +6072,67 @@ func TestNRGSnapshotCheckpointNodeClosed(t *testing.T) {
 	}
 }
 
+func TestNRGDrainAndReplaySnapshotNodeClosed(t *testing.T) {
+	for _, test := range []struct {
+		title  string
+		close  func(n *raft)
+		replay bool
+	}{
+		{title: "Stop", close: func(n *raft) { n.Stop() }, replay: true},
+		{title: "Delete", close: func(n *raft) { n.Delete() }, replay: false},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			// Create a sample entry, the content doesn't matter, just that it's stored.
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+
+			nats0 := "S1Nunr6R" // "nats-0"
+
+			// Timeline, the second message ups the pterm so we can snapshot on the first.
+			aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+			aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1, entries: nil})
+			aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 2, commit: 1, pterm: 1, pindex: 1, entries: entries})
+
+			n.processAppendEntry(aeMsg1, n.aesub)
+			n.processAppendEntry(aeHeartbeat, n.aesub)
+			require_Equal(t, n.commit, 1)
+			n.Applied(1)
+			n.processAppendEntry(aeMsg2, n.aesub)
+
+			// Snapshot, so we have something to replay.
+			require_NoError(t, n.InstallSnapshot(nil, false))
+			require_True(t, n.snapfile != _EMPTY_)
+			sfile := n.snapfile
+			sdata, err := os.ReadFile(sfile)
+			require_NoError(t, err)
+
+			test.close(n)
+
+			if test.replay {
+				require_True(t, n.snapfile != _EMPTY_)
+				require_True(t, n.DrainAndReplaySnapshot())
+				return
+			}
+
+			// Delete must not leave us pointing at a file it just removed.
+			require_Equal(t, n.snapfile, _EMPTY_)
+			require_False(t, n.DrainAndReplaySnapshot())
+
+			// Snapshot filenames are only "snap.<term>.<index>", so a later
+			// incarnation of a same-named group can recreate this exact path.
+			// Even then a deleted node must refuse to replay, or we'd adopt
+			// another generation's state.
+			require_NoError(t, os.MkdirAll(filepath.Dir(sfile), defaultDirPerms))
+			require_NoError(t, os.WriteFile(sfile, sdata, defaultFilePerms))
+			n.snapfile = sfile
+			require_False(t, n.DrainAndReplaySnapshot())
+		})
+	}
+}
+
 func TestNRGInstallSnapshotForce(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -7551,4 +7804,196 @@ func TestNRGRemovedPeerVoteDoesNotElectLeader(t *testing.T) {
 		t.Fatalf("removed peer %q helped elect second leader %q while %q was leader",
 			nodeD.node().ID(), nodeC.node().ID(), nodeA.node().ID())
 	}
+}
+
+func TestNRGEntryBytesEstimate(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	defer n.Unlock()
+
+	const largeEntryBytes = 512 * 1024
+	for _, test := range []struct {
+		name     string
+		pindex   uint64
+		papplied uint64
+		bytes    uint64
+		entries  uint64
+		expected uint64
+	}{
+		{"no entries in the wal", 0, 0, 0, 100, 0},
+		{"no bytes in the wal", 1000, 0, 0, 100, 0},
+		{"pindex equals papplied", 1000, 1000, 1024, 100, 0},
+		{"large entries", 1000, 0, 1000 * largeEntryBytes, 100, 100 * largeEntryBytes},
+		{"small entries", 1000, 0, 1000 * 1024, 100, 100 * 1024},
+		{"offset by papplied", 1500, 500, 1000 * largeEntryBytes, 100, 100 * largeEntryBytes},
+		{"asking for more than we hold", 1000, 0, 1000 * largeEntryBytes, 2000, 2000 * largeEntryBytes},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n.pindex, n.papplied, n.bytes = test.pindex, test.papplied, test.bytes
+			require_Equal(t, n.entryBytes(test.entries), test.expected)
+		})
+	}
+}
+
+func TestNRGOverrunUsesBytesWhenEntryCountIsLow(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	defer n.Unlock()
+
+	// A backlog of large entries. The entry count stays two orders of magnitude
+	// below the count threshold the whole time, so only the byte threshold can
+	// catch this.
+	const largeEntryBytes = 512 * 1024
+	setAverage := func(entries, avg uint64) {
+		n.papplied, n.pindex, n.bytes = 0, entries, entries*avg
+	}
+
+	// 2500 entries of 512KiB is ~1.22GB, over pauseQuorumBytes.
+	setAverage(2500, largeEntryBytes)
+	require_True(t, 2500 < uint64(pauseQuorumThreshold))
+	require_True(t, n.overrun(2500, pauseQuorumThreshold, pauseQuorumBytes))
+
+	// 900 entries of 512KiB is ~460MB, under pauseQuorumBytes.
+	setAverage(900, largeEntryBytes)
+	require_False(t, n.overrun(900, pauseQuorumThreshold, pauseQuorumBytes))
+
+	// The entry count path must still work for small entries.
+	setAverage(2500, 1024)
+	require_False(t, n.overrun(2500, pauseQuorumThreshold, pauseQuorumBytes))
+	setAverage(pauseQuorumThreshold+1, 1024)
+	require_True(t, n.overrun(pauseQuorumThreshold+1, pauseQuorumThreshold, pauseQuorumBytes))
+}
+
+func TestNRGLeaderOverrunOnLargeEntries(t *testing.T) {
+	const largeEntryBytes = 512 * 1024
+	for _, test := range []struct {
+		name     string
+		lagging  string // which counter lags behind
+		expected bool
+		avg      uint64
+	}{
+		{"uncommitted large entries", "commit", true, largeEntryBytes},
+		{"uncommitted small entries", "commit", false, 1024},
+		{"unapplied large entries", "applied", true, largeEntryBytes},
+		{"unapplied small entries", "applied", false, 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			n.Lock()
+			defer n.Unlock()
+
+			// 2500 entries is far below pauseQuorumThreshold, so whether we are
+			// overrun depends entirely on the byte estimate.
+			const entries = 2500
+			n.papplied, n.pindex, n.bytes = 0, entries, entries*test.avg
+			if test.lagging == "commit" {
+				// We are not getting quorum from our followers.
+				n.commit, n.applied = 0, 0
+			} else {
+				// We are committing but too slow to apply.
+				n.commit, n.applied = entries, 0
+			}
+
+			require_Equal(t, n.isLeaderOverrun(), test.expected)
+		})
+	}
+}
+
+func TestNRGCachePendingEntryBoundedByBytes(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		payloadSize int
+		inserts     int
+		capped      bool
+	}{
+		// Large entries: the cache fills up to paeDropBytes and stops
+		// there, nowhere near paeDropThreshold.
+		{"large entries stop at the byte cap", 512 * 1024, 1000, true},
+		// Small entries: 1000 of them is ~1MB, so nothing is dropped.
+		{"small entries are all cached", 1024, 1000, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			entries := []*Entry{newEntry(EntryNormal, make([]byte, test.payloadSize))}
+			ae := encode(t, &appendEntry{leader: "S1Nunr6R", term: 1, entries: entries})
+
+			n.Lock()
+			defer n.Unlock()
+
+			sz := n.entryStoreSize(ae)
+			require_True(t, sz > 0)
+
+			// We stop caching once we'd go over paeDropBytes.
+			expected := test.inserts
+			if test.capped {
+				expected = int((paeDropBytes + sz - 1) / sz)
+			}
+
+			// A long history of entries that were applied but not snapshotted yet
+			// must not dilute what we account for, only what's cached counts.
+			n.papplied, n.bytes = 0, 100*1024*1024
+
+			for i := 1; i <= test.inserts; i++ {
+				n.pindex = uint64(i)
+				n.cachePendingEntry(ae)
+			}
+
+			require_Len(t, len(n.pae), expected)
+			// Whatever we dropped, it was not because of the entry count.
+			require_True(t, len(n.pae) < paeDropThreshold)
+			// We must account for exactly what we've cached.
+			require_Equal(t, n.paeBytes, uint64(len(n.pae))*sz)
+		})
+	}
+}
+
+func TestNRGCachePendingEntryBytesAccounting(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	newAE := func(index uint64, payload int) *appendEntry {
+		entries := []*Entry{newEntry(EntryNormal, make([]byte, payload))}
+		return encode(t, &appendEntry{leader: nats0, term: 1, pterm: 1, pindex: index - 1, entries: entries})
+	}
+
+	n.Lock()
+	defer n.Unlock()
+
+	large := newAE(3, 4*1024)
+	ssz, lsz := n.entryStoreSize(newAE(1, 128)), n.entryStoreSize(large)
+	require_True(t, lsz > ssz)
+
+	// Cache a couple of entries.
+	for i := uint64(1); i <= 3; i++ {
+		n.pindex = i
+		n.cachePendingEntry(newAE(i, 128))
+	}
+	require_Len(t, len(n.pae), 3)
+	require_Equal(t, n.paeBytes, 3*ssz)
+
+	// Re-caching an index with a different value must not account for it twice.
+	n.pindex = 3
+	n.cachePendingEntry(large)
+	require_Len(t, len(n.pae), 3)
+	require_Equal(t, n.paeBytes, 2*ssz+lsz)
+
+	// Truncating must remove the bytes of the entries the WAL no longer has.
+	n.pterm, n.pindex = 1, 3
+	n.truncateWAL(1, 2)
+	require_Len(t, len(n.pae), 2)
+	require_Equal(t, n.paeBytes, 2*ssz)
+
+	// Resetting the cache clears our accounting.
+	n.resetPendingEntries()
+	require_Len(t, len(n.pae), 0)
+	require_Equal(t, n.paeBytes, 0)
 }
