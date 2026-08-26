@@ -2490,9 +2490,14 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 	}
 
 	remote.mu.Lock()
-	if didSolicit && !remote.route.didSolicit {
+	if didSolicit {
+		// On disconnect, an explicit route only reconnects if the connection's
+		// URL matches a configured route. So adopt the given URL rather than
+		// keeping a gossiped one, which may not match any configured route.
+		if !remote.route.didSolicit || (rtype == Explicit && remote.route.routeType != Explicit) {
+			remote.route.url = url
+		}
 		remote.route.didSolicit = true
-		remote.route.url = url
 	}
 	// The extra route might be an configured explicit route
 	// so keep the state that the remote was configured.
