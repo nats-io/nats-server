@@ -10376,11 +10376,12 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 	}
 
-	// Check for replica changes.
+	// Check for replica or retention changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
+	isRetentionChange := newCfg.Retention != osa.Config.Retention
 
 	// Combining a move and a scale in a single update is not allowed.
-	if isMoveRequest && isReplicaChange {
+	if isMoveRequest && (isReplicaChange || isRetentionChange) {
 		resp.Error = NewJSStreamMoveAndScaleError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -10404,7 +10405,7 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
-	} else if isReplicaChange && moveInFlight {
+	} else if (isReplicaChange || isRetentionChange) && moveInFlight {
 		// A scale can't combine with an inflight move either. Scales may freely stack
 		// onto an inflight scale or retention change, but not with a move.
 		resp.Error = NewJSStreamMoveInProgressError()

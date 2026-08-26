@@ -15637,6 +15637,15 @@ func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
 	_, err := js.AddStream(cfg)
 	require_NoError(t, err)
 
+	// A retention change converges through desired state just like a scale does, so it
+	// can't combine with a move in a single update either. The guard fires before peer
+	// selection, so the placement doesn't need to resolve.
+	comboCfg := *cfg
+	comboCfg.Retention = nats.InterestPolicy
+	comboCfg.Placement = &nats.Placement{Tags: []string{"na"}}
+	_, err = js.UpdateStream(&comboCfg)
+	require_Error(t, err, NewJSStreamMoveAndScaleError())
+
 	// Block the meta leader from reconciling desired stream assignments, so the
 	// desired state below stays in flight deterministically.
 	ml := c.leader()

@@ -4395,10 +4395,11 @@ func TestJetStreamSuperClusterLegacyMoveCancel(t *testing.T) {
 	})
 }
 
-// A legacy move is inflight just like one expressed as desired state, so a move or scale
-// on top of it must be rejected. Retargeting instead would record the over-replicated peer
-// set as the origin to roll back to, growing the assignment the guard is meant to bound.
-func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
+// A legacy move is inflight just like one expressed as desired state, so any other
+// reconfiguration on top of it must be rejected. Retargeting instead would record the
+// over-replicated peer set as the origin to roll back to, growing the assignment the
+// guard is meant to bound.
+func TestJetStreamSuperClusterLegacyMoveRejectsReconfigure(t *testing.T) {
 	sc := moveTestSuperCluster(t)
 	defer sc.shutdown()
 
@@ -4444,7 +4445,7 @@ func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
 	mjs.mu.RUnlock()
 	require_False(t, hasDesired)
 
-	// Both a scale and a placement induced move must be rejected while it is in progress.
+	// A scale, placement induced move and retention change must be rejected while it is in progress.
 	scaled := *cfg
 	scaled.Replicas = 3
 	_, err = js.UpdateStream(&scaled)
@@ -4455,47 +4456,29 @@ func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
 	_, err = js.UpdateStream(&moved)
 	require_Error(t, err, NewJSStreamMoveInProgressError())
 
-	// The peer set must be untouched by the rejected requests.
+	retention := *cfg
+	retention.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(&retention)
+	require_Error(t, err, NewJSStreamMoveInProgressError())
+
+	// The peer set must be untouched by the rejected requests, and none of them may
+	// have registered desired state or changed the config.
 	legacyPeers := append(copyStrings(originPeers), destPeers...)
 	peers, _, replicas := moveTestStreamGroup(t, sc.leader(), globalAccountName, "TEST")
 	require_Equal(t, replicas, 1)
 	require_True(t, moveTestSamePeers(peers, legacyPeers))
 
-	// A retention change does not retarget the peer set, so it is allowed and registers desired
-	// state. The origin it captures must be the peer set the legacy move started from, not the
-	// over-replicated set it is moving through, or a rollback would restore the enlarged set.
-	// The stream can't respond while its only peer is down, only the assignment matters here.
-	retention := *cfg
-	retention.Retention = nats.InterestPolicy
-	_, _ = js.UpdateStream(&retention, nats.MaxWait(time.Second))
-
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		mjs := sc.leader().getJetStream()
-		mjs.mu.RLock()
-		defer mjs.mu.RUnlock()
-		sa := mjs.streamAssignment(globalAccountName, "TEST")
-		if sa == nil || sa.Group == nil {
-			return errors.New("no stream assignment")
-		}
-		if sa.Config == nil || sa.Config.Retention != InterestPolicy {
-			return fmt.Errorf("retention change not applied yet: %+v", sa.Config)
-		}
-		d := sa.Group.Desired
-		if d == nil || d.Origin == nil {
-			return fmt.Errorf("no desired origin yet: %+v", d)
-		}
-		if !moveTestSamePeers(d.Origin.Peers, originPeers) {
-			return fmt.Errorf("expected origin peers %+v, got %+v", originPeers, d.Origin.Peers)
-		}
-		if d.Origin.Cluster != "C1" {
-			return fmt.Errorf("expected origin cluster %q, got %q", "C1", d.Origin.Cluster)
-		}
-		// The move itself is still in progress, so the assignment keeps both peer sets.
-		if !moveTestSamePeers(sa.Group.Peers, legacyPeers) {
-			return fmt.Errorf("expected peers %+v, got %+v", legacyPeers, sa.Group.Peers)
-		}
-		return nil
-	})
+	mjs = sc.leader().getJetStream()
+	mjs.mu.RLock()
+	sa = mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	require_NotNil(t, sa.Group)
+	require_NotNil(t, sa.Config)
+	hasDesired = sa.Group.Desired != nil
+	retentionPolicy := sa.Config.Retention
+	mjs.mu.RUnlock()
+	require_False(t, hasDesired)
+	require_Equal(t, retentionPolicy, LimitsPolicy)
 }
 
 // A legacy move that is stalled must remain cancellable. Only the stream's group leader
