@@ -157,6 +157,76 @@ func (s *GenericSublist[T]) MatchBytes(subject []byte, cb func(T)) {
 	s.match(string(subject), cb, true)
 }
 
+// ReverseMatch matches all entries against a subject that may contain
+// wildcards. This is useful when the sublist contains literal subjects and
+// the subject being matched is a subscription filter.
+func (s *GenericSublist[T]) ReverseMatch(subject string, cb func(T)) {
+	tsa := [32]string{}
+	tokens := tokenizeSubjectIntoSlice(tsa[:0], subject)
+
+	s.RLock()
+	reverseMatchLevel(s.root, tokens, nil, cb)
+	s.RUnlock()
+}
+
+func reverseMatchLevel[T comparable](l *level[T], toks []string, n *node[T], cb func(T)) {
+	if l == nil {
+		return
+	}
+	for i, t := range toks {
+		if len(t) == 1 {
+			switch t[0] {
+			case fwc:
+				getAllNodes(l, cb)
+				return
+			case pwc:
+				for _, n := range l.nodes {
+					reverseMatchLevel(n.next, toks[i+1:], n, cb)
+				}
+				if l.pwc != nil {
+					reverseMatchLevel(l.pwc.next, toks[i+1:], l.pwc, cb)
+				}
+				if l.fwc != nil {
+					getAllNodes(l, cb)
+				}
+				return
+			}
+		}
+		if l.fwc != nil {
+			getAllNodes(l, cb)
+			return
+		} else if l.pwc != nil {
+			reverseMatchLevel(l.pwc.next, toks[i+1:], l.pwc, cb)
+		}
+		n = l.nodes[t]
+		if n == nil {
+			break
+		}
+		l = n.next
+	}
+	if n != nil {
+		callbacksForResults(n, cb)
+	}
+}
+
+func getAllNodes[T comparable](l *level[T], cb func(T)) {
+	if l == nil {
+		return
+	}
+	if l.pwc != nil {
+		callbacksForResults(l.pwc, cb)
+		getAllNodes(l.pwc.next, cb)
+	}
+	if l.fwc != nil {
+		callbacksForResults(l.fwc, cb)
+		getAllNodes(l.fwc.next, cb)
+	}
+	for _, n := range l.nodes {
+		callbacksForResults(n, cb)
+		getAllNodes(n.next, cb)
+	}
+}
+
 // HasInterest will return whether or not there is any interest in the subject.
 // In cases where more detail is not required, this may be faster than Match.
 func (s *GenericSublist[T]) HasInterest(subject string) bool {

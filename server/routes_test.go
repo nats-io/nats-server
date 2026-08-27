@@ -1051,25 +1051,25 @@ func TestRoutePermsAppliedOnInboundAndOutboundRoute(t *testing.T) {
 		if perms.pub.allow == nil || perms.pub.allow.Count() != 1 {
 			t.Fatal("unexpected pub allow perms")
 		}
-		if r := perms.pub.allow.Match("imp.foo"); len(r.psubs) != 1 {
+		if np := perms.pub.allow.NumInterest("imp.foo"); np != 1 {
 			t.Fatal("unexpected pub allow match")
 		}
 		if perms.pub.deny == nil || perms.pub.deny.Count() != 1 {
 			t.Fatal("unexpected pub deny perms")
 		}
-		if r := perms.pub.deny.Match("imp.bar"); len(r.psubs) != 1 {
+		if np := perms.pub.deny.NumInterest("imp.bar"); np != 1 {
 			t.Fatal("unexpected pub deny match")
 		}
 		if perms.sub.allow == nil || perms.sub.allow.Count() != 1 {
 			t.Fatal("unexpected sub allow perms")
 		}
-		if r := perms.sub.allow.Match("exp.foo"); len(r.psubs) != 1 {
+		if np := perms.sub.allow.NumInterest("exp.foo"); np != 1 {
 			t.Fatal("unexpected sub allow match")
 		}
 		if perms.sub.deny == nil || perms.sub.deny.Count() != 1 {
 			t.Fatal("unexpected sub deny perms")
 		}
-		if r := perms.sub.deny.Match("exp.bar"); len(r.psubs) != 1 {
+		if np := perms.sub.deny.NumInterest("exp.bar"); np != 1 {
 			t.Fatal("unexpected sub deny match")
 		}
 	}

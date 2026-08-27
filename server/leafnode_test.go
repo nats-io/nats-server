@@ -10909,8 +10909,7 @@ func TestLeafNodeHubSideLMSGAllowsJSAPI(t *testing.T) {
 	}
 
 	l.mu.Lock()
-	r := l.perms.sub.deny.Match(jsAllAPI)
-	hasSyntheticJSDeny := len(r.psubs)+len(r.qsubs) > 0
+	hasSyntheticJSDeny := l.perms.sub.deny.HasInterest(jsAllAPI)
 	l.mu.Unlock()
 	if !hasSyntheticJSDeny {
 		t.Fatal("Expected synthetic JetStream deny on accepted leaf connection")

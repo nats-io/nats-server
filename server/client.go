@@ -40,6 +40,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats-server/v2/internal/fastrand"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 )
 
 // Type of client connection.
@@ -423,8 +424,8 @@ func nbPoolPut(b []byte) {
 }
 
 type perm struct {
-	allow *Sublist
-	deny  *Sublist
+	allow *gsl.GenericSublist[*subscription]
+	deny  *gsl.GenericSublist[*subscription]
 }
 
 type permissions struct {
@@ -1104,12 +1105,10 @@ func (c *client) setPermissions(perms *Permissions) {
 	c.perms = &permissions{}
 	c.mperms = nil
 	c.darray = nil
-	slcache := c.srv != nil && !c.srv.getOpts().NoSublistCache
-
 	// Loop over publish permissions
 	if perms.Publish != nil {
 		if perms.Publish.Allow != nil {
-			c.perms.pub.allow = NewSublist(slcache)
+			c.perms.pub.allow = gsl.NewSublist[*subscription]()
 		}
 		for _, pubSubject := range perms.Publish.Allow {
 			if !IsValidSubject(pubSubject) {
@@ -1117,12 +1116,12 @@ func (c *client) setPermissions(perms *Permissions) {
 				continue
 			}
 			sub := &subscription{subject: []byte(pubSubject)}
-			if err := c.perms.pub.allow.Insert(sub); err != nil {
+			if err := c.perms.pub.allow.Insert(pubSubject, sub); err != nil {
 				c.Errorf("invalid publish subject %q", pubSubject)
 			}
 		}
 		if len(perms.Publish.Deny) > 0 {
-			c.perms.pub.deny = NewSublist(slcache)
+			c.perms.pub.deny = gsl.NewSublist[*subscription]()
 		}
 		for _, pubSubject := range perms.Publish.Deny {
 			subject := []byte(pubSubject)
@@ -1138,7 +1137,7 @@ func (c *client) setPermissions(perms *Permissions) {
 				// scope instead of silently creating an unreachable trie node.
 				c.Errorf("queue qualifier is not valid for publish deny subject %q", pubSubject)
 			}
-			if err := c.perms.pub.deny.Insert(&subscription{subject: subject}); err != nil {
+			if err := c.perms.pub.deny.Insert(bytesToString(subject), &subscription{subject: subject}); err != nil {
 				c.Errorf("invalid publish deny subject %q", pubSubject)
 			}
 		}
@@ -1155,7 +1154,7 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms.Subscribe != nil {
 		var err error
 		if len(perms.Subscribe.Allow) > 0 {
-			c.perms.sub.allow = NewSublistNoCache()
+			c.perms.sub.allow = gsl.NewSublist[*subscription]()
 		}
 		for _, subSubject := range perms.Subscribe.Allow {
 			sub := &subscription{}
@@ -1164,12 +1163,12 @@ func (c *client) setPermissions(perms *Permissions) {
 				c.Errorf("%s", err.Error())
 				continue
 			}
-			if err := c.perms.sub.allow.Insert(sub); err != nil {
+			if err := c.perms.sub.allow.Insert(bytesToString(sub.subject), sub); err != nil {
 				c.Errorf("invalid subscribe allow subject %q", subSubject)
 			}
 		}
 		if len(perms.Subscribe.Deny) > 0 {
-			c.perms.sub.deny = NewSublistNoCache()
+			c.perms.sub.deny = gsl.NewSublist[*subscription]()
 		}
 		for _, subSubject := range perms.Subscribe.Deny {
 			sub := &subscription{}
@@ -1178,7 +1177,7 @@ func (c *client) setPermissions(perms *Permissions) {
 				c.Errorf("%s", err.Error())
 				continue
 			}
-			if err := c.perms.sub.deny.Insert(sub); err != nil {
+			if err := c.perms.sub.deny.Insert(bytesToString(sub.subject), sub); err != nil {
 				c.Errorf("invalid subscribe deny subject %q", subSubject)
 				continue
 			}
@@ -1211,37 +1210,27 @@ func (c *client) publicPermissions() *Permissions {
 		Subscribe: &SubjectPermission{},
 	}
 
-	_subs := [32]*subscription{}
-
 	// Publish
 	if c.perms.pub.allow != nil {
-		subs := _subs[:0]
-		c.perms.pub.allow.All(&subs)
-		for _, sub := range subs {
+		c.perms.pub.allow.ReverseMatch(">", func(sub *subscription) {
 			perms.Publish.Allow = append(perms.Publish.Allow, string(sub.subject))
-		}
+		})
 	}
 	if c.perms.pub.deny != nil {
-		subs := _subs[:0]
-		c.perms.pub.deny.All(&subs)
-		for _, sub := range subs {
+		c.perms.pub.deny.ReverseMatch(">", func(sub *subscription) {
 			perms.Publish.Deny = append(perms.Publish.Deny, string(sub.subject))
-		}
+		})
 	}
 	// Subsribe
 	if c.perms.sub.allow != nil {
-		subs := _subs[:0]
-		c.perms.sub.allow.All(&subs)
-		for _, sub := range subs {
+		c.perms.sub.allow.ReverseMatch(">", func(sub *subscription) {
 			perms.Subscribe.Allow = append(perms.Subscribe.Allow, subjectQueueString(sub))
-		}
+		})
 	}
 	if c.perms.sub.deny != nil {
-		subs := _subs[:0]
-		c.perms.sub.deny.All(&subs)
-		for _, sub := range subs {
+		c.perms.sub.deny.ReverseMatch(">", func(sub *subscription) {
 			perms.Subscribe.Deny = append(perms.Subscribe.Deny, subjectQueueString(sub))
-		}
+		})
 	}
 	// Responses.
 	if c.perms.resp != nil {
@@ -1278,14 +1267,13 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 	}
 	if what == pub || what == both {
 		if c.perms.pub.deny == nil {
-			c.perms.pub.deny = NewSublistForServer(c.srv)
+			c.perms.pub.deny = gsl.NewSublist[*subscription]()
 		}
 		mergeDenyPerm(&c.perms.pub, denyPubs, false)
 	}
 	if what == sub || what == both {
 		if c.perms.sub.deny == nil {
-			// Avoid sublist cache contention in canSubscribe.
-			c.perms.sub.deny = NewSublistNoCache()
+			c.perms.sub.deny = gsl.NewSublist[*subscription]()
 		}
 		c.darray = append(c.darray, mergeDenyPerm(&c.perms.sub, denyPubs, true)...)
 	}
@@ -1294,7 +1282,6 @@ func (c *client) mergeDenyPermissions(what denyType, denyPubs []string) {
 // mergeDenyPerm inserts new deny permissions, skipping subjects that already exist.
 func mergeDenyPerm(p *perm, denyPubs []string, allowQueue bool) []*subscription {
 	var inserted []*subscription
-FOR_DENY:
 	for _, deny := range denyPubs {
 		subject, queue, err := splitSubjectQueue(deny)
 		if err != nil {
@@ -1303,21 +1290,17 @@ FOR_DENY:
 		if !allowQueue {
 			queue = nil
 		}
-		r := p.deny.Match(string(subject))
-		for _, v := range r.qsubs {
-			for _, s := range v {
-				if bytes.Equal(s.subject, subject) && bytes.Equal(s.queue, queue) {
-					continue FOR_DENY
-				}
+		found := false
+		p.deny.Match(bytesToString(subject), func(sub *subscription) {
+			if bytes.Equal(sub.subject, subject) && bytes.Equal(sub.queue, queue) {
+				found = true
 			}
-		}
-		for _, s := range r.psubs {
-			if bytes.Equal(s.subject, subject) && len(queue) == 0 {
-				continue FOR_DENY
-			}
+		})
+		if found {
+			continue
 		}
 		sub := &subscription{subject: subject, queue: queue}
-		if p.deny.Insert(sub) == nil {
+		if p.deny.Insert(bytesToString(subject), sub) == nil {
 			inserted = append(inserted, sub)
 		}
 	}
@@ -3365,30 +3348,48 @@ func (c *client) canSubscribeInternal(subject string, optQueue ...string) bool {
 	}
 	// Check allow list. If no allow list that means all are allowed. Deny can overrule.
 	if checkAllow && c.perms.sub.allow != nil {
-		r := c.perms.sub.allow.Match(subject)
-		allowed = len(r.psubs) > 0
-		if queue != _EMPTY_ && len(r.qsubs) > 0 {
+		hasPlain, hasQueue, queueMatched := matchPermission(c.perms.sub.allow, subject, queue)
+		allowed = hasPlain
+		if queue != _EMPTY_ && hasQueue {
 			// If the queue appears in the allow list, then DO allow.
-			allowed = queueMatches(queue, r.qsubs)
+			allowed = queueMatched
 		}
 		// Leafnodes operate slightly differently in that they allow broader scoped subjects.
 		// They will prune based on publish perms before sending to a leafnode client.
 		if !allowed && c.kind == LEAF && subjectHasWildcard(subject) {
-			r := c.perms.sub.allow.ReverseMatch(subject)
-			allowed = len(r.psubs) != 0
+			c.perms.sub.allow.ReverseMatch(subject, func(sub *subscription) {
+				if len(sub.queue) == 0 {
+					allowed = true
+				}
+			})
 		}
 	}
 	// If we have a deny list and we think we are allowed, check that as well.
 	if allowed && c.perms.sub.deny != nil {
-		r := c.perms.sub.deny.Match(subject)
-		allowed = len(r.psubs) == 0
+		hasPlain, hasQueue, queueMatched := matchPermission(c.perms.sub.deny, subject, queue)
+		allowed = !hasPlain
 
-		if allowed && queue != _EMPTY_ && len(r.qsubs) > 0 {
+		if allowed && queue != _EMPTY_ && hasQueue {
 			// If the queue appears in the deny list, then DO NOT allow.
-			allowed = !queueMatches(queue, r.qsubs)
+			allowed = !queueMatched
 		}
 	}
 	return allowed
+}
+
+func matchPermission(sl *gsl.GenericSublist[*subscription], subject, queue string) (hasPlain, hasQueue, queueMatched bool) {
+	sl.Match(subject, func(sub *subscription) {
+		if len(sub.queue) == 0 {
+			hasPlain = true
+		} else {
+			hasQueue = true
+			qname := bytesToString(sub.queue)
+			if queue == qname || (subjectHasWildcard(qname) && subjectIsSubsetMatch(queue, qname)) {
+				queueMatched = true
+			}
+		}
+	})
+	return hasPlain, hasQueue, queueMatched
 }
 
 // canSubscribe determines if the client is authorized to subscribe to the
@@ -4202,13 +4203,11 @@ func (c *client) pubAllowedFullCheck(subject string, fullCheck, hasLock bool) bo
 	}
 	// Cache miss, check allow then deny as needed.
 	if checkAllow && c.perms.pub.allow != nil {
-		np, _ := c.perms.pub.allow.NumInterest(subject)
-		allowed = np != 0
+		allowed = c.perms.pub.allow.HasInterest(subject)
 	}
 	// If we have a deny list and are currently allowed, check that as well.
 	if allowed && c.perms.pub.deny != nil {
-		np, _ := c.perms.pub.deny.NumInterest(subject)
-		allowed = np == 0
+		allowed = !c.perms.pub.deny.HasInterest(subject)
 	}
 
 	// If we are tracking reply subjects

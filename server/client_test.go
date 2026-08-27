@@ -1203,7 +1203,7 @@ func TestClientSetPermissionsPublishDenyQueueQualifierFailsClosed(t *testing.T) 
 	c.setPermissions(&Permissions{
 		Publish: &SubjectPermission{Deny: []string{"admin.secret workers"}},
 	})
-	np, _ := c.perms.pub.deny.NumInterest("admin.secret")
+	np := c.perms.pub.deny.NumInterest("admin.secret")
 	require_Equal(t, 1, np)
 }
 
