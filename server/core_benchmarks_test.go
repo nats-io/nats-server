@@ -612,3 +612,101 @@ func fastRandomMutation(data []byte, mutations int) {
 		data[fastrand.Uint32n(uint32(len(data)))] = byte(fastrand.Uint32() % math.MaxUint8)
 	}
 }
+
+func BenchmarkClientPermissionACLs(b *testing.B) {
+	aclPermissions := func(numEntries int) (pub, sub, queueSub *SubjectPermission) {
+		pub = &SubjectPermission{
+			Allow: make([]string, 0, numEntries),
+			Deny:  make([]string, 0, numEntries),
+		}
+		sub = &SubjectPermission{
+			Allow: make([]string, 0, numEntries),
+			Deny:  make([]string, 0, numEntries),
+		}
+		queueSub = &SubjectPermission{
+			Allow: make([]string, 0, numEntries),
+			Deny:  make([]string, 0, numEntries),
+		}
+		for i := range numEntries {
+			pub.Allow = append(pub.Allow, fmt.Sprintf("tenant.%d.>", i))
+			pub.Deny = append(pub.Deny, fmt.Sprintf("tenant.%d.private", i))
+			sub.Allow = append(sub.Allow, fmt.Sprintf("tenant.%d.>", i))
+			sub.Deny = append(sub.Deny, fmt.Sprintf("tenant.%d.private", i))
+			queueSub.Allow = append(queueSub.Allow, fmt.Sprintf("tenant.%d.events >", i))
+			queueSub.Deny = append(queueSub.Deny, fmt.Sprintf("tenant.%d.events blocked.*", i))
+		}
+		return pub, sub, queueSub
+	}
+
+	permissionCheck := func(b *testing.B, expected bool, check func() bool) {
+		b.Helper()
+		b.ReportAllocs()
+		b.ResetTimer()
+		var allowed bool
+		for b.Loop() {
+			allowed = check()
+		}
+		if allowed != expected {
+			b.Fatalf("expected permission result %v, got %v", expected, allowed)
+		}
+	}
+
+	for _, numEntries := range []int{1, 16, 256, 4096} {
+		b.Run(fmt.Sprintf("Entries=%d", numEntries), func(b *testing.B) {
+			pub, sub, queueSub := aclPermissions(numEntries)
+
+			b.Run("Publish/Allowed", func(b *testing.B) {
+				c := &client{kind: CLIENT}
+				c.setPermissions(&Permissions{Publish: pub})
+				subject := fmt.Sprintf("tenant.%d.public", numEntries-1)
+				permissionCheck(b, true, func() bool {
+					return c.pubAllowed(subject)
+				})
+			})
+
+			b.Run("Publish/Denied", func(b *testing.B) {
+				c := &client{kind: CLIENT}
+				c.setPermissions(&Permissions{Publish: pub})
+				subject := fmt.Sprintf("tenant.%d.private", numEntries-1)
+				permissionCheck(b, false, func() bool {
+					return c.pubAllowed(subject)
+				})
+			})
+
+			b.Run("Subscribe/Allowed", func(b *testing.B) {
+				c := &client{kind: CLIENT}
+				c.setPermissions(&Permissions{Subscribe: sub})
+				subject := fmt.Sprintf("tenant.%d.public", numEntries-1)
+				permissionCheck(b, true, func() bool {
+					return c.canSubscribeInternal(subject)
+				})
+			})
+
+			b.Run("Subscribe/Denied", func(b *testing.B) {
+				c := &client{kind: CLIENT}
+				c.setPermissions(&Permissions{Subscribe: sub})
+				subject := fmt.Sprintf("tenant.%d.private", numEntries-1)
+				permissionCheck(b, false, func() bool {
+					return c.canSubscribeInternal(subject)
+				})
+			})
+
+			b.Run("Subscribe/QueueAllowed", func(b *testing.B) {
+				c := &client{kind: CLIENT}
+				c.setPermissions(&Permissions{Subscribe: queueSub})
+				subject := fmt.Sprintf("tenant.%d.events", numEntries-1)
+				permissionCheck(b, true, func() bool {
+					return c.canSubscribeInternal(subject, "workers.1")
+				})
+			})
+
+			b.Run("Leaf/ReverseMatch", func(b *testing.B) {
+				c := &client{kind: LEAF}
+				c.setPermissions(&Permissions{Subscribe: sub})
+				permissionCheck(b, true, func() bool {
+					return c.canSubscribeInternal("tenant.*.>")
+				})
+			})
+		})
+	}
+}
