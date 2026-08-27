@@ -13029,3 +13029,236 @@ func TestLeafNodeDialTimeoutConfigInvalid(t *testing.T) {
 		})
 	}
 }
+
+// A shadow subscription created by a stream import delivers the import's local
+// (post-transform) subject to the leafnode; the pre-transform subject exists
+// only in the exporting account and is never sent on the wire. The leafnode's
+// publish permissions must therefore be evaluated against the post-transform
+// subject.
+func TestLeafNodePermsWithImportSubjectTransform(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pub       string
+		delivered bool
+	}{
+		{"post transform form", `"leaf.>"`, true},
+		{"pre transform form", `"data.>"`, false},
+		{"unrelated form", `"other.>"`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hubConf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				accounts {
+				  sync_account: {
+				    users = [
+				      {user: "sync", password: "pass"}
+				      {user: "leaf-user", password: "pass", permissions: {
+				        publish = [%s]
+				        subscribe = ["leaf.>"]
+				      }}
+				    ]
+				  }
+				}
+				leafnodes { listen: 127.0.0.1:-1 }
+			`, test.pub)))
+			hub, hubOpts := RunServerWithConfig(hubConf)
+			defer hub.Shutdown()
+
+			leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				accounts {
+				  local_account: {
+				    exports = [ { stream: "data.>" } ]
+				    users = [ {user: "local", password: "pass"} ]
+				  }
+				  sync_account: {
+				    imports = [
+				      { stream: { account: local_account, subject: "data.>" }, to: "leaf.data.>" }
+				    ]
+				    users = [ {user: "sync", password: "pass"} ]
+				  }
+				}
+				leafnodes {
+				  remotes = [ { url: "nats://leaf-user:pass@127.0.0.1:%d", account: "sync_account" } ]
+				}
+			`, hubOpts.LeafNode.Port)))
+			leaf, _ := RunServerWithConfig(leafConf)
+			defer leaf.Shutdown()
+
+			checkLeafNodeConnected(t, leaf)
+
+			ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("sync", "pass"))
+			defer ncHub.Close()
+			sub := natsSubSync(t, ncHub, "leaf.>")
+			natsFlush(t, ncHub)
+
+			if test.delivered {
+				// The interest has to reach the exporting account on the leaf side.
+				checkSubInterest(t, leaf, "local_account", "data.foo", 2*time.Second)
+			} else {
+				// The hub may not even propagate the interest; give it a moment
+				// either way, the assertion below is that nothing is delivered.
+				time.Sleep(300 * time.Millisecond)
+			}
+
+			// Publish in the exporting account, on the pre-transform subject.
+			ncLeaf := natsConnect(t, leaf.ClientURL(), nats.UserInfo("local", "pass"))
+			defer ncLeaf.Close()
+			natsPub(t, ncLeaf, "data.foo", []byte("hello"))
+			natsFlush(t, ncLeaf)
+
+			if test.delivered {
+				msg := natsNexMsg(t, sub, 2*time.Second)
+				require_Equal(t, msg.Subject, "leaf.data.foo")
+			} else {
+				if msg, err := sub.NextMsg(500 * time.Millisecond); err == nil {
+					t.Fatalf("Should not have received %q", msg.Subject)
+				}
+			}
+		})
+	}
+}
+
+// Same as above, but the message is published on a gateway routed subject
+// (_GR_...). The header path transforms the complete subject, so the gateway
+// prefix ends up inside the delivered subject. The permission check has to be
+// done on that form and not on the one obtained by stripping the prefix first,
+// otherwise the leafnode authorizes a subject that differs from the one it
+// puts on the wire.
+func TestLeafNodePermsWithImportSubjectTransformGatewayRouted(t *testing.T) {
+	// Cluster hash and server hash are gwHashLen characters each, see the
+	// replyPfx built in newGateway().
+	gwPrefix := gwReplyPrefix + strings.Repeat("A", gwHashLen) + "." +
+		strings.Repeat("B", gwHashLen) + "."
+	// The import prepends "leaf." to the complete subject, so this is what the
+	// leafnode puts on the wire.
+	wireSubject := "leaf." + gwPrefix + "data.foo"
+	// Stripping the gateway prefix before applying the transform would yield
+	// this unrelated subject instead.
+	strippedSubject := "leaf.data.foo"
+
+	for _, test := range []struct {
+		name      string
+		pub       string
+		delivered bool
+	}{
+		{"wire form", wireSubject, true},
+		{"stripped form", strippedSubject, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hubConf := createConfFile(t, fmt.Appendf(nil, `
+				listen: 127.0.0.1:-1
+				accounts {
+				  sync_account: {
+				    users = [
+				      {user: "sync", password: "pass"}
+				      {user: "leaf-user", password: "pass", permissions: {
+				        publish = [%q]
+				        subscribe = ["leaf.>"]
+				      }}
+				    ]
+				  }
+				}
+				leafnodes { listen: 127.0.0.1:-1 }
+			`, test.pub))
+			hub, hubOpts := RunServerWithConfig(hubConf)
+			defer hub.Shutdown()
+
+			// Export and import cover ">" so that the gateway routed subject is
+			// matched as well.
+			leafConf := createConfFile(t, fmt.Appendf(nil, `
+				listen: 127.0.0.1:-1
+				accounts {
+				  local_account: {
+				    exports = [ { stream: ">" } ]
+				    users = [ {user: "origin", password: "pass"} ]
+				  }
+				  sync_account: {
+				    imports = [
+				      { stream: { account: local_account, subject: ">" }, to: "leaf.>" }
+				    ]
+				    users = [ {user: "sync", password: "pass"} ]
+				  }
+				}
+				leafnodes {
+				  listen: 127.0.0.1:-1
+				  remotes = [ { url: "nats://leaf-user:pass@127.0.0.1:%d", account: "sync_account" } ]
+				}
+			`, hubOpts.LeafNode.Port))
+			leaf, leafOpts := RunServerWithConfig(leafConf)
+			defer leaf.Shutdown()
+
+			checkLeafNodeConnected(t, leaf)
+
+			ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("sync", "pass"))
+			defer ncHub.Close()
+			sub := natsSubSync(t, ncHub, "leaf.>")
+			natsFlush(t, ncHub)
+
+			// The hub forwards the wildcard interest to the leafnode for both
+			// permission sets, see the ReverseMatch in canSubscribeInternal(),
+			// and relies on deliverMsg() to prune what may not be published.
+			// The shadow subscription is on ">", so any subject matches.
+			checkSubInterest(t, leaf, "local_account", "data.foo", 2*time.Second)
+
+			// A client is not allowed to publish on the gateway prefix, so
+			// inject the message over a leafnode connection instead.
+			originConn, err := net.DialTimeout("tcp",
+				net.JoinHostPort(leafOpts.LeafNode.Host, fmt.Sprintf("%d", leafOpts.LeafNode.Port)),
+				2*time.Second)
+			require_NoError(t, err)
+			defer originConn.Close()
+			if _, err := bufio.NewReader(originConn).ReadString('\n'); err != nil {
+				t.Fatalf("Error reading INFO: %v", err)
+			}
+			_, err = originConn.Write([]byte(
+				"CONNECT {\"name\":\"origin\",\"user\":\"origin\",\"pass\":\"pass\"}\r\nPING\r\n"))
+			require_NoError(t, err)
+			checkLeafNodeConnectedCount(t, leaf, 2)
+
+			// Messages the leafnode has put on the wire towards the hub, and
+			// whether that connection still exists. Both are needed below: a
+			// subject the leafnode may not publish makes the hub log a publish
+			// violation and close the connection, see leafPermViolation().
+			hubBoundMsgs := func() (int64, bool) {
+				var lns []*client
+				leaf.mu.Lock()
+				for _, ln := range leaf.leafs {
+					lns = append(lns, ln)
+				}
+				leaf.mu.Unlock()
+				for _, ln := range lns {
+					ln.mu.Lock()
+					solicited, msgs := ln.isSolicitedLeafNode(), ln.outMsgs
+					ln.mu.Unlock()
+					if solicited {
+						return msgs, true
+					}
+				}
+				return 0, false
+			}
+			before, ok := hubBoundMsgs()
+			require_True(t, ok)
+
+			_, err = fmt.Fprintf(originConn, "LMSG %s %d\r\n%s\r\n",
+				gwPrefix+"data.foo", len("hello"), "hello")
+			require_NoError(t, err)
+
+			if test.delivered {
+				msg := natsNexMsg(t, sub, 2*time.Second)
+				require_Equal(t, msg.Subject, wireSubject)
+			} else {
+				if msg, err := sub.NextMsg(500 * time.Millisecond); err == nil {
+					t.Fatalf("Should not have received %q", msg.Subject)
+				}
+				// The message must be held back by the leafnode itself, not by
+				// the hub, which would tear the connection down.
+				after, ok := hubBoundMsgs()
+				if !ok {
+					t.Fatal("Hub closed the leafnode connection, it rejected the subject the leafnode sent")
+				}
+				require_Equal(t, after, before)
+			}
+		})
+	}
+}
