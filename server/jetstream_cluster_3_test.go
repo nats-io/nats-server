@@ -11531,6 +11531,249 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/8423
+func TestJetStreamClusterWorkQueueSourceMustNotAckOtherSubjects(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:      "WQ",
+				Subjects:  []string{"x.>"},
+				Storage:   FileStorage,
+				Retention: WorkQueuePolicy,
+				Replicas:  replicas,
+			})
+			require_NoError(t, err)
+
+			// Wrap two matching sourced messages around a gap.
+			_, err = js.Publish("x.target", nil)
+			require_NoError(t, err)
+			for range 3 {
+				_, err = js.Publish("x.other", nil)
+				require_NoError(t, err)
+			}
+			_, err = js.Publish("x.target", nil)
+			require_NoError(t, err)
+
+			_, err = jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "TARGET",
+				Storage:  FileStorage,
+				Replicas: replicas,
+				Sources:  []*StreamSource{{Name: "WQ", FilterSubject: "x.target"}},
+			})
+			require_NoError(t, err)
+
+			// Wait for both messages to be sourced.
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TARGET")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages in TARGET, got %d", si.State.Msgs)
+				}
+				return nil
+			})
+
+			// The ack of sequence 5 must not have removed sequences 2-4 on "x.other".
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("WQ")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 3 {
+					return fmt.Errorf("expected 3 messages in WQ, got %d (first=%d, last=%d)",
+						si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+// https://github.com/nats-io/nats-server/issues/8423
+func TestJetStreamClusterScheduledMessagesWithWorkQueueSource(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:              "SCHEDULES",
+				Subjects:          []string{"x.>"},
+				Storage:           FileStorage,
+				Retention:         WorkQueuePolicy,
+				Replicas:          replicas,
+				AllowMsgSchedules: true,
+			})
+			require_NoError(t, err)
+
+			publishSchedule := func(subject string, due time.Time) {
+				t.Helper()
+				m := nats.NewMsg(subject)
+				m.Header.Set(JSSchedulePattern, "@at "+due.UTC().Format(time.RFC3339))
+				m.Header.Set(JSScheduleTarget, "x.target")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+			}
+			// A fired schedule writes to "x.target" and purges its own message, so we
+			// can wait on the resulting stream sequence.
+			waitForFire := func(lseq uint64) {
+				t.Helper()
+				checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+					si, err := js.StreamInfo("SCHEDULES")
+					if err != nil {
+						return err
+					}
+					if si.State.LastSeq != lseq {
+						return fmt.Errorf("expected last sequence %d, got %d", lseq, si.State.LastSeq)
+					}
+					return nil
+				})
+			}
+
+			soon := time.Now().Add(time.Second)
+			never := time.Now().Add(time.Hour)
+
+			// Fire a schedule first, so a message for "x.target" ends up below the
+			// schedules published next. Without a match at either end the sourcing
+			// consumer has one pending sequence, and the ack range collapses down to
+			// it, hiding the bug.
+			publishSchedule("x.fire-1", soon) // Sequence 1, purged once fired.
+			waitForFire(2)                    // Sequence 2, for "x.target".
+
+			// These are due long after the test, they must be kept.
+			publishSchedule("x.keep-1", never) // Sequence 3.
+			publishSchedule("x.keep-2", never) // Sequence 4.
+
+			publishSchedule("x.fire-2", soon) // Sequence 5, purged once fired.
+			waitForFire(6)                    // Sequence 6, for "x.target".
+
+			// Only source once both messages for "x.target" are there, so a single
+			// AckAll spans the schedules in between.
+			_, err = jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "TARGET",
+				Storage:  FileStorage,
+				Replicas: replicas,
+				Sources:  []*StreamSource{{Name: "SCHEDULES", FilterSubject: "x.target"}},
+			})
+			require_NoError(t, err)
+
+			// Both fired schedules must end up in TARGET.
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TARGET")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages in TARGET, got %d", si.State.Msgs)
+				}
+				return nil
+			})
+
+			// The ack of sequence 6 must not have removed the schedules at 3 and 4.
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("SCHEDULES")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 schedules in SCHEDULES, got %d (first=%d, last=%d)",
+						si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestJetStreamClusterAckAllAfterConsumerFilterUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:      "WQ",
+		Subjects:  []string{"x.>"},
+		Storage:   FileStorage,
+		Retention: WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("x.a", nil)
+	require_NoError(t, err)
+	_, err = js.Publish("x.b", nil)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// A flow-controlled consumer acks like an AckAll, and is allowed on a WQ stream.
+	cfg := ConsumerConfig{
+		Durable:        "C",
+		DeliverSubject: inbox,
+		FilterSubjects: []string{"x.a", "x.b"},
+		AckPolicy:      AckFlowControl,
+		FlowControl:    true,
+		Heartbeat:      time.Second,
+	}
+	_, err = jsConsumerCreate(t, nc, "WQ", cfg, false)
+	require_NoError(t, err)
+
+	// Both messages must be delivered, so both are pending. Also need the flow
+	// control subject, replying to that is what acks for this consumer.
+	var delivered int
+	var fcSubject string
+	for delivered < 2 || fcSubject == _EMPTY_ {
+		m, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		if len(m.Header) == 0 {
+			delivered++
+		} else if m.Reply != _EMPTY_ {
+			fcSubject = m.Reply
+		} else if stalled := m.Header.Get(JSConsumerStalled); stalled != _EMPTY_ {
+			fcSubject = stalled
+		}
+	}
+
+	// Narrow the filters, "x.a" is pending but no longer matches.
+	cfg.FilterSubjects = []string{"x.b"}
+	_, err = jsConsumerCreate(t, nc, "WQ", cfg, false)
+	require_NoError(t, err)
+
+	// Reply to flow control, acking everything delivered up to sequence 2.
+	m := nats.NewMsg(fcSubject)
+	m.Header.Set(JSLastConsumerSeq, "2")
+	m.Header.Set(JSLastStreamSeq, "2")
+	require_NoError(t, nc.PublishMsg(m))
+
+	// Both messages were acked by the consumer, so both must be removed.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("WQ")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("expected 0 messages in WQ, got %d (first=%d, last=%d)",
+				si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

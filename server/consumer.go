@@ -3710,7 +3710,7 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 	// violate lock ordering with respect to the stream.
 	ackInPlace := o.node == nil && o.retention != LimitsPolicy && needLock
 
-	var sgap, floor uint64
+	var ackAllSeqs []uint64
 	var needSignal bool
 
 	switch o.cfg.AckPolicy {
@@ -3739,17 +3739,25 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			needSignal = true
 		}
-		sgap = sseq - o.asflr
-		floor = sseq // start at same and set lower as we go.
+		sgap := sseq - o.asflr
 		o.adflr, o.asflr = dseq, sseq
 
+		// Only needed if we ack in place, otherwise we'd never collect anything.
+		// At most the pending entries below the ack, don't over-allocate.
+		if ackInPlace {
+			ackAllSeqs = make([]uint64, 0, min(uint64(len(o.pending)), sgap-1))
+		}
+
 		remove := func(seq uint64) {
+			// Only collect what was actually delivered to us.
+			if ackInPlace && seq != sseq {
+				if _, ok := o.pending[seq]; ok {
+					ackAllSeqs = append(ackAllSeqs, seq)
+				}
+			}
 			delete(o.pending, seq)
 			delete(o.rdc, seq)
 			o.removeFromRedeliverQueue(seq)
-			if seq < floor {
-				floor = seq
-			}
 		}
 		// Determine if smarter to walk all of pending vs the sequence range.
 		if sgap > uint64(len(o.pending)) {
@@ -3779,13 +3787,9 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 	unlock()
 
 	if ackInPlace {
-		if sgap > 1 {
-			// FIXME(dlc) - This can very inefficient, will need to fix.
-			for seq := sseq; seq >= floor; seq-- {
-				mset.ackMsg(o, seq)
-			}
-		} else {
-			mset.ackMsg(o, sseq)
+		mset.ackMsg(o, sseq)
+		for _, seq := range ackAllSeqs {
+			mset.ackMsg(o, seq)
 		}
 	}
 

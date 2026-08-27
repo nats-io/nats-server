@@ -7079,13 +7079,22 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	// Update activity.
 	o.lat = time.Now()
 
-	var sagap uint64
-	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
+	var ackAllSeqs []uint64
+	if o.retention != LimitsPolicy && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
 		// Always use the store state, as o.asflr is skipped ahead already.
-		// Capture before updating store.
+		// Capture before updating store, which clears the pending below.
 		state, err := o.store.BorrowState()
 		if err == nil {
-			sagap = sseq - state.AckFloor.Stream
+			// Only need to collect if the ack covers more than the sequence itself.
+			if sagap := sseq - state.AckFloor.Stream; sagap > 1 {
+				// At most the pending entries below the ack, don't over-allocate.
+				ackAllSeqs = make([]uint64, 0, min(uint64(len(state.Pending)), sagap-1))
+				for seq := range state.Pending {
+					if seq < sseq {
+						ackAllSeqs = append(ackAllSeqs, seq)
+					}
+				}
+			}
 		}
 	}
 
@@ -7115,13 +7124,9 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 	}
 	o.mu.Unlock()
 
-	if sagap > 1 {
-		// FIXME(dlc) - This is very inefficient, will need to fix.
-		for seq := sseq; seq > sseq-sagap; seq-- {
-			mset.ackMsg(o, seq)
-		}
-	} else {
-		mset.ackMsg(o, sseq)
+	mset.ackMsg(o, sseq)
+	for _, seq := range ackAllSeqs {
+		mset.ackMsg(o, seq)
 	}
 	return nil
 }

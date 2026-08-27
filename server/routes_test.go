@@ -5664,7 +5664,7 @@ func BenchmarkProcessLeafMsgArgs_Queues(b *testing.B) {
 	}
 }
 
-func TestRouteReconnectAfterDuplicateRouteUpgrade(t *testing.T) {
+func TestRouteReconnectAfterSolicitedUpgradeAdoptsConfiguredURL(t *testing.T) {
 	// Default pool size + pinned $SYS route, like a production setup, with a
 	// hostname-based route URL like production configs use.
 	ob := DefaultOptions()
@@ -5724,5 +5724,88 @@ func TestRouteReconnectAfterDuplicateRouteUpgrade(t *testing.T) {
 	natsFlush(t, ncb)
 	checkSubInterest(t, sa, globalAccountName, "reconnect.echo", 2*time.Second)
 	_, err = nca.Request("reconnect.echo", []byte("ping"), time.Second)
+	require_NoError(t, err)
+}
+
+func TestRouteReconnectAfterDuplicateRouteAdoptsConfiguredURL(t *testing.T) {
+	// handleDuplicateRoute is the other path that promotes a route to Explicit,
+	// used for duplicate per-account (pinned) routes and for any duplicate
+	// route in non-pool mode. It must adopt the configured URL too, otherwise
+	// routeStillValid rejects the gossiped one and the reconnect is abandoned.
+	// The global account is pinned here so interest can use ordinary pub/sub.
+	ob := DefaultOptions()
+	ob.Cluster.PinnedAccounts = []string{globalAccountName}
+	sb := RunServer(ob)
+	defer sb.Shutdown()
+
+	oa := DefaultOptions()
+	oa.Cluster.PinnedAccounts = []string{globalAccountName}
+	oa.Routes = RoutesFromStr(fmt.Sprintf("nats://localhost:%d", sb.ClusterAddr().Port))
+	sa := RunServer(oa)
+	defer sa.Shutdown()
+	checkClusterFormed(t, sa, sb)
+
+	// Grab A's pinned route for the global account.
+	var pinned *client
+	sa.mu.RLock()
+	for _, r := range sa.accRoutes[globalAccountName] {
+		pinned = r
+	}
+	sa.mu.RUnlock()
+	require_NotNil(t, pinned)
+
+	// Put the connection in the pre-upgrade gossip-dial state, then resolve it
+	// as a duplicate against the configured explicit route, as addRoute does
+	// for a pinned account. The upgrade must adopt the configured URL so the
+	// later reconnect passes routeStillValid.
+	gossipURL, err := url.Parse(fmt.Sprintf("nats-route://127.0.0.1:%d/", sb.ClusterAddr().Port))
+	require_NoError(t, err)
+	pinned.mu.Lock()
+	pinned.route.didSolicit = true
+	pinned.route.routeType = Implicit
+	pinned.route.url = gossipURL
+	pinned.mu.Unlock()
+
+	configured := oa.Routes[0]
+	dup := &client{}
+	dup.route = &route{
+		url:        configured,
+		didSolicit: true,
+		routeType:  Explicit,
+		accName:    []byte(globalAccountName),
+	}
+	handleDuplicateRoute(pinned, dup, true)
+
+	pinned.mu.Lock()
+	upURL := pinned.route.url
+	pinned.mu.Unlock()
+	require_Equal(t, upURL, configured)
+
+	// Drop the connection the way a fault would (slow consumer). The pinned
+	// route must come back, otherwise this account's mesh stays severed while
+	// every pooled route looks healthy.
+	pinned.closeConnection(SlowConsumerWriteDeadline)
+	checkClusterFormed(t, sa, sb)
+
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		sa.mu.RLock()
+		defer sa.mu.RUnlock()
+		for _, r := range sa.accRoutes[globalAccountName] {
+			if r != nil && r != pinned {
+				return nil
+			}
+		}
+		return fmt.Errorf("pinned route for %q did not reconnect", globalAccountName)
+	})
+
+	// Interest must flow across the re-established pinned route again.
+	nca := natsConnect(t, sa.ClientURL())
+	defer nca.Close()
+	ncb := natsConnect(t, sb.ClientURL())
+	defer ncb.Close()
+	natsSub(t, ncb, "pinned.echo", func(m *nats.Msg) { m.Respond(m.Data) })
+	natsFlush(t, ncb)
+	checkSubInterest(t, sa, globalAccountName, "pinned.echo", 2*time.Second)
+	_, err = nca.Request("pinned.echo", []byte("ping"), time.Second)
 	require_NoError(t, err)
 }
