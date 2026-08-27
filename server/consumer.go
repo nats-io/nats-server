@@ -3742,8 +3742,11 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 		sgap := sseq - o.asflr
 		o.adflr, o.asflr = dseq, sseq
 
+		// Only needed if we ack in place, otherwise we'd never collect anything.
 		// At most the pending entries below the ack, don't over-allocate.
-		ackAllSeqs = make([]uint64, 0, min(uint64(len(o.pending)), sgap-1))
+		if ackInPlace {
+			ackAllSeqs = make([]uint64, 0, min(uint64(len(o.pending)), sgap-1))
+		}
 
 		remove := func(seq uint64) {
 			// Only collect what was actually delivered to us.
