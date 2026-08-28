@@ -2300,7 +2300,7 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 	require_NoError(b, err)
 
 	b.Run("StartingSequenceForSources", func(b *testing.B) {
-		mset.startingSequenceForSources()
+		mset.resetSourceInfo()
 	})
 }
 

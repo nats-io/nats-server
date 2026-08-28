@@ -19284,6 +19284,142 @@ func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
 	}
 }
 
+func TestJetStreamSourceInfoExposesHighestSourcedSeq(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "ORIGIN",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	for range 3 {
+		_, err = js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "SOURCE",
+		Sources: []*nats.StreamSource{{Name: "ORIGIN"}},
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		rm, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "SOURCE"), nil, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamInfoResponse
+		require_NoError(t, json.Unmarshal(rm.Data, &resp))
+		if resp.Error != nil {
+			return resp.Error
+		}
+		si := resp.StreamInfo
+		if len(si.Sources) != 1 {
+			return fmt.Errorf("expected 1 source, got %d", len(si.Sources))
+		} else if si.State.Msgs != 3 {
+			return fmt.Errorf("expected 3 msgs, got %d", si.State.Msgs)
+		}
+		src := si.Sources[0]
+		if src.Name != "ORIGIN" {
+			return fmt.Errorf("expected source name to be ORIGIN, got %q", src.Name)
+		} else if src.Seq != 3 {
+			return fmt.Errorf("expected highest sourced seq of 3, got %d", src.Seq)
+		}
+		return nil
+	})
+
+	// The reported sequence must come from the persisted sources state, the
+	// in-memory sourceInfo can be ahead of what's actually been stored.
+	mset, err := s.globalAccount().lookupStream("SOURCE")
+	require_NoError(t, err)
+	const iname = "ORIGIN > >"
+	require_Equal(t, mset.store.SourcesState()[iname].Seq, 3)
+
+	mset.mu.Lock()
+	mset.sources[iname].sseq = 100
+	mset.mu.Unlock()
+
+	sis := mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 3)
+
+	// If the source stream is recreated the persisted state still holds the previous
+	// incarnation's identity and sequence, until a new message from the recreated
+	// stream is stored. Don't report that stale sequence as ours.
+	sss := mset.store.SourcesState()[iname]
+	require_True(t, sss.Ident != _EMPTY_)
+
+	mset.mu.Lock()
+	si := mset.sources[iname]
+	ident := si.ident
+	require_Equal(t, ident, sss.Ident)
+	si.ident, si.sseq = "recreated", 0
+	mset.mu.Unlock()
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 0)
+
+	// Same when we're about to retry due to an identity mismatch, the identity is
+	// unset but the persisted state is still from the previous incarnation.
+	mset.mu.Lock()
+	si.ident, si.rc = _EMPTY_, true
+	mset.mu.Unlock()
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 0)
+
+	// Once the identities match again we report the persisted sequence.
+	mset.mu.Lock()
+	si.ident, si.rc = ident, false
+	mset.mu.Unlock()
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 3)
+
+	// The persisted state can legitimately be identity-less, if the last sourced message
+	// was stored before source identities existed. That's unverifiable, but still valid,
+	// so we must keep reporting the persisted sequence.
+	mset.store.ApplySourcesState(map[string]StreamSourceState{iname: {Seq: 3}})
+	require_Equal(t, mset.store.SourcesState()[iname].Ident, _EMPTY_)
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 3)
+
+	// Unless we know a recreation is in progress.
+	mset.mu.Lock()
+	si.rc = true
+	mset.mu.Unlock()
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 0)
+
+	// Resetting the source infos, which happens on startup/leader change and can be
+	// followed by a delayed source consumer setup, must seed the identity and sequence
+	// right away. Otherwise we'd report a mismatch and a zero sequence in the meantime.
+	mset.mu.Lock()
+	mset.store.ApplySourcesState(map[string]StreamSourceState{iname: {Seq: 3, Ident: ident}})
+	mset.resetSourceInfo()
+	rsi := mset.sources[iname]
+	mset.mu.Unlock()
+
+	require_NotNil(t, rsi)
+	require_Equal(t, rsi.ident, ident)
+	require_Equal(t, rsi.sseq, 3)
+	require_False(t, rsi.rc)
+
+	sis = mset.sourcesInfo()
+	require_Len(t, len(sis), 1)
+	require_Equal(t, sis[0].Seq, 3)
+}
+
 func TestJetStreamRateLimitHighStreamIngest(t *testing.T) {
 	cfgFmt := []byte(fmt.Sprintf(`
         jetstream: {
@@ -25195,7 +25331,7 @@ func TestJetStreamSourcesStateStartingSequence(t *testing.T) {
 		// goes undetected, and we would resume from a sequence that means nothing
 		// in the new stream.
 		mset.mu.Lock()
-		mset.startingSequenceForSources()
+		mset.resetSourceInfo()
 		si := mset.sources[iname]
 		mset.mu.Unlock()
 
