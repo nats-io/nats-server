@@ -1789,3 +1789,49 @@ func TestMemStoreMultiLastSeqsDoesNotReorderConfigSubjects(t *testing.T) {
 	require_Equal(t, ms.cfg.Subjects[0], "orders.*")
 	require_Equal(t, ms.cfg.Subjects[1], "billing.*")
 }
+
+func TestMemStoreSourcesAddedSourceKeepsExistingState(t *testing.T) {
+	origin1 := &StreamSource{Name: "ORIGIN1"}
+	origin2 := &StreamSource{Name: "ORIGIN2"}
+	iName1, iName2 := origin1.composeIName(), origin2.composeIName()
+
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+		Sources:  []*StreamSource{origin1},
+	}
+	ms, err := newMemStore(&cfg)
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	for i := range 10 {
+		hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN1 %d > > foo", i+1))
+		_, _, err = ms.StoreMsg("foo", hdr, nil, 0)
+		require_NoError(t, err)
+	}
+	state := ms.SourcesState()
+	require_Len(t, len(state), 1)
+	require_Equal(t, state[iName1].Seq, 10)
+
+	// Remove the newest message, a scan would now only be able to derive
+	// ORIGIN1 up to sequence 9.
+	removed, err := ms.RemoveMsg(10)
+	require_NoError(t, err)
+	require_True(t, removed)
+
+	// Adding a source must only recover the sequence of the source that was just
+	// added. Sources that are already tracked must keep their state, even if a
+	// scan derives a lower sequence for them, since that would result in
+	// the source consumer re-delivering messages it had already stored.
+	ucfg := cfg
+	ucfg.Sources = []*StreamSource{origin1, origin2}
+	require_NoError(t, ms.UpdateConfig(&ucfg))
+
+	state = ms.SourcesState()
+	require_Len(t, len(state), 2)
+	// ORIGIN1 must not have moved backward.
+	require_Equal(t, state[iName1].Seq, 10)
+	// ORIGIN2 is newly seeded and has nothing to recover.
+	require_Equal(t, state[iName2].Seq, 0)
+}

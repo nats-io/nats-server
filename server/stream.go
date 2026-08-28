@@ -2704,6 +2704,8 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	jsa.mu.RUnlock()
 
 	mset.mu.Lock()
+
+	var needsStartingSeqNum map[string]struct{}
 	if mset.active {
 		// Check for mirror promotion.
 		if ocfg.Mirror != nil && cfg.Mirror == nil {
@@ -2720,7 +2722,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		for _, s := range ocfg.Subjects {
 			current[s] = struct{}{}
 		}
-		// Update config with new values. The store update will enforce any stricter limits.
 
 		// Now walk new subjects. All of these need to be added, but we will check
 		// the originals first, since if it is in there we can skip, already added.
@@ -2753,7 +2754,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		if len(cfg.Sources) > 0 || len(ocfg.Sources) > 0 {
 			currentIName := make(map[string]struct{})
 			currentConsumers := make(map[string]*StreamSource)
-			needsStartingSeqNum := make(map[string]struct{})
 
 			getSourcingConsumerIName := func(ssi *StreamSource, sources []*StreamSource) string {
 				var iName = ssi.Name
@@ -2801,6 +2801,9 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 					}
 
 					mset.sources[s.iname] = si
+					if needsStartingSeqNum == nil {
+						needsStartingSeqNum = make(map[string]struct{})
+					}
 					needsStartingSeqNum[s.iname] = struct{}{}
 				} else {
 					// source already exists
@@ -2821,14 +2824,6 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 			for iName := range currentIName {
 				mset.cancelSourceConsumer(iName)
 				delete(mset.sources, iName)
-			}
-			neededCopy := make(map[string]struct{}, len(needsStartingSeqNum))
-			for iName := range needsStartingSeqNum {
-				neededCopy[iName] = struct{}{}
-			}
-			mset.setStartingSequenceForSources(needsStartingSeqNum)
-			for iName := range neededCopy {
-				mset.setupSourceConsumer(iName, mset.sources[iName].sseq+1, time.Time{})
 			}
 		}
 	}
@@ -2957,6 +2952,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	if mset.isLeader() && sendAdvisory {
 		mset.sendUpdateAdvisoryLocked()
 	}
+	active := mset.active
 	mset.mu.Unlock()
 
 	if js != nil {
@@ -2976,7 +2972,26 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 	}
 
-	mset.store.UpdateConfig(cfg)
+	if err = mset.store.UpdateConfig(cfg); err != nil {
+		return err
+	}
+
+	// Newly added sources can now setup their source consumers, since the store scanned
+	// if the source was pre-existing as part of the config update above.
+	if active && len(needsStartingSeqNum) > 0 {
+		mset.mu.Lock()
+		if mset.active {
+			mset.setStartingSequenceForSources(needsStartingSeqNum)
+			for iName := range needsStartingSeqNum {
+				// A concurrent update could have removed or replaced the source
+				// in the meantime, only set up the ones still present.
+				if si, ok := mset.sources[iName]; ok {
+					mset.setupSourceConsumer(iName, si.sseq+1, time.Time{})
+				}
+			}
+		}
+		mset.mu.Unlock()
+	}
 
 	return nil
 }
@@ -4991,112 +5006,18 @@ func streamAndSeq(shdr string) (string, string, uint64, string) {
 
 // Lock should be held.
 func (mset *stream) setStartingSequenceForSources(iNames map[string]struct{}) {
-	var state StreamState
-	mset.store.FastState(&state)
-
-	// Collect known sources state and reuse where possible. This persisted state
-	// survives a full purge/expiry of the destination messages, so it has to be
-	// consulted before bailing out below on an emptied store.
+	// The store contains an index of the source state, use it here without doing lookups ourselves.
 	sourcesState := mset.store.SourcesState()
 	for iName := range iNames {
-		if sss, ok := sourcesState[iName]; ok {
-			if si, ok := mset.sources[iName]; ok {
+		if si, ok := mset.sources[iName]; ok {
+			if sss, ok := sourcesState[iName]; ok {
 				si.sseq = sss.Seq
 				si.dseq = 0
 				si.ident, si.rc = sss.Ident, false
-				delete(iNames, iName)
-			}
-		}
-	}
-	if len(iNames) == 0 {
-		return
-	}
-
-	// Do not reset sseq here so we can remember when purge/expiration happens.
-	if state.Msgs == 0 {
-		for iName := range iNames {
-			si := mset.sources[iName]
-			if si == nil {
-				continue
 			} else {
+				// If it doesn't exist, only reset the delivery sequence.
 				si.dseq = 0
 			}
-		}
-		return
-	}
-
-	// From the provided list of sources, we build a sublist that contains
-	// the interested filters (including transforms). As we figure out the
-	// starting sequence for each source, we will eliminate the source from
-	// the map and then refresh the sublist, which in turn makes the sublist
-	// ideally more specific. This allows LoadPrevMsgsMulti to work most
-	// effectively.
-	// Because this is a SimpleSublist we can't just remove the entries per
-	// source so we have no other option but to rebuild it from scratch, but
-	// this is cheap enough to do so not the end of the world.
-	var sl *gsl.SimpleSublist
-	refreshSublist := func() {
-		sl = gsl.NewSimpleSublist()
-		for iName := range iNames {
-			si := mset.sources[iName]
-			if si == nil {
-				continue
-			}
-			if si.sf == _EMPTY_ {
-				sl.Insert(fwcs, struct{}{})
-			} else {
-				sl.Insert(si.sf, struct{}{})
-			}
-			for _, sf := range si.sfs {
-				if sf == _EMPTY_ {
-					sl.Insert(fwcs, struct{}{})
-				} else {
-					sl.Insert(sf, struct{}{})
-				}
-			}
-		}
-	}
-	refreshSublist()
-
-	var smv StoreMsg
-	for last := state.LastSeq; ; {
-		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
-		if err != nil {
-			break
-		}
-		last = seq - 1
-		if len(sm.hdr) == 0 {
-			continue
-		}
-		ss := sliceHeader(JSStreamSource, sm.hdr)
-		if len(ss) == 0 {
-			continue
-		}
-
-		streamName, indexName, sseq, identity := streamAndSeq(bytesToString(ss))
-		if _, ok := iNames[indexName]; ok {
-			si := mset.sources[indexName]
-			si.sseq = sseq
-			si.dseq = 0
-			si.ident, si.rc = identity, false
-			delete(iNames, indexName)
-			refreshSublist()
-		} else if indexName == _EMPTY_ && streamName != _EMPTY_ {
-			for iName := range iNames {
-				// TODO streamSource is a linear walk, to optimize later
-				if si := mset.sources[iName]; si != nil && streamName == si.name ||
-					(mset.streamSource(iName).External != nil && streamName == si.name+":"+getHash(mset.streamSource(iName).External.ApiPrefix)) {
-					si.sseq = sseq
-					si.dseq = 0
-					si.ident, si.rc = _EMPTY_, false
-					delete(iNames, iName)
-					refreshSublist()
-					break
-				}
-			}
-		}
-		if len(iNames) == 0 {
-			break
 		}
 	}
 }
@@ -5146,106 +5067,19 @@ func (mset *stream) startingSequenceForSources() {
 	// Always reset here.
 	mset.resetSourceInfo()
 
-	var state StreamState
-	mset.store.FastState(&state)
-
-	// Generate a list of sources and, from that, a sublist that contains
-	// the interested filters (including transforms). As we figure out the
-	// starting sequence for each source, we will eliminate the source from
-	// the map and then refresh the sublist, which in turn makes the sublist
-	// ideally more specific. This allows LoadPrevMsgsMulti to work most
-	// effectively.
-	// Because this is a SimpleSublist we can't just remove the entries per
-	// source so we have no other option but to rebuild it from scratch, but
-	// this is cheap enough to do so not the end of the world.
-	sources := map[string]*StreamSource{}
-	for _, src := range mset.cfg.Sources {
-		sources[src.composeIName()] = src
-	}
-	var sl *gsl.SimpleSublist
-	refreshSublist := func() {
-		sl = gsl.NewSimpleSublist()
-		for _, src := range sources {
-			if src.FilterSubject == _EMPTY_ {
-				sl.Insert(fwcs, struct{}{})
-			} else {
-				sl.Insert(src.FilterSubject, struct{}{})
-			}
-			for _, tr := range src.SubjectTransforms {
-				if tr.Destination == _EMPTY_ {
-					sl.Insert(fwcs, struct{}{})
-				} else {
-					sl.Insert(tr.Destination, struct{}{})
-				}
-			}
-		}
-	}
-	refreshSublist()
-
-	update := func(iName string, seq uint64, ident string) {
-		// Only update active in case we have older ones in here that got configured out.
-		if si := mset.sources[iName]; si != nil {
-			if _, ok := sources[iName]; ok {
-				// Ignore if not set.
-				if seq == 0 {
-					delete(sources, iName)
-					refreshSublist()
-					return
-				}
-				si.sseq = seq
-				si.dseq = 0
-				si.ident, si.rc = ident, false
-				delete(sources, iName)
-				refreshSublist()
-			}
-		}
-	}
-
-	// Collect known sources state and reuse where possible. This persisted
-	// state survives a full purge/expiry of the destination messages. Otherwise,
-	// we would reset every source back to the origin's beginning.
+	// The store contains an index of the source state, use it here without doing lookups ourselves.
 	sourcesState := mset.store.SourcesState()
-	for iName := range sources {
-		if sss, ok := sourcesState[iName]; ok {
-			update(iName, sss.Seq, sss.Ident)
-		}
-	}
-	if len(sources) == 0 {
-		return
-	}
-
-	// Bail if no messages, meaning no further context to scan for.
-	if state.Msgs == 0 {
-		return
-	}
-
-	var smv StoreMsg
-	for last := state.LastSeq; ; {
-		sm, seq, err := mset.store.LoadPrevMsgMulti(sl, last, &smv)
-		if err != nil {
-			break
-		}
-		last = seq - 1
-		if len(sm.hdr) == 0 {
-			continue
-		}
-		ss := sliceHeader(JSStreamSource, sm.hdr)
-		if len(ss) == 0 {
-			continue
-		}
-
-		streamName, iName, sseq, identity := streamAndSeq(bytesToString(ss))
-		if iName == _EMPTY_ { // Pre-2.10 message header means it's a match for any source using that stream name
-			for _, ssi := range mset.cfg.Sources {
-				if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
-					update(ssi.iname, sseq, _EMPTY_)
-				}
+	for _, src := range mset.cfg.Sources {
+		iName := src.composeIName()
+		if si, ok := mset.sources[iName]; ok {
+			if sss, ok := sourcesState[iName]; ok {
+				si.sseq = sss.Seq
+				si.dseq = 0
+				si.ident, si.rc = sss.Ident, false
+			} else {
+				// If it doesn't exist, only reset the delivery sequence.
+				si.dseq = 0
 			}
-		} else {
-			update(iName, sseq, identity)
-		}
-		if len(sources) == 0 {
-			return
 		}
 	}
 }

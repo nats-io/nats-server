@@ -2273,13 +2273,13 @@ func (fs *fileStore) recoverPerMessageState() error {
 	}
 
 	// Create or delete the source tracking if needed.
+	var sourcesScan map[string]*StreamSource
 	if sources != nil && fs.sources == nil {
 		sourcesSeq = fs.recoverSourcesState()
-		// Only allow scanning if the index recovered something. If there is no index
-		// yet, then we'll just not do the scan and let the upper layer do so when needed.
-		if fs.sources != nil {
-			sourcesRecover = true
-			scanSeq = min(scanSeq, sourcesSeq)
+		sourcesRecover = true
+		scanSeq = min(scanSeq, sourcesSeq)
+		if sourcesSeq <= fs.state.LastSeq {
+			sourcesScan = sources
 		}
 	}
 	if len(sources) > 0 {
@@ -2296,28 +2296,26 @@ func (fs *fileStore) recoverPerMessageState() error {
 			}
 		}
 		// Seed sources that aren't in the map yet.
-		for k := range sources {
+		for k, v := range sources {
 			if _, ok := fs.sources[k]; !ok {
 				fs.sources[k] = &StreamSourceState{}
+				// Since we're adding a new source, we'll need to recover its sequence (if any).
+				sourcesSeq = fs.state.FirstSeq
+				sourcesRecover = true
+				scanSeq = min(scanSeq, sourcesSeq)
+				if sourcesScan == nil {
+					sourcesScan = make(map[string]*StreamSource)
+				}
+				if _, ok = sourcesScan[k]; !ok {
+					sourcesScan[k] = v
+				}
 			}
 		}
 	}
-	if fs.sources != nil {
-		// No sources configured anymore, clear.
-		if len(sources) == 0 {
-			fs.sources = nil
-		}
-		// If all zeros or empty, remove the index from disk.
-		remove := true
-		for _, ss := range fs.sources {
-			if ss.Seq > 0 {
-				remove = false
-				break
-			}
-		}
-		if remove {
-			_ = os.Remove(fs.sourcesStatePath())
-		}
+	// No sources configured anymore, clear and remove the index from disk.
+	if fs.sources != nil && len(sources) == 0 {
+		fs.sources = nil
+		_ = os.Remove(fs.sourcesStatePath())
 	}
 
 	// Short-circuit if no recovering is required.
@@ -2336,7 +2334,7 @@ func (fs *fileStore) recoverPerMessageState() error {
 	if sourcesRecover && !ttlRecover && !schedRecover {
 		if fs.state.Msgs > 0 && sourcesSeq <= fs.state.LastSeq {
 			fs.warn("Sourcing state is outdated; attempting to recover using backward scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
-			if err := fs.recoverSourcesBackwardScan(sourcesSeq, sources); err != nil {
+			if err := fs.recoverSourcesBackwardScan(sourcesSeq, sourcesScan); err != nil {
 				return err
 			}
 		}
@@ -2352,6 +2350,15 @@ func (fs *fileStore) recoverPerMessageState() error {
 		}
 		if sourcesRecover && sourcesSeq <= fs.state.LastSeq {
 			fs.warn("Sourcing state is outdated; attempting to recover using linear scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
+		}
+		// Only consider sources that need recovering.
+		update := func(iName string, sseq uint64, ident string) {
+			if _, ok := sourcesScan[iName]; !ok {
+				return
+			}
+			if sss, ok := fs.sources[iName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
+			}
 		}
 		var (
 			mb     *msgBlock
@@ -2417,11 +2424,17 @@ func (fs *fileStore) recoverPerMessageState() error {
 				}
 				if sourcesRecover && seq >= sourcesSeq {
 					if ss := sliceHeader(JSStreamSource, msg.hdr); len(ss) > 0 {
-						_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
-						if indexName != _EMPTY_ {
-							if sss, ok := fs.sources[indexName]; ok {
-								sss.Seq, sss.Ident = sseq, ident
+						streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+						if iName == _EMPTY_ {
+							// Pre-2.10 message header means it's a match for any source using that stream name.
+							// Such headers carry no identity, so it is left unset.
+							for _, ssi := range fs.cfg.Sources {
+								if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+									update(ssi.composeIName(), sseq, _EMPTY_)
+								}
 							}
+						} else {
+							update(iName, sseq, ident)
 						}
 					}
 				}
@@ -4995,21 +5008,15 @@ func (fs *fileStore) ApplySourcesState(sources map[string]StreamSourceState) {
 }
 
 // SourcesState return sources keys and their last known state.
-func (fs *fileStore) SourcesState() (dst map[string]StreamSourceState) {
+func (fs *fileStore) SourcesState() map[string]StreamSourceState {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 	if len(fs.sources) == 0 {
 		return nil
 	}
-	// Allocate lazily so that a map containing only seeded (zero) entries returns
-	// nil rather than an empty map; zeros must not leak out of SourcesState.
+	dst := make(map[string]StreamSourceState, len(fs.sources))
 	for k, ss := range fs.sources {
-		if ss.Seq > 0 {
-			if dst == nil {
-				dst = make(map[string]StreamSourceState, 1)
-			}
-			dst[k] = *ss
-		}
+		dst[k] = *ss
 	}
 	return dst
 }
@@ -12423,7 +12430,7 @@ func (fs *fileStore) sourcesStatePath() string {
 
 func (fs *fileStore) writeSourcesState() error {
 	fs.mu.RLock()
-	if fs.sources == nil {
+	if len(fs.sources) == 0 {
 		fs.mu.RUnlock()
 		return nil
 	}
@@ -12432,30 +12439,19 @@ func (fs *fileStore) writeSourcesState() error {
 	// Must be lseq+1 to identify up to which sequence the sources are valid.
 	highSeq := fs.state.LastSeq + 1
 
-	var count, sz uint64
+	count := uint64(len(fs.sources))
+	var sz uint64
 	for source, ss := range fs.sources {
-		if ss.Seq > 0 {
-			count++
-			// Length prefix + source bytes + seq varint +
-			// length prefix + identity bytes.
-			sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
-				uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
-		}
-	}
-	// Nothing observed yet, don't persist an empty index. Any stale file is
-	// removed by recoverPerMessageState on recovery.
-	if count == 0 {
-		fs.mu.RUnlock()
-		return nil
+		// Length prefix + source bytes + seq varint +
+		// length prefix + identity bytes.
+		sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
+			uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
 	}
 	buf := make([]byte, 0, sourcesHeaderLen+sz)
 	buf = append(buf, 1)                                 // Magic version
 	buf = binary.LittleEndian.AppendUint64(buf, count)   // Entry count
 	buf = binary.LittleEndian.AppendUint64(buf, highSeq) // Stamp
 	for source, ss := range fs.sources {
-		if ss.Seq == 0 {
-			continue
-		}
 		buf = binary.AppendUvarint(buf, uint64(len(source)))
 		buf = append(buf, source...)
 		buf = binary.AppendUvarint(buf, ss.Seq)
@@ -12541,8 +12537,7 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 	return stamp, nil
 }
 
-// recoverSourcesBackwardScan recovers fs.sources by scanning the stream backwards,
-// mirroring stream.startingSequenceForSources, down to and including the stopSeq.
+// recoverSourcesBackwardScan recovers fs.sources by scanning the stream backwards.
 // Lock should be held.
 func (fs *fileStore) recoverSourcesBackwardScan(stopSeq uint64, sources map[string]*StreamSource) error {
 	var sl *gsl.SimpleSublist

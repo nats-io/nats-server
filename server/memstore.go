@@ -133,9 +133,9 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 		if ms.sources == nil {
 			ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
 		}
-		sources := make(map[string]struct{}, len(cfg.Sources))
+		sources := make(map[string]*StreamSource, len(cfg.Sources))
 		for _, ssi := range cfg.Sources {
-			sources[ssi.composeIName()] = struct{}{}
+			sources[ssi.composeIName()] = ssi
 		}
 		// Remove sources that are tracked but no longer exist.
 		for k := range ms.sources {
@@ -143,11 +143,17 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 				delete(ms.sources, k)
 			}
 		}
-		// Seed sources that aren't in the map yet.
-		for k := range sources {
+		// Seed sources that aren't in the map yet. Anything newly seeded needs its
+		// sequence recovered, otherwise it would re-source from the very beginning.
+		scan := make(map[string]*StreamSource)
+		for k, ssi := range sources {
 			if _, ok := ms.sources[k]; !ok {
 				ms.sources[k] = &StreamSourceState{}
+				scan[k] = ssi
 			}
+		}
+		if len(scan) > 0 && ms.state.Msgs > 0 {
+			ms.recoverSourcesBackwardScan(scan)
 		}
 	}
 
@@ -1048,21 +1054,15 @@ func (ms *memStore) ApplySourcesState(sources map[string]StreamSourceState) {
 }
 
 // SourcesState return sources keys and their last known state.
-func (ms *memStore) SourcesState() (dst map[string]StreamSourceState) {
+func (ms *memStore) SourcesState() map[string]StreamSourceState {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	if len(ms.sources) == 0 {
 		return nil
 	}
-	// Allocate lazily so that a map containing only seeded (zero) entries returns
-	// nil rather than an empty map; zeros must not leak out of SourcesState.
+	dst := make(map[string]StreamSourceState, len(ms.sources))
 	for k, ss := range ms.sources {
-		if ss.Seq > 0 {
-			if dst == nil {
-				dst = make(map[string]StreamSourceState, 1)
-			}
-			dst[k] = *ss
-		}
+		dst[k] = *ss
 	}
 	return dst
 }
@@ -2153,12 +2153,83 @@ func (ms *memStore) LoadPrevMsg(filter string, wc bool, start uint64, smp *Store
 	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
+// recoverSourcesBackwardScan recovers ms.sources by scanning the stream backwards.
+// Lock should be held.
+func (ms *memStore) recoverSourcesBackwardScan(sources map[string]*StreamSource) {
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
+	update := func(iName string, sseq uint64, ident string) {
+		// Only consider sources that are configured and not yet found. The backward
+		// scan visits the highest matching sequence first, so the first hit per source
+		// is the latest.
+		if _, ok := sources[iName]; !ok {
+			return
+		}
+		ms.sources[iName] = &StreamSourceState{Seq: sseq, Ident: ident}
+		delete(sources, iName)
+		refreshSublist()
+	}
+
+	var smv StoreMsg
+	for last := ms.state.LastSeq; ; {
+		sm, seq, err := ms.loadPrevMsgMultiLocked(sl, last, &smv)
+		if err != nil {
+			// Done, including ErrStoreEOF.
+			return
+		}
+		if len(sm.hdr) > 0 {
+			if ss := sliceHeader(JSStreamSource, sm.hdr); len(ss) > 0 {
+				streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+				if iName == _EMPTY_ {
+					// Pre-2.10 message header means it's a match for any source using that
+					// stream name. Such headers carry no identity, so it is left unset.
+					for _, ssi := range ms.cfg.Sources {
+						if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+							update(ssi.composeIName(), sseq, _EMPTY_)
+						}
+					}
+				} else {
+					update(iName, sseq, ident)
+				}
+			}
+		}
+		// Done once every source has been resolved, or we've reached the floor.
+		if len(sources) == 0 || seq <= ms.state.FirstSeq {
+			return
+		}
+		last = seq - 1
+	}
+}
+
 // LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
 func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
-	// TODO(dlc) - for now simple linear walk to get started.
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+	return ms.loadPrevMsgMultiLocked(sl, start, smp)
+}
 
+// loadPrevMsgMultiLocked will find the previous message matching any entry in the sublist.
+// Lock should be held.
+func (ms *memStore) loadPrevMsgMultiLocked(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
 	if start > ms.state.LastSeq {
 		start = ms.state.LastSeq
 	}

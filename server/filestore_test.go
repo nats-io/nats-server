@@ -11508,21 +11508,64 @@ func TestFileStoreSourcesRecovery(t *testing.T) {
 		require_NoError(t, err)
 		defer fs.Stop()
 
+		// Sequence and identity must both survive the restart, otherwise
+		// stream recreation can't be detected.
+		// Recovered if it still exists, but otherwise the store needs to scan.
 		state = fs.SourcesState()
-		if remove {
-			// Should not recover the sources state if it didn't exist at least partially.
-			require_True(t, state == nil)
-		} else {
-			// Sequence and identity must both survive the restart, otherwise
-			// stream recreation can't be detected.
-			require_NotNil(t, state)
-			require_Equal(t, state["ORIGIN > >"].Seq, N)
-			require_Equal(t, state["ORIGIN > >"].Ident, ident)
-		}
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, N)
+		require_Equal(t, state["ORIGIN > >"].Ident, ident)
 	}
 
 	t.Run("Normal", func(t *testing.T) { test(t, false) })
 	t.Run("Remove", func(t *testing.T) { test(t, true) })
+}
+
+func TestFileStoreSourcesRecoveryPre210Headers(t *testing.T) {
+	// Pre-2.10 source headers carry no index name, they match any source using
+	// that stream name. Both the backward scan and the combined forward scan
+	// (taken when TTL/scheduling state must be recovered as well) must honor them,
+	// otherwise the source consumer restarts from sequence 1 and redelivers.
+	test := func(t *testing.T, allowMsgTTL bool) {
+		dir := t.TempDir()
+		cfg := StreamConfig{
+			Name:        "SOURCE",
+			Subjects:    []string{"foo.*"},
+			Storage:     FileStorage,
+			Sources:     []*StreamSource{{Name: "ORIGIN"}},
+			AllowMsgTTL: allowMsgTTL,
+		}
+		fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 256}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+
+		// Pre-2.10 header format, just "<stream> <seq>", no index name and no identity.
+		const N = 10
+		for i := 1; i <= N; i++ {
+			hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN %d", i))
+			_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+			require_NoError(t, err)
+		}
+		require_NoError(t, fs.Stop())
+
+		// Drop the persisted index so recovery must scan for the source sequence.
+		require_NoError(t, os.Remove(filepath.Join(dir, sourcesStreamStateFile)))
+
+		fs, err = newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Must resume from the latest source sequence, not from zero.
+		state := fs.SourcesState()
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, N)
+		require_Equal(t, state["ORIGIN > >"].Ident, _EMPTY_)
+	}
+
+	// Without TTLs this takes the backward scan, with TTLs the combined forward scan.
+	t.Run("BackwardScan", func(t *testing.T) { test(t, false) })
+	t.Run("ForwardScan", func(t *testing.T) { test(t, true) })
 }
 
 func TestFileStoreSourcesStaleConfig(t *testing.T) {
@@ -11590,11 +11633,15 @@ func TestFileStoreSourcesStaleConfig(t *testing.T) {
 		fn := filepath.Join(dir, sourcesStreamStateFile)
 
 		// Sources are configured but nothing has been observed yet, so the map only
-		// holds seeded (zero) entries. Persisting state must not write an empty index.
-		require_True(t, fs.SourcesState() == nil)
+		// holds seeded (zero) entries.
+		state := fs.SourcesState()
+		require_Len(t, len(state), 1)
+		sss, ok := state["ORIGIN > >"]
+		require_True(t, ok)
+		require_Equal(t, sss.Seq, 0)
 		require_NoError(t, fs.writeFullState())
 		_, err = os.Stat(fn)
-		require_True(t, os.IsNotExist(err))
+		require_NoError(t, err)
 
 		// Observe a source, the index should now be written.
 		hdr := genHeader(nil, JSStreamSource, "ORIGIN 1 > > foo.bar")
@@ -11612,6 +11659,63 @@ func TestFileStoreSourcesStaleConfig(t *testing.T) {
 		_, err = os.Stat(fn)
 		require_True(t, os.IsNotExist(err))
 	})
+}
+
+func TestFileStoreSourcesAddedSourceKeepsExistingState(t *testing.T) {
+	origin1 := &StreamSource{Name: "ORIGIN1"}
+	origin2 := &StreamSource{Name: "ORIGIN2"}
+	iName1, iName2 := origin1.composeIName(), origin2.composeIName()
+
+	// Adding a source must only recover the sequence of the source that was just
+	// added. Sources that are already tracked must keep their state, even if a
+	// scan derives a lower sequence for them, since that would result in
+	// the source consumer re-delivering messages it had already stored.
+	test := func(t *testing.T, allowMsgTTL bool) {
+		dir := t.TempDir()
+		fcfg := FileStoreConfig{StoreDir: dir}
+		cfg := StreamConfig{
+			Name:     "SOURCE",
+			Subjects: []string{"foo"},
+			Storage:  FileStorage,
+			Sources:  []*StreamSource{origin1},
+		}
+
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for i := range 10 {
+			hdr := genHeader(nil, JSStreamSource, fmt.Sprintf("ORIGIN1 %d > > foo", i+1))
+			_, _, err = fs.StoreMsg("foo", hdr, nil, 0)
+			require_NoError(t, err)
+		}
+		state := fs.SourcesState()
+		require_Len(t, len(state), 1)
+		require_Equal(t, state[iName1].Seq, 10)
+
+		// Remove the newest message, a scan would now only be able to derive
+		// ORIGIN1 up to sequence 9.
+		removed, err := fs.RemoveMsg(10)
+		require_NoError(t, err)
+		require_True(t, removed)
+
+		// Add a second source. Optionally enabling TTLs as well, which forces
+		// recovery through the forward linear scan instead of the backward scan.
+		ucfg := cfg
+		ucfg.AllowMsgTTL = allowMsgTTL
+		ucfg.Sources = []*StreamSource{origin1, origin2}
+		require_NoError(t, fs.UpdateConfig(&ucfg))
+
+		state = fs.SourcesState()
+		require_Len(t, len(state), 2)
+		// ORIGIN1 must not have moved backward.
+		require_Equal(t, state[iName1].Seq, 10)
+		// ORIGIN2 is newly seeded and has nothing to recover.
+		require_Equal(t, state[iName2].Seq, 0)
+	}
+
+	t.Run("BackwardScan", func(t *testing.T) { test(t, false) })
+	t.Run("LinearScan", func(t *testing.T) { test(t, true) })
 }
 
 func TestFileStoreSourcesRecoveredFromOutdatedState(t *testing.T) {
@@ -16059,7 +16163,7 @@ func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
 	fs2.ApplySourcesState(map[string]StreamSourceState{"OTHER > >": {Seq: 9}})
 	require_Equal(t, fs2.SourcesState()["OTHER > >"].Seq, 9)
 	_, ok := fs2.SourcesState()[iname]
-	require_False(t, ok)
+	require_True(t, ok)
 	fs2.mu.RLock()
 	seeded := fs2.sources[iname]
 	fs2.mu.RUnlock()

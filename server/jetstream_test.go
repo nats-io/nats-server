@@ -19195,90 +19195,92 @@ func addConsumerWithError(t *testing.T, nc *nats.Conn, cfg *CreateConsumerReques
 }
 
 func TestJetStreamSourceRemovalAndReAdd(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
+	test := func(t *testing.T, storageType nats.StorageType) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
 
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
 
-	// The source stream.
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "SRC",
-		Subjects: []string{"foo.*"},
-	})
-	require_NoError(t, err)
-
-	// The stream that sources.
-	_, err = js.AddStream(&nats.StreamConfig{
-		Name: "TEST",
-		Sources: []*nats.StreamSource{{
-			Name: "SRC",
-		}},
-	})
-	require_NoError(t, err)
-
-	// Now add in 10 msgs.
-	for i := 0; i < 10; i++ {
-		_, err := js.Publish(fmt.Sprintf("foo.%d", i), []byte("test"))
+		// The source stream.
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "SRC",
+			Subjects: []string{"foo.*"},
+		})
 		require_NoError(t, err)
-	}
 
-	// Make sure we have 10 msgs in TEST.
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+		// The stream that sources.
+		cfg := &nats.StreamConfig{
+			Name: "TEST",
+			Sources: []*nats.StreamSource{{
+				Name: "SRC",
+			}},
+			Storage: storageType,
+		}
+		_, err = js.AddStream(cfg)
+		require_NoError(t, err)
+
+		// Now add in 10 msgs.
+		for i := range 10 {
+			_, err := js.Publish(fmt.Sprintf("foo.%d", i), []byte("test"))
+			require_NoError(t, err)
+		}
+
+		// Make sure we have 10 msgs in TEST.
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			if si.State.Msgs == 10 {
+				return nil
+			}
+			return fmt.Errorf("Do not have all msgs yet, %d of 10", si.State.Msgs)
+		})
+
+		// Now update the TEST stream to no longer source.
+		cfg.Sources = nil
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+
+		// Now add in 10 more msgs.
+		for i := range 10 {
+			_, err := js.Publish(fmt.Sprintf("foo.%d", i+10), []byte("test"))
+			require_NoError(t, err)
+		}
+		// Make sure we are still stuck at 10 for TEST.
 		si, err := js.StreamInfo("TEST")
 		require_NoError(t, err)
-		if si.State.Msgs == 10 {
-			return nil
-		}
-		return fmt.Errorf("Do not have all msgs yet, %d of 10", si.State.Msgs)
-	})
+		require_Equal(t, si.State.Msgs, 10)
 
-	// Now update the TEST stream to no longer source.
-	_, err = js.UpdateStream(&nats.StreamConfig{
-		Name: "TEST",
-	})
-	require_NoError(t, err)
-
-	// Now add in 10 more msgs.
-	for i := 0; i < 10; i++ {
-		_, err := js.Publish(fmt.Sprintf("foo.%d", i+10), []byte("test"))
+		// Now re-add the source to our stream.
+		cfg.Sources = []*nats.StreamSource{{Name: "SRC"}}
+		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
+
+		// Make sure we have 20 msgs now.
+		checkFor(t, time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			if si.State.Msgs == 20 {
+				return nil
+			}
+			return fmt.Errorf("Do not have all msgs yet, %d of 20", si.State.Msgs)
+		})
+
+		// Check that we get what we want in the stream.
+		sub, err := js.PullSubscribe("foo.*", "d")
+		require_NoError(t, err)
+
+		msgs, err := sub.Fetch(20)
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 20)
+
+		for i, m := range msgs {
+			require_Equal(t, m.Subject, fmt.Sprintf("foo.%d", i))
+		}
 	}
-	// Make sure we are still stuck at 10 for TEST.
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_Equal(t, si.State.Msgs, 10)
 
-	// Now re-add the source to our stream.
-	_, err = js.UpdateStream(&nats.StreamConfig{
-		Name: "TEST",
-		Sources: []*nats.StreamSource{{
-			Name: "SRC",
-		}},
-	})
-	require_NoError(t, err)
-
-	// Make sure we have 20 msgs now.
-	// Make sure we have 10 msgs in TEST.
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
-		require_NoError(t, err)
-		if si.State.Msgs == 20 {
-			return nil
-		}
-		return fmt.Errorf("Do not have all msgs yet, %d of 20", si.State.Msgs)
-	})
-
-	// Check that we get what we want in the stream.
-	sub, err := js.PullSubscribe("foo.*", "d")
-	require_NoError(t, err)
-
-	msgs, err := sub.Fetch(20)
-	require_NoError(t, err)
-	require_Equal(t, len(msgs), 20)
-
-	for i, m := range msgs {
-		require_Equal(t, m.Subject, fmt.Sprintf("foo.%d", i))
+	for _, storageType := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(storageType.String(), func(t *testing.T) { test(t, storageType) })
 	}
 }
 
@@ -25086,7 +25088,8 @@ func TestJetStreamSourcesState(t *testing.T) {
 		require_NoError(t, err)
 		store := mset.Store()
 		state := store.SourcesState()
-		require_True(t, state == nil)
+		require_NotNil(t, state)
+		require_Equal(t, state["ORIGIN > >"].Seq, 0)
 
 		_, err = js.Publish("foo", nil)
 		require_NoError(t, err)
