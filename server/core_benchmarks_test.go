@@ -18,14 +18,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nats.go"
 )
 
@@ -43,7 +42,6 @@ func BenchmarkCoreRequestReply(b *testing.B) {
 
 	for _, messageSize := range messageSizes {
 		b.Run(fmt.Sprintf("msgSz=%db", messageSize), func(b *testing.B) {
-
 			// Start server
 			serverOpts := DefaultOptions()
 			server := RunServer(serverOpts)
@@ -73,11 +71,11 @@ func BenchmarkCoreRequestReply(b *testing.B) {
 			}
 			defer ncPub.Close()
 
-			var errors = 0
+			errors := 0
 
 			// Create message
 			messageData := make([]byte, messageSize)
-			rand.New(rand.NewSource(12345)).Read(messageData)
+			rand.NewChaCha8([32]byte{42}).Read(messageData)
 
 			b.SetBytes(messageSize)
 
@@ -132,16 +130,13 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 	}
 
 	for _, keyType := range keyTypeCases {
-
 		b.Run(
 			fmt.Sprintf("keyType=%s", keyType),
 			func(b *testing.B) {
-
 				for _, messageSize := range messageSizeCases {
 					b.Run(
 						fmt.Sprintf("msgSz=%db", messageSize),
 						func(b *testing.B) {
-
 							for _, numSubs := range numSubsCases {
 								b.Run(
 									fmt.Sprintf("subs=%d", numSubs),
@@ -206,11 +201,11 @@ func BenchmarkCoreTLSFanOut(b *testing.B) {
 										}
 										defer ncPub.Close()
 
-										var errorCount = 0
+										errorCount := 0
 
 										// random bytes as payload
 										messageData := make([]byte, messageSize)
-										rand.New(rand.NewSource(12345)).Read(messageData)
+										rand.NewChaCha8([32]byte{42}).Read(messageData)
 
 										quitCh := make(chan bool, 1)
 
@@ -346,11 +341,11 @@ func BenchmarkCoreFanOut(b *testing.B) {
 							}
 							defer ncPub.Close()
 
-							var errorCount = 0
+							errorCount := 0
 
 							// random bytes as payload
 							messageData := make([]byte, messageSize)
-							rand.New(rand.NewSource(123456)).Read(messageData)
+							rand.NewChaCha8([32]byte{42}).Read(messageData)
 
 							quitCh := make(chan bool, 1)
 
@@ -395,7 +390,6 @@ func BenchmarkCoreFanOut(b *testing.B) {
 }
 
 func BenchmarkCoreFanIn(b *testing.B) {
-
 	type BenchPublisher struct {
 		// nats connection for this publisher
 		conn *nats.Conn
@@ -435,7 +429,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 	}
 
 	workload := func(b *testing.B, clientUrl string, numPubs int, messageSize int64) {
-
 		// connection options
 		opts := []nats.Option{
 			nats.MaxReconnects(-1),
@@ -469,7 +462,7 @@ func BenchmarkCoreFanIn(b *testing.B) {
 				quitCh:         make(chan bool, 1),
 				messageData:    make([]byte, messageSize),
 			}
-			rand.New(rand.NewSource(int64(i))).Read(publisher.messageData)
+			rand.NewChaCha8([32]byte{byte(i)}).Read(publisher.messageData)
 			publishers[i] = publisher
 		}
 
@@ -511,7 +504,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 		// start publisher sub-routines
 		for i := range publishers {
 			go func(pubId int) {
-
 				// publisher sub-routine initialized
 				publishersReadyWg.Done()
 
@@ -576,7 +568,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 
 		// report error rate
 		b.ReportMetric(errorRate, "%error")
-
 	}
 
 	// benchmark case matrix
@@ -598,9 +589,11 @@ func BenchmarkCoreFanIn(b *testing.B) {
 
 							// run fan-in workload
 							workload(b, clientUrl, numPubs, messageSize)
-						})
+						},
+					)
 				}
-			})
+			},
+		)
 	}
 }
 
@@ -609,6 +602,6 @@ func BenchmarkCoreFanIn(b *testing.B) {
 // we do not want to measure), while not slowing down the benchmark with a full payload generated for each operation.
 func fastRandomMutation(data []byte, mutations int) {
 	for i := 0; i < mutations; i++ {
-		data[fastrand.Uint32n(uint32(len(data)))] = byte(fastrand.Uint32() % math.MaxUint8)
+		data[rand.Uint32N(uint32(len(data)))] = byte(rand.Uint32() % math.MaxUint8)
 	}
 }
