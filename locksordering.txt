@@ -65,3 +65,9 @@ while holding the Server lock, but the Server lock must not be acquired while
 holding eventIdsMu.
 
     Server -> eventIdsMu
+
+The "closedMu" lock protects the server's closed connection ring. It may be
+acquired while holding the Server lock, but the Server lock must not be acquired
+while holding closedMu.
+
+    Server -> closedMu
