@@ -309,7 +309,8 @@ type Server struct {
 	}
 
 	// For eventIDs
-	eventIds *nuid.NUID
+	eventIdsMu sync.Mutex
+	eventIds   *nuid.NUID
 
 	// Websocket structure
 	websocket srvWebsocket
