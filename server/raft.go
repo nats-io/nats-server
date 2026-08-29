@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"iter"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/antithesishq/antithesis-sdk-go/assert"
-	"github.com/nats-io/nats-server/v2/internal/fastrand"
 
 	"github.com/minio/highwayhash"
 )
@@ -1336,7 +1335,7 @@ func (n *raft) encodeSnapshot(snap *snapshot) []byte {
 	if snap == nil {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	buf := make([]byte, minSnapshotLen+len(snap.peerstate)+len(snap.data))
 	le.PutUint64(buf[0:], snap.lastTerm)
 	le.PutUint64(buf[8:], snap.lastIndex)
@@ -1811,7 +1810,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 		return nil, errSnapshotCorrupt
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	lps := le.Uint32(buf[16:])
 	snap := &snapshot{
 		lastTerm:  le.Uint64(buf[0:]),
@@ -2118,7 +2117,7 @@ func (n *raft) CampaignImmediately() error {
 }
 
 func randCampaignTimeout() time.Duration {
-	delta := rand.Int63n(int64(maxCampaignTimeout - minCampaignTimeout))
+	delta := rand.Int64N(int64(maxCampaignTimeout - minCampaignTimeout))
 	return (minCampaignTimeout + time.Duration(delta))
 }
 
@@ -2380,7 +2379,7 @@ const (
 // Lock should be held (due to use of random generator)
 func (n *raft) newCatchupInbox() string {
 	var b [replySuffixLen]byte
-	rn := fastrand.Uint64()
+	rn := rand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2391,7 +2390,7 @@ func (n *raft) newCatchupInbox() string {
 // Lock should be held (due to use of random generator)
 func (n *raft) newCatchupProgressInbox() string {
 	var b [replySuffixLen]byte
-	rn := fastrand.Uint64()
+	rn := rand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2401,7 +2400,7 @@ func (n *raft) newCatchupProgressInbox() string {
 
 func (n *raft) newInbox() string {
 	var b [replySuffixLen]byte
-	rn := fastrand.Uint64()
+	rn := rand.Uint64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2448,7 +2447,7 @@ func (n *raft) createInternalSubs() error {
 }
 
 func randElectionTimeout() time.Duration {
-	delta := rand.Int63n(int64(maxElectionTimeout - minElectionTimeout))
+	delta := rand.Int64N(int64(maxElectionTimeout - minElectionTimeout))
 	return (minElectionTimeout + time.Duration(delta))
 }
 
@@ -2892,7 +2891,7 @@ func (ae *appendEntry) encode(b []byte) ([]byte, error) {
 		buf = make([]byte, idLen, tlen)
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	copy(buf[:idLen], ae.leader)
 	buf = le.AppendUint64(buf, ae.term)
 	buf = le.AppendUint64(buf, ae.commit)
@@ -2919,7 +2918,7 @@ func decodeAppendEntry(msg []byte, sub *subscription, reply string) (*appendEntr
 		return nil, errBadAppendEntry
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 
 	ae := newAppendEntry(string(msg[:idLen]), le.Uint64(msg[8:]), le.Uint64(msg[16:]), le.Uint64(msg[24:]), le.Uint64(msg[32:]), nil)
 	ae.reply, ae.sub = reply, sub
@@ -2956,8 +2955,10 @@ var arPool = sync.Pool{
 }
 
 // We want to make sure this does not change from system changing length of syshash.
-const idLen = 8
-const appendEntryResponseLen = 24 + 1
+const (
+	idLen                  = 8
+	appendEntryResponseLen = 24 + 1
+)
 
 // appendEntryResponse is our response to a received appendEntry.
 type appendEntryResponse struct {
@@ -2984,7 +2985,7 @@ func (ar *appendEntryResponse) encode(b []byte) []byte {
 	} else {
 		buf = make([]byte, appendEntryResponseLen)
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], ar.term)
 	le.PutUint64(buf[8:], ar.index)
 	copy(buf[16:16+idLen], ar.peer)
@@ -3003,7 +3004,7 @@ func decodeAppendEntryResponse(msg []byte) *appendEntryResponse {
 	if len(msg) != appendEntryResponseLen {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	ar := arPool.Get().(*appendEntryResponse)
 	ar.term = le.Uint64(msg[0:])
 	ar.index = le.Uint64(msg[8:])
@@ -4238,7 +4239,8 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 						"ae.leader": ae.leader,
 						"ae.term":   ae.term,
 						"ae.lterm":  ae.lterm,
-					})
+					},
+				)
 			}
 			n.debug("Received append entry from another leader, stepping down to %q", ae.leader)
 			n.stepdownLocked(ae.leader)
@@ -4607,7 +4609,6 @@ CONTINUE:
 				ps, ok := n.peers[oldPeer]
 				if !ok {
 					ps = &lps{time.Time{}, 0}
-
 				}
 				n.membChange = &membChange{index: n.pindex, peer: oldPeer, prev: ps}
 				delete(n.peers, oldPeer)
@@ -4940,7 +4941,7 @@ func peerStateBufSize(ps *peerState) int {
 }
 
 func encodePeerState(ps *peerState) []byte {
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	buf := make([]byte, peerStateBufSize(ps))
 	le.PutUint32(buf[0:], uint32(ps.clusterSize))
 	le.PutUint32(buf[4:], uint32(len(ps.knownPeers)))
@@ -4957,7 +4958,7 @@ func decodePeerState(buf []byte) (*peerState, error) {
 	if len(buf) < 8 {
 		return nil, errCorruptPeers
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	ps := &peerState{clusterSize: int(le.Uint32(buf[0:]))}
 	expectedPeers := int(le.Uint32(buf[4:]))
 	buf = buf[8:]
@@ -5052,7 +5053,7 @@ const voteRequestLen = 24 + idLen
 
 func (vr *voteRequest) encode() []byte {
 	var buf [voteRequestLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], vr.term)
 	le.PutUint64(buf[8:], vr.lastTerm)
 	le.PutUint64(buf[16:], vr.lastIndex)
@@ -5066,7 +5067,7 @@ func decodeVoteRequest(msg []byte, reply string) *voteRequest {
 		return nil
 	}
 
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	return &voteRequest{
 		term:      le.Uint64(msg[0:]),
 		lastTerm:  le.Uint64(msg[8:]),
@@ -5112,9 +5113,11 @@ func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) 
 	return decodePeerState(buf)
 }
 
-const termVoteFile = "tav.idx"
-const termLen = 8 // uint64
-const termVoteLen = idLen + termLen
+const (
+	termVoteFile = "tav.idx"
+	termLen      = 8 // uint64
+	termVoteLen  = idLen + termLen
+)
 
 // Writes out our term & vote outside of a specific raft context.
 func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) error {
@@ -5139,7 +5142,7 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 		// Not enough bytes for the uint64 below, so avoid a panic.
 		return 0, noVote, nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	term = le.Uint64(buf[0:])
 	if len(buf) < termVoteLen {
 		return term, noVote, nil
@@ -5223,7 +5226,7 @@ func (n *raft) writeTermVote() error {
 	}
 
 	var buf [termVoteLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], n.term)
 	copy(buf[8:], n.vote)
 	b := buf[:8+len(n.vote)]
@@ -5256,7 +5259,7 @@ const voteResponseLen = 8 + 8 + 1
 
 func (vr *voteResponse) encode() []byte {
 	var buf [voteResponseLen]byte
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	le.PutUint64(buf[0:], vr.term)
 	copy(buf[8:], vr.peer)
 	if vr.granted {
@@ -5272,7 +5275,7 @@ func decodeVoteResponse(msg []byte) *voteResponse {
 	if len(msg) != voteResponseLen {
 		return nil
 	}
-	var le = binary.LittleEndian
+	le := binary.LittleEndian
 	vr := &voteResponse{term: le.Uint64(msg[0:]), peer: string(msg[8:16])}
 	vr.granted = msg[16]&1 != 0
 	vr.empty = msg[16]&2 != 0

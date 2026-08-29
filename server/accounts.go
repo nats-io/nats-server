@@ -22,7 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/textproto"
 	"reflect"
@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nkeys"
 	"github.com/nats-io/nuid"
 )
@@ -802,7 +801,7 @@ func (a *Account) AddWeightedMappings(src string, dests ...*MapDest) error {
 	m := &mapping{src: src, wc: subjectHasWildcard(src), dests: make([]*destination, 0, len(dests)+1)}
 	seen := make(map[string]struct{})
 
-	var tw = make(map[string]uint8)
+	tw := make(map[string]uint8)
 	for _, d := range dests {
 		if _, ok := seen[d.Subject]; ok {
 			return fmt.Errorf("duplicate entry for %q", d.Subject)
@@ -1006,7 +1005,7 @@ func (a *Account) selectMappedSubject(dest string) (string, bool) {
 	if len(dests) == 1 && dests[0].weight == 100 {
 		d = dests[0]
 	} else {
-		w := uint8(fastrand.Uint32n(100))
+		w := uint8(rand.Uint32N(100))
 		for _, rm := range dests {
 			if w < rm.weight {
 				d = rm
@@ -1217,7 +1216,8 @@ func (a *Account) AddServiceExportWithResponse(subject string, respType ServiceR
 
 // AddServiceExportWithresponse will configure the account with the defined export and response type.
 func (a *Account) addServiceExportWithResponseAndAccountPos(
-	subject string, respType ServiceRespType, accounts []*Account, accountPos uint) error {
+	subject string, respType ServiceRespType, accounts []*Account, accountPos uint,
+) error {
 	if a == nil {
 		return ErrMissingAccount
 	}
@@ -2388,7 +2388,7 @@ func shouldSample(l *serviceLatency, c *client) (bool, http.Header) {
 	if l.sampling >= 100 {
 		return true, nil
 	}
-	if l.sampling > 0 && rand.Int31n(100) <= int32(l.sampling) {
+	if l.sampling > 0 && rand.Int32N(100) <= int32(l.sampling) {
 		return true, nil
 	}
 	h := c.parseState.getHeader()
@@ -2480,8 +2480,8 @@ func (a *Account) processServiceImportResponse(sub *subscription, c *client, _ *
 // for all service replies, unless we are bound to a leafnode.
 // Lock should be held.
 func (a *Account) createRespWildcard() {
-	var b = [baseServerLen]byte{'_', 'R', '_', '.'}
-	rn := fastrand.Uint64()
+	b := [baseServerLen]byte{'_', 'R', '_', '.'}
+	rn := rand.Uint64()
 	for i, l := replyPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2500,7 +2500,7 @@ func isTrackedReply(reply []byte) bool {
 func (a *Account) newServiceReply(tracking bool) []byte {
 	a.mu.Lock()
 	s := a.srv
-	rn := fastrand.Uint64()
+	rn := rand.Uint64()
 
 	// Check if we need to create the reply here.
 	var createdSiReply bool
@@ -3609,7 +3609,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		case jwt.Stream:
 			s.Debugf("Adding stream export %q for %s", e.Subject, tl)
 			if err := a.addStreamExportWithAccountPos(
-				string(e.Subject), authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
+				string(e.Subject), authAccounts(e.TokenReq), e.AccountTokenPosition,
+			); err != nil {
 				s.Debugf("Error adding stream export to account [%s]: %v", tl, err.Error())
 			}
 		case jwt.Service:
@@ -3622,7 +3623,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 				rt = Chunked
 			}
 			if err := a.addServiceExportWithResponseAndAccountPos(
-				string(e.Subject), rt, authAccounts(e.TokenReq), e.AccountTokenPosition); err != nil {
+				string(e.Subject), rt, authAccounts(e.TokenReq), e.AccountTokenPosition,
+			); err != nil {
 				s.Debugf("Error adding service export to account [%s]: %v", tl, err)
 				continue
 			}
@@ -4133,7 +4135,7 @@ func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Ac
 	}
 
 	// Now check for permissions.
-	var p = buildPermissionsFromJwt(&uc.Permissions)
+	p := buildPermissionsFromJwt(&uc.Permissions)
 	if p == nil {
 		nu.defaultPerms = true
 		acc.mu.RLock()
