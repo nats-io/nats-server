@@ -786,7 +786,9 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string, asyncWindow int) (int, int) {
 		const publishCompleteMaxWait = 30 * time.Second
 		message := make([]byte, messageSize)
-		rand.NewChaCha8([32]byte{seed}).Read(message)
+		src := rand.NewChaCha8([32]byte{seed})
+		src.Read(message)
+		rng := rand.New(src)
 
 		published, errors := 0, 0
 
@@ -805,7 +807,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 
 			for i := 0; i < publishBatchSize; i++ {
 				fastRandomMutation(message, 10)
-				subject := subjects[rand.IntN(len(subjects))]
+				subject := subjects[rng.IntN(len(subjects))]
 				pubAckFuture, err := js.PublishAsync(subject, message)
 				if err != nil {
 					errors++
@@ -1579,12 +1581,13 @@ func BenchmarkJetStreamKV(b *testing.B) {
 	)
 
 	runKVGet := func(b *testing.B, kv nats.KeyValue, keys []string) int {
+		rng := rand.New(rand.NewChaCha8([32]byte{seed}))
 		errors := 0
 
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			key := keys[rand.IntN(len(keys))]
+			key := keys[rng.IntN(len(keys))]
 			_, err := kv.Get(key)
 			if err != nil {
 				errors++
