@@ -1944,7 +1944,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 											rng := rand.NewChaCha8([32]byte{seed})
 											for n := 0; n < bc.numKeys; n++ {
 												key := fmt.Sprintf("%s_%d", keyPrefix, n)
-												dataSz := rand.IntN(bc.maxObjSz-bc.minObjSz+1) + bc.minObjSz
+												dataSz := rand.New(rng).IntN(bc.maxObjSz-bc.minObjSz+1) + bc.minObjSz
 												value := make([]byte, dataSz)
 												rng.Read(value)
 												_, err := objStore.PutBytes(key, value)
