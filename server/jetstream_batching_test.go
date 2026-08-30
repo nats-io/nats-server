@@ -2126,6 +2126,95 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchPublishSyncAlwaysRollupRecovery(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			sync_interval: always
+		}
+	`, storeDir)))
+	s, _ := RunServerWithConfig(conf)
+
+	nc, js := jsClientConnect(t, s)
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"state.*"},
+		Storage:            FileStorage,
+		Retention:          LimitsPolicy,
+		Replicas:           1,
+		AllowRollup:        true,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+	_, err = js.Publish("state.a", []byte("old-a"))
+	require_NoError(t, err)
+	_, err = js.Publish("state.b", []byte("old-b"))
+	require_NoError(t, err)
+
+	m := nats.NewMsg("state.a")
+	m.Data = []byte("new-a")
+	m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+	m.Header.Set(JSBatchId, "sync-batch")
+	m.Header.Set(JSBatchSeq, "1")
+	require_NoError(t, nc.PublishMsg(m))
+
+	m = nats.NewMsg("state.b")
+	m.Data = []byte("new-b")
+	m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+	m.Header.Set(JSBatchId, "sync-batch")
+	m.Header.Set(JSBatchSeq, "2")
+	m.Header.Set(JSBatchCommit, "1")
+	rmsg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.Sequence, 4)
+	require_Equal(t, pubAck.BatchId, "sync-batch")
+	require_Equal(t, pubAck.BatchSize, 2)
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 2)
+
+	m = nats.NewMsg("state.a")
+	m.Data = []byte("eob-a")
+	m.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+	m.Header.Set(JSBatchId, "sync-eob")
+	m.Header.Set(JSBatchSeq, "1")
+	require_NoError(t, nc.PublishMsg(m))
+	m = nats.NewMsg("state.a")
+	m.Header.Set(JSBatchId, "sync-eob")
+	m.Header.Set(JSBatchSeq, "2")
+	m.Header.Set(JSBatchCommit, "eob")
+	rmsg, err = nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	pubAck = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.Sequence, 5)
+	require_Equal(t, pubAck.BatchId, "sync-eob")
+	require_Equal(t, pubAck.BatchSize, 1)
+
+	nc.Close()
+	s.Shutdown()
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 2)
+	for subject, expected := range map[string]string{"state.a": "eob-a", "state.b": "new-b"} {
+		rsm, err := js.GetLastMsg("TEST", subject)
+		require_NoError(t, err)
+		require_Equal(t, string(rsm.Data), expected)
+	}
+}
+
 func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

@@ -7829,6 +7829,22 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		// via the defer above, but release mset.mu and batches.mu.
 		mset.mu.Unlock()
 		batches.mu.Unlock()
+
+		fs, hasFileStore := mset.store.(*fileStore)
+		coalesceSync := false
+		if hasFileStore {
+			coalesceSync, err = fs.beginAtomicSyncBatch()
+			if err != nil {
+				return err
+			}
+		}
+		syncBatchEnded := !coalesceSync
+		defer func() {
+			if !syncBatchEnded {
+				_ = fs.endAtomicSyncBatch()
+			}
+		}()
+
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			// Use the checked (and possibly rewritten) message from above, not the raw staged
 			// message, so transformations like counter increments and scheduled message
@@ -7837,7 +7853,9 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			bsubj, bhdr, bmsg = cm.subj, cm.hdr, cm.msg
 			var _reply string
 			if seq == batchSeq {
-				_reply = reply
+				if !coalesceSync {
+					_reply = reply
+				}
 				// If committed by EOB, the last message must get the normal commit header.
 				if commitEob {
 					bhdr = genHeader(bhdr, JSBatchCommit, "1")
@@ -7847,6 +7865,22 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			// Don't clean up the batch so that a restart can try to recover it.
 			if err = mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false); err != nil {
 				return err
+			}
+		}
+		if coalesceSync {
+			if err = fs.endAtomicSyncBatch(); err != nil {
+				return err
+			}
+			syncBatchEnded = true
+			if canRespond {
+				mset.mu.RLock()
+				lseq, pubAck, outq := mset.lseq, mset.pubAck, mset.outq
+				mset.mu.RUnlock()
+				var buf [256]byte
+				response := append(buf[:0], pubAck...)
+				response = append(response, strconv.FormatUint(lseq, 10)...)
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq)...)
+				outq.sendMsg(reply, response)
 			}
 		}
 		// Re-acquire for the cleanup below. If a concurrent staging error

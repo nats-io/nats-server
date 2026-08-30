@@ -224,6 +224,10 @@ type fileStore struct {
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
 	sources     map[string]*StreamSourceState
+	// atomicBatchSync tracks the short SyncOnFlush durability section used by
+	// R1 atomic publish commits. The final PubAck is sent only after the store
+	// returns to SyncAlways and all dirty blocks have been synced.
+	atomicBatchSync bool
 }
 
 // Represents a message store block and its data.
@@ -687,11 +691,15 @@ func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
 	if !fs.fcfg.SyncAlways {
 		return
 	}
-	// If the stream is backed by a Raft WAL we relax the SyncAlways
-	// setting in favor of SyncOnFlush. Enable the new sync mode
-	// before disabling the old one so writes are never processed
-	// with both modes disabled.
-	if replicas > 1 {
+	// If the stream is backed by a Raft WAL, relax SyncAlways in favor of
+	// syncing when the WAL flushes the stream store.
+	fs.setSyncOnFlushLocked(replicas > 1)
+}
+
+func (fs *fileStore) setSyncOnFlushLocked(enabled bool) {
+	// Enable the new mode before disabling the old one so writes are never
+	// processed with both modes disabled.
+	if enabled {
 		fs.syncOnFlush.Store(true)
 		fs.syncAlways.Store(false)
 	} else {
@@ -5737,6 +5745,40 @@ func (fs *fileStore) FlushAllPending() error {
 		return fs.werr
 	}
 	return fs.checkAndFlushLastBlock()
+}
+
+// beginAtomicSyncBatch temporarily uses the existing SyncOnFlush mode to
+// coalesce an R1 atomic publish commit into a single durability boundary.
+func (fs *fileStore) beginAtomicSyncBatch() (bool, error) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if !fs.syncAlways.Load() {
+		return false, nil
+	}
+	if fs.atomicBatchSync {
+		return false, errors.New("atomic sync batch already active")
+	}
+	fs.atomicBatchSync = true
+	fs.setSyncOnFlushLocked(true)
+	return true, nil
+}
+
+// endAtomicSyncBatch restores SyncAlways before syncing dirty blocks, so
+// concurrent maintenance writes cannot slip past the final durability flush.
+func (fs *fileStore) endAtomicSyncBatch() error {
+	fs.mu.RLock()
+	active := fs.atomicBatchSync
+	fs.mu.RUnlock()
+	if !active {
+		return nil
+	}
+
+	err := fs.flushForScaleDown()
+	fs.mu.Lock()
+	fs.atomicBatchSync = false
+	fs.mu.Unlock()
+	return err
 }
 
 // Lock should be held.
