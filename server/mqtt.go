@@ -4568,17 +4568,10 @@ func (pipe *mqttAckPipeline) shutdown() {
 // failure or timeout, stops the pipeline and closes the connection. Runs
 // in its own goroutine, one per connection with inbound QoS1 traffic.
 func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
+	// Reset per entry; as of Go 1.23 Stop/Reset guarantee no stale receive,
+	// no draining needed.
 	t := time.NewTimer(time.Hour)
-	stopTimer := func() {
-		if !t.Stop() {
-			select {
-			case <-t.C:
-			default:
-			}
-		}
-	}
-	stopTimer()
-	defer stopTimer()
+	defer t.Stop()
 
 	fail := func(ack *mqttPipelinedAck, err error) {
 		jsa.replies.Delete(ack.reply)
@@ -4596,7 +4589,6 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
 			t.Reset(jsa.timeout)
 			select {
 			case err := <-ack.done:
-				stopTimer()
 				if err != nil {
 					fail(ack, err)
 					return
@@ -4611,13 +4603,11 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
 				return
 
 			case <-pipe.quitCh:
-				stopTimer()
 				// Already dequeued, invisible to the exit-path drain.
 				jsa.replies.Delete(ack.reply)
 				return
 
 			case <-s.quitCh:
-				stopTimer()
 				// Already dequeued, invisible to the exit-path drain.
 				jsa.replies.Delete(ack.reply)
 				return
@@ -4790,8 +4780,7 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish) error {
 
 	// If QoS 0 messages don't need to be stored, other (1 and 2) do. Store them
 	// JetStream under "$MQTT.msgs.<delivery-subject>"
-	qos := mqttGetQoS(pp.flags)
-	if qos == 0 {
+	if qos := mqttGetQoS(pp.flags); qos == 0 {
 		return nil
 	}
 
