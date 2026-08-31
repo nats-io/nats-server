@@ -78,6 +78,9 @@ func TestDefaultOptions(t *testing.T) {
 		JetStreamRequestQueueLimit: JSDefaultRequestQueueLimit,
 		JetStreamInfoQueueLimit:    JSDefaultRequestQueueLimit,
 		JetStreamConcurrentIOs:     defaultConcurrentIOs,
+		JetStreamLimits: JSLimitOpts{
+			DefaultMaxConsumers: JSDefaultMaxConsumersPerStream,
+		},
 	}
 
 	opts := &Options{}
