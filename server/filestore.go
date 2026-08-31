@@ -225,9 +225,11 @@ type fileStore struct {
 	dios        *diskIOSemaphore
 	sources     map[string]*StreamSourceState
 	// atomicBatchSync tracks the short SyncOnFlush durability section used by
-	// R1 atomic publish commits. The final PubAck is sent only after the store
-	// returns to SyncAlways and all dirty blocks have been synced.
-	atomicBatchSync bool
+	// R1 atomic publish commits. atomicBatchMu protects the exact set of blocks
+	// dirtied in that section so the final flush does not scan the whole stream.
+	atomicBatchMu    sync.Mutex
+	atomicBatchSync  atomic.Bool
+	atomicBatchDirty map[*msgBlock]struct{}
 }
 
 // Represents a message store block and its data.
@@ -5756,29 +5758,140 @@ func (fs *fileStore) beginAtomicSyncBatch() (bool, error) {
 	if !fs.syncAlways.Load() {
 		return false, nil
 	}
-	if fs.atomicBatchSync {
+	fs.atomicBatchMu.Lock()
+	defer fs.atomicBatchMu.Unlock()
+	if fs.atomicBatchSync.Load() {
 		return false, errors.New("atomic sync batch already active")
 	}
-	fs.atomicBatchSync = true
+	fs.atomicBatchDirty = make(map[*msgBlock]struct{})
+	fs.atomicBatchSync.Store(true)
 	fs.setSyncOnFlushLocked(true)
 	return true, nil
 }
 
-// endAtomicSyncBatch restores SyncAlways before syncing dirty blocks, so
-// concurrent maintenance writes cannot slip past the final durability flush.
+// endAtomicSyncBatch restores the durability mode required by the current
+// replica count, then syncs only blocks dirtied by this batch.
 func (fs *fileStore) endAtomicSyncBatch() error {
-	fs.mu.RLock()
-	active := fs.atomicBatchSync
-	fs.mu.RUnlock()
-	if !active {
+	fs.mu.Lock()
+	fs.atomicBatchMu.Lock()
+	if !fs.atomicBatchSync.Load() {
+		fs.atomicBatchMu.Unlock()
+		fs.mu.Unlock()
+		return nil
+	}
+	fs.updateDurabilitySettingsLocked(fs.cfg.Replicas)
+	dirty := make([]*msgBlock, 0, len(fs.atomicBatchDirty))
+	for mb := range fs.atomicBatchDirty {
+		dirty = append(dirty, mb)
+	}
+	fs.atomicBatchDirty = nil
+	fs.atomicBatchSync.Store(false)
+	fs.atomicBatchMu.Unlock()
+	fs.mu.Unlock()
+
+	return fs.syncAtomicBatchBlocks(dirty)
+}
+
+// markNeedsSyncLocked records a block for the batch durability flush when one
+// is active. The caller must hold the block lock.
+func (mb *msgBlock) markNeedsSyncLocked() {
+	mb.needSync = true
+	fs := mb.fs
+	if !fs.atomicBatchSync.Load() {
+		return
+	}
+	fs.atomicBatchMu.Lock()
+	if fs.atomicBatchSync.Load() {
+		fs.atomicBatchDirty[mb] = struct{}{}
+	}
+	fs.atomicBatchMu.Unlock()
+}
+
+// syncPendingWriteLocked applies the current durability mode to a completed
+// block write. The caller must hold the block lock.
+func (mb *msgBlock) syncPendingWriteLocked() error {
+	fs := mb.fs
+	if fs.syncAlways.Load() {
+		err := mb.mfd.Sync()
+		if err == nil {
+			mb.needSync = false
+		}
+		return err
+	}
+	if !fs.atomicBatchSync.Load() {
+		// Recheck SyncAlways to close the race with the batch end transition.
+		if fs.syncAlways.Load() {
+			err := mb.mfd.Sync()
+			if err == nil {
+				mb.needSync = false
+			}
+			return err
+		}
+		mb.needSync = true
 		return nil
 	}
 
-	err := fs.flushForScaleDown()
-	fs.mu.Lock()
-	fs.atomicBatchSync = false
-	fs.mu.Unlock()
-	return err
+	fs.atomicBatchMu.Lock()
+	defer fs.atomicBatchMu.Unlock()
+	if fs.syncAlways.Load() {
+		err := mb.mfd.Sync()
+		if err == nil {
+			mb.needSync = false
+		}
+		return err
+	}
+	mb.needSync = true
+	if fs.atomicBatchSync.Load() {
+		fs.atomicBatchDirty[mb] = struct{}{}
+	}
+	return nil
+}
+
+func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) error {
+	fs.syncMu.Lock()
+	defer fs.syncMu.Unlock()
+
+	storeWriteErr := func(err error) error {
+		fs.mu.Lock()
+		fs.setWriteErr(err)
+		fs.mu.Unlock()
+		return err
+	}
+
+	for _, mb := range blks {
+		mb.mu.Lock()
+		if mb.closed {
+			mb.mu.Unlock()
+			continue
+		}
+		if err := mb.werr; err != nil {
+			mb.mu.Unlock()
+			return storeWriteErr(err)
+		}
+		if _, err := mb.flushPendingMsgsLocked(); err != nil {
+			mb.mu.Unlock()
+			return storeWriteErr(err)
+		}
+		if mb.needKeySync && mb.kfn != _EMPTY_ {
+			if err := fs.syncFileAndDir(mb.kfn); err != nil {
+				mb.mu.Unlock()
+				return storeWriteErr(err)
+			}
+			mb.needKeySync = false
+		}
+		if mb.needSync {
+			if err := mb.syncFile(); err != nil {
+				mb.mu.Unlock()
+				return storeWriteErr(err)
+			}
+			mb.needSync = false
+		}
+		mb.mu.Unlock()
+	}
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.werr
 }
 
 // Lock should be held.
@@ -6610,8 +6723,12 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		return err
 	}
 
-	// Make sure to sync if we have not done so yet
-	mb.needSync = !sync
+	// Make sure to sync if we have not done so yet.
+	if sync {
+		mb.needSync = false
+	} else {
+		mb.markNeedsSyncLocked()
+	}
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
@@ -8779,20 +8896,15 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// Update write pointer.
 	mb.cache.wp = int(wp)
 
-	// Check if we are in sync always mode.
-	if mb.fs.syncAlways.Load() {
-		if err = mb.mfd.Sync(); err != nil {
-			mb.werr = err
-			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
-				"name":     mb.fs.cfg.Name,
-				"mb.index": mb.index,
-				"err":      err,
-				"stack":    string(debug.Stack()),
-			})
-			return nil, err
-		}
-	} else {
-		mb.needSync = true
+	if err = mb.syncPendingWriteLocked(); err != nil {
+		mb.werr = err
+		assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
+			"name":     mb.fs.cfg.Name,
+			"mb.index": mb.index,
+			"err":      err,
+			"stack":    string(debug.Stack()),
+		})
+		return nil, err
 	}
 
 	// Check for additional writes while we were writing to the disk.
@@ -10950,7 +11062,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			deleted++
 		} else {
 			// Make sure to sync changes.
-			smb.needSync = true
+			smb.markNeedsSyncLocked()
 		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
@@ -10958,7 +11070,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 	} else {
 		// Make sure to sync changes.
-		smb.needSync = true
+		smb.markNeedsSyncLocked()
 		// Just for start condition for selectNextFirst.
 		if smb.first.seq < seq {
 			atomic.StoreUint64(&smb.first.seq, seq-1)
