@@ -9301,7 +9301,26 @@ func TestJetStreamClusterProcessClusterUpdateStreamNilStreamAssignment(t *testin
 	}
 	mset.mu.Unlock()
 
-	sjs.processClusterUpdateStream(acc, osa, sa)
+	// Scale-up must not install its Raft node while an R1 atomic commit owns
+	// the stream isolation boundary.
+	mset.isolateMu.Lock()
+	updateDone := make(chan struct{})
+	go func() {
+		sjs.processClusterUpdateStream(acc, osa, sa)
+		close(updateDone)
+	}()
+	select {
+	case <-updateDone:
+		mset.isolateMu.Unlock()
+		t.Fatal("cluster update crossed the stream isolation boundary")
+	case <-time.After(100 * time.Millisecond):
+	}
+	mset.isolateMu.Unlock()
+	select {
+	case <-updateDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cluster update did not finish after releasing isolation")
+	}
 
 	mset.mu.RLock()
 	got := mset.sa

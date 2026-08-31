@@ -7530,10 +7530,18 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 
 	// If not clustered, the commit message runs the consistency checks and
 	// commits straight to the store below, so hold the isolation lock across
-	// that whole section.
+	// that whole section. A scale-up takes the same lock while installing its
+	// Raft node, so recheck the topology after acquiring it instead of using a
+	// classification that may have become stale while waiting.
 	if !isClustered && commit {
 		mset.isolateMu.Lock()
 		defer mset.isolateMu.Unlock()
+		mset.mu.RLock()
+		isLeader, isClustered, node, r = mset.isLeader(), mset.isClustered(), mset.node, mset.cfg.Replicas
+		mset.mu.RUnlock()
+		if !isLeader {
+			return NewJSClusterNotLeaderError()
+		}
 	}
 	mset.mu.Lock()
 	if mset.batches == nil {
@@ -7878,7 +7886,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			// batch was being made durable. Do not use the state captured before
 			// the commit when deciding whether to send its delayed response.
 			mset.mu.RLock()
-			canRespond = !mset.cfg.NoAck && len(reply) > 0 && mset.isLeader() && !mt.traceOnly()
+			canRespond = !mset.cfg.NoAck && len(reply) > 0 && mset.isLeader() && !mset.isClustered() && !mt.traceOnly()
 			lseq, pubAck, outq := mset.lseq, mset.pubAck, mset.outq
 			mset.mu.RUnlock()
 			if canRespond {

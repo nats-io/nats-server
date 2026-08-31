@@ -2215,13 +2215,21 @@ func TestJetStreamAtomicBatchPublishSyncAlwaysRollupRecovery(t *testing.T) {
 	}
 }
 
+type atomicBatchLeaderRaftNode struct {
+	RaftNode
+}
+
+func (*atomicBatchLeaderRaftNode) Leader() bool {
+	return true
+}
+
 func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 	type result struct {
 		responseErr     error
 		trace           MsgTraceJetStream
 		traceBeforeSync bool
 	}
-	test := func(t *testing.T, mutate func(*stream, *fileStore)) result {
+	test := func(t *testing.T, mutate func(*stream, *fileStore) func()) result {
 		storeDir := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 			listen: 127.0.0.1:-1
@@ -2288,7 +2296,10 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 		if traceErr != nil {
 			require_Error(t, traceErr, nats.ErrTimeout)
 		}
-		mutate(mset, fs)
+		cleanup := mutate(mset, fs)
+		if cleanup != nil {
+			defer cleanup()
+		}
 		fs.syncMu.Unlock()
 		locked = false
 		if traceMsg == nil {
@@ -2303,10 +2314,11 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 	}
 
 	t.Run("RechecksAckState", func(t *testing.T) {
-		result := test(t, func(mset *stream, _ *fileStore) {
+		result := test(t, func(mset *stream, _ *fileStore) func() {
 			mset.mu.Lock()
 			mset.cfg.NoAck = true
 			mset.mu.Unlock()
+			return nil
 		})
 		require_Error(t, result.responseErr, nats.ErrTimeout)
 		require_False(t, result.traceBeforeSync)
@@ -2316,7 +2328,7 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 	t.Run("RecordsSyncFailure", func(t *testing.T) {
 		writeErr := errors.New("atomic batch final sync failed")
 		var mset *stream
-		result := test(t, func(s *stream, fs *fileStore) {
+		result := test(t, func(s *stream, fs *fileStore) func() {
 			mset = s
 			fs.mu.RLock()
 			lmb := fs.lmb
@@ -2324,6 +2336,7 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			lmb.mu.Lock()
 			lmb.werr = writeErr
 			lmb.mu.Unlock()
+			return nil
 		})
 		require_Error(t, result.responseErr, nats.ErrTimeout)
 		require_False(t, result.traceBeforeSync)
@@ -2334,6 +2347,22 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			}
 			return nil
 		})
+	})
+
+	t.Run("RechecksClusterState", func(t *testing.T) {
+		result := test(t, func(mset *stream, _ *fileStore) func() {
+			mset.mu.Lock()
+			previousNode := mset.node
+			mset.node = &atomicBatchLeaderRaftNode{}
+			mset.mu.Unlock()
+			return func() {
+				mset.mu.Lock()
+				mset.node = previousNode
+				mset.mu.Unlock()
+			}
+		})
+		require_Error(t, result.responseErr, nats.ErrTimeout)
+		require_False(t, result.traceBeforeSync)
 	})
 }
 
