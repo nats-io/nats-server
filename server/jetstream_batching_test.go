@@ -844,7 +844,8 @@ func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
 		}
 	}`
 
-	cf := createConfFile(t, []byte(fmt.Sprintf(batchingConf, t.TempDir(), 10, 20, 100, "5s")))
+	storeDir := t.TempDir()
+	cf := createConfFile(t, []byte(fmt.Sprintf(batchingConf, storeDir, 10, 20, 100, "5s")))
 	s, _ := RunServerWithConfig(cf)
 	defer s.Shutdown()
 
@@ -854,9 +855,26 @@ func TestJetStreamAtomicBatchPublishConfigOpts(t *testing.T) {
 	require_Equal(t, opts.JetStreamLimits.MaxBatchSize, 100)
 	require_Equal(t, opts.JetStreamLimits.MaxBatchTimeout, 5*time.Second)
 
-	// Reloading is not supported, that would potentially mean dropping random batches when lowering limits.
-	changeCurrentConfigContentWithNewContent(t, cf, []byte(fmt.Sprintf(batchingConf, t.TempDir(), 20, 40, 200, "10s")))
-	require_Error(t, s.Reload(), fmt.Errorf("config reload not supported for JetStreamLimits"))
+	// The limits are all read at the point of use, so they can be reloaded. Raising them.
+	reloadUpdateConfig(t, s, cf, fmt.Sprintf(batchingConf, storeDir, 20, 40, 200, "10s"))
+	opts = s.getOpts()
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightPerStream, 20)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightTotal, 40)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchSize, 200)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchTimeout, 10*time.Second)
+
+	// As well as lowering them again. In-flight batches are not silently dropped, the
+	// publisher is always responded to with an error and an advisory is sent.
+	reloadUpdateConfig(t, s, cf, fmt.Sprintf(batchingConf, storeDir, 5, 10, 50, "2s"))
+	opts = s.getOpts()
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightPerStream, 5)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchInflightTotal, 10)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchSize, 50)
+	require_Equal(t, opts.JetStreamLimits.MaxBatchTimeout, 2*time.Second)
+
+	// Changing the storage directory remains unsupported.
+	changeCurrentConfigContentWithNewContent(t, cf, []byte(fmt.Sprintf(batchingConf, t.TempDir(), 5, 10, 50, "2s")))
+	require_Error(t, s.Reload(), fmt.Errorf("config reload not supported for jetstream storage directory"))
 }
 
 func TestJetStreamAtomicBatchPublishDenyHeaders(t *testing.T) {
