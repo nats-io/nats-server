@@ -2216,7 +2216,12 @@ func TestJetStreamAtomicBatchPublishSyncAlwaysRollupRecovery(t *testing.T) {
 }
 
 func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
-	test := func(t *testing.T, mutate func(*stream, *fileStore)) error {
+	type result struct {
+		responseErr     error
+		trace           MsgTraceJetStream
+		traceBeforeSync bool
+	}
+	test := func(t *testing.T, mutate func(*stream, *fileStore)) result {
 		storeDir := t.TempDir()
 		conf := createConfFile(t, []byte(fmt.Sprintf(`
 			listen: 127.0.0.1:-1
@@ -2245,6 +2250,7 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 		reply := nats.NewInbox()
 		sub, err := nc.SubscribeSync(reply)
 		require_NoError(t, err)
+		traceSub := natsSubSync(t, nc, nats.NewInbox())
 		require_NoError(t, nc.Flush())
 
 		first := nats.NewMsg("state.a")
@@ -2265,6 +2271,7 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 		commit.Header.Set(JSBatchId, "sync-state")
 		commit.Header.Set(JSBatchSeq, "2")
 		commit.Header.Set(JSBatchCommit, "1")
+		commit.Header.Set(MsgTraceDest, traceSub.Subject)
 		require_NoError(t, nc.PublishMsg(commit))
 
 		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
@@ -2276,26 +2283,40 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			}
 			return nil
 		})
+		traceMsg, traceErr := traceSub.NextMsg(50 * time.Millisecond)
+		traceBeforeSync := traceErr == nil
+		if traceErr != nil {
+			require_Error(t, traceErr, nats.ErrTimeout)
+		}
 		mutate(mset, fs)
 		fs.syncMu.Unlock()
 		locked = false
+		if traceMsg == nil {
+			traceMsg = natsNexMsg(t, traceSub, time.Second)
+		}
+		var traceEvent MsgTraceEvent
+		require_NoError(t, json.Unmarshal(traceMsg.Data, &traceEvent))
+		jsTrace := traceEvent.JetStream()
+		require_NotNil(t, jsTrace)
 		_, err = sub.NextMsg(250 * time.Millisecond)
-		return err
+		return result{err, *jsTrace, traceBeforeSync}
 	}
 
 	t.Run("RechecksAckState", func(t *testing.T) {
-		err := test(t, func(mset *stream, _ *fileStore) {
+		result := test(t, func(mset *stream, _ *fileStore) {
 			mset.mu.Lock()
 			mset.cfg.NoAck = true
 			mset.mu.Unlock()
 		})
-		require_Error(t, err, nats.ErrTimeout)
+		require_Error(t, result.responseErr, nats.ErrTimeout)
+		require_False(t, result.traceBeforeSync)
+		require_Equal(t, result.trace.Error, _EMPTY_)
 	})
 
 	t.Run("RecordsSyncFailure", func(t *testing.T) {
 		writeErr := errors.New("atomic batch final sync failed")
 		var mset *stream
-		err := test(t, func(s *stream, fs *fileStore) {
+		result := test(t, func(s *stream, fs *fileStore) {
 			mset = s
 			fs.mu.RLock()
 			lmb := fs.lmb
@@ -2304,7 +2325,9 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			lmb.werr = writeErr
 			lmb.mu.Unlock()
 		})
-		require_Error(t, err, nats.ErrTimeout)
+		require_Error(t, result.responseErr, nats.ErrTimeout)
+		require_False(t, result.traceBeforeSync)
+		require_Equal(t, result.trace.Error, writeErr.Error())
 		checkFor(t, time.Second, 10*time.Millisecond, func() error {
 			if !errors.Is(mset.getWriteErr(), writeErr) {
 				return errors.New("stream did not record final sync failure")
@@ -2312,6 +2335,56 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			return nil
 		})
 	})
+}
+
+func TestJetStreamAtomicBatchPublishTraceOnlyNoAck(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			sync_interval: always
+		}
+	`, storeDir)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"state.*"},
+		Storage:            FileStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	replySub := natsSubSync(t, nc, nats.NewInbox())
+	traceSub := natsSubSync(t, nc, nats.NewInbox())
+	require_NoError(t, nc.Flush())
+
+	commit := nats.NewMsg("state.a")
+	commit.Reply = replySub.Subject
+	commit.Header.Set(JSBatchId, "trace-only")
+	commit.Header.Set(JSBatchSeq, "1")
+	commit.Header.Set(JSBatchCommit, "1")
+	commit.Header.Set(MsgTraceDest, traceSub.Subject)
+	commit.Header.Set(MsgTraceOnly, "true")
+	require_NoError(t, nc.PublishMsg(commit))
+
+	traceMsg := natsNexMsg(t, traceSub, time.Second)
+	var traceEvent MsgTraceEvent
+	require_NoError(t, json.Unmarshal(traceMsg.Data, &traceEvent))
+	jsTrace := traceEvent.JetStream()
+	require_NotNil(t, jsTrace)
+	require_Equal(t, jsTrace.Error, _EMPTY_)
+
+	_, err = replySub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	streamInfo, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, streamInfo.State.Msgs, 0)
 }
 
 func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
