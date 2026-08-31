@@ -1160,6 +1160,9 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 		// than stream config we prefer the account limits to handle cases where account limits are
 		// updated during the lifecycle of the stream
 		maxc := cfg.MaxConsumers
+		if maxConsumers := srvLim.DefaultMaxConsumers; maxConsumers > 0 && maxc <= 0 {
+			maxc = maxConsumers
+		}
 		if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
 			maxc = selectedLimits.MaxConsumers
 		}

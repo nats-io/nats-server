@@ -11260,6 +11260,9 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		// counts.
 		streamMaxc := sa.Config.MaxConsumers
 		tierMaxc := selectedLimits.MaxConsumers
+		if maxConsumers := s.getOpts().JetStreamLimits.DefaultMaxConsumers; maxConsumers > 0 && streamMaxc <= 0 {
+			streamMaxc = maxConsumers
+		}
 		if streamMaxc > 0 || tierMaxc > 0 {
 			// If the consumer name is specified and we think it already exists, then
 			// we're likely updating an existing consumer, so don't count it. Otherwise

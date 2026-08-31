@@ -9467,6 +9467,84 @@ func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T
 	}
 }
 
+var jsClusterAssetLimitsTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {
+		max_mem_store: 2GB
+		max_file_store: 2GB
+		store_dir: '%s'
+		limits: {
+			default_max_consumers: 2
+		}
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+func TestJetStreamClusterDefaultMaxConsumers(t *testing.T) {
+	c := createJetStreamClusterWithTemplate(t, jsClusterAssetLimitsTempl, "ALT", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+
+	// Create consumers up to the limit of 2 each.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"S.>"}, Replicas: 3})
+	require_NoError(t, err)
+	for _, dur := range []string{"C1", "C2"} {
+		_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: dur, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	// The consumer limit is now reached, so creating more is rejected.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	nc.Close()
+
+	// Restart the cluster with the limit lowered to 1.
+	for _, s := range c.servers {
+		s.Shutdown()
+	}
+	for _, o := range c.opts {
+		o.JetStreamLimits.DefaultMaxConsumers = 1
+	}
+	c.restartAllSamePorts()
+	c.waitOnAllCurrent()
+
+	// The existing assets must recover.
+	c.waitOnStreamLeader(globalAccountName, "S")
+	for _, dur := range []string{"C1", "C2"} {
+		c.waitOnConsumerLeader(globalAccountName, "S", dur)
+	}
+
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err = js.StreamInfo("S")
+	require_NoError(t, err)
+	for _, dur := range []string{"C1", "C2"} {
+		_, err = js.ConsumerInfo("S", dur)
+		require_NoError(t, err)
+	}
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Existing assets can still be idempotently recreated and updated, even while
+	// above the lowered limit, since that doesn't add new assets.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+}
+
 //
 // DO NOT ADD NEW TESTS IN THIS FILE  (unless to balance test times)
 // Add at the end of jetstream_cluster_<n>_test.go, with <n> being the highest value.
