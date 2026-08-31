@@ -7869,13 +7869,18 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		}
 		if coalesceSync {
 			if err = fs.endAtomicSyncBatch(); err != nil {
+				mset.setWriteErr(err)
 				return err
 			}
 			syncBatchEnded = true
+			// Stream configuration and leadership may have changed while the
+			// batch was being made durable. Do not use the state captured before
+			// the commit when deciding whether to send its delayed response.
+			mset.mu.RLock()
+			canRespond = !mset.cfg.NoAck && len(reply) > 0 && mset.isLeader()
+			lseq, pubAck, outq := mset.lseq, mset.pubAck, mset.outq
+			mset.mu.RUnlock()
 			if canRespond {
-				mset.mu.RLock()
-				lseq, pubAck, outq := mset.lseq, mset.pubAck, mset.outq
-				mset.mu.RUnlock()
 				var buf [256]byte
 				response := append(buf[:0], pubAck...)
 				response = append(response, strconv.FormatUint(lseq, 10)...)

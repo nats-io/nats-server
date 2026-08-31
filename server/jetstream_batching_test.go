@@ -2215,6 +2215,105 @@ func TestJetStreamAtomicBatchPublishSyncAlwaysRollupRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
+	test := func(t *testing.T, mutate func(*stream, *fileStore)) error {
+		storeDir := t.TempDir()
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			jetstream: {
+				store_dir: %q
+				sync_interval: always
+			}
+		`, storeDir)))
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+
+		nc, _ := jsClientConnect(t, s)
+		defer nc.Close()
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"state.*"},
+			Storage:            FileStorage,
+			Replicas:           1,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		fs := mset.store.(*fileStore)
+
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		require_NoError(t, nc.Flush())
+
+		first := nats.NewMsg("state.a")
+		first.Header.Set(JSBatchId, "sync-state")
+		first.Header.Set(JSBatchSeq, "1")
+		require_NoError(t, nc.PublishMsg(first))
+		require_NoError(t, nc.Flush())
+
+		fs.syncMu.Lock()
+		locked := true
+		defer func() {
+			if locked {
+				fs.syncMu.Unlock()
+			}
+		}()
+		commit := nats.NewMsg("state.b")
+		commit.Reply = reply
+		commit.Header.Set(JSBatchId, "sync-state")
+		commit.Header.Set(JSBatchSeq, "2")
+		commit.Header.Set(JSBatchCommit, "1")
+		require_NoError(t, nc.PublishMsg(commit))
+
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			mset.mu.RLock()
+			lseq := mset.lseq
+			mset.mu.RUnlock()
+			if lseq != 2 || fs.atomicBatchSync.Load() {
+				return fmt.Errorf("atomic batch has not reached final sync")
+			}
+			return nil
+		})
+		mutate(mset, fs)
+		fs.syncMu.Unlock()
+		locked = false
+		_, err = sub.NextMsg(250 * time.Millisecond)
+		return err
+	}
+
+	t.Run("RechecksAckState", func(t *testing.T) {
+		err := test(t, func(mset *stream, _ *fileStore) {
+			mset.mu.Lock()
+			mset.cfg.NoAck = true
+			mset.mu.Unlock()
+		})
+		require_Error(t, err, nats.ErrTimeout)
+	})
+
+	t.Run("RecordsSyncFailure", func(t *testing.T) {
+		writeErr := errors.New("atomic batch final sync failed")
+		var mset *stream
+		err := test(t, func(s *stream, fs *fileStore) {
+			mset = s
+			fs.mu.RLock()
+			lmb := fs.lmb
+			fs.mu.RUnlock()
+			lmb.mu.Lock()
+			lmb.werr = writeErr
+			lmb.mu.Unlock()
+		})
+		require_Error(t, err, nats.ErrTimeout)
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if !errors.Is(mset.getWriteErr(), writeErr) {
+				return errors.New("stream did not record final sync failure")
+			}
+			return nil
+		})
+	})
+}
+
 func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
