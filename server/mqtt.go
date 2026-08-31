@@ -4575,8 +4575,6 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
 
 	fail := func(ack *mqttPipelinedAck, err error) {
 		jsa.replies.Delete(ack.reply)
-		// Unblocks a readLoop waiting for room; shutdown drains the queue.
-		pipe.stop()
 		c.Errorf("unable to store QoS1 message in JetStream (pi=%v): %v; "+
 			"closing the connection, the client will re-send unacknowledged PUBLISH packets on reconnect",
 			ack.pi, err)
@@ -4652,7 +4650,11 @@ func (s *Server) mqttPipelineStart(c *client, jsa *mqttJSA) *mqttAckPipeline {
 	}
 	if !s.startGoRoutine(func() {
 		defer s.grWG.Done()
+
 		s.mqttAckLoop(c, pipe, jsa)
+		// The loop was the sole consumer; release a readLoop possibly
+		// waiting for room in push, it observes only pipe.quitCh.
+		pipe.stop()
 	}) {
 		return nil
 	}
@@ -4683,6 +4685,10 @@ func (s *Server) mqttPipelinePush(c *client, jsa *mqttJSA, ack *mqttPipelinedAck
 				return fmt.Errorf("JetStream did not acknowledge the QoS1 message within %v "+
 					"(server is shutting down); failing the connection, "+
 					"the client will re-send unacknowledged PUBLISH packets on reconnect", jsa.timeout)
+			case <-s.quitCh:
+				// The reply may never come; do not hold up the shutdown.
+				jsa.replies.Delete(ack.reply)
+				return ErrServerNotRunning
 			}
 		}
 		c.mqtt.acks = pipe
