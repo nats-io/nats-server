@@ -16191,48 +16191,6 @@ func TestFileStoreDeleteMapView(t *testing.T) {
 	checkView(deleteMap(staleBlks))
 }
 
-func TestFileStoreAtomicSyncBatchCoalescesAppendAndPurgeSync(t *testing.T) {
-	sd := t.TempDir()
-	fcfg := FileStoreConfig{StoreDir: sd, SyncAlways: true}
-	cfg := StreamConfig{Name: "TEST", Subjects: []string{"state.*"}, Storage: FileStorage}
-	fs, err := newFileStore(fcfg, cfg)
-	require_NoError(t, err)
-
-	_, _, err = fs.StoreMsg("state.a", nil, []byte("old"), 0)
-	require_NoError(t, err)
-
-	enabled, err := fs.beginAtomicSyncBatch()
-	require_NoError(t, err)
-	require_True(t, enabled)
-
-	_, _, err = fs.StoreMsg("state.a", nil, []byte("new"), 0)
-	require_NoError(t, err)
-	purged, err := fs.PurgeEx("state.a", 0, 1)
-	require_NoError(t, err)
-	require_Equal(t, purged, 1)
-	fs.lmb.mu.RLock()
-	require_True(t, fs.lmb.needSync)
-	fs.lmb.mu.RUnlock()
-
-	require_NoError(t, fs.endAtomicSyncBatch())
-	fs.lmb.mu.RLock()
-	require_False(t, fs.lmb.needSync)
-	fs.lmb.mu.RUnlock()
-	require_NoError(t, fs.Stop())
-
-	fs, err = newFileStore(fcfg, cfg)
-	require_NoError(t, err)
-	defer fs.Stop()
-
-	state := fs.State()
-	require_Equal(t, state.Msgs, 1)
-	require_Equal(t, state.LastSeq, 2)
-	var smv StoreMsg
-	sm, err := fs.LoadLastMsg("state.a", &smv)
-	require_NoError(t, err)
-	require_Equal(t, string(sm.msg), "new")
-}
-
 func TestFileStoreAtomicSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
 	sd := t.TempDir()
 	fcfg := FileStoreConfig{

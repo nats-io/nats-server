@@ -693,15 +693,11 @@ func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
 	if !fs.fcfg.SyncAlways {
 		return
 	}
-	// If the stream is backed by a Raft WAL, relax SyncAlways in favor of
-	// syncing when the WAL flushes the stream store.
-	fs.setSyncOnFlushLocked(replicas > 1)
-}
-
-func (fs *fileStore) setSyncOnFlushLocked(enabled bool) {
-	// Enable the new mode before disabling the old one so writes are never
-	// processed with both modes disabled.
-	if enabled {
+	// If the stream is backed by a Raft WAL we relax the SyncAlways
+	// setting in favor of SyncOnFlush. Enable the new sync mode
+	// before disabling the old one so writes are never processed
+	// with both modes disabled.
+	if replicas > 1 {
 		fs.syncOnFlush.Store(true)
 		fs.syncAlways.Store(false)
 	} else {
@@ -5765,7 +5761,8 @@ func (fs *fileStore) beginAtomicSyncBatch() (bool, error) {
 	}
 	fs.atomicBatchDirty = make(map[*msgBlock]struct{})
 	fs.atomicBatchSync.Store(true)
-	fs.setSyncOnFlushLocked(true)
+	fs.syncOnFlush.Store(true)
+	fs.syncAlways.Store(false)
 	return true, nil
 }
 
@@ -5811,21 +5808,20 @@ func (mb *msgBlock) markNeedsSyncLocked() {
 // block write. The caller must hold the block lock.
 func (mb *msgBlock) syncPendingWriteLocked() error {
 	fs := mb.fs
-	if fs.syncAlways.Load() {
+	sync := func() error {
 		err := mb.mfd.Sync()
 		if err == nil {
 			mb.needSync = false
 		}
 		return err
 	}
+	if fs.syncAlways.Load() {
+		return sync()
+	}
 	if !fs.atomicBatchSync.Load() {
 		// Recheck SyncAlways to close the race with the batch end transition.
 		if fs.syncAlways.Load() {
-			err := mb.mfd.Sync()
-			if err == nil {
-				mb.needSync = false
-			}
-			return err
+			return sync()
 		}
 		mb.needSync = true
 		return nil
@@ -5834,11 +5830,7 @@ func (mb *msgBlock) syncPendingWriteLocked() error {
 	fs.atomicBatchMu.Lock()
 	defer fs.atomicBatchMu.Unlock()
 	if fs.syncAlways.Load() {
-		err := mb.mfd.Sync()
-		if err == nil {
-			mb.needSync = false
-		}
-		return err
+		return sync()
 	}
 	mb.needSync = true
 	if fs.atomicBatchSync.Load() {
@@ -5847,16 +5839,16 @@ func (mb *msgBlock) syncPendingWriteLocked() error {
 	return nil
 }
 
-func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) error {
+func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) (err error) {
 	fs.syncMu.Lock()
 	defer fs.syncMu.Unlock()
-
-	storeWriteErr := func(err error) error {
-		fs.mu.Lock()
-		fs.setWriteErr(err)
-		fs.mu.Unlock()
-		return err
-	}
+	defer func() {
+		if err != nil {
+			fs.mu.Lock()
+			fs.setWriteErr(err)
+			fs.mu.Unlock()
+		}
+	}()
 
 	for _, mb := range blks {
 		mb.mu.Lock()
@@ -5864,25 +5856,25 @@ func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) error {
 			mb.mu.Unlock()
 			continue
 		}
-		if err := mb.werr; err != nil {
+		if err = mb.werr; err != nil {
 			mb.mu.Unlock()
-			return storeWriteErr(err)
+			return err
 		}
-		if _, err := mb.flushPendingMsgsLocked(); err != nil {
+		if _, err = mb.flushPendingMsgsLocked(); err != nil {
 			mb.mu.Unlock()
-			return storeWriteErr(err)
+			return err
 		}
 		if mb.needKeySync && mb.kfn != _EMPTY_ {
-			if err := fs.syncFileAndDir(mb.kfn); err != nil {
+			if err = fs.syncFileAndDir(mb.kfn); err != nil {
 				mb.mu.Unlock()
-				return storeWriteErr(err)
+				return err
 			}
 			mb.needKeySync = false
 		}
 		if mb.needSync {
-			if err := mb.syncFile(); err != nil {
+			if err = mb.syncFile(); err != nil {
 				mb.mu.Unlock()
-				return storeWriteErr(err)
+				return err
 			}
 			mb.needSync = false
 		}
@@ -5890,8 +5882,9 @@ func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) error {
 	}
 
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	return fs.werr
+	err = fs.werr
+	fs.mu.RUnlock()
+	return err
 }
 
 // Lock should be held.
@@ -6723,12 +6716,8 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		return err
 	}
 
-	// Make sure to sync if we have not done so yet.
-	if sync {
-		mb.needSync = false
-	} else {
-		mb.markNeedsSyncLocked()
-	}
+	// Make sure to sync if we have not done so yet
+	mb.needSync = !sync
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
