@@ -16266,6 +16266,74 @@ func TestFileStoreAtomicSyncBatchRestoresConcurrentReplicaUpdate(t *testing.T) {
 	require_True(t, fs.syncOnFlush.Load())
 }
 
+func TestFileStoreAtomicSyncBatchSyncsBlocksInOrder(t *testing.T) {
+	sd := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir:     sd,
+		BlockSize:    128,
+		SyncInterval: time.Hour,
+		SyncAlways:   true,
+	}
+	cfg := StreamConfig{Name: "TEST", Subjects: []string{"state.*"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	payload := make([]byte, 96)
+	for i := 0; len(fs.blks) < 2; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("state.batch.%d", i), nil, payload, 0)
+		require_NoError(t, err)
+	}
+	earlier, commit := fs.blks[len(fs.blks)-2], fs.blks[len(fs.blks)-1]
+	writeErr := errors.New("earlier block sync failed")
+	earlier.mu.Lock()
+	earlier.werr = writeErr
+	earlier.mu.Unlock()
+	commit.mu.Lock()
+	commit.needSync = true
+	commit.mu.Unlock()
+
+	err = fs.syncAtomicBatchBlocks([]*msgBlock{commit, earlier})
+	require_Error(t, err, writeErr)
+	commit.mu.RLock()
+	commitNeedsSync := commit.needSync
+	commit.mu.RUnlock()
+	require_True(t, commitNeedsSync)
+
+	earlier.mu.Lock()
+	earlier.werr = nil
+	earlier.mu.Unlock()
+	fs.mu.Lock()
+	fs.werr = nil
+	fs.mu.Unlock()
+}
+
+func TestFileStoreAtomicSyncBatchFailsWhenStoreCloses(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), SyncAlways: true}
+	cfg := StreamConfig{Name: "TEST", Subjects: []string{"state.*"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+
+	enabled, err := fs.beginAtomicSyncBatch()
+	require_NoError(t, err)
+	require_True(t, enabled)
+	_, _, err = fs.StoreMsg("state.batch", nil, []byte("new"), 0)
+	require_NoError(t, err)
+
+	fs.syncMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- fs.endAtomicSyncBatch() }()
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if fs.atomicBatchSync.Load() {
+			return errors.New("atomic batch has not reached final sync")
+		}
+		return nil
+	})
+	require_NoError(t, fs.Stop())
+	fs.syncMu.Unlock()
+	require_Error(t, <-done, ErrStoreClosed)
+}
+
 func Benchmark_FileStoreDeleteMap(b *testing.B) {
 	msg := []byte("hello")
 	// Many small blocks with mostly interior deletes, the shape a stream
