@@ -4603,12 +4603,14 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline, jsa *mqttJSA) {
 				return
 
 			case <-pipe.quitCh:
-				// Already dequeued, invisible to the exit-path drain.
+				// pipe.shutdown only covers entries still queued; this one is
+				// ours to clean up.
 				jsa.replies.Delete(ack.reply)
 				return
 
 			case <-s.quitCh:
-				// Already dequeued, invisible to the exit-path drain.
+				// pipe.shutdown only covers entries still queued; this one is
+				// ours to clean up.
 				jsa.replies.Delete(ack.reply)
 				return
 			}
