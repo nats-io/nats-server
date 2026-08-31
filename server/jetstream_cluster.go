@@ -11254,7 +11254,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 	// Check for max consumers here to short circuit if possible.
 	// Start with limit on a stream, but if one is defined at the level of the account
 	// and is lower, use that limit.
-	if action == ActionCreate || action == ActionCreateOrUpdate {
+	if (action == ActionCreate || action == ActionCreateOrUpdate) && !cfg.Direct && !cfg.Sourcing {
 		// The stream limit caps every consumer of the stream. The account limit
 		// caps only the consumers of the selected tier, so the two need separate
 		// counts.
