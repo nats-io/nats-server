@@ -9034,3 +9034,203 @@ func TestJetStreamClusterStreamSnapshots(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamClusterConsumerAssignmentCreateAPI(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	ncsys, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	cfg, err := json.Marshal(&ConsumerConfig{
+		Durable:   "CONSUMER",
+		Name:      "CONSUMER",
+		AckPolicy: AckExplicit,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	created := time.Now().UTC()
+	req, err := json.Marshal(&consumerAssignmentCreate{
+		Account:  globalAccountName,
+		Stream:   "TEST",
+		Consumer: "CONSUMER",
+		Created:  created,
+		Config:   cfg,
+	})
+	require_NoError(t, err)
+	require_NoError(t, ncsys.Publish(consumerAssignmentCreateSubj, req))
+
+	// The meta leader creates the group for us and assigns the consumer.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("TEST", "CONSUMER")
+		if err != nil {
+			return err
+		}
+		if ci.Cluster == nil || len(ci.Cluster.Replicas) != 2 {
+			return fmt.Errorf("expected an R3 consumer, got %+v", ci.Cluster)
+		}
+		return nil
+	})
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	require_NotNil(t, mjs)
+	getCa := func() *consumerAssignment {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		return mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	}
+
+	ca := getCa()
+	require_NotNil(t, ca)
+	require_True(t, ca.Created.Equal(created))
+	require_NotNil(t, ca.Group)
+	require_Len(t, len(ca.Group.Peers), 3)
+
+	// Requests are idempotent, so the requester can simply retry until it observes the
+	// assignment. A repeat must not create a new group or reset the assignment.
+	require_NoError(t, ncsys.Publish(consumerAssignmentCreateSubj, req))
+	require_NoError(t, ncsys.Flush())
+	time.Sleep(500 * time.Millisecond)
+
+	nca := getCa()
+	require_NotNil(t, nca)
+	require_NotNil(t, nca.Group)
+	require_Equal(t, nca.Group.Name, ca.Group.Name)
+	require_True(t, nca.Created.Equal(created))
+}
+
+func TestJetStreamClusterConsumerAssignmentCreateCompressedAPI(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	cfgJSON, err := json.Marshal(&ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: AckExplicit,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// State is only distributed when restoring, and is the one field that can grow
+	// large, so make sure a request carrying it survives being compressed and framed.
+	state := &ConsumerState{
+		Delivered: SequencePair{Consumer: 1000, Stream: 1000},
+		AckFloor:  SequencePair{Consumer: 1, Stream: 1},
+		Pending:   make(map[uint64]*Pending, 1000),
+	}
+	for i := uint64(2); i <= 1000; i++ {
+		state.Pending[i] = &Pending{Sequence: i, Timestamp: int64(i)}
+	}
+
+	s := c.randomServer()
+	s.sendConsumerAssignmentCreate(&consumerAssignmentCreate{
+		Account:  globalAccountName,
+		Stream:   "TEST",
+		Consumer: "C",
+		Created:  time.Now().UTC(),
+		Config:   cfgJSON,
+		State:    state,
+	})
+
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if ca := sjs.consumerAssignment(globalAccountName, "TEST", "C"); ca == nil {
+			return errors.New("consumer assignment not seen yet")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerAssignmentDeleteAPI(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		Replicas:  3,
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	require_NotNil(t, mjs)
+	getCa := func() *consumerAssignment {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		return mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	}
+
+	ca := getCa()
+	require_NotNil(t, ca)
+	created := ca.Created
+
+	ncsys, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	sendDelete := func(created time.Time) {
+		req, err := json.Marshal(&consumerAssignmentDelete{
+			Account:  globalAccountName,
+			Stream:   "TEST",
+			Consumer: "CONSUMER",
+			Created:  created,
+		})
+		require_NoError(t, err)
+		require_NoError(t, ncsys.Publish(consumerAssignmentDeleteSubj, req))
+		require_NoError(t, ncsys.Flush())
+	}
+
+	// The creation time is part of the consumer's identity, so a request that doesn't
+	// match must be ignored. Otherwise we'd delete a consumer that got recreated.
+	sendDelete(created.Add(-time.Second))
+	time.Sleep(500 * time.Millisecond)
+	nca := getCa()
+	require_NotNil(t, nca)
+	require_True(t, nca.Created.Equal(created))
+
+	// A matching request deletes the consumer.
+	sendDelete(created)
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if getCa() != nil {
+			return errors.New("consumer assignment still present")
+		}
+		return nil
+	})
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_Error(t, err, nats.ErrConsumerNotFound)
+}
