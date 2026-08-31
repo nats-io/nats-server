@@ -1544,14 +1544,22 @@ func TestJetStreamClusterParallelStreamCreation(t *testing.T) {
 	require_NoError(t, err)
 
 	// Check state directly.
-	mset.mu.Lock()
-	var state StreamState
-	mset.store.FastState(&state)
-	mset.mu.Unlock()
-
-	require_Equal(t, state.Msgs, 100)
-	require_Equal(t, state.FirstSeq, 1)
-	require_Equal(t, state.LastSeq, 100)
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		var state StreamState
+		mset.store.FastState(&state)
+		if state.Msgs != 100 {
+			return fmt.Errorf("expected 100 msgs, got %d", state.Msgs)
+		}
+		if state.FirstSeq != 1 {
+			return fmt.Errorf("expected first sequence 1, got %d", state.FirstSeq)
+		}
+		if state.LastSeq != 100 {
+			return fmt.Errorf("expected last sequence 100, got %d", state.LastSeq)
+		}
+		return nil
+	})
 }
 
 // In addition to test above, if streams were attempted to be created in parallel
@@ -2114,14 +2122,23 @@ func TestJetStreamClusterReplacementPolicyAfterPeerRemoveNoPlace(t *testing.T) {
 		}
 	}
 
-	// Remove 1 peer replica (this will be random cloud region as initial placement was randomized ordering)
-	_, err = nc.Request("$JS.API.STREAM.PEER.REMOVE.TEST", []byte(`{"peer":"`+osi.Cluster.Replicas[0].Name+`"}`), time.Second*10)
+	// Evacuate 1 peer replica (this will be random cloud region as initial placement was
+	// randomized ordering). A stream scoped peer remove would be rejected here, there is no
+	// eligible replacement, so go through the server scoped endpoint which is best effort.
+	snc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	ereq, err := json.Marshal(JSApiMetaServerRemoveRequest{Server: osi.Cluster.Replicas[0].Name})
 	require_NoError(t, err)
+	emsg, err := snc.Request(JSApiEvacuateServer, ereq, time.Second*10)
+	require_NoError(t, err)
+	var eresp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(emsg.Data, &eresp))
+	require_True(t, eresp.Success)
 
 	sc.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Verify R2 since no eligible peer can replace the removed peer without braking unique constraint
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		osi, err = jsc.StreamInfo("TEST")
 		require_NoError(t, err)
 		if len(osi.Cluster.Replicas) != 1 {
@@ -4932,43 +4949,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 		t.Fatalf("Did not receive completion signal")
 	}
 
-	sreq := &JSApiStreamSnapshotRequest{
-		DeliverSubject: nats.NewInbox(),
-		ChunkSize:      512,
-	}
-	req, _ := json.Marshal(sreq)
-	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, time.Second)
-	require_NoError(t, err)
-
-	var resp JSApiStreamSnapshotResponse
-	json.Unmarshal(rmsg.Data, &resp)
-	require_True(t, resp.Error == nil)
-
-	state := *resp.State
-	cfg := *resp.Config
-
-	var snapshot []byte
-	done := make(chan bool)
-
-	sub, _ := nc.Subscribe(sreq.DeliverSubject, func(m *nats.Msg) {
-		// EOF
-		if len(m.Data) == 0 {
-			done <- true
-			return
-		}
-		// Could be writing to a file here too.
-		snapshot = append(snapshot, m.Data...)
-		// Flow ack
-		m.Respond(nil)
-	})
-	defer sub.Unsubscribe()
-
-	// Wait to receive the snapshot.
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Did not receive our snapshot in time")
-	}
+	// Take a backup of the stream.
+	sc, ss, snapshot := performStreamBackup(t, nc, "TEST")
 
 	// Delete before we try to restore.
 	require_NoError(t, js.DeleteStream("TEST"))
@@ -4989,53 +4971,15 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 		})
 	}
 
-	var rresp JSApiStreamRestoreResponse
-	rreq := &JSApiStreamRestoreRequest{
-		Config: cfg,
-		State:  state,
-	}
-	req, _ = json.Marshal(rreq)
-
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
-	require_NoError(t, err)
-
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	checkHealth()
-
-	// We will now chunk the snapshot responses (and EOF).
-	var chunk [1024]byte
-	for i, r := 0, bytes.NewReader(snapshot); ; {
-		n, err := r.Read(chunk[:])
-		if err != nil {
-			break
-		}
-		nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
-		i++
-		// We will call healthz for all servers halfway through the restore.
-		if i%100 == 0 {
-			checkHealth()
-		}
-	}
-	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
-	require_NoError(t, err)
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	si, err := js.StreamInfo("TEST")
-	require_NoError(t, err)
-	require_True(t, si.State.Msgs == uint64(toSend))
-
+	// Restore the backup.
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
 	checkHealth()
 
 	// Make sure stepdown works, this would fail before the fix.
 	_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
 
-	si, err = js.StreamInfo("TEST")
+	si, err := js.StreamInfo("TEST")
 	require_NoError(t, err)
 	require_True(t, si.State.Msgs == uint64(toSend))
 
@@ -5048,29 +4992,8 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	nc, _ = jsClientConnect(t, s)
 	defer nc.Close()
 
-	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
-	require_NoError(t, err)
-
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-	require_True(t, rresp.Error == nil)
-
-	for i, r := 0, bytes.NewReader(snapshot); ; {
-		n, err := r.Read(chunk[:])
-		if err != nil {
-			break
-		}
-		_, err = nc.Request(rresp.DeliverSubject, chunk[:n], time.Second)
-		require_NoError(t, err)
-		i++
-	}
-	rmsg, err = nc.Request(rresp.DeliverSubject, nil, time.Second)
-	require_NoError(t, err)
-	rresp.Error = nil
-	json.Unmarshal(rmsg.Data, &rresp)
-
-	require_True(t, rresp.Error != nil)
-	require_Equal(t, rresp.ApiResponse.Error.ErrCode, 10074)
+	// Restore the backup.
+	require_True(t, performStreamRestore(t, nc, sc, ss, snapshot))
 
 	status := s.healthz(nil)
 	require_Equal(t, status.StatusCode, 200)
@@ -5291,13 +5214,20 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	require_NoError(t, err)
 
 	// Now scale back up.
-	_, err = js.UpdateStream(&nats.StreamConfig{
+	cfg := &nats.StreamConfig{
 		Name:     "TEST1",
 		Subjects: []string{"foo"},
 		MaxBytes: 1 * 1024 * 1024 * 1024,
 		MaxMsgs:  1000,
 		Replicas: 3,
-	})
+	}
+	_, err = js.UpdateStream(cfg)
+	if err != nil {
+		// If still in progress, wait for it to complete before retrying.
+		require_Error(t, err, NewJSStreamMoveInProgressError())
+		c.waitOnStreamLeader(aExpPub, "TEST1")
+		_, err = js.UpdateStream(cfg)
+	}
 	require_NoError(t, err)
 	c.waitOnStreamLeader(aExpPub, "TEST1")
 
@@ -5346,7 +5276,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 	mset, err := acc.lookupStream("TEST1")
 	require_NoError(t, err)
 	// NRG only
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 	// Need to re-lookup this stream since we will recreate from reset above.
 	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
@@ -5354,7 +5284,7 @@ func TestJetStreamClusterAccountUsageDrifts(t *testing.T) {
 		return err
 	})
 	// Now NRG and Stream state itself.
-	mset.resetClusteredState(errFirstSequenceMismatch)
+	mset.resetClusteredState(mset.raftNode(), errFirstSequenceMismatch)
 	checkAccount(sir1.State.Bytes, sir3.State.Bytes)
 
 	// Now test server restart
@@ -5421,7 +5351,7 @@ func TestJetStreamClusterStreamFailTracking(t *testing.T) {
 	mset, err := nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	// Reset raft
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 	time.Sleep(100 * time.Millisecond)
 
 	nl.Shutdown()
@@ -5601,11 +5531,18 @@ func TestJetStreamClusterOrphanConsumerSubjects(t *testing.T) {
 	require_NoError(t, err)
 
 	for _, replicas := range []int{3, 1, 3} {
-		_, err = js.UpdateStream(&nats.StreamConfig{
+		cfg := &nats.StreamConfig{
 			Name:     "TEST",
 			Subjects: []string{"bar.>"},
 			Replicas: replicas,
-		})
+		}
+		_, err = js.UpdateStream(cfg)
+		if err != nil {
+			// If still in progress, wait for it to complete before retrying.
+			require_Error(t, err, NewJSStreamMoveInProgressError())
+			c.waitOnStreamLeader("$G", "TEST")
+			_, err = js.UpdateStream(cfg)
+		}
 		require_NoError(t, err)
 		c.waitOnAllCurrent()
 	}
@@ -6516,7 +6453,7 @@ func TestJetStreamClusterLimitsBasedStreamFileStoreDesync(t *testing.T) {
 Setup:
 	for {
 		select {
-		case err = <-errCh:
+		case <-errCh:
 			errCount++
 			if errCount >= 20_000 {
 				// Stop both producing and consuming.
@@ -7492,6 +7429,9 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	cfg.Replicas = 1
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+	// Wait for scale down to finish, since the group is NOT changed if scaling
+	// too fast since it would remain replicated throughout.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 	// Publish a couple more messages while it's R1.
 	for range 2 {
 		_, err = js.Publish("foo", []byte("B"))
@@ -7500,6 +7440,7 @@ func TestJetStreamClusterStreamScaleDownChangesRaftGroup(t *testing.T) {
 	cfg.Replicas = 3
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	// Wait for some time to let the servers catch each other up. Can't use equality checks here.
 	time.Sleep(500 * time.Millisecond)
@@ -7600,6 +7541,9 @@ func TestJetStreamClusterStreamRescaleCatchup(t *testing.T) {
 		cfg.Replicas = 1
 		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
+		// Wait for scale down to finish, since the group is NOT changed if scaling
+		// too fast since it would remain replicated throughout.
+		c.waitOnStreamLeader(globalAccountName, "TEST")
 		cfg.Replicas = 3
 		_, err = js.UpdateStream(cfg)
 		require_NoError(t, err)
@@ -7745,10 +7689,13 @@ func TestJetStreamClusterConsumerScaleDownChangesRaftGroup(t *testing.T) {
 	n := mset.lookupConsumer("CONSUMER").raftNode()
 	old := n.Group()
 
-	// Scale stream down and back up.
+	// Scale consumer down and back up.
 	cfg.Replicas = 1
 	_, err = js.UpdateConsumer("TEST", cfg)
 	require_NoError(t, err)
+	// Wait for scale down to finish, since the group is NOT changed if scaling
+	// too fast since it would remain replicated throughout.
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 	cfg.Replicas = 3
 	_, err = js.UpdateConsumer("TEST", cfg)
 	require_NoError(t, err)
@@ -7830,10 +7777,13 @@ func TestJetStreamClusterConsumerRescaleCatchup(t *testing.T) {
 		rs.Shutdown()
 		rs.WaitForShutdown()
 
-		// Scale stream down and back up.
+		// Scale consumer down and back up.
 		cfg.Replicas = 1
 		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
+		// Wait for scale down to finish, since the group is NOT changed if scaling
+		// too fast since it would remain replicated throughout.
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
 		cfg.Replicas = 3
 		_, err = js.UpdateConsumer("TEST", cfg)
 		require_NoError(t, err)
@@ -8568,11 +8518,17 @@ func TestJetStreamClusterConsumerRemapWaitsForMonitorRoutineQuit(t *testing.T) {
 
 	// Simulate a consumer Raft group remapping that has been collapsed down into just a single update.
 	// Instead of one update to R1 and then to R3, it's just one update straight to the new R3 group.
+	sjs.mu.Lock()
 	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
-	require_NotNil(t, ca)
+	if ca == nil {
+		sjs.mu.Unlock()
+		t.Fatal("consumer assignment not found")
+	}
 	cca := ca.copyGroup()
 	cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
-	require_NoError(t, cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(cca)))
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(cca))
+	sjs.mu.Unlock()
+	require_NoError(t, err)
 
 	// The monitor routine should stop.
 	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
@@ -9939,6 +9895,82 @@ func TestJetStreamClusterDurableStreamMirrorServerManaged(t *testing.T) {
 	}
 }
 
+func TestJetStreamDurableProbeShortCircuitsBackoff(t *testing.T) {
+	for _, mirror := range []bool{false, true} {
+		kind := "Source"
+		if mirror {
+			kind = "Mirror"
+		}
+		t.Run(kind, func(t *testing.T) {
+			// Make every request time out, so we always end up backing off.
+			owt := srcDurableConsumerWaitTime
+			srcDurableConsumerWaitTime = time.Nanosecond
+			defer func() { srcDurableConsumerWaitTime = owt }()
+
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, _ := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "O",
+				Subjects: []string{"foo"},
+				Storage:  FileStorage,
+			})
+			require_NoError(t, err)
+			_, err = jsConsumerCreate(t, nc, "O", ConsumerConfig{
+				Durable:        "C",
+				DeliverSubject: "d",
+				AckPolicy:      AckFlowControl,
+				Heartbeat:      time.Second,
+			}, false)
+			require_NoError(t, err)
+
+			cfg := &StreamConfig{Name: "S", Storage: FileStorage}
+			ss := &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "C", DeliverSubject: "d"}}
+			if mirror {
+				cfg.Mirror = ss
+			} else {
+				cfg.Sources = []*StreamSource{ss}
+			}
+			_, err = jsStreamCreate(t, nc, cfg)
+			require_NoError(t, err)
+
+			mset, err := s.globalAccount().lookupStream("S")
+			require_NoError(t, err)
+
+			// Mirrors and sources share the sourceInfo, and only one of the two is set,
+			// so the rest of the test does not need to care which we are.
+			lastReq := func() time.Time {
+				mset.mu.RLock()
+				defer mset.mu.RUnlock()
+				si := mset.mirror
+				for _, ss := range mset.sources {
+					si = ss
+				}
+				return si.lreq
+			}
+
+			// The consumer is alive and pushing at us, so the probe we put up on each
+			// timeout must keep cutting the backoff short, and must be put back up for
+			// the timeout after that. Without it the next request would be 10s out and
+			// climbing, with it we only wait out the retry throttle.
+			var requests int
+			last := lastReq()
+			checkFor(t, 8*time.Second, 50*time.Millisecond, func() error {
+				if lreq := lastReq(); lreq.After(last) {
+					requests, last = requests+1, lreq
+				}
+				if requests < 2 {
+					return fmt.Errorf("only %d requests, backoff is not being cut short", requests)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamClusterDurableStreamSource(t *testing.T) {
 	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
 		var s *Server
@@ -10899,7 +10931,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 100, Num: 401})),
 	})
 	batch := &batchApply{}
-	_, err = sjs.applyStreamEntries(mset, replay, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), replay, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 1000)
 
@@ -10913,7 +10945,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr := newCommittedEntry(2, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1001, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2000)
 	mset.store.FastState(&after)
@@ -10923,7 +10955,7 @@ func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {
 	dr = newCommittedEntry(3, []*Entry{
 		newEntry(EntryNormal, encodeDeleteRange(&DeleteRange{First: 1501, Num: 1000})),
 	})
-	_, err = sjs.applyStreamEntries(mset, dr, false, batch)
+	_, err = sjs.applyStreamEntries(mset, mset.raftNode(), dr, false, batch)
 	require_NoError(t, err)
 	require_Equal(t, mset.lastSeq(), 2500)
 	mset.store.FastState(&after)
@@ -11024,18 +11056,20 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 	mjs.mu.RUnlock()
 	require_Len(t, len(streamPeers), 5)
 
-	// Shut down three of the stream's peers. Only two of the five stream peers remain online.
+	// Shut down three of the stream's peers. Only two of the five stream peers
+	// remain online, so the stream's group has lost quorum.
 	sl := c.streamLeader(globalAccountName, "TEST")
 	var offline []*Server
+	var online []string
 	for _, p := range streamPeers {
-		if len(offline) == 3 {
-			break
-		}
-		if s := peerSrv[p]; s != sl && s != ml {
+		if s := peerSrv[p]; s != sl && s != ml && len(offline) < 3 {
 			offline = append(offline, s)
+		} else {
+			online = append(online, p)
 		}
 	}
 	require_Len(t, len(offline), 3)
+	require_Len(t, len(online), 2)
 	for _, s := range offline {
 		s.Shutdown()
 	}
@@ -11050,8 +11084,11 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 		return nil
 	})
 
-	// Scale the stream down to R3. Only two of the five peers are online, but
-	// the stream must still end up with the requested number of replicas.
+	// Scale the stream down to R3. The update is accepted and recorded as
+	// desired state, but with a majority of the peers offline the group can
+	// not commit membership changes. The scale down must stay pending rather
+	// than override quorum, which could select peers that miss acknowledged
+	// writes or split the group.
 	_, err = js.UpdateStream(&nats.StreamConfig{
 		Name:     "TEST",
 		Subjects: []string{"foo"},
@@ -11059,8 +11096,7 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 	})
 	require_NoError(t, err)
 
-	// Wait for the scale down to be applied in the meta layer.
-	var newPeers []string
+	// Wait for the desired scale down to be registered in the meta layer.
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		mjs.mu.RLock()
 		defer mjs.mu.RUnlock()
@@ -11068,24 +11104,65 @@ func TestJetStreamClusterStreamScaleDownOfflinePeersHonorsReplicaCount(t *testin
 		if sa == nil {
 			return fmt.Errorf("stream assignment not found")
 		}
-		if len(sa.Group.Peers) == len(streamPeers) {
-			return fmt.Errorf("scale down not applied yet, still %d peers", len(sa.Group.Peers))
+		if sa.Group.Desired == nil {
+			return fmt.Errorf("desired state not registered yet")
+		}
+		return nil
+	})
+
+	// While the group has no quorum the scale down must remain pending and
+	// the assigned peer set must remain unchanged.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mjs.mu.RLock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		var peers int
+		var pending bool
+		if sa != nil {
+			peers = len(sa.Group.Peers)
+			pending = sa.Group.Desired != nil
+		}
+		mjs.mu.RUnlock()
+		require_True(t, sa != nil)
+		require_Len(t, peers, 5)
+		require_True(t, pending)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Restart one of the offline peers. Three of the five peers are online
+	// again, restoring quorum, so the scale down can now proceed safely by
+	// committing membership changes through the group.
+	c.restartServer(offline[0])
+
+	// Wait for the scale down to complete in the meta layer.
+	var newPeers []string
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("scale down still pending")
+		}
+		if len(sa.Group.Peers) != 3 {
+			return fmt.Errorf("expected 3 peers, got %d", len(sa.Group.Peers))
 		}
 		newPeers = copyStrings(sa.Group.Peers)
 		return nil
 	})
 
-	// The stream peer set must reflect the requested replica count.
-	require_Len(t, len(newPeers), 3)
-
-	// The online peers must be preferred and part of the new peer set.
-	for _, p := range streamPeers {
-		if slices.Contains(offline, peerSrv[p]) {
-			continue
-		}
+	// The peers that stayed online must be preferred and part of the new peer set.
+	for _, p := range online {
 		if !slices.Contains(newPeers, p) {
 			t.Fatalf("Online peer %q not selected by the scale down", peerSrv[p].Name())
 		}
+	}
+
+	// The new peer set must be a subset of the original peer set.
+	for _, p := range newPeers {
+		require_True(t, slices.Contains(streamPeers, p))
 	}
 }
 
@@ -11520,5 +11597,2855 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 			return fmt.Errorf("consumer state lost on scale up: %+v", state)
 		}
 		return nil
+	})
+}
+
+func TestJetStreamClusterDesiredOriginRetention(t *testing.T) {
+	// Builds the assignment as it exists prior to the update, optionally already
+	// having desired state with a recorded origin retention.
+	newAssignment := func(retention RetentionPolicy, origin *RetentionPolicy, peers ...string) *streamAssignment {
+		if len(peers) == 0 {
+			peers = []string{"S1", "S2", "S3"}
+		}
+		osa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Retention: retention, Replicas: len(peers)},
+			Group:  &raftGroup{Name: "G", Peers: peers, Cluster: "C1"},
+		}
+		if origin != nil {
+			osa.Group.Desired = &desiredRaftGroup{
+				ID:    "ID",
+				Peers: osa.Group.Peers,
+				Origin: &desiredRaftGroupOrigin{
+					Peers:    osa.Group.Peers,
+					Cluster:  osa.Group.Cluster,
+					Replicas: osa.Config.Replicas,
+					// The stream was already moving toward its config retention, the origin
+					// retention is what remains active until the desired state is reached.
+					Retention: origin,
+				},
+			}
+		}
+		return osa
+	}
+
+	// Note that changing retention to/from WorkQueue is currently rejected by config
+	// validation, but the origin retention logic itself is retention agnostic.
+	limits, interest, workQueue := LimitsPolicy, InterestPolicy, WorkQueuePolicy
+	for _, test := range []struct {
+		name string
+		// Retention of the stream config prior to the update.
+		retention RetentionPolicy
+		// Origin retention that's already recorded (if any).
+		origin *RetentionPolicy
+		// Retention the user wants to move to.
+		newRetention RetentionPolicy
+		// Origin retention that must be recorded after the update.
+		expected *RetentionPolicy
+	}{
+		{
+			// Consumers must be scaled up to have parity with the stream before the
+			// stream can truly become Interest, so remain on Limits until then.
+			name: "LimitsToInterest", retention: limits, newRetention: interest, expected: &limits,
+		},
+		{
+			name: "LimitsToWorkQueue", retention: limits, newRetention: workQueue, expected: &limits,
+		},
+		{
+			// Interest already requires consumer parity, but the origin must still be
+			// recorded so a cancel can revert to it.
+			name: "InterestToWorkQueue", retention: interest, newRetention: workQueue, expected: &interest,
+		},
+		{
+			// The origin must be the retention from before any desired state changes
+			// were made, so it can't be overwritten by a subsequent change.
+			name: "LimitsToInterestToWorkQueue", retention: interest, origin: &limits,
+			newRetention: workQueue, expected: &limits,
+		},
+		{
+			// Moving to Limits is not restrictive, it can be applied immediately and
+			// must not be held back by the recorded origin.
+			name: "InterestToLimits", retention: interest, newRetention: limits, expected: nil,
+		},
+		{
+			// Same, but now the origin was recorded by a previous change and MUST be
+			// removed, otherwise the stream would remain Interest.
+			name: "InterestToWorkQueueToLimits", retention: workQueue, origin: &interest,
+			newRetention: limits, expected: nil,
+		},
+		{
+			// Moving back to where we came from must not leave the origin behind.
+			name: "LimitsToInterestToLimits", retention: interest, origin: &limits,
+			newRetention: limits, expected: nil,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			osa := newAssignment(test.retention, test.origin)
+			rg := osa.copyGroup().Group.withRetentionChange(osa, test.newRetention)
+
+			newCfg := osa.Config.clone()
+			newCfg.Retention = test.newRetention
+
+			// A retention change must always register desired state, and it must always
+			// have an origin recorded, or it can't be rolled back or canceled.
+			require_NotNil(t, rg.Desired)
+			require_NotNil(t, rg.Desired.Origin)
+			if test.expected == nil {
+				require_True(t, rg.Desired.Origin.Retention == nil)
+				// Without an origin retention the config's retention is used as-is.
+				require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, test.newRetention)
+				return
+			}
+			require_NotNil(t, rg.Desired.Origin.Retention)
+			require_Equal(t, *rg.Desired.Origin.Retention, *test.expected)
+			// The origin retention remains active until the desired state is reached.
+			require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, *test.expected)
+		})
+	}
+
+	// An unchanged retention must be left alone entirely.
+	t.Run("NoRetentionChange", func(t *testing.T) {
+		osa := newAssignment(interest, nil)
+		rg := osa.copyGroup().Group.withRetentionChange(osa, interest)
+		require_True(t, rg.Desired == nil)
+	})
+
+	// A singleton has no consumers to scale up first, so it can be applied immediately.
+	t.Run("Singleton", func(t *testing.T) {
+		osa := newAssignment(limits, nil, "S1")
+		rg := osa.copyGroup().Group.withRetentionChange(osa, interest)
+		require_True(t, rg.Desired == nil)
+
+		newCfg := osa.Config.clone()
+		newCfg.Retention = interest
+		require_Equal(t, newCfg.atDesiredOrigin(rg).Retention, interest)
+	})
+
+	// But a singleton that's already moving or scaling must still go through desired state.
+	t.Run("SingletonWithDesiredState", func(t *testing.T) {
+		osa := newAssignment(limits, nil, "S1")
+		rg := osa.Group.withDesired(osa.copyGroup().Group)
+		rg = rg.withRetentionChange(osa, interest)
+		require_NotNil(t, rg.Desired)
+		require_NotNil(t, rg.Desired.Origin)
+		require_NotNil(t, rg.Desired.Origin.Retention)
+		require_Equal(t, *rg.Desired.Origin.Retention, limits)
+	})
+}
+
+// Moving into a more restrictive retention must keep the previous retention active
+// until all consumers have been scaled up to have parity with the stream.
+func TestJetStreamClusterDesiredOriginRetentionScaleUpFirst(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up to R3 before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	// While the desired state is pending the stream must remain on Limits, and only
+	// flip to Interest once the desired state is reached.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		// The config always contains the retention the user wants to move to.
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("expected config retention to be Interest, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			// Not converged yet, must still be on Limits.
+			if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != LimitsPolicy {
+				return fmt.Errorf("expected effective retention to remain Limits, got %v", r)
+			}
+			return fmt.Errorf("desired state still pending")
+		}
+		// Converged, the consumer must have parity with the stream.
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "C")
+		if ca == nil {
+			return fmt.Errorf("consumer assignment not found")
+		}
+		if len(ca.Group.Peers) != 3 {
+			return fmt.Errorf("expected consumer to be scaled up to 3 peers, got %d", len(ca.Group.Peers))
+		}
+		return nil
+	})
+
+	// And all replicas must now be on Interest. The assignment is replicated, so the
+	// members don't all apply it at the same time.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != InterestPolicy {
+				return fmt.Errorf("expected Interest on all members, got %v", r)
+			}
+		}
+		return nil
+	})
+}
+
+// Moving into Limits is not restrictive and must be applied immediately, even if a
+// previous change had recorded an origin retention.
+func TestJetStreamClusterDesiredOriginRetentionRemovedForLimits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Move to Interest first, this records Limits as the origin retention.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	// Snapshot the state, we must not assert while holding the lock.
+	snapshot := func() (retention, effective RetentionPolicy, origin *RetentionPolicy, pending bool) {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		require_NotNil(t, sa)
+		if d := sa.Group.Desired; d != nil {
+			pending = true
+			// Pending desired state must always have an origin, or it can't be canceled.
+			require_NotNil(t, d.Origin)
+			if d.Origin.Retention != nil {
+				r := *d.Origin.Retention
+				origin = &r
+			}
+		}
+		return sa.Config.Retention, sa.Config.atDesiredOrigin(sa.Group).Retention, origin, pending
+	}
+
+	// Either we're still moving toward Interest, in which case the origin must hold
+	// Limits, or we've already converged and the origin is gone entirely.
+	retention, _, origin, pending := snapshot()
+	require_Equal(t, retention, InterestPolicy)
+	if pending {
+		require_NotNil(t, origin)
+		require_Equal(t, *origin, LimitsPolicy)
+	}
+
+	// And then move back to Limits, which must be applied immediately.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// The origin retention must be gone right away, the effective retention must be
+	// Limits regardless of the desired state still being pending.
+	retention, effective, origin, _ := snapshot()
+	require_Equal(t, retention, LimitsPolicy)
+	require_Equal(t, effective, LimitsPolicy)
+	require_True(t, origin == nil)
+
+	// Must fully converge without the origin retention ever coming back.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != LimitsPolicy {
+			return fmt.Errorf("expected effective retention to be Limits, got %v", r)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != LimitsPolicy {
+				return fmt.Errorf("expected Limits on all members, got %v", r)
+			}
+		}
+		return nil
+	})
+}
+
+// A singleton without desired state applies retention changes immediately.
+func TestJetStreamClusterDesiredOriginRetentionSingleton(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("expected config retention to be Interest, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("unexpected desired state for singleton")
+		}
+		if r := sa.Config.atDesiredOrigin(sa.Group).Retention; r != InterestPolicy {
+			return fmt.Errorf("expected effective retention to be Interest, got %v", r)
+		}
+		return nil
+	})
+}
+
+// An ephemeral consumer that auto-scales (Replicas:0) must follow the stream's
+// retention: R1 while the stream is Limits, and scaled up to have parity while
+// the stream is Interest.
+func TestJetStreamClusterDesiredOriginRetentionEphemeralAutoScale(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An old-school ephemeral, it auto-scales with the stream's retention.
+	sub, err := js.SubscribeSync("foo")
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	ci, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+	name := ci.Name
+
+	mjs := ml.getJetStream()
+	consumerPeers := func() int {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", name)
+		if ca == nil {
+			return -1
+		}
+		return len(ca.Group.Peers)
+	}
+	requirePeers := func(t *testing.T, expected int) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			mjs.mu.RLock()
+			sa := mjs.streamAssignment(globalAccountName, "TEST")
+			pending := sa == nil || sa.Group.Desired != nil
+			mjs.mu.RUnlock()
+			if pending {
+				return fmt.Errorf("desired state still pending")
+			}
+			if p := consumerPeers(); p != expected {
+				return fmt.Errorf("expected consumer to have %d peers, got %d", expected, p)
+			}
+			return nil
+		})
+	}
+
+	// Ephemerals are R1 while the stream is Limits.
+	requirePeers(t, 1)
+
+	// Interest requires parity with the stream, so it must be scaled up.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+	requirePeers(t, 3)
+
+	// And scaled back down once the stream is Limits again.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+	requirePeers(t, 1)
+}
+
+// A read-modify-write of an unrelated config field must not cancel a pending retention
+// change, since clients are reported the requested config they then send back.
+func TestJetStreamClusterDesiredOriginRetentionSurvivesConfigEdit(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// Block the consumer from finishing its scale-up by stopping the meta leader from
+	// reconciling consumer assignments.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	consumerReconcile := mjs.cluster.consumerReconcile
+	mjs.cluster.consumerReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, consumerReconcile)
+	ml.sysUnsubscribe(consumerReconcile)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	require_True(t, ml == c.leader())
+	mjs.mu.RLock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	wasPending := sa != nil && sa.Group.Desired != nil
+	mjs.mu.RUnlock()
+	require_True(t, wasPending)
+
+	// Now edit an unrelated field, the way a client would: fetch, modify, update.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	cfg := si.Config
+	cfg.Description = "edited"
+	_, err = js.UpdateStream(&cfg)
+	require_NoError(t, err)
+
+	// Unblock the consumer scale-up so the stream can converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	// The retention change must not have been canceled by the edit.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if sa.Config.Retention != InterestPolicy {
+			return fmt.Errorf("retention change was canceled, got %v", sa.Config.Retention)
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			cfg := mset.config()
+			if cfg.Retention != InterestPolicy || cfg.Description != "edited" {
+				return fmt.Errorf("members not caught up: %v/%q", cfg.Retention, cfg.Description)
+			}
+		}
+		return nil
+	})
+}
+
+// The running config is at its origin, while the config as requested is the target.
+// Both placement and retention must be reverted independently of one another.
+func TestJetStreamClusterDesiredOriginTarget(t *testing.T) {
+	origin := &Placement{Cluster: "C1"}
+	target := &Placement{Cluster: "C2"}
+	limits, interest := LimitsPolicy, InterestPolicy
+
+	for _, test := range []struct {
+		name string
+		// The origin recorded when the desired state was registered.
+		origin *desiredRaftGroupOrigin
+		// Placement/retention as requested by the user.
+		targetPlacement *Placement
+		targetRetention RetentionPolicy
+		// What the stream must run at while the desired state is pending.
+		runPlacement *Placement
+		runRetention RetentionPolicy
+	}{
+		{
+			name:            "NoOrigin",
+			origin:          &desiredRaftGroupOrigin{},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: target, runRetention: interest,
+		},
+		{
+			// Only placement is held back, the retention was not changed.
+			name:            "PlacementOnly",
+			origin:          &desiredRaftGroupOrigin{Placement: origin},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: origin, runRetention: interest,
+		},
+		{
+			// And only retention is held back, the placement was not changed.
+			name:            "RetentionOnly",
+			origin:          &desiredRaftGroupOrigin{Retention: &limits},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: target, runRetention: limits,
+		},
+		{
+			// Moving and changing retention at the same time holds back both.
+			name:            "PlacementAndRetention",
+			origin:          &desiredRaftGroupOrigin{Placement: origin, Retention: &limits},
+			targetPlacement: target, targetRetention: interest,
+			runPlacement: origin, runRetention: limits,
+		},
+		{
+			// Removing placement must be held back as well.
+			name:            "PlacementRemoved",
+			origin:          &desiredRaftGroupOrigin{Placement: origin},
+			targetPlacement: nil, targetRetention: limits,
+			runPlacement: origin, runRetention: limits,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			targetCfg := &StreamConfig{Name: "TEST", Placement: test.targetPlacement, Retention: test.targetRetention}
+			rg := &raftGroup{Name: "G", Desired: &desiredRaftGroup{ID: "ID", Origin: test.origin}}
+
+			// What the stream runs at while the desired state is pending.
+			runCfg := targetCfg.atDesiredOrigin(rg)
+			require_Equal(t, runCfg.Retention, test.runRetention)
+			if test.runPlacement == nil {
+				require_True(t, runCfg.Placement == nil)
+			} else {
+				require_NotNil(t, runCfg.Placement)
+				require_Equal(t, runCfg.Placement.Cluster, test.runPlacement.Cluster)
+			}
+
+			// Must be reported as requested, i.e. reverting back to the target.
+			reported := runCfg.atDesiredTarget(targetCfg)
+			require_Equal(t, reported.Retention, test.targetRetention)
+			if test.targetPlacement == nil {
+				require_True(t, reported.Placement == nil)
+			} else {
+				require_NotNil(t, reported.Placement)
+				require_Equal(t, reported.Placement.Cluster, test.targetPlacement.Cluster)
+			}
+		})
+	}
+
+	// Without desired state there's nothing to revert.
+	t.Run("NoDesiredState", func(t *testing.T) {
+		cfg := &StreamConfig{Name: "TEST", Placement: target, Retention: interest}
+		runCfg := cfg.atDesiredOrigin(&raftGroup{Name: "G"})
+		require_Equal(t, runCfg.Placement.Cluster, target.Cluster)
+		reported := runCfg.atDesiredTarget(cfg)
+		require_Equal(t, reported.Placement.Cluster, target.Cluster)
+		require_Equal(t, reported.Retention, interest)
+	})
+}
+
+// The origin must capture the state from before any desired state changes were made,
+// which for a legacy move is only encoded as an over-replicated peer set.
+func TestJetStreamClusterDesiredOriginPopulate(t *testing.T) {
+	newAssignment := func(peers []string, replicas int, desired *desiredRaftGroup) *streamAssignment {
+		return &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Retention: LimitsPolicy, Replicas: replicas},
+			Group:  &raftGroup{Name: "G", Peers: peers, Cluster: "C1", Desired: desired},
+		}
+	}
+
+	// A legacy move only appended the destination peers, the first Replicas peers
+	// are the peer set it started from.
+	t.Run("LegacyMove", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3", "S4", "S5", "S6"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.Desired = &desiredRaftGroup{ID: "ID", Peers: rg.Peers}
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_Equal(t, len(rg.Desired.Origin.Peers), 3)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C1")
+		require_Equal(t, rg.Desired.Origin.Replicas, 3)
+	})
+
+	// Same, but now reached through a retention change registering the desired state.
+	t.Run("LegacyMoveWithRetentionChange", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3", "S4", "S5", "S6"}, 3, nil)
+		rg := osa.copyGroup().Group.withRetentionChange(osa, InterestPolicy)
+
+		require_NotNil(t, rg.Desired)
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+		require_NotNil(t, rg.Desired.Origin.Retention)
+		require_Equal(t, *rg.Desired.Origin.Retention, LimitsPolicy)
+	})
+
+	// Without a legacy move the current peer set is the origin.
+	t.Run("NoLegacyMove", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.Desired = &desiredRaftGroup{ID: "ID", Peers: rg.Peers}
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S1", "S2", "S3"}))
+	})
+
+	// Desired state without an origin means we rolled back, capture what we rolled back to.
+	t.Run("DesiredWithoutOrigin", func(t *testing.T) {
+		desired := &desiredRaftGroup{ID: "ID", Peers: []string{"S4", "S5", "S6"}, Cluster: "C2"}
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, desired)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S4", "S5", "S6"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C2")
+	})
+
+	// An already recorded origin MUST NOT be overwritten, it's from before any changes.
+	t.Run("OriginNotOverwritten", func(t *testing.T) {
+		origin := &desiredRaftGroupOrigin{Peers: []string{"S7", "S8", "S9"}, Cluster: "C3", Replicas: 3}
+		desired := &desiredRaftGroup{ID: "ID", Peers: []string{"S4", "S5", "S6"}, Origin: origin}
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, desired)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+
+		require_NotNil(t, rg.Desired.Origin)
+		require_True(t, slices.Equal(rg.Desired.Origin.Peers, []string{"S7", "S8", "S9"}))
+		require_Equal(t, rg.Desired.Origin.Cluster, "C3")
+	})
+
+	// And without desired state there's nothing to record onto.
+	t.Run("NoDesiredState", func(t *testing.T) {
+		osa := newAssignment([]string{"S1", "S2", "S3"}, 3, nil)
+		rg := osa.copyGroup().Group
+		rg.populateOrigin(osa)
+		require_True(t, rg.Desired == nil)
+	})
+}
+
+// While the desired state is pending the stream keeps running at its origin, but every
+// endpoint that reports the config must report it as the user requested it. Both placement
+// and retention are changed at once, so all of them are checked against both.
+func TestJetStreamClusterDesiredOriginReportsTarget(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Start out with placement, so the origin has something to hold back.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Placement: &nats.Placement{Cluster: "R3S"},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer, it must be scaled up before the stream can become Interest.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	mjs := ml.getJetStream()
+	pending := func() bool {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		return sa != nil && sa.Group.Desired != nil
+	}
+	memberConfigs := func(t *testing.T) []StreamConfig {
+		t.Helper()
+		var cfgs []StreamConfig
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			cfgs = append(cfgs, mset.config())
+		}
+		return cfgs
+	}
+	// Whether any member's running config is held back at its origin.
+	atOrigin := func(t *testing.T) bool {
+		t.Helper()
+		var atOrigin bool
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			atOrigin = atOrigin || (sa != nil && sa.Group.Desired != nil && sa.Group.Desired.Origin != nil)
+			sjs.mu.RUnlock()
+		}
+		return atOrigin
+	}
+	// Reports the stream as jsz sees it, on every server.
+	jszDetails := func(t *testing.T) []StreamDetail {
+		t.Helper()
+		var details []StreamDetail
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(&JSzOptions{Accounts: true, Streams: true, Config: true})
+			require_NoError(t, err)
+			for _, ad := range jsz.AccountDetails {
+				if ad.Name != globalAccountName {
+					continue
+				}
+				for _, sd := range ad.Streams {
+					if sd.Name == "TEST" {
+						details = append(details, sd)
+					}
+				}
+			}
+		}
+		require_Len(t, len(details), len(c.servers))
+		return details
+	}
+
+	// Without any desired state the running config is never at its origin.
+	require_False(t, atOrigin(t))
+
+	// Block the consumer from finishing its scale-up by stopping the meta leader from
+	// reconciling consumer assignments.
+	mjs.mu.Lock()
+	consumerReconcile := mjs.cluster.consumerReconcile
+	mjs.cluster.consumerReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, consumerReconcile)
+	ml.sysUnsubscribe(consumerReconcile)
+
+	// Remove the placement and change retention, the desired state holds back both. The
+	// description is not held back, so it marks the update as having been applied.
+	si, err := js.UpdateStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		Description: "applied",
+		Retention:   nats.InterestPolicy,
+		Replicas:    3,
+	})
+	require_NoError(t, err)
+
+	// The update response must report the config as requested.
+	require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+	require_True(t, si.Config.Placement == nil)
+
+	// The assignment is replicated, so wait for all members to have applied the update
+	// before asserting on it. Must not wait on the desired state itself, since that would
+	// wait out the very window where the running config and the target differ.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		for _, cfg := range memberConfigs(t) {
+			if cfg.Description != "applied" {
+				return fmt.Errorf("update not applied on all members yet")
+			}
+		}
+		return nil
+	})
+
+	// All members applied it, so they must know they're running at their origin and the
+	// desired state must not have been reached yet.
+	require_True(t, ml == c.leader())
+	require_True(t, pending())
+	require_True(t, atOrigin(t))
+
+	// The members must still be running at their origin, so consumers keep their parity
+	// guarantee until they've all been scaled up.
+	for _, cfg := range memberConfigs(t) {
+		require_Equal(t, cfg.Retention, LimitsPolicy)
+		require_NotNil(t, cfg.Placement)
+		require_Equal(t, cfg.Placement.Cluster, "R3S")
+	}
+
+	// But stream info, stream list and jsz must all report the config as requested.
+	si, err = js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+	require_True(t, si.Config.Placement == nil)
+
+	var listed bool
+	for si := range js.StreamsInfo() {
+		if si.Config.Name == "TEST" {
+			listed = true
+			require_Equal(t, si.Config.Retention, nats.InterestPolicy)
+			require_True(t, si.Config.Placement == nil)
+		}
+	}
+	require_True(t, listed)
+
+	for _, sd := range jszDetails(t) {
+		require_NotNil(t, sd.Config)
+		require_Equal(t, sd.Config.Retention, InterestPolicy)
+		require_True(t, sd.Config.Placement == nil)
+	}
+
+	// Unblock the consumer scale-up so the stream can converge.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+
+	// Wait for the desired state to be reached.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if pending() {
+			return fmt.Errorf("desired state still pending")
+		}
+		return nil
+	})
+
+	// Once converged the running config must have caught up with the target, and the
+	// members must go back to the fast path.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, cfg := range memberConfigs(t) {
+			if cfg.Retention != InterestPolicy || cfg.Placement != nil {
+				return fmt.Errorf("running config not caught up: %v/%v", cfg.Retention, cfg.Placement)
+			}
+		}
+		if atOrigin(t) {
+			return fmt.Errorf("still marked as running at origin")
+		}
+		return nil
+	})
+
+	// And jsz must no longer report any desired state alongside it.
+	for _, sd := range jszDetails(t) {
+		require_NotNil(t, sd.Config)
+		require_Equal(t, sd.Config.Retention, InterestPolicy)
+		require_True(t, sd.Config.Placement == nil)
+		if sd.Cluster != nil {
+			require_True(t, sd.Cluster.Desired == nil)
+		}
+	}
+}
+
+// peerRemove takes the given servers out as an operator would, either out of the
+// cluster entirely or just out of the stream.
+func peerRemove(t *testing.T, c *cluster, nc *nats.Conn, stream string, serverScope bool, peers []string) {
+	t.Helper()
+	if !serverScope {
+		for _, name := range peers {
+			req, err := json.Marshal(&JSApiStreamRemovePeerRequest{Peer: name})
+			require_NoError(t, err)
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, stream), req, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamRemovePeerResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+			require_True(t, resp.Error == nil)
+		}
+		return
+	}
+
+	// The server scoped endpoint is system account only.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	snc, err := nats.Connect(ml.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer snc.Close()
+
+	for _, name := range peers {
+		req, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := snc.Request(JSApiRemoveServer, req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+	}
+}
+
+// proposeSelectedScaleDown rewrites a consumer assignment as if a scale-down had
+// already selected its final peer set before the group lost quorum: the desired
+// peers hold only the kept peer, while the actual peers still hold the downed
+// ones. A subsequent peer-remove of the downed servers is a no-op for the desired
+// peers, so recovering from this shape requires recording the removals against
+// the actual peers.
+func proposeSelectedScaleDown(t *testing.T, c *cluster, stream, consumer string, replicas int, keep *Server) {
+	t.Helper()
+	const desiredID = "selected-scale-down"
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	cc := mjs.cluster
+	ca := mjs.consumerAssignment(globalAccountName, stream, consumer)
+	if ca == nil || cc == nil || cc.meta == nil {
+		mjs.mu.Unlock()
+		t.Fatalf("no consumer assignment for %q", consumer)
+	}
+	nca := ca.copyGroup()
+	if replicas > 0 {
+		cfg := *nca.Config
+		cfg.Replicas = replicas
+		nca.Config = &cfg
+	}
+	nca.Group.Desired = &desiredRaftGroup{ID: desiredID, Peers: []string{keep.Node()}}
+	err := cc.meta.Propose(cc.term, encodeAddConsumerAssignment(nca))
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Wait for the assignment to be applied before returning.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		if ca := mjs.consumerAssignment(globalAccountName, stream, consumer); ca == nil ||
+			ca.Group.Desired == nil || ca.Group.Desired.ID != desiredID {
+			return fmt.Errorf("consumer %q assignment not applied yet", consumer)
+		}
+		return nil
+	})
+}
+
+// A stream and consumer that lost quorum, because their peers were shut down,
+// must recover once those peers are removed. They can't commit the peer removal
+// through their own log, since that needs the quorum they lost. Removing the
+// servers from the cluster takes them out of every group, removing them from the
+// stream only takes them out of this one and leaves them cluster members.
+func TestJetStreamClusterPeerRemoveRestoresQuorum(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		serverScope bool
+	}{
+		{"Server", true},
+		{"Stream", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R5S", 5)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "dur",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			// A second consumer that will be rewritten below as a stuck scale-down.
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "scaled",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Shut down both stream followers, taking the stream and its consumer
+			// below quorum. The meta group has 3 of 5 servers left, so it stays
+			// available.
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			var downed []string
+			for _, r := range si.Cluster.Replicas {
+				downed = append(downed, r.Name)
+			}
+			sl := c.serverByName(si.Cluster.Leader)
+			for _, name := range downed {
+				c.serverByName(name).Shutdown()
+			}
+			c.waitOnLeader()
+
+			// Reconnect to a server that's still up.
+			nc.Close()
+			nc, js = jsClientConnect(t, sl)
+			defer nc.Close()
+
+			// Both groups must be stuck at this point. The old leaders step down
+			// once they notice they've lost quorum, and no new leader can be
+			// elected. Can take up to lostQuorumInterval plus lostQuorumCheck for
+			// them to notice.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+					return fmt.Errorf("stream still has leader %q", l.Name())
+				}
+				for _, consumer := range []string{"dur", "scaled"} {
+					if l := c.consumerLeader(globalAccountName, "TEST", consumer); l != nil {
+						return fmt.Errorf("consumer %q still has leader %q", consumer, l.Name())
+					}
+				}
+				return nil
+			})
+			_, err = js.Publish("foo", nil)
+			require_Error(t, err, nats.ErrNoStreamResponse)
+
+			// The second consumer already selected its scale-down peer set, so the
+			// peer-remove below can't touch its desired peers, only its actual ones.
+			proposeSelectedScaleDown(t, c, "TEST", "scaled", 1, sl)
+
+			// Now remove both downed servers. Only a server peer-remove changes
+			// cluster membership, so that's the only one there is something to
+			// wait for. A stream peer-remove leaves it alone, which the check at
+			// the end of the test confirms.
+			peerRemove(t, c, nc, "TEST", test.serverScope, downed)
+			if test.serverScope {
+				checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+					ml := c.leader()
+					if ml == nil {
+						return errors.New("no meta leader")
+					}
+					if n := len(ml.getJetStream().getMetaGroup().Peers()); n != 3 {
+						return fmt.Errorf("expected 3 meta members, got %d", n)
+					}
+					return nil
+				})
+			}
+
+			// Both the stream and the consumers must now be able to elect a leader
+			// again, having evicted the removed peers, and become fully available.
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "dur")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "scaled")
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// And no group should reference the removed servers anymore.
+			// Waiting on the leaders above also waits for the groups to have
+			// converged, so this must hold right away.
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_NotNil(t, si.Cluster)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			ci, err := js.ConsumerInfo("TEST", "dur")
+			require_NoError(t, err)
+			require_NotNil(t, ci.Cluster)
+			require_Equal(t, len(ci.Cluster.Replicas), 2)
+
+			// The stuck scale-down settles on its selected peer.
+			sci, err := js.ConsumerInfo("TEST", "scaled")
+			require_NoError(t, err)
+			require_NotNil(t, sci.Cluster)
+			require_Equal(t, sci.Cluster.Leader, sl.Name())
+			require_Equal(t, len(sci.Cluster.Replicas), 0)
+
+			for _, name := range downed {
+				require_NotEqual(t, si.Cluster.Leader, name)
+				require_NotEqual(t, ci.Cluster.Leader, name)
+				for _, r := range si.Cluster.Replicas {
+					require_NotEqual(t, r.Name, name)
+				}
+				for _, r := range ci.Cluster.Replicas {
+					require_NotEqual(t, r.Name, name)
+				}
+			}
+
+			// Only a server peer-remove takes them out of the cluster as well.
+			expectedMetaPeers := 5
+			if test.serverScope {
+				expectedMetaPeers = 3
+			}
+			ml := c.leader()
+			require_NotNil(t, ml)
+			require_Equal(t, len(ml.getJetStream().getMetaGroup().Peers()), expectedMetaPeers)
+		})
+	}
+}
+
+// A stream peer remove that would leave the group below its replica count is rejected, even
+// when the peers are offline and the group is below quorum. Scaling the stream down is the
+// way out, after which the same removes are accepted and evict the peers, restoring the
+// stream without needing a server peer remove.
+func TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum(t *testing.T) {
+	// Tag placement so the stream can only ever live on S-1, S-2 and S-3. That leaves no
+	// eligible replacement once peers go down, while the meta group keeps quorum on five.
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 5,
+		func(serverName, clusterName, storeDir, conf string) string {
+			switch serverName {
+			case "S-1", "S-2", "S-3":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:a]", conf, serverName)
+			default:
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:b]", conf, serverName)
+			}
+		})
+	defer c.shutdown()
+
+	// The meta leader must be outside the stream's peer set so it stays able to propose.
+	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
+		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	ml := c.leader()
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"grp:a"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	toSend := 5
+	for range toSend {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Take two of the three stream peers down for good, putting the stream below quorum.
+	var offline []string
+	for _, name := range []string{"S-2", "S-3"} {
+		s := c.serverByName(name)
+		offline = append(offline, s.Node())
+		s.Shutdown()
+	}
+	checkFor(t, 15*time.Second, 250*time.Millisecond, func() error {
+		for _, p := range offline {
+			si, ok := ml.nodeToInfo.Load(p)
+			if !ok || si == nil || !si.(nodeInfo).offline {
+				return fmt.Errorf("peer %q not offline yet", p)
+			}
+		}
+		return nil
+	})
+
+	// The stream must actually be stuck before we exercise the recovery. The old leader
+	// steps down once it notices it has lost quorum, which can take up to
+	// lostQuorumInterval plus lostQuorumCheck.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+			return fmt.Errorf("stream still has leader %q", l.Name())
+		}
+		return nil
+	})
+
+	removePeer := func(peer string) *JSApiStreamRemovePeerResponse {
+		t.Helper()
+		b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: peer})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRemovePeerResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		return &resp
+	}
+
+	// At R3 there is nowhere to hand the peer to, so this must be rejected and the group
+	// left exactly as it was.
+	resp := removePeer(offline[0])
+	require_False(t, resp.Success)
+	require_Error(t, resp.Error, NewJSPeerRemapError())
+	require_Len(t, len(metaStreamPeers(ml, globalAccountName, "TEST")), 3)
+
+	// Scale the stream down. The request can time out waiting on a stream that has no
+	// leader to respond, what matters is that the meta layer records it.
+	cfg.Replicas = 1
+	_, _ = js.UpdateStream(cfg, nats.MaxWait(time.Second))
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Config.Replicas != 1 {
+			return fmt.Errorf("expected R1, got R%d", sa.Config.Replicas)
+		}
+		return nil
+	})
+
+	// Now the same removes are accepted, the group is no longer short of its replica count.
+	for _, peer := range offline {
+		require_True(t, removePeer(peer).Success)
+	}
+
+	// Both offline peers are evicted, leaving the stream on its one surviving peer.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Group.Desired != nil {
+			return fmt.Errorf("stream still converging: peers=%v desired=%v scaleDown=%v",
+				sa.Group.Peers, sa.Group.Desired.Peers, sa.Group.Desired.ScaleDown)
+		}
+		if len(sa.Group.Peers) != 1 {
+			return fmt.Errorf("expected 1 peer, got %v", sa.Group.Peers)
+		}
+		for _, p := range offline {
+			if slices.Contains(sa.Group.Peers, p) {
+				return fmt.Errorf("offline peer %q still in peer set %v", p, sa.Group.Peers)
+			}
+		}
+		return nil
+	})
+
+	// And the stream is usable again, with its data, without a server peer remove.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(toSend+1))
+	require_Len(t, len(si.Cluster.Replicas), 0)
+}
+
+// A scale-down or move that appended a removal of the surviving peer, but lost
+// quorum before committing it, leaves that peer speculatively dropped from its
+// own peer set while the assignment still lists it. Peer-removing the downed
+// servers must still evict them, reverting the stuck self-removal, or the
+// survivor could never campaign again.
+func TestJetStreamClusterStreamPeerRemoveWithUncommittedSelfRemoval(t *testing.T) {
+	// Tag placement so the stream can only ever live on S-1, S-2 and S-3, same as
+	// TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum.
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 5,
+		func(serverName, clusterName, storeDir, conf string) string {
+			switch serverName {
+			case "S-1", "S-2", "S-3":
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:a]", conf, serverName)
+			default:
+				return fmt.Sprintf("%s\nserver_tags: [server:%s, grp:b]", conf, serverName)
+			}
+		})
+	defer c.shutdown()
+
+	// The meta leader must be outside the stream's peer set so it stays able to propose.
+	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
+		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	ml := c.leader()
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Tags: []string{"grp:a"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// Take the other two stream peers down for good, leaving S-1 as the survivor.
+	survivor := c.serverByName("S-1")
+	var offline []string
+	for _, name := range []string{"S-2", "S-3"} {
+		s := c.serverByName(name)
+		offline = append(offline, s.Node())
+		s.Shutdown()
+	}
+
+	// The stream must be stuck before we exercise the recovery.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+			return fmt.Errorf("stream still has leader %q", l.Name())
+		}
+		return nil
+	})
+
+	// Put the survivor in the state a scale-down or move would leave behind if it
+	// appended a removal of this peer and lost quorum before committing it. This
+	// is the same speculative apply processAppendEntry does for the entry.
+	mset, err := survivor.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	node := mset.raftNode().(*raft)
+	node.Lock()
+	node.membChange = &membChange{index: node.pindex + 1, peer: node.id, prev: node.peers[node.id]}
+	delete(node.peers, node.id)
+	node.adjustClusterSizeAndQuorum()
+	pendingSelfRemoval := node.pendingSelfRemoval()
+	node.Unlock()
+	require_True(t, pendingSelfRemoval)
+
+	// Scale the stream down, so the peer removes below aren't rejected for leaving
+	// the group short of its replica count. No leader can respond to the request.
+	cfg.Replicas = 1
+	_, _ = js.UpdateStream(cfg, nats.MaxWait(time.Second))
+	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil {
+			return errors.New("stream not found")
+		}
+		if sa.Config.Replicas != 1 {
+			return fmt.Errorf("expected R1, got R%d", sa.Config.Replicas)
+		}
+		return nil
+	})
+
+	// Remove both downed peers.
+	for _, peer := range offline {
+		b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: peer})
+		require_NoError(t, err)
+		msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRemovePeerResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Success)
+	}
+
+	// The survivor must evict the removed peers, revert its own stuck removal and
+	// be able to elect a leader again, settling the group at R1.
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		node.RLock()
+		pendingSelfRemoval := node.pendingSelfRemoval()
+		node.RUnlock()
+		if pendingSelfRemoval {
+			return errors.New("self removal still pending")
+		}
+		if !slices.Contains(node.PeerNames(), node.ID()) {
+			return fmt.Errorf("not a member of our own group: %v", node.PeerNames())
+		}
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return errors.New("stream not found")
+		}
+		if len(sa.Group.Peers) != 1 || sa.Group.Peers[0] != survivor.Node() {
+			return fmt.Errorf("expected the survivor as only peer, got %v", sa.Group.Peers)
+		}
+		return nil
+	})
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(2))
+	require_Equal(t, si.Cluster.Leader, survivor.Name())
+	require_Len(t, len(si.Cluster.Replicas), 0)
+}
+
+// A stream that lost quorum can't scale down either, removing peers needs the
+// quorum it just lost. Removing the downed servers must let it shrink around
+// them and settle at its new replica count.
+func TestJetStreamClusterPeerRemoveRestoresQuorumWhileScalingDown(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		serverScope bool
+	}{
+		{"Server", true},
+		{"Stream", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R5S", 5)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// A consumer that will be rewritten below as a stuck scale-down.
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "scaled",
+				AckPolicy: nats.AckExplicitPolicy,
+			})
+			require_NoError(t, err)
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			// Shut down both stream followers, taking the stream below quorum. The
+			// meta group has 3 of 5 servers left, so it stays available.
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, len(si.Cluster.Replicas), 2)
+
+			var downed []string
+			for _, r := range si.Cluster.Replicas {
+				downed = append(downed, r.Name)
+			}
+			sl := c.serverByName(si.Cluster.Leader)
+			for _, name := range downed {
+				c.serverByName(name).Shutdown()
+			}
+			c.waitOnLeader()
+
+			// Reconnect to a server that's still up.
+			nc.Close()
+			nc, js = jsClientConnect(t, sl)
+			defer nc.Close()
+
+			// Scale the stream down to R1. The meta layer takes the new replica
+			// count, but the group can't shrink to it while it has no quorum. The
+			// request races the old leader stepping down, so it may not get a
+			// response at all. What matters is that the new config took.
+			_, _ = js.UpdateStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 1,
+			})
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				ml := c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				mjs := ml.getJetStream()
+				mjs.mu.RLock()
+				sa := mjs.streamAssignment(globalAccountName, "TEST")
+				var replicas int
+				if sa != nil && sa.Config != nil {
+					replicas = sa.Config.Replicas
+				}
+				mjs.mu.RUnlock()
+				if replicas != 1 {
+					return fmt.Errorf("expected 1 replica in the assignment, got %d", replicas)
+				}
+				return nil
+			})
+
+			// It must be stuck, no leader can be elected.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				if l := c.streamLeader(globalAccountName, "TEST"); l != nil {
+					return fmt.Errorf("stream still has leader %q", l.Name())
+				}
+				if l := c.consumerLeader(globalAccountName, "TEST", "scaled"); l != nil {
+					return fmt.Errorf("consumer still has leader %q", l.Name())
+				}
+				return nil
+			})
+			_, err = js.Publish("foo", nil)
+			require_Error(t, err, nats.ErrNoStreamResponse)
+
+			// The consumer already selected its scale-down peer set, so the
+			// peer-remove below can't touch its desired peers, only its actual ones.
+			proposeSelectedScaleDown(t, c, "TEST", "scaled", 0, sl)
+
+			// Now remove both downed servers. Only a server peer-remove changes
+			// cluster membership, so that's the only one there is something to
+			// wait for. A stream peer-remove leaves it alone, which the check at
+			// the end of the test confirms.
+			peerRemove(t, c, nc, "TEST", test.serverScope, downed)
+			if test.serverScope {
+				checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+					ml := c.leader()
+					if ml == nil {
+						return errors.New("no meta leader")
+					}
+					if n := len(ml.getJetStream().getMetaGroup().Peers()); n != 3 {
+						return fmt.Errorf("expected 3 meta members, got %d", n)
+					}
+					return nil
+				})
+			}
+
+			// The stream and consumer must be able to elect a leader again, having
+			// evicted the removed peers, and settle at R1.
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+			c.waitOnConsumerLeader(globalAccountName, "TEST", "scaled")
+
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_NotNil(t, si.Cluster)
+			require_Equal(t, si.Config.Replicas, 1)
+			require_Equal(t, len(si.Cluster.Replicas), 0)
+			for _, name := range downed {
+				require_NotEqual(t, si.Cluster.Leader, name)
+			}
+
+			// The stuck scale-down settles on its selected peer.
+			ci, err := js.ConsumerInfo("TEST", "scaled")
+			require_NoError(t, err)
+			require_NotNil(t, ci.Cluster)
+			require_Equal(t, ci.Cluster.Leader, sl.Name())
+			require_Equal(t, len(ci.Cluster.Replicas), 0)
+
+			// Only a server peer-remove takes them out of the cluster as well.
+			expectedMetaPeers := 5
+			if test.serverScope {
+				expectedMetaPeers = 3
+			}
+			ml := c.leader()
+			require_NotNil(t, ml)
+			require_Equal(t, len(ml.getJetStream().getMetaGroup().Peers()), expectedMetaPeers)
+		})
+	}
+}
+
+// A new desired state must not lose which peers were peer-removed, the group can
+// still be carrying them and need to shrink around them. Peers the new desired
+// set takes back on are no longer removed.
+func TestJetStreamClusterDesiredStateCarriesRemoved(t *testing.T) {
+	const a, b, c, d, e = "A", "B", "C", "D", "E"
+
+	newGroup := func() *raftGroup {
+		return &raftGroup{
+			Name:  "G",
+			Peers: []string{a, b, c},
+			Desired: &desiredRaftGroup{
+				Peers:   []string{a, c, d},
+				Removed: []string{b},
+			},
+		}
+	}
+
+	// A further removal must keep the earlier one on record.
+	rg := newGroup()
+	ng := rg.withDesired(&raftGroup{Name: "G", Peers: []string{a, d}})
+	require_True(t, slices.Contains(ng.Desired.Removed, b))
+	// And must not have mutated the original.
+	require_True(t, slices.Contains(rg.Desired.Removed, b))
+
+	// A peer the new desired set takes back on is no longer removed.
+	rg = newGroup()
+	ng = rg.withDesired(&raftGroup{Name: "G", Peers: []string{a, b, d}})
+	require_False(t, slices.Contains(ng.Desired.Removed, b))
+
+	// Recording is idempotent, and never records a peer that's still desired.
+	// In the real flow the peers are stripped from the desired set first, so that
+	// guard only catches a caller that hasn't.
+	rg = newGroup()
+	rg.Desired.addRemoved([]string{b, c, e})
+	require_Equal(t, len(rg.Desired.Removed), 2)
+	require_True(t, slices.Contains(rg.Desired.Removed, b))
+	require_True(t, slices.Contains(rg.Desired.Removed, e))
+	require_False(t, slices.Contains(rg.Desired.Removed, c))
+}
+
+// A consumer already scaling down can hold a peer-removed peer only in its actual
+// peer set, with its desired peers untouched by the removal. Remapping must still
+// record that removal, or the group could never evict the peer and stay leaderless
+// below quorum.
+func TestJetStreamClusterRemapConsumerRecordsRemovedActualPeer(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	js := &jetStream{cluster: &jetStreamCluster{}}
+	newAssignments := func(consumerPeers []string) (*streamAssignment, *consumerAssignment) {
+		// Stream already had peer C removed by the operator.
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 2, Retention: LimitsPolicy},
+			Group: &raftGroup{
+				Name:  "S",
+				Peers: []string{a, b},
+				Desired: &desiredRaftGroup{
+					Peers:   []string{a, b},
+					Removed: []string{c},
+				},
+			},
+		}
+		// Consumer is mid-scale-down with its final peers already selected, C is
+		// gone from its desired peers but still in its actual peers, so the
+		// peer-remove itself is a desired no-op.
+		ca := &consumerAssignment{
+			Name:   "CONSUMER",
+			Stream: "TEST",
+			Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: 2},
+			Group: &raftGroup{
+				Name:  "C",
+				Peers: consumerPeers,
+				Desired: &desiredRaftGroup{
+					Peers: []string{a, b},
+				},
+			},
+		}
+		sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+		return sa, ca
+	}
+
+	// The removed peer must be dropped from the actual peers and recorded as removed.
+	sa, _ := newAssignments([]string{a, b, c})
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca := consumers[0]
+	require_False(t, slices.Contains(cca.Group.Peers, c))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, c))
+	require_True(t, slices.Contains(cca.Group.Peers, a))
+	require_True(t, slices.Contains(cca.Group.Peers, b))
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
+	require_False(t, cca.Group.Desired.ScaleDown)
+
+	// Recording is idempotent, once recorded there's nothing left to propose.
+	sa.consumers[cca.Name] = cca
+	consumers, deleted, _ = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_Len(t, len(deleted), 0)
+
+	// If all actual peers were removed, the consumer jumps to its desired set.
+	sa, _ = newAssignments([]string{c})
+	consumers, deleted, _ = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	cca = consumers[0]
+	require_False(t, slices.Contains(cca.Group.Peers, c))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, c))
+	require_True(t, slices.Contains(cca.Group.Peers, a))
+	require_True(t, slices.Contains(cca.Group.Peers, b))
+}
+
+func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	getCreated := func(s *Server) (time.Time, error) {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+		if sa == nil {
+			return time.Time{}, fmt.Errorf("server %q has no stream assignment", s)
+		}
+		return sa.Created, nil
+	}
+	c.waitOnLeader()
+	created, err := getCreated(c.leader())
+	require_NoError(t, err)
+
+	// An idempotent create retry re-proposes the stream assignment.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// The retry responds after its proposal applied, but replicas might lag.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sc, err := getCreated(s)
+			if err != nil {
+				return err
+			}
+			if !sc.Equal(created) {
+				return fmt.Errorf("server %q changed Created from %v to %v", s, created, sc)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaSnapshotIdempotentCreatePreservesStream(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Make sure the R1 stream is not hosted on the meta leader, so we can shut
+	// down its host while keeping the meta leader around.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	ml := c.leader()
+	require_NotNil(t, ml)
+	if sl == ml {
+		meta := ml.getJetStream().getMetaGroup()
+		require_NoError(t, meta.StepDown())
+		c.waitOnLeader()
+	}
+	ml = c.leader()
+	require_NotNil(t, ml)
+	require_NotEqual(t, sl, ml)
+
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Capture the assignment's created time before the host goes down.
+	mljs := ml.getJetStream()
+	mljs.mu.RLock()
+	sa := mljs.streamAssignmentOrInflight(globalAccountName, "TEST")
+	if sa == nil {
+		mljs.mu.RUnlock()
+		t.Fatal("stream assignment not found")
+	}
+	created := sa.Created
+	mljs.mu.RUnlock()
+
+	sl.Shutdown()
+	sl.WaitForShutdown()
+
+	// Reconnect in case our client was on the downed server.
+	nc.Close()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Perform an idempotent create while the host is down. The duplicate
+	// assignment is proposed, but the only member is down and can't respond.
+	_, err = js.AddStream(cfg, nats.MaxWait(time.Second))
+	require_Error(t, err, nats.ErrTimeout, context.DeadlineExceeded)
+
+	// Wait for the duplicate assignment to be applied, it must preserve the
+	// original created time.
+	var created2 time.Time
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if len(mljs.cluster.inflightStreams[globalAccountName]) > 0 {
+			return fmt.Errorf("create proposal not applied yet")
+		}
+		nsa := mljs.streamAssignment(globalAccountName, "TEST")
+		if nsa == nil {
+			return fmt.Errorf("stream assignment not found")
+		}
+		if nsa == sa {
+			return fmt.Errorf("duplicate create proposal not applied yet")
+		}
+		created2 = nsa.Created
+		return nil
+	})
+	require_True(t, created2.Equal(created))
+
+	// Compact the meta log so the downed server recovers via snapshot and
+	// never replays the duplicate create entry.
+	require_NoError(t, ml.JetStreamSnapshotMeta())
+
+	// Restart. The server must not treat the idempotent create as a recreate,
+	// it holds the only copy of the data.
+	sl = c.restartServer(sl)
+	c.checkClusterFormed()
+	c.waitOnServerCurrent(sl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+		if err != nil {
+			return err
+		}
+		if state.Msgs != 10 {
+			return fmt.Errorf("stream data lost on idempotent create: %+v", state)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterApplyMetaSnapshotRecreateDetection(t *testing.T) {
+	const acc, stream, consumer = "A", "TEST", "C"
+	created := time.Now().UTC()
+	recreatedTS := created.Add(time.Second)
+
+	group := func(name string) *raftGroup {
+		if name == _EMPTY_ {
+			return nil
+		}
+		return &raftGroup{Name: name, Storage: FileStorage}
+	}
+	scfg := &StreamConfig{Name: stream, Subjects: []string{"foo"}, Storage: FileStorage, Replicas: 3}
+	scfgJSON, err := json.Marshal(scfg)
+	require_NoError(t, err)
+	ccfg := &ConsumerConfig{Durable: consumer}
+	ccfgJSON, err := json.Marshal(ccfg)
+	require_NoError(t, err)
+
+	mkStream := func(created time.Time, groupName string) *streamAssignment {
+		return &streamAssignment{Client: &ClientInfo{Account: acc}, Created: created, Group: group(groupName), Config: scfg, ConfigJSON: scfgJSON}
+	}
+	mkConsumer := func(created time.Time, groupName string) *consumerAssignment {
+		return &consumerAssignment{Client: &ClientInfo{Account: acc}, Created: created, Group: group(groupName), Name: consumer, Stream: stream, Config: ccfg, ConfigJSON: ccfgJSON}
+	}
+
+	skey := mkStream(created, _EMPTY_).recoveryKey()
+	ckey := mkConsumer(created, _EMPTY_).recoveryKey()
+
+	applySnapshot := func(t *testing.T, osa, nsa *streamAssignment) *recoveryUpdates {
+		t.Helper()
+		js := &jetStream{srv: &Server{}, cluster: &jetStreamCluster{
+			streams: map[string]map[string]*streamAssignment{acc: {stream: osa}},
+		}}
+		buf, _, _, err := js.encodeMetaSnapshot(map[string]map[string]*streamAssignment{acc: {stream: nsa}})
+		require_NoError(t, err)
+		ru := &recoveryUpdates{
+			removeStreams:   make(map[string]*streamAssignment),
+			removeConsumers: make(map[string]map[string]*consumerAssignment),
+			addStreams:      make(map[string]*streamAssignment),
+			updateStreams:   make(map[string]*streamAssignment),
+			updateConsumers: make(map[string]map[string]*consumerAssignment),
+		}
+		require_NoError(t, js.applyMetaSnapshot(buf, ru, true))
+		return ru
+	}
+
+	for _, test := range []struct {
+		name      string
+		nCreated  time.Time
+		group     string
+		nGroup    string
+		recreated bool
+	}{
+		{"same created same group", created, "G-A", "G-A", false},
+		{"same created different group", created, "G-A", "G-B", false},
+		{"same created nil groups", created, _EMPTY_, _EMPTY_, false},
+		{"different created same group", recreatedTS, "G-A", "G-A", false},
+		{"different created different group", recreatedTS, "G-A", "G-B", true},
+		{"different created nil old group", recreatedTS, _EMPTY_, "G-A", true},
+		{"different created nil new group", recreatedTS, "G-A", _EMPTY_, true},
+		{"different created nil groups", recreatedTS, _EMPTY_, _EMPTY_, true},
+	} {
+		t.Run("stream/"+test.name, func(t *testing.T) {
+			osa := mkStream(created, test.group)
+			nsa := mkStream(test.nCreated, test.nGroup)
+			ru := applySnapshot(t, osa, nsa)
+
+			_, removed := ru.removeStreams[skey]
+			_, added := ru.addStreams[skey]
+			_, updated := ru.updateStreams[skey]
+			require_Equal(t, removed, test.recreated)
+			require_Equal(t, added, test.recreated)
+			require_Equal(t, updated, !test.recreated)
+		})
+
+		t.Run("consumer/"+test.name, func(t *testing.T) {
+			// Keep the stream itself unchanged so only the consumer varies.
+			osa := mkStream(created, "G-S")
+			osa.consumers = map[string]*consumerAssignment{consumer: mkConsumer(created, test.group)}
+			nsa := mkStream(created, "G-S")
+			nsa.consumers = map[string]*consumerAssignment{consumer: mkConsumer(test.nCreated, test.nGroup)}
+			ru := applySnapshot(t, osa, nsa)
+
+			_, updated := ru.updateStreams[skey]
+			require_True(t, updated)
+			_, removed := ru.removeConsumers[skey][ckey]
+			require_Equal(t, removed, test.recreated)
+			// The consumer from the snapshot is always (re)applied.
+			_, added := ru.updateConsumers[skey][ckey]
+			require_True(t, added)
+		})
+	}
+}
+
+// https://github.com/nats-io/nats-server/issues/8423
+func TestJetStreamClusterWorkQueueSourceMustNotAckOtherSubjects(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:      "WQ",
+				Subjects:  []string{"x.>"},
+				Storage:   FileStorage,
+				Retention: WorkQueuePolicy,
+				Replicas:  replicas,
+			})
+			require_NoError(t, err)
+
+			// Wrap two matching sourced messages around a gap.
+			_, err = js.Publish("x.target", nil)
+			require_NoError(t, err)
+			for range 3 {
+				_, err = js.Publish("x.other", nil)
+				require_NoError(t, err)
+			}
+			_, err = js.Publish("x.target", nil)
+			require_NoError(t, err)
+
+			_, err = jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "TARGET",
+				Storage:  FileStorage,
+				Replicas: replicas,
+				Sources:  []*StreamSource{{Name: "WQ", FilterSubject: "x.target"}},
+			})
+			require_NoError(t, err)
+
+			// Wait for both messages to be sourced.
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TARGET")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages in TARGET, got %d", si.State.Msgs)
+				}
+				return nil
+			})
+
+			// The ack of sequence 5 must not have removed sequences 2-4 on "x.other".
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("WQ")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 3 {
+					return fmt.Errorf("expected 3 messages in WQ, got %d (first=%d, last=%d)",
+						si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+// https://github.com/nats-io/nats-server/issues/8423
+func TestJetStreamClusterScheduledMessagesWithWorkQueueSource(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := jsStreamCreate(t, nc, &StreamConfig{
+				Name:              "SCHEDULES",
+				Subjects:          []string{"x.>"},
+				Storage:           FileStorage,
+				Retention:         WorkQueuePolicy,
+				Replicas:          replicas,
+				AllowMsgSchedules: true,
+			})
+			require_NoError(t, err)
+
+			publishSchedule := func(subject string, due time.Time) {
+				t.Helper()
+				m := nats.NewMsg(subject)
+				m.Header.Set(JSSchedulePattern, "@at "+due.UTC().Format(time.RFC3339))
+				m.Header.Set(JSScheduleTarget, "x.target")
+				_, err = js.PublishMsg(m)
+				require_NoError(t, err)
+			}
+			// A fired schedule writes to "x.target" and purges its own message, so we
+			// can wait on the resulting stream sequence.
+			waitForFire := func(lseq uint64) {
+				t.Helper()
+				checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+					si, err := js.StreamInfo("SCHEDULES")
+					if err != nil {
+						return err
+					}
+					if si.State.LastSeq != lseq {
+						return fmt.Errorf("expected last sequence %d, got %d", lseq, si.State.LastSeq)
+					}
+					return nil
+				})
+			}
+
+			soon := time.Now().Add(time.Second)
+			never := time.Now().Add(time.Hour)
+
+			// Fire a schedule first, so a message for "x.target" ends up below the
+			// schedules published next. Without a match at either end the sourcing
+			// consumer has one pending sequence, and the ack range collapses down to
+			// it, hiding the bug.
+			publishSchedule("x.fire-1", soon) // Sequence 1, purged once fired.
+			waitForFire(2)                    // Sequence 2, for "x.target".
+
+			// These are due long after the test, they must be kept.
+			publishSchedule("x.keep-1", never) // Sequence 3.
+			publishSchedule("x.keep-2", never) // Sequence 4.
+
+			publishSchedule("x.fire-2", soon) // Sequence 5, purged once fired.
+			waitForFire(6)                    // Sequence 6, for "x.target".
+
+			// Only source once both messages for "x.target" are there, so a single
+			// AckAll spans the schedules in between.
+			_, err = jsStreamCreate(t, nc, &StreamConfig{
+				Name:     "TARGET",
+				Storage:  FileStorage,
+				Replicas: replicas,
+				Sources:  []*StreamSource{{Name: "SCHEDULES", FilterSubject: "x.target"}},
+			})
+			require_NoError(t, err)
+
+			// Both fired schedules must end up in TARGET.
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TARGET")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 messages in TARGET, got %d", si.State.Msgs)
+				}
+				return nil
+			})
+
+			// The ack of sequence 6 must not have removed the schedules at 3 and 4.
+			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("SCHEDULES")
+				if err != nil {
+					return err
+				}
+				if si.State.Msgs != 2 {
+					return fmt.Errorf("expected 2 schedules in SCHEDULES, got %d (first=%d, last=%d)",
+						si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestJetStreamClusterAckAllAfterConsumerFilterUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:      "WQ",
+		Subjects:  []string{"x.>"},
+		Storage:   FileStorage,
+		Retention: WorkQueuePolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("x.a", nil)
+	require_NoError(t, err)
+	_, err = js.Publish("x.b", nil)
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	// A flow-controlled consumer acks like an AckAll, and is allowed on a WQ stream.
+	cfg := ConsumerConfig{
+		Durable:        "C",
+		DeliverSubject: inbox,
+		FilterSubjects: []string{"x.a", "x.b"},
+		AckPolicy:      AckFlowControl,
+		FlowControl:    true,
+		Heartbeat:      time.Second,
+	}
+	_, err = jsConsumerCreate(t, nc, "WQ", cfg, false)
+	require_NoError(t, err)
+
+	// Both messages must be delivered, so both are pending. Also need the flow
+	// control subject, replying to that is what acks for this consumer.
+	var delivered int
+	var fcSubject string
+	for delivered < 2 || fcSubject == _EMPTY_ {
+		m, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		if len(m.Header) == 0 {
+			delivered++
+		} else if m.Reply != _EMPTY_ {
+			fcSubject = m.Reply
+		} else if stalled := m.Header.Get(JSConsumerStalled); stalled != _EMPTY_ {
+			fcSubject = stalled
+		}
+	}
+
+	// Narrow the filters, "x.a" is pending but no longer matches.
+	cfg.FilterSubjects = []string{"x.b"}
+	_, err = jsConsumerCreate(t, nc, "WQ", cfg, false)
+	require_NoError(t, err)
+
+	// Reply to flow control, acking everything delivered up to sequence 2.
+	m := nats.NewMsg(fcSubject)
+	m.Header.Set(JSLastConsumerSeq, "2")
+	m.Header.Set(JSLastStreamSeq, "2")
+	require_NoError(t, nc.PublishMsg(m))
+
+	// Both messages were acked by the consumer, so both must be removed.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("WQ")
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 0 {
+			return fmt.Errorf("expected 0 messages in WQ, got %d (first=%d, last=%d)",
+				si.State.Msgs, si.State.FirstSeq, si.State.LastSeq)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaRescueRejectedWithLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 1})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// This is a broadcast subject, every online server evaluates and responds
+	// to the request independently. All of them know of a healthy meta leader
+	// so all must reject the rescue.
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+		require_True(t, strings.Contains(resp.Error.Description, errRescueLeaderKnown.Error()))
+		require_Equal(t, resp.NewQuorum, 0)
+		require_NotEqual(t, resp.Server, _EMPTY_)
+		require_NotEqual(t, resp.ServerID, _EMPTY_)
+	}
+	// And no more responses than that.
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestJetStreamClusterMetaRescue(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	// Keep two servers that are not the meta leader, and shut down the other
+	// three without peer-removing them. The meta group still believes its size
+	// is 5 and needs 3 votes for quorum, so the meta layer is now stuck.
+	leader := c.leader()
+	var survivors []*Server
+	var downed []string
+	for _, s := range c.servers {
+		if s != leader && len(survivors) < 2 {
+			survivors = append(survivors, s)
+			continue
+		}
+		downed = append(downed, s.Name())
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+	require_Len(t, len(survivors), 2)
+	require_Len(t, len(downed), 3)
+
+	// Wait until the survivors see no meta leader.
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if leader := s.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+				return fmt.Errorf("server %q still sees meta leader %q", s.Name(), leader)
+			}
+		}
+		return nil
+	})
+
+	nc, err := nats.Connect(survivors[0].ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	// Listen for the rescue advisories.
+	advSub, err := nc.SubscribeSync(JSAdvisoryMetaRescue)
+	require_NoError(t, err)
+	// Make sure interest has propagated to the other survivor.
+	checkSubInterest(t, survivors[1], "$SYS", JSAdvisoryMetaRescue, time.Second)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	checkSubInterest(t, survivors[1], "$SYS", inbox, time.Second)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 2})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// Both survivors respond independently. At least one must have applied the
+	// rescue, the other may already know of a new leader by the time it
+	// evaluates the request and reject it.
+	var applied int
+	for range 2 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		if resp.Error != nil {
+			require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+			require_True(t, strings.Contains(resp.Error.Description, errRescueLeaderKnown.Error()))
+			continue
+		}
+		// No error means the rescue was applied and the new quorum is set.
+		require_Equal(t, resp.PrevQuorum, 3)
+		require_Equal(t, resp.NewQuorum, 2)
+		applied++
+	}
+	require_True(t, applied >= 1)
+
+	// Every server that applied the rescue also published an advisory.
+	for range applied {
+		msg, err := advSub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var adv JSMetaRescueAdvisory
+		require_NoError(t, json.Unmarshal(msg.Data, &adv))
+		require_Equal(t, adv.Type, JSMetaRescueAdvisoryType)
+		require_Equal(t, adv.PrevQuorum, 3)
+		require_Equal(t, adv.NewQuorum, 2)
+		require_Equal(t, adv.Cluster, c.name)
+	}
+
+	// With the lowered quorum the survivors can now elect a meta leader.
+	var metaLeader string
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if leader := s.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+				metaLeader = leader
+				return nil
+			}
+		}
+		return fmt.Errorf("expected a meta leader among the survivors")
+	})
+	require_True(t, metaLeader == getHash(survivors[0].Name()) || metaLeader == getHash(survivors[1].Name()))
+
+	// While the rescue is active, JSZ exposes the lowered quorum and the
+	// rescue state on the servers that applied it.
+	var inRescue int
+	for _, s := range survivors {
+		jsz, err := s.Jsz(nil)
+		require_NoError(t, err)
+		require_True(t, jsz.Meta != nil)
+		if jsz.Meta.Rescue {
+			require_Equal(t, jsz.Meta.QuorumNeeded, 2)
+			inRescue++
+		}
+	}
+	require_True(t, inRescue >= applied)
+
+	// The meta layer is unblocked, use the normal peer-remove path to
+	// permanently drop the lost peers.
+	for _, name := range downed {
+		rmReq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(JSApiRemoveServer, rmReq, 2*time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+	}
+
+	// The peer set should now only contain the survivors, and with the natural
+	// quorum of the shrunken peer set the meta group operates normally.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range survivors {
+			if cs := s.getJetStream().getMetaGroup().ClusterSize(); cs != 2 {
+				return fmt.Errorf("expected cluster size 2 on %q, got %d", s.Name(), cs)
+			}
+			if qn := s.getJetStream().getMetaGroup().QuorumNeeded(); qn != 2 {
+				return fmt.Errorf("expected quorum 2 on %q, got %d", s.Name(), qn)
+			}
+			// The natural quorum of the shrunken peer set reached the rescued
+			// value, which stops the rescue.
+			if s.getJetStream().getMetaGroup().InRescue() {
+				return fmt.Errorf("expected rescue to be stopped on %q", s.Name())
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMetaRescueBadRequest(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	// Empty request.
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, nil))
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSBadRequestErr))
+	}
+
+	// Quorum larger than the current effective quorum, it can only be
+	// lowered. This is checked before the leader-known check would reject it.
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 4})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+	for range 3 {
+		msg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaRescueResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error != nil)
+		require_Equal(t, resp.Error.ErrCode, uint16(JSClusterRescueErr))
+		require_True(t, strings.Contains(resp.Error.Description, errRescueBadQuorum.Error()))
+	}
+}
+
+func TestJetStreamClusterMetaRescueSingleSurvivor(t *testing.T) {
+	lqi := lostQuorumInterval
+	lostQuorumInterval = 2 * time.Second
+	defer func() { lostQuorumInterval = lqi }()
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Keep the first server, it seeds the routes for the servers added in
+	// later. Shut down the other two without peer-removing them, the meta
+	// group still believes its size is 3 and needs 2 votes for quorum.
+	survivor := c.servers[0]
+	var downed []string
+	for _, s := range c.servers[1:] {
+		downed = append(downed, s.Name())
+		s.Shutdown()
+		s.WaitForShutdown()
+	}
+	// Only track the survivor, so the servers added in later join through it.
+	c.servers = c.servers[:1]
+	c.opts = c.opts[:1]
+
+	// Wait until the survivor sees no meta leader. If the survivor was the
+	// meta leader itself, it steps down once it detects the lost quorum.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if leader := survivor.getJetStream().getMetaGroup().GroupLeader(); leader != _EMPTY_ {
+			return fmt.Errorf("survivor still sees meta leader %q", leader)
+		}
+		return nil
+	})
+
+	nc, err := nats.Connect(survivor.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	req, err := json.Marshal(&JSApiMetaRescueRequest{QuorumNeeded: 1})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(JSApiMetaRescue, inbox, req))
+
+	// Only the survivor is online to respond, and it applies the rescue.
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaRescueResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_Equal(t, resp.PrevQuorum, 2)
+	require_Equal(t, resp.NewQuorum, 1)
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+
+	// With a quorum of 1 the survivor can elect itself.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		if !survivor.JetStreamIsLeader() {
+			return fmt.Errorf("survivor is not meta leader yet")
+		}
+		return nil
+	})
+
+	// The meta layer is unblocked, use the normal peer-remove path to
+	// permanently drop the lost peers.
+	for _, name := range downed {
+		rmReq, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: name})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(JSApiRemoveServer, rmReq, 2*time.Second)
+		require_NoError(t, err)
+		var resp JSApiMetaServerRemoveResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_True(t, resp.Success)
+	}
+
+	// The peer set shrunk to just the survivor. The natural quorum reached
+	// the rescued value, which stops the rescue.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if cs := meta.ClusterSize(); cs != 1 {
+			return fmt.Errorf("expected cluster size 1, got %d", cs)
+		}
+		if qn := meta.QuorumNeeded(); qn != 1 {
+			return fmt.Errorf("expected quorum 1, got %d", qn)
+		}
+		if meta.InRescue() {
+			return fmt.Errorf("expected rescue to be stopped")
+		}
+		return nil
+	})
+
+	// Add two new servers to go back to R3, under names not seen before.
+	// Reusing the names of the peer-removed servers would not work, they
+	// map to the same peer IDs which are marked as removed and can not
+	// immediately be re-added to the peer set.
+	for _, sn := range []string{"S-NEW-1", "S-NEW-2"} {
+		seedRoute := fmt.Sprintf("nats-route://127.0.0.1:%d", c.opts[0].Cluster.Port)
+		conf := fmt.Sprintf(jsClusterTempl, sn, t.TempDir(), c.name, -1, seedRoute)
+		s, o := RunServerWithConfig(createConfFile(t, []byte(conf)))
+		c.servers = append(c.servers, s)
+		c.opts = append(c.opts, o)
+	}
+	c.checkClusterFormed()
+	c.waitOnPeerCount(3)
+
+	// Quorum is back at its natural value for the new R3 peer set.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		meta := survivor.getJetStream().getMetaGroup()
+		if qn := meta.QuorumNeeded(); qn != 2 {
+			return fmt.Errorf("expected quorum 2, got %d", qn)
+		}
+		return nil
+	})
+
+	// And the meta layer is fully operational again.
+	ncjs, js := jsClientConnect(t, survivor)
+	defer ncjs.Close()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterMetaReplicasInJsz(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// The configured meta peer set must be visible on every server, not just
+	// the meta leader, so it can be inspected during disaster recovery when
+	// there is no meta leader.
+	checkFor(t, 2*time.Second, 250*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(nil)
+			if err != nil {
+				return err
+			}
+			if jsz.Meta == nil {
+				return fmt.Errorf("no meta cluster info on %q", s.Name())
+			}
+			// Excludes the server itself, hence one less than the peer set size.
+			if len(jsz.Meta.Replicas) != 2 {
+				return fmt.Errorf("expected 2 meta replicas on %q, got %d", s.Name(), len(jsz.Meta.Replicas))
+			}
+			if jsz.Meta.QuorumNeeded != 2 {
+				return fmt.Errorf("expected quorum 2 on %q, got %d", s.Name(), jsz.Meta.QuorumNeeded)
+			}
+			if jsz.Meta.Rescue {
+				return fmt.Errorf("expected no active rescue on %q", s.Name())
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterPendingPeersReportedInClusterInfo(t *testing.T) {
+	js := &jetStream{srv: &Server{}}
+
+	peerInfo := func(ci *ClusterInfo, peer string) *PeerInfo {
+		t.Helper()
+		for _, pi := range ci.Replicas {
+			if pi.Peer == peer {
+				return pi
+			}
+		}
+		t.Fatalf("peer %q not reported in cluster info", peer)
+		return nil
+	}
+
+	// The assignment has scaled up to three peers, but only "a" has joined the
+	// Raft group so far. The peers that are only known from the assignment must
+	// be distinguishable from the one that's an actual peer of the group.
+	rg := &raftGroup{
+		Name:  "test",
+		Peers: []string{"a", "b", "c"},
+		node:  &raft{peers: map[string]*lps{"a": {}}},
+	}
+	ci := js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	require_False(t, peerInfo(ci, "a").Pending)
+	require_True(t, peerInfo(ci, "b").Pending)
+	require_True(t, peerInfo(ci, "c").Pending)
+
+	// Once they've all joined the group nothing is pending anymore.
+	rg.node = &raft{peers: map[string]*lps{"a": {}, "b": {}, "c": {}}}
+	ci = js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	for _, pi := range ci.Replicas {
+		require_False(t, pi.Pending)
+	}
+
+	// Without a Raft node we have no knowledge of group membership, so we can't
+	// claim any of the assigned peers are pending.
+	rg.node = nil
+	rg.Desired = &desiredRaftGroup{ID: "id", Cluster: "C1", Peers: []string{"a", "b", "c"}}
+	ci = js.clusterInfo(rg)
+	require_Len(t, len(ci.Replicas), 3)
+	for _, pi := range ci.Replicas {
+		require_False(t, pi.Pending)
+	}
+}
+
+func TestJetStreamClusterMigrationStatusReportedInClusterInfo(t *testing.T) {
+	js := &jetStream{srv: &Server{}}
+
+	newGroup := func(desired *desiredRaftGroup) *raftGroup {
+		return &raftGroup{
+			Name:    "test",
+			Peers:   []string{"a"},
+			node:    &raft{},
+			Desired: desired,
+		}
+	}
+
+	// A status without any desired state must still be reported, on an otherwise
+	// empty desired block. This is what a group requesting desired state looks like.
+	rg := newGroup(nil)
+	js.setMigrationStatus(rg, mstat(MigrationStatusMeta, "requesting desired state from meta leader"))
+	ci := js.clusterInfo(rg)
+	require_NotNil(t, ci.Desired)
+	require_NotNil(t, ci.Desired.Status)
+	require_Equal(t, ci.Desired.Status.Description, "requesting desired state from meta leader")
+	require_Equal(t, ci.Desired.Status.Type, "meta")
+	require_Equal(t, ci.Desired.Status.Err, _EMPTY_)
+	require_Equal(t, ci.Desired.Name, _EMPTY_)
+	require_Len(t, len(ci.Desired.Replicas), 0)
+
+	// With desired state the status sits alongside it, and doesn't disturb it.
+	rg = newGroup(&desiredRaftGroup{ID: "id", Cluster: "C1", Peers: []string{"a", "b"}})
+	js.setMigrationStatus(rg, mstat(MigrationStatusMembership, "adding peer %s", "s2"))
+	ci = js.clusterInfo(rg)
+	require_NotNil(t, ci.Desired)
+	require_NotNil(t, ci.Desired.Status)
+	require_Equal(t, ci.Desired.Status.Description, "adding peer s2")
+	require_Equal(t, ci.Desired.Status.Type, "membership")
+	require_Equal(t, ci.Desired.Name, "C1")
+	require_Len(t, len(ci.Desired.Replicas), 2)
+
+	// A persistent fault is reported beside the line, leaving the line itself stable.
+	rg = newGroup(nil)
+	diskErr := errors.New("no space left on device")
+	js.setMigrationStatus(rg, mstat(MigrationStatusSnapshot, "waiting to encode state for snapshot").withErr(diskErr))
+	ci = js.clusterInfo(rg)
+	require_NotNil(t, ci.Desired)
+	require_NotNil(t, ci.Desired.Status)
+	require_Equal(t, ci.Desired.Status.Description, "waiting to encode state for snapshot")
+	require_Equal(t, ci.Desired.Status.Type, "snapshot")
+	require_Equal(t, ci.Desired.Status.Err, "no space left on device")
+
+	// Errors that resolve themselves on the next cycle must not be reported, they'd
+	// only flap in and out of stream info while the migration is healthy.
+	for _, benign := range []error{ErrStoreClosed, errNotLeader, errNodeClosed, errMembershipChange, errNoSnapAvailable} {
+		rg = newGroup(nil)
+		js.setMigrationStatus(rg, mstat(MigrationStatusMembership, "adding peer s2").withErr(benign))
+		ci = js.clusterInfo(rg)
+		require_NotNil(t, ci.Desired)
+		require_NotNil(t, ci.Desired.Status)
+		require_Equal(t, ci.Desired.Status.Description, "adding peer s2")
+		require_Equal(t, ci.Desired.Status.Err, _EMPTY_)
+	}
+
+	// A converged group reports desired state without a status.
+	rg = newGroup(&desiredRaftGroup{ID: "id", Cluster: "C1", Peers: []string{"a", "b"}})
+	ci = js.clusterInfo(rg)
+	require_NotNil(t, ci.Desired)
+	require_True(t, ci.Desired.Status == nil)
+
+	// Clearing the status must not leave an empty desired block behind.
+	rg = newGroup(nil)
+	js.setMigrationStatus(rg, mstat(MigrationStatusSnapshot, "installing snapshot"))
+	js.setMigrationStatus(rg, nil)
+	ci = js.clusterInfo(rg)
+	require_True(t, ci.Desired == nil)
+}
+
+// The sourcing state outlives the messages it was collected from, so unlike other
+// per-message derived state it can't always be rebuilt from what's replicated. A
+// replica that catches up over a stream whose sourced messages are already gone
+// never sees the headers that carried the source's position, and would resume
+// sourcing from an earlier point once it becomes leader.
+func TestJetStreamClusterSourcesStateSnapshot(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		title := "Disabled"
+		if enabled {
+			title = "Enabled"
+		}
+		t.Run(title, func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			for _, s := range c.servers {
+				s.optsMu.Lock()
+				s.opts.FeatureFlags = map[string]bool{FeatureFlagJsSnapshotSources: enabled}
+				s.optsMu.Unlock()
+			}
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "ORIGIN",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			// Start at R1, so the other peers never take part in the sourcing.
+			cfg := &nats.StreamConfig{
+				Name:     "SOURCE",
+				Sources:  []*nats.StreamSource{{Name: "ORIGIN"}},
+				Replicas: 1,
+			}
+			_, err = js.AddStream(cfg)
+			require_NoError(t, err)
+
+			const total = 5
+			for range total {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			c.waitOnStreamLeader(globalAccountName, "SOURCE")
+			sl := c.streamLeader(globalAccountName, "SOURCE")
+			mset, err := sl.globalAccount().lookupStream("SOURCE")
+			require_NoError(t, err)
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				if msgs := mset.store.State().Msgs; msgs != total {
+					return fmt.Errorf("expected %d messages, got %d", total, msgs)
+				}
+				return nil
+			})
+
+			const iname = "ORIGIN > >"
+			require_Equal(t, mset.store.SourcesState()[iname].Seq, total)
+
+			// Purge. The tracked state deliberately survives, but the messages that
+			// established it are gone, so it can no longer be derived by a scan.
+			_, err = mset.purge(nil)
+			require_NoError(t, err)
+			require_Equal(t, mset.store.State().Msgs, 0)
+			require_Equal(t, mset.store.SourcesState()[iname].Seq, total)
+
+			// Scale out. The added replicas catch up over an emptied stream, so they
+			// never see the headers that carried the source's position.
+			cfg.Replicas = 3
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			c.waitOnStreamLeader(globalAccountName, "SOURCE")
+			for _, s := range c.servers {
+				c.waitOnStreamCurrent(s, globalAccountName, "SOURCE")
+			}
+
+			var known int
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				known = 0
+				for _, s := range c.servers {
+					m, err := s.globalAccount().lookupStream("SOURCE")
+					if err != nil {
+						return err
+					}
+					if m.store.SourcesState()[iname].Seq == total {
+						known++
+					}
+				}
+				if enabled && known != 3 {
+					return fmt.Errorf("expected all 3 replicas to know the source position, got %d", known)
+				}
+				return nil
+			})
+
+			if enabled {
+				// The snapshot carried it, so every replica agrees.
+				require_Equal(t, known, 3)
+			} else {
+				// Only the replica that did the sourcing knows where to resume.
+				require_Equal(t, known, 1)
+			}
+		})
+	}
+}
+
+// A stream that gets remapped into a new Raft group has its old node removed out from
+// underneath the running monitor. A monitor parked in catchup only surfaces the resulting
+// error afterwards, and must not reset the stream: the meta layer has already moved us to
+// a new group, so a reset would tear the stream down and resurrect the replaced group.
+func TestJetStreamClusterNoResetClusteredStateAfterStreamRemap(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for _, name := range []string{"TEST", "OTHER"} {
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     name,
+			Subjects: []string{name + ".foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
+	}
+
+	// Use a follower so we don't disturb the stream leader.
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// The node this monitor generation owns.
+	n := mset.raftNode()
+	require_NotNil(t, n)
+
+	t.Run("NodeRemoved", func(t *testing.T) {
+		// Simulate processClusterUpdateStream detecting a stream remap: the node is removed
+		// and the monitor is torn down, both while the monitor is parked in catchup.
+		mset.removeNode()
+		mset.stopMonitoring()
+		require_True(t, mset.raftNode() == nil)
+
+		// This is what the parked monitor does once its catchup finally aborts.
+		require_True(t, mset.resetClusteredState(n, errCatchupAbortedNoLeader))
+
+		// The stream must be left intact for the meta layer to converge on, not stopped
+		// and recreated from the now stale stream assignment.
+		time.Sleep(500 * time.Millisecond)
+		require_False(t, mset.closed.Load())
+		nmset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		require_True(t, nmset == mset)
+	})
+
+	t.Run("NodeReplaced", func(t *testing.T) {
+		// Same remap, but caught after a different node has already been linked in. The
+		// monitor is still stopped from the subtest above, so nothing races us here.
+		other, err := s.globalAccount().lookupStream("OTHER")
+		require_NoError(t, err)
+		replacement := other.raftNode()
+		require_NotNil(t, replacement)
+
+		mset.mu.Lock()
+		mset.node = replacement
+		mset.mu.Unlock()
+
+		// Our generation's node is no longer the stream's node, so we must not reset.
+		require_True(t, mset.resetClusteredState(n, errCatchupAbortedNoLeader))
+
+		time.Sleep(500 * time.Millisecond)
+		require_False(t, mset.closed.Load())
+		require_False(t, other.closed.Load())
+
+		mset.mu.Lock()
+		mset.node = nil
+		mset.mu.Unlock()
 	})
 }

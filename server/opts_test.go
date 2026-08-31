@@ -172,10 +172,6 @@ func TestTLSConfigFile(t *testing.T) {
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("Expected MinVersion of 1.2 [%v], got [%v]", tls.VersionTLS12, tlsConfig.MinVersion)
 	}
-	//lint:ignore SA1019 We want to retry on a bunch of errors here.
-	if !tlsConfig.PreferServerCipherSuites { // nolint:staticcheck
-		t.Fatal("Expected PreferServerCipherSuites to be true")
-	}
 	// Verify hostname is correct in certificate
 	if len(tlsConfig.Certificates) != 1 {
 		t.Fatal("Expected 1 certificate")
@@ -4625,69 +4621,69 @@ func TestOptionsCompressionEqual(t *testing.T) {
 		}, true},
 		{"s2 auto c1 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: defaultCompressionS2AutoRTTThresholds,
-				}, &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}
+				Mode:          CompressionS2Auto,
+				RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
 		}, true},
 		{"s2 auto c2 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}, &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: defaultCompressionS2AutoRTTThresholds,
-				}
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+			}
 		}, true},
 		{"s2 auto same rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
-				}, &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
-				}
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}
 		}, true},
 		{"s2 auto different rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
-				}, &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
-				}
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}
 		}, false},
 		{"s2 auto different rtt thresholds c1 not set", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}, &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
-				}
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}
 		}, false},
 		{"s2 auto different rtt thresholds c2 not set", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
-				}, &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
 		}, false},
 		{"s2 auto both rtt thresholds empty", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{},
-				}, &CompressionOpts{
-					Mode:          CompressionS2Auto,
-					RTTThresholds: []time.Duration{},
-				}
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{},
+			}
 		}, true},
 		{"s2 auto both rtt thresholds nil", func() (*CompressionOpts, *CompressionOpts) {
 			return &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}, &CompressionOpts{
-					Mode: CompressionS2Auto,
-				}
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
 		}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {

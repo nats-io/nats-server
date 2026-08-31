@@ -2577,6 +2577,130 @@ func TestFlushOutboundNoSliceReuseIfPartial(t *testing.T) {
 	}
 }
 
+func TestFlushOutboundFreesExcessiveWorkingBuffer(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxPending = MAX_PENDING_SIZE
+	s := &Server{opts: opts}
+
+	fakeConn := &testConnWritePartial{}
+	c := &client{srv: s, nc: fakeConn}
+	c.initClient()
+
+	// Helper that queues n separate chunks, each filling a small pool
+	// buffer exactly, so that "nb" ends up with n entries, and then
+	// flushes until everything has been written out.
+	queueAndFlush := func(n int) {
+		t.Helper()
+		payload := make([]byte, nbPoolSizeSmall)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for i := 0; i < n; i++ {
+			c.queueOutbound(payload)
+		}
+		if len(c.out.nb) != n {
+			t.Fatalf("Expected %d queued buffers, got %d", n, len(c.out.nb))
+		}
+		for c.out.pb > 0 {
+			c.flushOutbound()
+		}
+	}
+
+	// A modest flush should retain the working buffer for reuse.
+	queueAndFlush(10)
+	c.mu.Lock()
+	retained := c.out.wnb != nil
+	c.mu.Unlock()
+	if !retained {
+		t.Fatalf("Expected the working buffer to be retained for reuse")
+	}
+
+	// Growing the working buffer beyond a full writev batch of entries
+	// should cause it to be freed once everything has been written.
+	queueAndFlush(nbMaxVectorSize + 100)
+	c.mu.Lock()
+	freed := c.out.wnb == nil
+	c.mu.Unlock()
+	if !freed {
+		t.Fatalf("Expected the excessively grown working buffer to be freed")
+	}
+}
+
+type testTimeoutError struct{}
+
+func (testTimeoutError) Error() string   { return "i/o timeout" }
+func (testTimeoutError) Timeout() bool   { return true }
+func (testTimeoutError) Temporary() bool { return true }
+
+// Accepts up to maxWrite bytes per Write call, then reports a timeout,
+// leaving the rest of the buffer unwritten for the next flushOutbound.
+type testConnPartialWriteTimeout struct {
+	net.Conn
+	buf      bytes.Buffer
+	maxWrite int
+}
+
+func (c *testConnPartialWriteTimeout) Write(p []byte) (int, error) {
+	if c.maxWrite > 0 && len(p) > c.maxWrite {
+		n, _ := c.buf.Write(p[:c.maxWrite])
+		return n, testTimeoutError{}
+	}
+	return c.buf.Write(p)
+}
+
+func (c *testConnPartialWriteTimeout) RemoteAddr() net.Addr             { return nil }
+func (c *testConnPartialWriteTimeout) SetWriteDeadline(time.Time) error { return nil }
+
+func TestFlushOutboundPartialWriteKeepsPoolBufferCapacity(t *testing.T) {
+	opts := DefaultOptions()
+	s := &Server{opts: opts}
+
+	fakeConn := &testConnPartialWriteTimeout{maxWrite: 10}
+
+	// Use a ROUTER so that the write timeout policy is Retry, which keeps
+	// the connection open with the partially written buffer left in wnb.
+	c := &client{srv: s, kind: ROUTER, nc: fakeConn}
+	c.initClient()
+
+	payload := make([]byte, 100)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.queueOutbound(payload)
+	c.flushOutbound()
+
+	// The write timed out after maxWrite bytes, so the rest of the buffer
+	// stays behind in the working copy for the next flush.
+	if n := len(c.out.wnb); n != 1 {
+		t.Fatalf("Expected 1 buffer left in wnb, got %v", n)
+	}
+	if n, expected := len(c.out.wnb[0]), len(payload)-fakeConn.maxWrite; n != expected {
+		t.Fatalf("Expected %v pending bytes in wnb, got %v", expected, n)
+	}
+	// The leftover buffer must retain its original pooled capacity.
+	if cp := cap(c.out.wnb[0]); cp != nbPoolSizeSmall {
+		t.Fatalf("Expected wnb buffer to keep pooled capacity %v, got %v", nbPoolSizeSmall, cp)
+	}
+
+	// Let the next flush complete the write and check nothing was lost
+	// or duplicated by the buffer shuffling.
+	fakeConn.maxWrite = 0
+	c.flushOutbound()
+
+	if n := len(c.out.wnb); n != 0 {
+		t.Fatalf("Expected no buffers left in wnb, got %v", n)
+	}
+	if c.out.pb != 0 {
+		t.Fatalf("Expected no pending bytes, got %v", c.out.pb)
+	}
+	if !bytes.Equal(payload, fakeConn.buf.Bytes()) {
+		t.Fatalf("Expected\n%q\ngot\n%q", payload, fakeConn.buf.Bytes())
+	}
+}
+
 type captureNoticeLogger struct {
 	DummyLogger
 	notices []string

@@ -1587,9 +1587,16 @@ func (s *Server) updateJszVarz(js *jetStream, v *JetStreamVarz, doConfig bool) {
 	v.Limits = &s.getOpts().JetStreamLimits
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			v.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
-			if ci.Leader == s.info.Name {
-				v.Meta.Replicas = ci.Replicas
+			v.Meta = &MetaClusterInfo{
+				Name:         ci.Name,
+				Leader:       ci.Leader,
+				Replicas:     ci.Replicas,
+				Size:         mg.ClusterSize(),
+				QuorumNeeded: mg.QuorumNeeded(),
+				Rescue:       mg.InRescue(),
+			}
+			if ci.Leader != _EMPTY_ {
+				v.Meta.Peer = getHash(ci.Leader)
 			}
 			if ipq := s.jsAPIRoutedReqs; ipq != nil {
 				v.Meta.PendingRequests = ipq.len()
@@ -3092,6 +3099,8 @@ type MetaClusterInfo struct {
 	Peer            string             `json:"peer,omitempty"`     // Peer is unique ID of the leader
 	Replicas        []*PeerInfo        `json:"replicas,omitempty"` // Replicas is a list of known peers
 	Size            int                `json:"cluster_size"`       // Size is the known size of the cluster
+	QuorumNeeded    int                `json:"quorum_needed"`      // QuorumNeeded is this server's current effective quorum size
+	Rescue          bool               `json:"rescue,omitempty"`   // Rescue indicates the quorum is unsafely lowered by an active rescue
 	Pending         int                `json:"pending"`            // Pending is how many RAFT messages are not yet processed
 	PendingRequests int                `json:"pending_requests"`   // PendingRequests is how many CRUD operations are queued for processing
 	PendingInfos    int                `json:"pending_infos"`      // PendingInfos is how many info operations are queued for processing
@@ -3160,7 +3169,9 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 			ci := js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
-				c := stream.config()
+				// Report the config as requested, the stream can still be running at its origin.
+				// Must be consistent with the desired state reported as part of the cluster info.
+				c := js.targetStreamConfig(stream, stream.config())
 				cfg = &c
 			}
 			// Skip if we are only looking for stream leaders.
@@ -3312,9 +3323,16 @@ func (s *Server) Jsz(opts *JSzOptions) (*JSInfo, error) {
 
 	if mg := js.getMetaGroup(); mg != nil {
 		if ci := s.raftNodeToClusterInfo(mg); ci != nil {
-			jsi.Meta = &MetaClusterInfo{Name: ci.Name, Leader: ci.Leader, Peer: getHash(ci.Leader), Size: mg.ClusterSize()}
-			if isLeader {
-				jsi.Meta.Replicas = ci.Replicas
+			jsi.Meta = &MetaClusterInfo{
+				Name:         ci.Name,
+				Leader:       ci.Leader,
+				Replicas:     ci.Replicas,
+				Size:         mg.ClusterSize(),
+				QuorumNeeded: mg.QuorumNeeded(),
+				Rescue:       mg.InRescue(),
+			}
+			if ci.Leader != _EMPTY_ {
+				jsi.Meta.Peer = getHash(ci.Leader)
 			}
 			if ipq := s.jsAPIRoutedReqs; ipq != nil {
 				jsi.Meta.PendingRequests = ipq.len()

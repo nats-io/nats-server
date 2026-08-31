@@ -233,6 +233,7 @@ type Server struct {
 	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
+		dialer      leafNodeDialer
 	}
 	leafRemoteCfgs     map[*leafNodeCfg]struct{}
 	rmLeafRemoteCfgs   map[string]*leafNodeCfg
@@ -399,6 +400,13 @@ type nodeInfo struct {
 	js              bool
 	binarySnapshots bool
 	accountNRG      bool
+}
+
+// selectable reports whether we've had STATSZ from this node. Peer selection
+// skips nodes without config or stats, so until then there's nothing we could
+// place on it.
+func (ni nodeInfo) selectable() bool {
+	return ni.cfg != nil && ni.stats != nil
 }
 
 type stats struct {

@@ -17,6 +17,7 @@ package server
 
 import (
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/json"
 	"errors"
@@ -439,7 +440,7 @@ func TestNoRaceBinaryStreamSnapshotEncodingBasic(t *testing.T) {
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 
-	snap, err := mset.store.EncodedStreamState(0)
+	snap, err := mset.store.EncodedStreamState(0, false)
 	require_NoError(t, err)
 
 	// Now decode the snapshot.
@@ -476,7 +477,7 @@ func TestNoRaceFilestoreBinaryStreamSnapshotEncodingLargeGaps(t *testing.T) {
 	// The tombstones from above will only be cleaned up when syncing blocks.
 	fs.syncBlocks()
 
-	snap, err := fs.EncodedStreamState(0)
+	snap, err := fs.EncodedStreamState(0, false)
 	require_NoError(t, err)
 	require_LessThan(t, len(snap), 512)
 
@@ -620,7 +621,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 					continue
 				}
 				start := time.Now()
-				snap, err := gs.EncodedStreamState(0)
+				snap, err := gs.EncodedStreamState(0, false)
 				require_NoError(t, err)
 				elapsed := time.Since(start)
 				// Should take <1ms without race but if CI/CD is slow we will give it a bit of room.
@@ -839,6 +840,63 @@ func TestNoRaceWSNoCorruptionWithFrameSizeLimit(t *testing.T) {
 	testWSNoCorruptionWithFrameSizeLimit(t, 50000)
 }
 
+func TestNoRaceWSCompressionGrownBufferRecycling(t *testing.T) {
+	opts := testWSOptions()
+	opts.MaxPending = MAX_PENDING_SIZE
+	s := &Server{opts: opts}
+	c := &client{srv: s, ws: &websocket{compress: true}}
+	c.initClient()
+
+	// Incompressible payload filling the medium pool bucket exactly, so
+	// that the flate output (payload + block overhead) is guaranteed to
+	// outgrow the pooled buffer seeding the compression bytes.Buffer.
+	payload := make([]byte, nbPoolSizeMedium)
+	rnd := uint32(1)
+	for i := range payload {
+		rnd = rnd*1664525 + 1013904223
+		payload[i] = byte(rnd >> 24)
+	}
+
+	// Confirm the payload no longer fits the bucket once compressed.
+	var cb bytes.Buffer
+	cw, _ := flate.NewWriter(&cb, flate.BestSpeed)
+	cw.Write(payload)
+	cw.Flush()
+	if cb.Len() <= nbPoolSizeMedium {
+		t.Fatalf("Expected compressed payload to exceed %v bytes, got %v", nbPoolSizeMedium, cb.Len())
+	}
+
+	nbSlice := make(net.Buffers, 1)
+	collapse := func() {
+		c.mu.Lock()
+		data := nbPoolGet(len(payload))
+		data = append(data, payload...)
+		nbSlice[0] = data
+		c.out.nb = nbSlice
+		c.out.pb = int64(len(payload))
+		c.ws.fs = 0
+
+		// calls c.wsCollapsePtoNB internally.
+		bufs, _ := c.collapsePtoNB()
+		for _, buf := range bufs {
+			nbPoolPut(buf)
+		}
+		c.out.nb = nil
+		c.mu.Unlock()
+	}
+	// Populate the pool and initialize the compressor.
+	for i := 0; i < 10; i++ {
+		collapse()
+	}
+
+	// Growing the bytes.Buffer beyond the seeded pool buffer costs a few
+	// allocations per iteration but the seed itself must be returned to the pool.
+	allocs := testing.AllocsPerRun(500, collapse)
+	if allocs > 3 {
+		t.Fatalf("Too many allocs per iteration (%.1f); the compression seed buffer is likely not recycled", allocs)
+	}
+}
+
 func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -1044,7 +1102,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	// Create 50k messages randomly from 1-100
 	for i := 0; i < 50_000; i++ {
 		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
-		js.PublishAsync(subj, msg)
+		publishAsync(t, js, subj, msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -1053,7 +1111,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	}
 	// Now create a large gap.
 	for i := 0; i < 100_000; i++ {
-		js.PublishAsync("foo.2", msg)
+		publishAsync(t, js, "foo.2", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -1063,7 +1121,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	// Do 50k random again at end.
 	for i := 0; i < 50_000; i++ {
 		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
-		js.PublishAsync(subj, msg)
+		publishAsync(t, js, subj, msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -1133,12 +1191,17 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 
 	var wg sync.WaitGroup
 
+	// Cap inflight consumer create requests to prevent timeout on slower CI machines.
+	inflight := make(chan struct{}, 50)
+
 	for i := 0; i < numConsumers; i++ {
 		cname := fmt.Sprintf("CONS-%d", i+1)
 		consumers = append(consumers, cname)
 		wg.Add(1)
+		inflight <- struct{}{}
 		go func() {
 			defer wg.Done()
+			defer func() { <-inflight }()
 			_, err := js.PullSubscribe("foo.>", cname, nats.BindStream("TEST"))
 			require_NoError(t, err)
 		}()
@@ -1161,12 +1224,17 @@ func TestNoRaceJetStreamClusterBadRestartsWithHealthzPolling(t *testing.T) {
 	numStreams := 200
 	streams := make([]string, 0, numStreams)
 
+	// Cap number of inflight stream request creates.
+	sinflight := make(chan struct{}, 25)
+
 	for i := 0; i < numStreams; i++ {
 		sname := fmt.Sprintf("TEST-%d", i+1)
 		streams = append(streams, sname)
 		wg.Add(1)
+		sinflight <- struct{}{}
 		go func() {
 			defer wg.Done()
+			defer func() { <-sinflight }()
 			_, err := js.AddStream(&nats.StreamConfig{Name: sname, Replicas: 3})
 			require_NoError(t, err)
 		}()
@@ -2453,10 +2521,10 @@ func TestNoRaceJetStreamClusterMirrorSkipSequencingBug(t *testing.T) {
 	// via the max msgs per limit.
 	for i := 0; i < 500_000; i++ {
 		subj := fmt.Sprintf("foo.%d", i)
-		js.PublishAsync(subj, nil)
+		publishAsync(t, js, subj, nil)
 		// Create sequence holes every 100k.
 		if i%100_000 == 0 {
-			js.PublishAsync(subj, nil)
+			publishAsync(t, js, subj, nil)
 		}
 	}
 	select {
@@ -2678,11 +2746,11 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceWQ(t *testing.T) {
 	// Load up a bunch of messages for three different subjects.
 	msg := bytes.Repeat([]byte("Z"), 4096)
 	for i := 0; i < 100_000; i++ {
-		js.PublishAsync("foo.foo", msg)
+		publishAsync(t, js, "foo.foo", msg)
 	}
 	for i := 0; i < 5_000; i++ {
-		js.PublishAsync("foo.bar", msg)
-		js.PublishAsync("foo.baz", msg)
+		publishAsync(t, js, "foo.bar", msg)
+		publishAsync(t, js, "foo.baz", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -2800,11 +2868,11 @@ func TestNoRaceJetStreamClusterCheckInterestStatePerformanceInterest(t *testing.
 	// Load up a bunch of messages for three different subjects.
 	msg := bytes.Repeat([]byte("Z"), 4096)
 	for i := 0; i < 90_000; i++ {
-		js.PublishAsync("foo.foo", msg)
+		publishAsync(t, js, "foo.foo", msg)
 	}
 	for i := 0; i < 5_000; i++ {
-		js.PublishAsync("foo.bar", msg)
-		js.PublishAsync("foo.baz", msg)
+		publishAsync(t, js, "foo.bar", msg)
+		publishAsync(t, js, "foo.baz", msg)
 	}
 	select {
 	case <-js.PublishAsyncComplete():

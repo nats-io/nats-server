@@ -182,6 +182,7 @@ type JSSnapshotCompleteAdvisory struct {
 	End    time.Time   `json:"end"`
 	Client *ClientInfo `json:"client"`
 	Domain string      `json:"domain,omitempty"`
+	Error  string      `json:"error,omitempty"`
 }
 
 // JSSnapshotCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
@@ -352,6 +353,22 @@ type JSServerRemovedAdvisory struct {
 	ServerID string `json:"server_id"`
 	Cluster  string `json:"cluster"`
 	Domain   string `json:"domain,omitempty"`
+}
+
+// JSMetaRescueAdvisoryType is sent when a server unsafely lowers the meta
+// group's quorum requirement for disaster recovery.
+const JSMetaRescueAdvisoryType = "io.nats.jetstream.advisory.v1.meta_rescue"
+
+// JSMetaRescueAdvisory indicates that a server has unsafely lowered the meta
+// group's quorum requirement for disaster recovery.
+type JSMetaRescueAdvisory struct {
+	TypedEvent
+	Server     string `json:"server"`
+	ServerID   string `json:"server_id"`
+	PrevQuorum int    `json:"prev_quorum"`
+	NewQuorum  int    `json:"new_quorum"`
+	Cluster    string `json:"cluster"`
+	Domain     string `json:"domain,omitempty"`
 }
 
 // JSAPILimitReachedAdvisoryType is sent when the JS API request queue limit is reached.

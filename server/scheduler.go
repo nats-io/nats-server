@@ -37,6 +37,7 @@ type MsgScheduling struct {
 	ttls      *thw.HashWheel
 	timer     *time.Timer
 	running   bool
+	paused    bool
 	deadline  int64
 	schedules map[string]*MsgSchedule
 	seqToSubj map[uint64]string
@@ -121,6 +122,9 @@ func (ms *MsgScheduling) clearInflight() {
 }
 
 func (ms *MsgScheduling) resetTimer() {
+	if ms.paused {
+		return
+	}
 	// If we're already scheduling messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if ms.running {

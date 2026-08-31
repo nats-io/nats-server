@@ -77,6 +77,9 @@ const (
 	// JSClusterRequiredErr JetStream clustering support required
 	JSClusterRequiredErr ErrorIdentifier = 10010
 
+	// JSClusterRescueErr JetStream system rescue not applied: {err}
+	JSClusterRescueErr ErrorIdentifier = 10224
+
 	// JSClusterServerMemberChangeInflightErr cluster member change is in progress
 	JSClusterServerMemberChangeInflightErr ErrorIdentifier = 10202
 
@@ -299,6 +302,9 @@ const (
 	// JSConsumerStoreFailedErrF error creating store for consumer: {err}
 	JSConsumerStoreFailedErrF ErrorIdentifier = 10104
 
+	// JSConsumerStreamIdentityMismatchF consumer's stream identity does not match: {msg}
+	JSConsumerStreamIdentityMismatchF ErrorIdentifier = 10225
+
 	// JSConsumerWQConsumerNotDeliverAllErr consumer must be deliver all on workqueue stream
 	JSConsumerWQConsumerNotDeliverAllErr ErrorIdentifier = 10101
 
@@ -367,6 +373,9 @@ const (
 
 	// JSMessageSchedulesTimeZoneInvalidErr message schedules time zone is invalid
 	JSMessageSchedulesTimeZoneInvalidErr ErrorIdentifier = 10223
+
+	// JSMessageSourceHdrNotAllowedErr message stream source header is not allowed
+	JSMessageSourceHdrNotAllowedErr ErrorIdentifier = 10227
 
 	// JSMessageTTLDisabledErr per-message TTL is disabled
 	JSMessageTTLDisabledErr ErrorIdentifier = 10166
@@ -575,11 +584,8 @@ const (
 	// JSStreamMoveAndScaleErr can not move and scale a stream in a single update
 	JSStreamMoveAndScaleErr ErrorIdentifier = 10123
 
-	// JSStreamMoveInProgressF stream move already in progress: {msg}
-	JSStreamMoveInProgressF ErrorIdentifier = 10124
-
-	// JSStreamMoveNotInProgress stream move not in progress
-	JSStreamMoveNotInProgress ErrorIdentifier = 10129
+	// JSStreamMoveInProgressErr stream move already in progress
+	JSStreamMoveInProgressErr ErrorIdentifier = 10124
 
 	// JSStreamMsgDeleteFailedF Generic message deletion failure error string ({err})
 	JSStreamMsgDeleteFailedF ErrorIdentifier = 10057
@@ -607,6 +613,12 @@ const (
 
 	// JSStreamPurgeFailedF Generic stream purge failure error string ({err})
 	JSStreamPurgeFailedF ErrorIdentifier = 10110
+
+	// JSStreamReconfigureInProgressErr stream reconfiguration already in progress
+	JSStreamReconfigureInProgressErr ErrorIdentifier = 10226
+
+	// JSStreamReconfigureNotInProgressErr stream reconfiguration not in progress
+	JSStreamReconfigureNotInProgressErr ErrorIdentifier = 10129
 
 	// JSStreamReplicasNotSupportedErr replicas > 1 not supported in non-clustered mode
 	JSStreamReplicasNotSupportedErr ErrorIdentifier = 10074
@@ -698,6 +710,7 @@ var (
 		JSClusterNotLeaderErr:                        {Code: 500, ErrCode: 10009, Description: "JetStream cluster can not handle request"},
 		JSClusterPeerNotMemberErr:                    {Code: 400, ErrCode: 10040, Description: "peer not a member"},
 		JSClusterRequiredErr:                         {Code: 503, ErrCode: 10010, Description: "JetStream clustering support required"},
+		JSClusterRescueErr:                           {Code: 400, ErrCode: 10224, Description: "JetStream system rescue not applied: {err}"},
 		JSClusterServerMemberChangeInflightErr:       {Code: 400, ErrCode: 10202, Description: "cluster member change is in progress"},
 		JSClusterServerNotMemberErr:                  {Code: 400, ErrCode: 10044, Description: "server is not a member of the cluster"},
 		JSClusterTagsErr:                             {Code: 400, ErrCode: 10011, Description: "tags placement not supported for operation"},
@@ -772,6 +785,7 @@ var (
 		JSConsumerReplicasShouldMatchStream:          {Code: 400, ErrCode: 10134, Description: "consumer config replicas must match interest retention stream's replicas"},
 		JSConsumerSmallHeartbeatErr:                  {Code: 400, ErrCode: 10083, Description: "consumer idle heartbeat needs to be >= 100ms"},
 		JSConsumerStoreFailedErrF:                    {Code: 500, ErrCode: 10104, Description: "error creating store for consumer: {err}"},
+		JSConsumerStreamIdentityMismatchF:            {Code: 400, ErrCode: 10225, Description: "consumer's stream identity does not match: {msg}"},
 		JSConsumerWQConsumerNotDeliverAllErr:         {Code: 400, ErrCode: 10101, Description: "consumer must be deliver all on workqueue stream"},
 		JSConsumerWQConsumerNotUniqueErr:             {Code: 400, ErrCode: 10100, Description: "filtered consumer not unique on workqueue stream"},
 		JSConsumerWQMultipleUnfilteredErr:            {Code: 400, ErrCode: 10099, Description: "multiple non-filtered consumers not allowed on workqueue stream"},
@@ -795,6 +809,7 @@ var (
 		JSMessageSchedulesTTLInvalidErr:              {Code: 400, ErrCode: 10191, Description: "message schedules invalid per-message TTL"},
 		JSMessageSchedulesTargetInvalidErr:           {Code: 400, ErrCode: 10190, Description: "message schedules target is invalid"},
 		JSMessageSchedulesTimeZoneInvalidErr:         {Code: 400, ErrCode: 10223, Description: "message schedules time zone is invalid"},
+		JSMessageSourceHdrNotAllowedErr:              {Code: 400, ErrCode: 10227, Description: "message stream source header is not allowed"},
 		JSMessageTTLDisabledErr:                      {Code: 400, ErrCode: 10166, Description: "per-message TTL is disabled"},
 		JSMessageTTLInvalidErr:                       {Code: 400, ErrCode: 10165, Description: "invalid per-message TTL"},
 		JSMirrorConsumerRequiresAckFCErr:             {Code: 400, ErrCode: 10214, Description: "stream mirror consumer requires flow control ack policy"},
@@ -864,8 +879,7 @@ var (
 		JSStreamMirrorNotUpdatableErr:                {Code: 400, ErrCode: 10055, Description: "stream mirror configuration can not be updated"},
 		JSStreamMismatchErr:                          {Code: 400, ErrCode: 10056, Description: "stream name in subject does not match request"},
 		JSStreamMoveAndScaleErr:                      {Code: 400, ErrCode: 10123, Description: "can not move and scale a stream in a single update"},
-		JSStreamMoveInProgressF:                      {Code: 400, ErrCode: 10124, Description: "stream move already in progress: {msg}"},
-		JSStreamMoveNotInProgress:                    {Code: 400, ErrCode: 10129, Description: "stream move not in progress"},
+		JSStreamMoveInProgressErr:                    {Code: 400, ErrCode: 10124, Description: "stream move already in progress"},
 		JSStreamMsgDeleteFailedF:                     {Code: 500, ErrCode: 10057, Description: "{err}"},
 		JSStreamNameContainsPathSeparatorsErr:        {Code: 400, ErrCode: 10128, Description: "Stream name can not contain path separators"},
 		JSStreamNameExistErr:                         {Code: 400, ErrCode: 10058, Description: "stream name already in use with a different configuration"},
@@ -875,6 +889,8 @@ var (
 		JSStreamOfflineErr:                           {Code: 500, ErrCode: 10118, Description: "stream is offline"},
 		JSStreamOfflineReasonErrF:                    {Code: 500, ErrCode: 10194, Description: "stream is offline: {err}"},
 		JSStreamPurgeFailedF:                         {Code: 500, ErrCode: 10110, Description: "{err}"},
+		JSStreamReconfigureInProgressErr:             {Code: 400, ErrCode: 10226, Description: "stream reconfiguration already in progress"},
+		JSStreamReconfigureNotInProgressErr:          {Code: 400, ErrCode: 10129, Description: "stream reconfiguration not in progress"},
 		JSStreamReplicasNotSupportedErr:              {Code: 500, ErrCode: 10074, Description: "replicas > 1 not supported in non-clustered mode"},
 		JSStreamReplicasNotUpdatableErr:              {Code: 400, ErrCode: 10061, Description: "Replicas configuration can not be updated"},
 		JSStreamRestoreErrF:                          {Code: 500, ErrCode: 10062, Description: "restore failed: {err}"},
@@ -1177,6 +1193,22 @@ func NewJSClusterRequiredError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSClusterRequiredErr]
+}
+
+// NewJSClusterRescueError creates a new JSClusterRescueErr error: "JetStream system rescue not applied: {err}"
+func NewJSClusterRescueError(err error, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSClusterRescueErr]
+	args := e.toReplacerArgs([]interface{}{"{err}", err})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
 }
 
 // NewJSClusterServerMemberChangeInflightError creates a new JSClusterServerMemberChangeInflightErr error: "cluster member change is in progress"
@@ -1991,6 +2023,22 @@ func NewJSConsumerStoreFailedError(err error, opts ...ErrorOption) *ApiError {
 	}
 }
 
+// NewJSConsumerStreamIdentityMismatchError creates a new JSConsumerStreamIdentityMismatchF error: "consumer's stream identity does not match: {msg}"
+func NewJSConsumerStreamIdentityMismatchError(msg interface{}, opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	e := ApiErrors[JSConsumerStreamIdentityMismatchF]
+	args := e.toReplacerArgs([]interface{}{"{msg}", msg})
+	return &ApiError{
+		Code:        e.Code,
+		ErrCode:     e.ErrCode,
+		Description: strings.NewReplacer(args...).Replace(e.Description),
+	}
+}
+
 // NewJSConsumerWQConsumerNotDeliverAllError creates a new JSConsumerWQConsumerNotDeliverAllErr error: "consumer must be deliver all on workqueue stream"
 func NewJSConsumerWQConsumerNotDeliverAllError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
@@ -2225,6 +2273,16 @@ func NewJSMessageSchedulesTimeZoneInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSMessageSchedulesTimeZoneInvalidErr]
+}
+
+// NewJSMessageSourceHdrNotAllowedError creates a new JSMessageSourceHdrNotAllowedErr error: "message stream source header is not allowed"
+func NewJSMessageSourceHdrNotAllowedError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSMessageSourceHdrNotAllowedErr]
 }
 
 // NewJSMessageTTLDisabledError creates a new JSMessageTTLDisabledErr error: "per-message TTL is disabled"
@@ -3031,30 +3089,14 @@ func NewJSStreamMoveAndScaleError(opts ...ErrorOption) *ApiError {
 	return ApiErrors[JSStreamMoveAndScaleErr]
 }
 
-// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressF error: "stream move already in progress: {msg}"
-func NewJSStreamMoveInProgressError(msg interface{}, opts ...ErrorOption) *ApiError {
+// NewJSStreamMoveInProgressError creates a new JSStreamMoveInProgressErr error: "stream move already in progress"
+func NewJSStreamMoveInProgressError(opts ...ErrorOption) *ApiError {
 	eopts := parseOpts(opts)
 	if ae, ok := eopts.err.(*ApiError); ok {
 		return ae
 	}
 
-	e := ApiErrors[JSStreamMoveInProgressF]
-	args := e.toReplacerArgs([]interface{}{"{msg}", msg})
-	return &ApiError{
-		Code:        e.Code,
-		ErrCode:     e.ErrCode,
-		Description: strings.NewReplacer(args...).Replace(e.Description),
-	}
-}
-
-// NewJSStreamMoveNotInProgressError creates a new JSStreamMoveNotInProgress error: "stream move not in progress"
-func NewJSStreamMoveNotInProgressError(opts ...ErrorOption) *ApiError {
-	eopts := parseOpts(opts)
-	if ae, ok := eopts.err.(*ApiError); ok {
-		return ae
-	}
-
-	return ApiErrors[JSStreamMoveNotInProgress]
+	return ApiErrors[JSStreamMoveInProgressErr]
 }
 
 // NewJSStreamMsgDeleteFailedError creates a new JSStreamMsgDeleteFailedF error: "{err}"
@@ -3163,6 +3205,26 @@ func NewJSStreamPurgeFailedError(err error, opts ...ErrorOption) *ApiError {
 		ErrCode:     e.ErrCode,
 		Description: strings.NewReplacer(args...).Replace(e.Description),
 	}
+}
+
+// NewJSStreamReconfigureInProgressError creates a new JSStreamReconfigureInProgressErr error: "stream reconfiguration already in progress"
+func NewJSStreamReconfigureInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamReconfigureInProgressErr]
+}
+
+// NewJSStreamReconfigureNotInProgressError creates a new JSStreamReconfigureNotInProgressErr error: "stream reconfiguration not in progress"
+func NewJSStreamReconfigureNotInProgressError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSStreamReconfigureNotInProgressErr]
 }
 
 // NewJSStreamReplicasNotSupportedError creates a new JSStreamReplicasNotSupportedErr error: "replicas > 1 not supported in non-clustered mode"

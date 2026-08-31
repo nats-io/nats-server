@@ -411,7 +411,7 @@ func TestMonitorHandleVarz(t *testing.T) {
 			t.Fatalf("JS limits not set")
 		}
 		if v.JetStream.Limits.MaxHAAssets != 1000 {
-			t.Fatalf("Expected 1000 max_ha_assets got %q", v.JetStream.Limits.MaxHAAssets)
+			t.Fatalf("Expected 1000 max_ha_assets got %v", v.JetStream.Limits.MaxHAAssets)
 		}
 	}
 }
@@ -5620,29 +5620,20 @@ func TestMonitorJsz(t *testing.T) {
 		}
 	})
 	t.Run("cluster-info", func(t *testing.T) {
-		found := 0
-		for i, url := range []string{monUrl1, monUrl2} {
+		for _, url := range []string{monUrl1, monUrl2} {
 			info := readJsInfo(url + "")
 			if info.Meta.Peer != getHash(info.Meta.Leader) {
 				t.Fatalf("Invalid Peer: %+v", info.Meta)
 			}
-			if info.Meta.Replicas != nil {
-				found++
-				for _, r := range info.Meta.Replicas {
-					if r.Peer == _EMPTY_ {
-						t.Fatalf("Replicas' Peer is empty: %+v", r)
-					}
-				}
-				if info.Meta.Leader != srvs[i].Name() {
-					t.Fatalf("received cluster info from non leader: leader %s, server: %s", info.Meta.Leader, srvs[i].Name())
+			// Replicas are populated on every server, not just the meta leader.
+			if len(info.Meta.Replicas) == 0 {
+				t.Fatalf("Expected replicas to be populated: %+v", info.Meta)
+			}
+			for _, r := range info.Meta.Replicas {
+				if r.Peer == _EMPTY_ {
+					t.Fatalf("Replicas' Peer is empty: %+v", r)
 				}
 			}
-		}
-		if found == 0 {
-			t.Fatalf("did not receive cluster info from any node")
-		}
-		if found > 1 {
-			t.Fatalf("received cluster info from multiple nodes")
 		}
 	})
 	t.Run("meta-snapshot-stats", func(t *testing.T) {

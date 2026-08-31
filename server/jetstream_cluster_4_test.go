@@ -3526,7 +3526,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				// Too many retries while processing snapshot is considered a cluster reset.
 				// If a leader is temporarily unavailable we shouldn't blow away our state.
 				require_True(t, isClusterResetErr(errCatchupTooManyRetries))
-				mset.resetClusteredState(errCatchupTooManyRetries)
+				mset.resetClusteredState(mset.raftNode(), errCatchupTooManyRetries)
 			},
 		},
 		{
@@ -3549,7 +3549,7 @@ func TestJetStreamClusterDesyncAfterErrorDuringCatchup(t *testing.T) {
 				err := mset.processSnapshot(&snap, appliedIndex)
 				require_True(t, errors.Is(err, errCatchupAbortedNoLeader))
 				require_True(t, isClusterResetErr(err))
-				mset.resetClusteredState(err)
+				mset.resetClusteredState(mset.raftNode(), err)
 			},
 		},
 	}
@@ -3709,7 +3709,7 @@ func TestJetStreamClusterConsumerDesyncAfterErrorDuringStreamCatchup(t *testing.
 	require_NoError(t, err)
 
 	// Run error condition.
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 
 	// Consumer leader stays offline, we only start the server with missing stream/consumer data.
 	// We expect that the reset server must not allow the outdated server to become leader, as that would result in desync.
@@ -3870,7 +3870,7 @@ func TestJetStreamClusterReservedResourcesAccountingAfterClusterReset(t *testing
 			require_NotNil(t, sa)
 			require_Equal(t, rn, saGroupNode)
 
-			require_True(t, mset.resetClusteredState(clusterResetErr))
+			require_True(t, mset.resetClusteredState(mset.raftNode(), clusterResetErr))
 
 			checkFor(t, 5*time.Second, 500*time.Millisecond, func() error {
 				sjs.mu.RLock()
@@ -8254,7 +8254,7 @@ func TestJetStreamClusterSourceRetryDoesNotDuplicate(t *testing.T) {
 		if len(ss) == 0 {
 			continue
 		}
-		_, _, sseq := streamAndSeq(string(ss))
+		_, _, sseq, _ := streamAndSeq(string(ss))
 		if sseq == replaySseq {
 			dstSeqs = append(dstSeqs, seq)
 		}
@@ -8739,7 +8739,7 @@ func TestJetStreamClusterApplyEntriesRejectEmptyNormal(t *testing.T) {
 		t.Fatalf("expected errBadEntryOp from applyMetaEntries, got %v", err)
 	}
 	ce := &CommittedEntry{Entries: empty}
-	if _, err := js.applyStreamEntries(&stream{}, ce, false, nil); err != errBadEntryOp {
+	if _, err := js.applyStreamEntries(&stream{}, nil, ce, false, nil); err != errBadEntryOp {
 		t.Fatalf("expected errBadEntryOp from applyStreamEntries, got %v", err)
 	}
 	if err := js.applyConsumerEntries(&consumer{}, ce, false); err != errBadEntryOp {
@@ -8781,4 +8781,256 @@ func TestJetStreamClusterCreateGroupForConsumerNoPeers(t *testing.T) {
 	require_True(t, cerr == nil)
 	require_True(t, rg != nil)
 	require_Len(t, len(rg.Peers), 3)
+}
+
+func TestJetStreamClusterStreamSnapshots(t *testing.T) {
+	workload := func(t *testing.T, setup func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext)) {
+		c := createJetStreamClusterExplicit(t, "R3C", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.servers[0])
+		defer nc.Close()
+
+		setup(t, nc, js)
+		cfg, state, archive := performStreamBackup(t, nc, "test_stream")
+
+		osi, err := js.StreamInfo("test_stream")
+		require_NoError(t, err)
+
+		require_NoError(t, js.DeleteStream("test_stream"))
+		require_True(t, performStreamRestore(t, nc, cfg, state, archive))
+
+		c.waitOnAllCurrent()
+		c.waitOnStreamLeader(globalAccountName, "test_stream")
+
+		nsi, err := js.StreamInfo("test_stream")
+		require_NoError(t, err)
+
+		// Nothing should have been mangled in the round-trip. We are
+		// specifically ignoring FirstTime and LastTime here though, as
+		// the compact call on the restore path can influence that in
+		// certain cases.
+		require_True(t, reflect.DeepEqual(osi.Config, nsi.Config))
+		require_Equal(t, osi.State.FirstSeq, nsi.State.FirstSeq)
+		require_Equal(t, osi.State.LastSeq, nsi.State.LastSeq)
+		require_Equal(t, osi.State.Msgs, nsi.State.Msgs)
+		require_Equal(t, osi.State.Bytes, nsi.State.Bytes)
+		require_Equal(t, osi.State.NumSubjects, nsi.State.NumSubjects)
+		require_Equal(t, osi.State.NumDeleted, nsi.State.NumDeleted)
+		require_Equal(t, osi.State.Consumers, nsi.State.Consumers)
+	}
+
+	for storename, storetype := range map[string]StorageType{
+		"Memory": MemoryStorage,
+		"File":   FileStorage,
+	} {
+		t.Run(storename, func(t *testing.T) {
+			for name, setup := range map[string]func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext){
+				"LimitsNoConsumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:     "test_stream",
+						Subjects: []string{"foo.>"},
+						Storage:  storetype,
+						Replicas: 3,
+					})
+					for range 5 * 10 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+				},
+				"LimitsWithR3Consumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:     "test_stream",
+						Subjects: []string{"foo.>"},
+						Storage:  storetype,
+						Replicas: 3,
+					})
+					for n := range 5 {
+						_, err := js.AddConsumer("test_stream", &nats.ConsumerConfig{
+							Name:          fmt.Sprintf("consumer_%d", n),
+							AckPolicy:     nats.AckExplicitPolicy,
+							MemoryStorage: storetype == MemoryStorage,
+							Replicas:      3,
+						})
+						require_NoError(t, err)
+					}
+					for range 5 * 10 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+					for n := range 5 {
+						cn := fmt.Sprintf("consumer_%d", n)
+						sub, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test_stream", cn))
+						require_NoError(t, err)
+						for range n * 10 {
+							msgs, err := sub.Fetch(1)
+							require_NoError(t, err)
+							require_Len(t, len(msgs), 1)
+							require_NoError(t, msgs[0].AckSync())
+						}
+					}
+				},
+				"LimitsWithR1Consumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:     "test_stream",
+						Subjects: []string{"foo.>"},
+						Storage:  storetype,
+						Replicas: 3,
+					})
+					for n := range 20 {
+						_, err := js.AddConsumer("test_stream", &nats.ConsumerConfig{
+							Name:          fmt.Sprintf("consumer_%d", n),
+							AckPolicy:     nats.AckExplicitPolicy,
+							MemoryStorage: storetype == MemoryStorage,
+							Replicas:      1,
+						})
+						require_NoError(t, err)
+					}
+					for range 20 * 10 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+					for n := range 20 {
+						cn := fmt.Sprintf("consumer_%d", n)
+						sub, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test_stream", cn))
+						require_NoError(t, err)
+						for range n * 10 {
+							msgs, err := sub.Fetch(1)
+							require_NoError(t, err)
+							require_Len(t, len(msgs), 1)
+							require_NoError(t, msgs[0].AckSync())
+						}
+					}
+				},
+				"InterestNoConsumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:      "test_stream",
+						Subjects:  []string{"foo.>"},
+						Storage:   storetype,
+						Retention: InterestPolicy,
+						Replicas:  3,
+					})
+					for range 300 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+					// Technically since there is no interest, this should be empty.
+					si, err := js.StreamInfo("test_stream")
+					require_NoError(t, err)
+					require_Equal(t, si.State.Msgs, 0)
+					require_Equal(t, si.State.FirstSeq, 301)
+				},
+				"InterestWithR3Consumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:      "test_stream",
+						Subjects:  []string{"foo.>"},
+						Storage:   storetype,
+						Retention: InterestPolicy,
+						Replicas:  3,
+					})
+					for n := range 5 {
+						_, err := js.AddConsumer("test_stream", &nats.ConsumerConfig{
+							Name:           fmt.Sprintf("consumer_%d", n),
+							AckPolicy:      nats.AckExplicitPolicy,
+							FilterSubjects: []string{"foo.>"},
+							MemoryStorage:  storetype == MemoryStorage,
+							Replicas:       3,
+						})
+						require_NoError(t, err)
+					}
+					for range 300 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+					for n := range 5 {
+						cn := fmt.Sprintf("consumer_%d", n)
+						sub, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test_stream", cn))
+						require_NoError(t, err)
+						for range (n + 1) * 10 {
+							msgs, err := sub.Fetch(1)
+							require_NoError(t, err)
+							require_Len(t, len(msgs), 1)
+							require_NoError(t, msgs[0].AckSync())
+						}
+					}
+					// Consumers have made mixed progress but the first ten messages should be gone.
+					si, err := js.StreamInfo("test_stream")
+					require_NoError(t, err)
+					require_Equal(t, si.State.Msgs, 290)
+					require_Equal(t, si.State.FirstSeq, 11)
+				},
+				"WorkQueueNoConsumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:      "test_stream",
+						Subjects:  []string{"foo.>"},
+						Storage:   storetype,
+						Retention: WorkQueuePolicy,
+						Replicas:  3,
+					})
+					for range 300 {
+						_, err := js.Publish("foo.bar", nil)
+						require_NoError(t, err)
+					}
+					// With no consumers, all messages should remain.
+					si, err := js.StreamInfo("test_stream")
+					require_NoError(t, err)
+					require_Equal(t, si.State.Msgs, 300)
+					require_Equal(t, si.State.FirstSeq, 1)
+				},
+				"WorkQueueWithConsumers": func(t *testing.T, nc *nats.Conn, js nats.JetStreamContext) {
+					jsStreamCreate(t, nc, &StreamConfig{
+						Name:      "test_stream",
+						Subjects:  []string{"foo.0", "foo.1", "foo.2", "foo.3", "foo.4"},
+						Storage:   storetype,
+						Retention: WorkQueuePolicy,
+						Replicas:  3,
+					})
+					// Each consumer gets a unique subject filter (WorkQueue requires non-overlapping).
+					for n := range 5 {
+						_, err := js.AddConsumer("test_stream", &nats.ConsumerConfig{
+							Name:           fmt.Sprintf("consumer_%d", n),
+							AckPolicy:      nats.AckExplicitPolicy,
+							FilterSubjects: []string{fmt.Sprintf("foo.%d", n)},
+							MemoryStorage:  storetype == MemoryStorage,
+							Replicas:       3,
+						})
+						require_NoError(t, err)
+					}
+					for n := range 5 {
+						for range 60 {
+							_, err := js.Publish(fmt.Sprintf("foo.%d", n), nil)
+							require_NoError(t, err)
+						}
+					}
+					for n := range 5 {
+						cn := fmt.Sprintf("consumer_%d", n)
+						sub, err := js.PullSubscribe(_EMPTY_, _EMPTY_, nats.Bind("test_stream", cn))
+						require_NoError(t, err)
+						for range (n + 1) * 10 {
+							msgs, err := sub.Fetch(1)
+							require_NoError(t, err)
+							require_Len(t, len(msgs), 1)
+							require_NoError(t, msgs[0].AckSync())
+						}
+					}
+					// Each consumer acked (n+1)*10 of its 60 messages.
+					// Total acked: 10+20+30+40+50 = 150 of 300.
+					checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+						si, err := js.StreamInfo("test_stream")
+						if err != nil {
+							return err
+						}
+						if si.State.Msgs != 150 {
+							return fmt.Errorf("expected 150 messages, got %d", si.State.Msgs)
+						}
+						return nil
+					})
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					workload(t, setup)
+				})
+			}
+		})
+	}
 }

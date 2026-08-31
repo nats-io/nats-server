@@ -1,5 +1,5 @@
 # These are supported funding model platforms
 
 # NATS.io
-community_bridge: nats-io
+custom: "https://crowdfunding.linuxfoundation.org/initiatives/nats-io"
 

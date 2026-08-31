@@ -2300,7 +2300,7 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 	require_NoError(b, err)
 
 	b.Run("StartingSequenceForSources", func(b *testing.B) {
-		mset.startingSequenceForSources()
+		mset.resetSourceInfo()
 	})
 }
 
@@ -2343,4 +2343,147 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 	}
 
 	return c, s, shutdown, nc, js
+}
+
+// BenchmarkJetStreamDirectGet measures direct get latency, single and multi,
+// idle and while a concurrent writer floods the stream, plus the publish path
+// on its own to spot read-isolation cost on writes.
+func BenchmarkJetStreamDirectGet(b *testing.B) {
+	const numSubjects = 256
+
+	setup := func(b *testing.B) (*Server, *nats.Conn) {
+		b.Helper()
+		s := RunBasicJetStreamServer(b)
+		nc, js := jsClientConnect(b, s)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo.*"},
+			Storage:           nats.FileStorage,
+			MaxMsgsPerSubject: 1,
+			AllowDirect:       true,
+		})
+		if err != nil {
+			b.Fatalf("add stream: %v", err)
+		}
+		payload := make([]byte, 64)
+		for i := 0; i < numSubjects; i++ {
+			if _, err := js.PublishAsync(fmt.Sprintf("foo.%d", i), payload); err != nil {
+				b.Fatalf("preload: %v", err)
+			}
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(10 * time.Second):
+			b.Fatalf("preload did not complete")
+		}
+		return s, nc
+	}
+
+	// Hammer the stream with async publishes over the same subject space for
+	// the duration of the benchmark. The stop func reports publishes acked.
+	startWriter := func(b *testing.B, s *Server) (stop func() uint64) {
+		b.Helper()
+		nc, js := jsClientConnect(b, s, nats.NoEcho())
+		done := make(chan struct{})
+		finished := make(chan struct{})
+		var acked atomic.Uint64
+		go func() {
+			defer close(finished)
+			payload := make([]byte, 64)
+			for i := 0; ; i++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				pa, err := js.PublishAsync(fmt.Sprintf("foo.%d", i%numSubjects), payload)
+				if err != nil {
+					// Pending limit reached, wait for completions.
+					select {
+					case <-js.PublishAsyncComplete():
+					case <-time.After(time.Second):
+					}
+					continue
+				}
+				go func() {
+					select {
+					case <-pa.Ok():
+						acked.Add(1)
+					case <-pa.Err():
+					case <-done:
+					}
+				}()
+			}
+		}()
+		return func() uint64 {
+			close(done)
+			<-finished
+			nc.Close()
+			return acked.Load()
+		}
+	}
+
+	single := `{"last_by_subj":"foo.7"}`
+	multi := `{"multi_last":["foo.7","foo.11","foo.13","foo.17","foo.19","foo.23","foo.29","foo.31"]}`
+	for _, bc := range []struct {
+		name       string
+		req        string
+		withWrites bool
+	}{
+		{"Single/Idle", single, false},
+		{"Single/UnderWrites", single, true},
+		{"Multi/Idle", multi, false},
+		{"Multi/UnderWrites", multi, true},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			s, nc := setup(b)
+			defer s.Shutdown()
+			defer nc.Close()
+
+			var stop func() uint64
+			if bc.withWrites {
+				stop = startWriter(b, s)
+				// Let the writer get going.
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			getSubj := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+			req := []byte(bc.req)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := nc.Request(getSubj, req, 5*time.Second); err != nil {
+					b.Fatalf("direct get: %v", err)
+				}
+			}
+			b.StopTimer()
+			if stop != nil {
+				writes := stop()
+				b.ReportMetric(float64(writes)/b.Elapsed().Seconds(), "writes/s")
+			}
+		})
+	}
+
+	b.Run("PublishOnly", func(b *testing.B) {
+		s, nc := setup(b)
+		defer s.Shutdown()
+		defer nc.Close()
+
+		_, js := jsClientConnect(b, s)
+		payload := make([]byte, 64)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := js.PublishAsync(fmt.Sprintf("foo.%d", i%numSubjects), payload); err != nil {
+				i--
+				select {
+				case <-js.PublishAsyncComplete():
+				case <-time.After(time.Second):
+				}
+			}
+		}
+		select {
+		case <-js.PublishAsyncComplete():
+		case <-time.After(30 * time.Second):
+			b.Fatalf("publishes did not complete")
+		}
+	})
 }

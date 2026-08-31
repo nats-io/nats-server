@@ -1044,21 +1044,29 @@ func (s *Server) sendStatsz(subj string) {
 			if mg.Leader() {
 				if ci := s.raftNodeToClusterInfo(mg); ci != nil {
 					jStat.Meta = &MetaClusterInfo{
-						Name:     ci.Name,
-						Leader:   ci.Leader,
-						Peer:     getHash(ci.Leader),
-						Replicas: ci.Replicas,
-						Size:     mg.ClusterSize(),
+						Name:         ci.Name,
+						Leader:       ci.Leader,
+						Replicas:     ci.Replicas,
+						Size:         mg.ClusterSize(),
+						QuorumNeeded: mg.QuorumNeeded(),
+						Rescue:       mg.InRescue(),
+					}
+					if ci.Leader != _EMPTY_ {
+						jStat.Meta.Peer = getHash(ci.Leader)
 					}
 				}
 			} else {
 				// non leader only include a shortened version without peers
 				leader := s.serverNameForNode(mg.GroupLeader())
 				jStat.Meta = &MetaClusterInfo{
-					Name:   mg.Group(),
-					Leader: leader,
-					Peer:   getHash(leader),
-					Size:   mg.ClusterSize(),
+					Name:         mg.Group(),
+					Leader:       leader,
+					Size:         mg.ClusterSize(),
+					QuorumNeeded: mg.QuorumNeeded(),
+					Rescue:       mg.InRescue(),
+				}
+				if leader != _EMPTY_ {
+					jStat.Meta.Peer = getHash(leader)
 				}
 			}
 			if jStat.Meta != nil {
@@ -1765,7 +1773,7 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 
 	node := getHash(si.Name)
 	accountNRG := si.AccountNRG()
-	oldInfo, _ := s.nodeToInfo.Swap(node, nodeInfo{
+	newInfo := nodeInfo{
 		name:            si.Name,
 		version:         si.Version,
 		cluster:         si.Cluster,
@@ -1778,12 +1786,20 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 		js:              si.JetStreamEnabled(),
 		binarySnapshots: si.BinaryStreamSnapshot(),
 		accountNRG:      accountNRG,
-	})
+	}
+	oldInfo, _ := s.nodeToInfo.Swap(node, newInfo)
 	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
 		// whether or not it supports in-account NRG, so update the groups
 		// with this information.
 		s.updateNRGAccountStatus()
+	}
+
+	// Process a peer's statsz when it has sufficient information.
+	if newInfo.selectable() {
+		if js := s.getJetStream(); js != nil {
+			js.processPeerStatsz(node)
+		}
 	}
 }
 

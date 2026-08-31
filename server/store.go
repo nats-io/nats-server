@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math/bits"
 	"os"
 	"strings"
@@ -114,25 +115,30 @@ type StreamStore interface {
 	FilteredState(seq uint64, subject string) (SimpleState, error)
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
+	SourcesState() map[string]StreamSourceState
 	AllLastSeqs() ([]uint64, error)
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
+	MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error)
 	SubjectForSeq(seq uint64) (string, error)
 	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error)
 	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error)
 	State() StreamState
 	FastState(*StreamState)
-	EncodedStreamState(failed uint64) (enc []byte, err error)
+	EncodedStreamState(failed uint64, withSources bool) (enc []byte, err error)
+	ApplySourcesState(sources map[string]StreamSourceState)
 	SyncDeleted(dbs DeleteBlocks) error
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
 	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
 	RegisterProcessJetStreamMsg(ProcessJetStreamMsgHandler)
 	UpdateConfig(cfg *StreamConfig) error
+	Ready() // Only needed if store started in recovering mode.
 	Delete(inline bool) error
 	Stop() error
 	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
+	Consumers() iter.Seq[ConsumerStore]
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
 	ResetState()
@@ -200,7 +206,7 @@ type LostStreamData struct {
 type SnapshotResult struct {
 	Reader io.ReadCloser
 	State  StreamState
-	errCh  chan string
+	errCh  chan error
 }
 
 const (
@@ -208,6 +214,10 @@ const (
 	streamStateMagic = uint8(42)
 	// Version
 	streamStateVersion = uint8(1)
+	// Version that additionally carries the stream's sourcing state. Only emitted
+	// when explicitly enabled, since a server that only understands the previous
+	// version rejects the encoding outright.
+	streamStateVersionSources = uint8(2)
 	// Magic / Identifier for run length encodings.
 	runLengthMagic = uint8(33)
 	// Magic / Identifier for AVL seqsets.
@@ -235,20 +245,27 @@ type StreamReplicatedState struct {
 	LastSeq  uint64
 	Failed   uint64
 	Deleted  DeleteBlocks
+	// Sources is the stream's sourcing state, only present in encodings of
+	// streamStateVersionSources and above. It can't be derived from the messages
+	// alone, since it outlives the messages it was collected from.
+	Sources map[string]StreamSourceState
 }
 
 // Determine if this is an encoded stream state.
 func IsEncodedStreamState(buf []byte) bool {
-	return len(buf) >= hdrLen && buf[0] == streamStateMagic && buf[1] == streamStateVersion
+	return len(buf) >= hdrLen && buf[0] == streamStateMagic &&
+		(buf[1] == streamStateVersion || buf[1] == streamStateVersionSources)
 }
 
 var ErrBadStreamStateEncoding = errors.New("bad stream state encoding")
 
 func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 	ss := &StreamReplicatedState{}
-	if len(buf) < hdrLen || buf[0] != streamStateMagic || buf[1] != streamStateVersion {
+	if len(buf) < hdrLen || buf[0] != streamStateMagic ||
+		(buf[1] != streamStateVersion && buf[1] != streamStateVersionSources) {
 		return nil, ErrBadStreamStateEncoding
 	}
+	withSources := buf[1] == streamStateVersionSources
 	var bi = hdrLen
 
 	readU64 := func() uint64 {
@@ -277,6 +294,42 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 
 	if parserFailed() {
 		return nil, ErrCorruptStreamState
+	}
+
+	// Sources come before the deleted blocks, since those are read up to the end
+	// of the buffer and can't be followed by anything else.
+	if withSources {
+		numSources := readU64()
+		if parserFailed() {
+			return nil, ErrCorruptStreamState
+		}
+		// Same entry layout as the on-disk sources index, all lengths as varints
+		// since both strings are short.
+		readStr := func() (string, bool) {
+			n := readU64()
+			if parserFailed() || uint64(len(buf)-bi) < n {
+				bi = -1
+				return _EMPTY_, false
+			}
+			s := string(buf[bi : bi+int(n)])
+			bi += int(n)
+			return s, true
+		}
+		for i := uint64(0); i < numSources; i++ {
+			name, ok := readStr()
+			if !ok {
+				return nil, ErrCorruptStreamState
+			}
+			seq := readU64()
+			ident, ok := readStr()
+			if !ok || parserFailed() {
+				return nil, ErrCorruptStreamState
+			}
+			if ss.Sources == nil {
+				ss.Sources = make(map[string]StreamSourceState, numSources)
+			}
+			ss.Sources[name] = StreamSourceState{Seq: seq, Ident: ident}
+		}
 	}
 
 	if numDeleted := readU64(); numDeleted > 0 {
@@ -388,6 +441,7 @@ type ConsumerStore interface {
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error
 	RemoveRedeliveredBelow(seq uint64)
+	GetConfig() *ConsumerConfig
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
 	ForceUpdate(*ConsumerState) error

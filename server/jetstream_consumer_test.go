@@ -7809,10 +7809,10 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	checkNumFilter := func(expected int) {
 		t.Helper()
 		mset.mu.RLock()
-		nf := mset.numFilter
+		nf := int(mset.csl.Count())
 		mset.mu.RUnlock()
 		if nf != expected {
-			t.Fatalf("Expected stream's numFilter to be %d, got %d", expected, nf)
+			t.Fatalf("Expected stream's filters to be %d, got %d", expected, nf)
 		}
 	}
 
@@ -7826,7 +7826,7 @@ func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	// and expect that numFilter reports correctly.
+	// and expect that it reports correctly.
 	checkNumFilter(0)
 }
 
@@ -11345,7 +11345,7 @@ func TestJetStreamConsumerAllowOverlappingSubjectsIfNotSubset(t *testing.T) {
 }
 
 func TestJetStreamConsumerResetToSequence(t *testing.T) {
-	test := func(replicas int) {
+	test := func(replicas int, ackPolicy AckPolicy) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
@@ -11360,8 +11360,18 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 		_, err := js.AddStream(cfg)
 		require_NoError(t, err)
 
+		var ackOpt nats.SubOpt
+		switch ackPolicy {
+		case AckExplicit:
+			ackOpt = nats.AckExplicit()
+		case AckAll:
+			ackOpt = nats.AckAll()
+		default:
+			t.Fatalf("unsupported ack policy for this test: %v", ackPolicy)
+		}
 		sub, err := js.PullSubscribe(_EMPTY_, "CONSUMER",
 			nats.BindStream("TEST"),
+			ackOpt,
 			nats.MaxAckPending(1),
 			nats.AckWait(time.Second),
 			nats.ConsumerReplicas(replicas),
@@ -11448,6 +11458,12 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 2, adflr: 1,
 			sseq: 2, asflr: 1,
 		})
+		// Confirm the initial pending values.
+		o.mu.RLock()
+		npc, npf := o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 2)
+		require_Equal(t, npf, 0)
 
 		// Resetting the consumer with an empty request results in a reset back to the ack floor.
 		var resp JSApiConsumerResetResponse
@@ -11468,6 +11484,17 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 1, asflr: 1,
 		})
+		// AckAll can use the ack-floor fast path and leaves the floor as-is;
+		// AckExplicit always requires full recalculation here.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 3)
+		if ackPolicy == AckAll {
+			require_Equal(t, npf, 0)
+		} else {
+			require_Equal(t, npf, 4)
+		}
 
 		// Trying to reset to zero also resets back to the ack floor.
 		req := JSApiConsumerResetRequest{Seq: 0}
@@ -11490,6 +11517,16 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 1, asflr: 1,
 		})
+		// Same as above.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 3)
+		if ackPolicy == AckAll {
+			require_Equal(t, npf, 0)
+		} else {
+			require_Equal(t, npf, 4)
+		}
 
 		// Resetting the consumer to the last message's sequence so it can be delivered still.
 		req = JSApiConsumerResetRequest{Seq: 4}
@@ -11513,6 +11550,12 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 			dseq: 0, adflr: 0,
 			sseq: 3, asflr: 3,
 		})
+		// Confirm pending was recalculated.
+		o.mu.RLock()
+		npc, npf = o.npc, o.npf
+		o.mu.RUnlock()
+		require_Equal(t, npc, 1)
+		require_Equal(t, npf, 4)
 
 		// As a result of moving the starting sequence up, some messages
 		// have now lost interest and need to be removed.
@@ -11562,9 +11605,11 @@ func TestJetStreamConsumerResetToSequence(t *testing.T) {
 	}
 
 	for _, replicas := range []int{1, 3} {
-		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
-			test(replicas)
-		})
+		for _, ackPolicy := range []AckPolicy{AckExplicit, AckAll} {
+			t.Run(fmt.Sprintf("R%d/%s", replicas, ackPolicy), func(t *testing.T) {
+				test(replicas, ackPolicy)
+			})
+		}
 	}
 }
 
@@ -12845,6 +12890,103 @@ func TestJetStreamConsumerUpdateConfigStopRace(t *testing.T) {
 }
 
 // Must be run with -race.
+// updateConfig assigns the whole ConsumerConfig under o.mu, while
+// getPublicConsumers/getDirectConsumers used to read o.cfg.Direct holding only
+// mset.clsMu. They read the immutable o.direct now. Real world pairing is
+// jsConsumerCreateRequest (update path) against jsConsumerListRequest.
+func TestJetStreamConsumerConfigDirectRace(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: AckExplicit,
+	})
+	require_NoError(t, err)
+
+	const iters = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+	start := make(chan struct{})
+
+	// Writer: Description is updatable, and varying it defeats the
+	// DeepEqual early return in checkNewConsumerConfig.
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range iters {
+			cfg := o.config()
+			cfg.Description = fmt.Sprintf("update-%d", i)
+			_ = o.updateConfig(&cfg)
+		}
+	}()
+
+	// Reader: walks cList without taking the consumer lock.
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iters {
+			if n := len(mset.getPublicConsumers()); n != 1 {
+				t.Errorf("Expected 1 public consumer, got %d", n)
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+}
+
+// Direct and Sourcing classify a consumer for its whole lifetime. The stream
+// reads them off the consumer without taking the consumer lock, so an update
+// must not be able to change them.
+func TestJetStreamConsumerUpdateRejectsDirectAndSourcingChange(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	// Direct consumers need to be push based ephemerals.
+	od, err := mset.addConsumer(&ConsumerConfig{
+		DeliverSubject: "d",
+		AckPolicy:      AckNone,
+		Direct:         true,
+	})
+	require_NoError(t, err)
+
+	cfg := od.config()
+	cfg.Direct = false
+	require_Error(t, od.updateConfig(&cfg), errors.New("direct can not be updated"))
+	require_True(t, od.direct)
+	require_True(t, od.config().Direct)
+
+	os, err := mset.addConsumer(&ConsumerConfig{
+		Durable:   "S",
+		AckPolicy: AckExplicit,
+		Sourcing:  true,
+	})
+	require_NoError(t, err)
+
+	cfg = os.config()
+	cfg.Sourcing = false
+	require_Error(t, os.updateConfig(&cfg), errors.New("sourcing can not be updated"))
+	require_True(t, os.sourcing)
+	require_True(t, os.config().Sourcing)
+}
+
+// Must be run with -race.
 func TestJetStreamConsumerSetRateLimitAccountMpayRace(t *testing.T) {
 	acc := &Account{Name: "A"}
 	acc.mpay = 1024
@@ -13014,4 +13156,290 @@ func TestJetStreamConsumerResetResponseAcrossServiceImport(t *testing.T) {
 			return c.consumerLeader("A", "TEST", "CONSUMER")
 		})
 	})
+}
+
+func TestJetStreamConsumerFlowControlResetOnLeaderChange(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST", Subjects: []string{"foo"}, Storage: nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// A push consumer only delivers while there is interest on the deliver
+	// subject. We never read these, the subscription just keeps it active.
+	dsubj := "d.flowcontrol"
+	_, err = nc.Subscribe(dsubj, func(*nats.Msg) {})
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:        "FC",
+		DeliverSubject: dsubj,
+		AckPolicy:      AckNone,
+		FlowControl:    true,
+		Heartbeat:      100 * time.Millisecond,
+	})
+	require_NoError(t, err)
+
+	state := func() (pbytes, maxpb int, fcid string, dseq uint64) {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		return o.pbytes, o.maxpb, o.fcid, o.dseq
+	}
+
+	// Open the window up to the ceiling a long lived consumer reaches on its own,
+	// by doubling in processFlowControl.
+	o.mu.Lock()
+	o.pblimit, o.maxpb = JsFlowControlMaxPending, JsFlowControlMaxPending
+	o.mu.Unlock()
+
+	// Above the post-reset window (limit/16) so delivery gates later, below the
+	// arming threshold (limit/2) so no flow control request goes out.
+	const target = JsFlowControlMaxPending / 8
+	payload := make([]byte, 256*1024)
+	for sent := 0; sent < target; sent += len(payload) {
+		_, err = js.Publish("foo", payload)
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if pbytes, _, _, _ := state(); pbytes < target {
+			return fmt.Errorf("pbytes %d has not reached %d yet", pbytes, target)
+		}
+		return nil
+	})
+
+	// The state we expect to carry into the transition.
+	pbytes, maxpb, fcid, _ := state()
+	require_Equal(t, fcid, _EMPTY_)
+	require_Equal(t, maxpb, JsFlowControlMaxPending)
+	require_True(t, pbytes > JsFlowControlMaxPending/16)
+
+	// This is the sequence processConsumerLeaderChange runs.
+	require_NoError(t, o.setLeader(false, 0))
+	require_NoError(t, o.setLeader(true, 0))
+
+	pbytes, _, _, dseq := state()
+	require_Equal(t, pbytes, 0)
+
+	// And it must still deliver.
+	_, err = js.Publish("foo", []byte("hello"))
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if _, _, _, cur := state(); cur <= dseq {
+			return fmt.Errorf("consumer is not delivering, dseq stuck at %d", cur)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerStore(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	})
+	require_NoError(t, err)
+
+	// Existing durable consumer registered under "dur" with an on-disk store.
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	cfs, ok := o.store.(*consumerFileStore)
+	require_True(t, ok)
+	odir := cfs.odir
+	require_NotEqual(t, odir, _EMPTY_)
+
+	// Sanity: the existing consumer's store directory exists.
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+
+	// Trigger the collision path. Since the consumer already exists, this should error.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit},
+		"dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err, NewJSConsumerNameExistError())
+
+	// The existing consumer should still be registered, and its store directory intact.
+	require_Equal(t, mset.lookupConsumer("dur"), o)
+	_, err = os.Stat(odir)
+	require_NoError(t, err)
+}
+
+func TestJetStreamConsumerFailedRecoverStateDoesNotLeakInternalClients(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	sys := s.SystemAccount()
+
+	// Stream stays empty, so its last sequence is 0 while the recovered consumer below
+	// has a much higher delivered sequence: this drives the reconcile path.
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Set up a consumer store whose delivered sequence is far ahead of the stream.
+	cfg := &ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit}
+	cs, err := mset.store.ConsumerStore("dur", time.Now().UTC(), cfg)
+	require_NoError(t, err)
+	ifn := cs.(*consumerFileStore).ifn // Capture before stop.
+	require_NoError(t, cs.ForceUpdate(&ConsumerState{
+		Delivered: SequencePair{Consumer: 100, Stream: 100},
+		AckFloor:  SequencePair{Consumer: 100, Stream: 100},
+	}))
+	require_NoError(t, cs.Stop())
+
+	// Make a directory where the state file's temporary write target lives
+	// (during writeAtomically) so that it fails with EISDIR when opening it.
+	// This fails even when the tests run as root (usually in container envs).
+	require_NoError(t, os.Mkdir(ifn+".tmp", defaultDirPerms))
+
+	numClients := func(a *Account) int {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		return len(a.clients)
+	}
+	accBefore, sysBefore := numClients(acc), numClients(sys)
+
+	// Trigger recovery multiple times to exploit if internal clients are leaked.
+	const iters = 20
+	for range iters {
+		_, err = mset.addConsumerWithAssignment(cfg, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "error creating store for consumer")
+	}
+
+	// Validate that no internal clients were leaked.
+	const tolerance = 5
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if d := numClients(acc) - accBefore; d > tolerance {
+			return fmt.Errorf("account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		if d := numClients(sys) - sysBefore; d > tolerance {
+			return fmt.Errorf("system account leaked ~%d internal clients over %d failed recovery creates", d, iters)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamConsumerCreateNameTooLongDoesNotDeleteObsStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// A stream literally named "obs".
+	acc := s.globalAccount()
+	obs, err := acc.addStream(&StreamConfig{Name: "obs", Subjects: []string{"obs.>"}, Storage: FileStorage})
+	require_NoError(t, err)
+	fs, ok := obs.store.(*fileStore)
+	require_True(t, ok)
+	obsDir := fs.fcfg.StoreDir
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+
+	mset, err := acc.addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	// Durable name longer than the limit: rejected before the consumer is registered.
+	_, err = mset.addConsumer(&ConsumerConfig{Durable: strings.Repeat("a", JSMaxNameLen+1), AckPolicy: AckExplicit})
+	require_Error(t, err)
+
+	// The unrelated "obs" stream's directory must still exist.
+	_, err = os.Stat(obsDir)
+	require_NoError(t, err)
+}
+
+func TestJetStreamConsumerCreateCollisionPreservesExistingConsumerQueues(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "dur", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	// A pull consumer registers two queues in the server's ipQueues map.
+	ackKey, reqKey := o.ackMsgs.name, o.nextMsgReqs.name
+	if _, ok := s.ipQueues.Load(ackKey); !ok {
+		t.Fatal("precondition: existing consumer ackMsgs queue not registered")
+	}
+
+	// Trigger the name collision path.
+	_, err = mset.addConsumerWithAssignment(
+		&ConsumerConfig{AckPolicy: AckExplicit}, "dur", nil, false, ActionCreateOrUpdate, false,
+	)
+	require_Error(t, err)
+
+	// The existing registry entries must still be present and still point at its queues.
+	v, ok := s.ipQueues.Load(ackKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*jsAckMsg]), o.ackMsgs)
+	v, ok = s.ipQueues.Load(reqKey)
+	require_True(t, ok)
+	require_Equal(t, v.(*ipQueue[*nextMsgReq]), o.nextMsgReqs)
+}
+
+func TestJetStreamConsumerDeliveryCountUnderflow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	acc, err := s.lookupAccount(globalAccountName)
+	require_NoError(t, err)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:    "CONSUMER",
+		AckPolicy:  AckExplicit,
+		MaxDeliver: 3,
+	})
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// A failed delivery attempt on a message that was never redelivered must
+	// not fabricate redelivery state for it.
+	o.decDeliveryCount(1)
+	require_True(t, o.rdc == nil)
+	require_Equal(t, o.deliveryCount(1), 1)
+	// Underflow used to report a delivery count of 2^64-1 here, which is
+	// >= any configured MaxDeliver, so the message was immediately treated as
+	// having exhausted its delivery attempts.
+	require_False(t, o.hasMaxDeliveries(1))
+
+	// A failed delivery attempt after a redelivery has to be reversible, all
+	// the way back to no redelivery state at all.
+	require_Equal(t, o.incDeliveryCount(1), 2)
+	require_Equal(t, o.deliveryCount(1), 1)
+	require_Equal(t, o.incDeliveryCount(1), 3)
+	require_Equal(t, o.deliveryCount(1), 2)
+	o.decDeliveryCount(1)
+	require_Equal(t, o.deliveryCount(1), 1)
+	o.decDeliveryCount(1)
+	require_Equal(t, o.deliveryCount(1), 1)
+	_, present := o.rdc[1]
+	require_False(t, present)
 }

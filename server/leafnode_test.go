@@ -84,7 +84,7 @@ func TestLeafNodeRandomIP(t *testing.T) {
 	o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
 	o.LeafNode.ReconnectInterval = 50 * time.Millisecond
 	o.LeafNode.resolver = resolver
-	o.LeafNode.dialTimeout = 15 * time.Millisecond
+	o.LeafNode.DialTimeout = 15 * time.Millisecond
 	s := RunServer(o)
 	defer s.Shutdown()
 
@@ -12728,4 +12728,117 @@ func TestLeafNodeRemoteIgnoreGossip(t *testing.T) {
 
 	checkSubNoInterest(t, leaf, globalAccountName, "foo", time.Second)
 	checkSubInterest(t, leaf, globalAccountName, "bar", time.Second)
+}
+
+// Verify that the dial timeout handed to the dialer is resolved in this order:
+// remote's `dial_timeout`, then the leafnodes{} block `dial_timeout`, then
+// DEFAULT_ROUTE_DIAL.
+//
+// We install a test dialer instead of relying on a genuinely slow network,
+// because a userspace listener/proxy completes the TCP handshake immediately
+// and would therefore never exercise the dial timeout at all. Reproducing a
+// real dial timeout requires delaying or dropping the SYN in the kernel (for
+// instance with tc/netem), which is not something a unit test can rely on.
+func TestLeafNodeDialTimeoutOption(t *testing.T) {
+	// The remote does not need to exist: the test dialer never connects, it
+	// just records the timeout it was given and returns an error, which sends
+	// the connect loop into its normal retry path.
+	u, err := url.Parse("nats-leaf://127.0.0.1:1234")
+	require_NoError(t, err)
+
+	for _, test := range []struct {
+		name     string
+		server   time.Duration
+		remote   time.Duration
+		expected time.Duration
+	}{
+		{"not set", 0, 0, DEFAULT_ROUTE_DIAL},
+		{"server level", 3 * time.Second, 0, 3 * time.Second},
+		{"remote level", 0, 4 * time.Second, 4 * time.Second},
+		{"remote overrides server", 3 * time.Second, 4 * time.Second, 4 * time.Second},
+		{"invalid server level", -1, 0, DEFAULT_ROUTE_DIAL},
+		{"invalid remote level", 3 * time.Second, -1, 3 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ch := make(chan time.Duration, 1)
+
+			o := DefaultOptions()
+			o.Host = "127.0.0.1"
+			o.Port = -1
+			o.LeafNode.Port = 0
+			o.LeafNode.ReconnectInterval = 50 * time.Millisecond
+			o.LeafNode.DialTimeout = test.server
+			o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}, DialTimeout: test.remote}}
+			o.LeafNode.dialer = func(network, address string, timeout time.Duration) (net.Conn, error) {
+				// Non-blocking send: the connect loop will keep retrying and
+				// we only care about the first invocation.
+				select {
+				case ch <- timeout:
+				default:
+				}
+				return nil, fmt.Errorf("test dialer does not connect")
+			}
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			select {
+			case got := <-ch:
+				require_Equal(t, got, test.expected)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Leafnode dialer was never invoked")
+			}
+		})
+	}
+}
+
+// Verify that `dial_timeout` is accepted both in the leafnodes{} block and on
+// an individual remote.
+func TestLeafNodeDialTimeoutConfig(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		leafnodes {
+			dial_timeout: "5s"
+			remotes = [
+				{ url: "nats-leaf://127.0.0.1:1234" }
+				{ url: "nats-leaf://127.0.0.1:5678", dial_timeout: "15s" }
+			]
+		}
+	`))
+	o, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+
+	require_Equal(t, o.LeafNode.DialTimeout, 5*time.Second)
+	require_Len(t, len(o.LeafNode.Remotes), 2)
+	// Not set on this remote, so the leafnodes{} block value applies.
+	require_Equal(t, o.LeafNode.Remotes[0].DialTimeout, time.Duration(0))
+	require_Equal(t, o.LeafNode.Remotes[1].DialTimeout, 15*time.Second)
+}
+
+// An invalid duration should be reported as a config error rather than being
+// silently ignored.
+func TestLeafNodeDialTimeoutConfigInvalid(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		conf string
+	}{
+		{"server level", `
+			leafnodes {
+				dial_timeout: abc
+			}
+		`},
+		{"remote level", `
+			leafnodes {
+				remotes = [
+					{ url: "nats-leaf://127.0.0.1:1234", dial_timeout: abc }
+				]
+			}
+		`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(test.conf))
+			if _, err := ProcessConfigFile(conf); err == nil ||
+				!strings.Contains(err.Error(), "error parsing dial_timeout") {
+				t.Fatalf("Expected error parsing dial_timeout, got %v", err)
+			}
+		})
+	}
 }

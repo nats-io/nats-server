@@ -6,6 +6,12 @@ jetStream -> jsAccount -> Server -> client -> Account
 
 jetStream -> jsAccount -> stream -> consumer
 
+The "prMu" lock protects the peer reconcile signaling state on jetStream, so
+signaling is cheap and never contends on the JS lock. It must not be held while
+acquiring the JetStream lock.
+
+  jetStream -> prMu
+
 A lock to protect jetstream account's usage has been introduced: jsAccount.usageMu.
 This lock is independent and can be invoked under any other lock: jsAccount -> jsa.usageMu, stream -> jsa.usageMu, etc...
 
@@ -46,3 +52,10 @@ The "mset.batches.mu" lock protects the batching state without needing to hold t
 If "clMu" is used to commit a batch, it should only be acquired while already holding the batch lock.
 
     stream -> mset.batches.mu -> clMu
+
+The "isolateMu" lock isolates direct get and msg get reads from writes, so those reads do not
+observe partially applied rollups or atomic batches. Other read paths (consumer delivery,
+mirrors/sources, info requests, etc.) are sequentially consistent and may observe a prefix of
+an inflight batch. It must be acquired before the stream lock, never while holding it.
+
+    isolateMu -> stream

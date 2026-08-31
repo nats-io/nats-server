@@ -19,6 +19,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -49,7 +51,7 @@ func init() {
 	hbInterval = 50 * time.Millisecond
 	minElectionTimeout = 1500 * time.Millisecond
 	maxElectionTimeout = 3500 * time.Millisecond
-	lostQuorumInterval = 2 * time.Second
+	lostQuorumInterval = 5 * time.Second
 	lostQuorumCheck = 4 * hbInterval
 
 	// For statz and jetstream placement speedups as well.
@@ -102,10 +104,23 @@ func (sc *supercluster) waitOnStreamLeader(account, stream string) {
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
 		for _, c := range sc.clusters {
-			if leader := c.streamLeader(account, stream); leader != nil {
-				time.Sleep(200 * time.Millisecond)
-				return
+			leader := c.streamLeader(account, stream)
+			if leader == nil {
+				time.Sleep(100 * time.Millisecond)
+				continue
 			}
+			// Also wait for the stream leader to finish any scales/moves.
+			js := leader.getJetStream()
+			js.mu.RLock()
+			sa := js.streamAssignment(account, stream)
+			wait := sa == nil || (sa.Group != nil && sa.Group.Desired != nil)
+			js.mu.RUnlock()
+			if wait {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			time.Sleep(200 * time.Millisecond)
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -153,6 +168,25 @@ var jsClusterTempl = `
 	listen: 127.0.0.1:-1
 	server_name: %s
 	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s'}
+
+	leaf {
+		listen: 127.0.0.1:-1
+	}
+
+	cluster {
+		name: %s
+		listen: 127.0.0.1:%d
+		routes = [%s]
+	}
+
+	# For access to system account.
+	accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+`
+
+var jsClusterSyncAlwaysTempl = `
+	listen: 127.0.0.1:-1
+	server_name: %s
+	jetstream: {max_mem_store: 2GB, max_file_store: 2GB, store_dir: '%s', sync_interval: always}
 
 	leaf {
 		listen: 127.0.0.1:-1
@@ -1439,11 +1473,23 @@ func (c *cluster) waitOnConsumerLeader(account, stream, consumer string) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		if leader := c.consumerLeader(account, stream, consumer); leader != nil {
-			time.Sleep(200 * time.Millisecond)
-			return
+		leader := c.consumerLeader(account, stream, consumer)
+		if leader == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Also wait for the consumer leader to finish any scales/moves.
+		js := leader.getJetStream()
+		js.mu.RLock()
+		ca := js.consumerAssignment(account, stream, consumer)
+		wait := ca == nil || (ca.Group != nil && ca.Group.Desired != nil)
+		js.mu.RUnlock()
+		if wait {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		time.Sleep(200 * time.Millisecond)
+		return
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnConsumerLeader", map[string]any{
 		"cluster":  c.name,
@@ -1478,11 +1524,23 @@ func (c *cluster) waitOnStreamLeader(account, stream string) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
 	for time.Now().Before(expires) {
-		if leader := c.streamLeader(account, stream); leader != nil {
-			time.Sleep(200 * time.Millisecond)
-			return
+		leader := c.streamLeader(account, stream)
+		if leader == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Also wait for the stream leader to finish any scales/moves.
+		js := leader.getJetStream()
+		js.mu.RLock()
+		sa := js.streamAssignment(account, stream)
+		wait := sa == nil || (sa.Group != nil && sa.Group.Desired != nil)
+		js.mu.RUnlock()
+		if wait {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		time.Sleep(200 * time.Millisecond)
+		return
 	}
 	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnStreamLeader", map[string]any{
 		"cluster": c.name,
@@ -2125,6 +2183,19 @@ func copyDir(t *testing.T, dst, src string) error {
 		if err != nil {
 			return err
 		}
+		// A purge moves msgs to __msgs__ and removes that directory
+		// asynchronously. It is disposable and may disappear while walking a
+		// live store, so do not include it in the copy.
+		if d.IsDir() && d.Name() == purgeDir {
+			return fs.SkipDir
+		}
+		// Atomic writes use .tmp files that are renamed into place when complete.
+		if strings.HasSuffix(d.Name(), blkTmpSuffix) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		newPath := path.Join(dst, p)
 		if d.IsDir() {
 			return os.MkdirAll(newPath, defaultDirPerms)
@@ -2256,4 +2327,125 @@ func checkStateAndErr(t *testing.T, c *cluster, accountName, streamName string) 
 		return StreamState{}, errors.Join(errs...)
 	}
 	return streamLeader.State, nil
+}
+
+// Helpers for the meta leader peer reconciliation tests.
+func metaStreamPeers(s *Server, account, stream string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	sa := js.streamAssignmentOrInflight(account, stream)
+	if sa == nil {
+		return nil
+	}
+	peers := copyStrings(sa.Group.Peers)
+	slices.Sort(peers)
+	return peers
+}
+
+func metaConsumerPeers(s *Server, account, stream, consumer string) []string {
+	js := s.getJetStream()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	ca := js.consumerAssignmentOrInflight(account, stream, consumer)
+	if ca == nil {
+		return nil
+	}
+	peers := copyStrings(ca.Group.Peers)
+	slices.Sort(peers)
+	return peers
+}
+
+func performStreamBackup(t *testing.T, nc *nats.Conn, streamName string) (StreamConfig, StreamState, []byte) {
+	t.Helper()
+	endpoint := fmt.Sprintf(JSApiStreamSnapshotT, streamName)
+	inbox := nc.NewRespInbox()
+
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+
+	resp, err := nc.RequestMsg(&nats.Msg{
+		Subject: endpoint,
+		Data:    fmt.Appendf(nil, `{"deliver_subject": %q}`, inbox),
+	}, 5*time.Second)
+	require_NoError(t, err)
+
+	var body struct {
+		StreamState  `json:"state"`
+		StreamConfig `json:"config"`
+	}
+	require_NoError(t, json.Unmarshal(resp.Data, &body))
+
+	buf := bytes.NewBuffer(nil)
+	for {
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		if msg.Reply != _EMPTY_ {
+			require_NoError(t, msg.Respond(nil))
+		}
+		if len(msg.Data) == 0 {
+			break
+		}
+		_, err = buf.Write(msg.Data)
+		require_NoError(t, err)
+	}
+	return body.StreamConfig, body.StreamState, buf.Bytes()
+}
+
+func performStreamRestore(t *testing.T, nc *nats.Conn, sc StreamConfig, ss StreamState, archive []byte) bool {
+	t.Helper()
+	endpoint := fmt.Sprintf(JSApiStreamRestoreT, sc.Name)
+
+	req, err := json.Marshal(struct {
+		StreamState  `json:"state"`
+		StreamConfig `json:"config"`
+	}{
+		StreamState:  ss,
+		StreamConfig: sc,
+	})
+	require_NoError(t, err)
+
+	resp, err := nc.RequestMsg(&nats.Msg{
+		Subject: endpoint,
+		Data:    req,
+	}, 5*time.Second)
+	require_NoError(t, err)
+
+	var res struct {
+		DeliverSubject string `json:"deliver_subject"`
+	}
+	require_NoError(t, json.Unmarshal(resp.Data, &res))
+	if !IsValidLiteralSubject(res.DeliverSubject) {
+		return false
+	}
+
+	reader := bytes.NewReader(archive)
+	buf := make([]byte, 128*1024)
+	for {
+		n, err := reader.Read(buf)
+		if err == io.EOF {
+			break
+		}
+		require_NoError(t, err)
+
+		_, err = nc.Request(res.DeliverSubject, buf[:n], time.Second)
+		require_NoError(t, err)
+	}
+
+	_, err = nc.Request(res.DeliverSubject, nil, time.Second)
+	require_NoError(t, err)
+	return true
+}
+
+// publishAsync publishes a message asynchronously, retrying if we're stalled
+// on async publishes.
+func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byte) nats.PubAckFuture {
+	t.Helper()
+	for {
+		pubAck, err := js.PublishAsync(subj, msg)
+		if err == nil {
+			return pubAck
+		}
+		require_Error(t, err, nats.ErrTooManyStalledMsgs)
+	}
 }

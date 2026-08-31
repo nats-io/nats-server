@@ -16,6 +16,7 @@ package server
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -27,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"iter"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -67,6 +69,8 @@ type FileStoreConfig struct {
 	SyncInterval time.Duration
 	// SyncAlways is when the stream should sync all data writes.
 	SyncAlways bool
+	// SyncOnFlush relaxes SyncAlways to flush writes on FlushAllPending.
+	SyncOnFlush bool
 	// AsyncFlush allows async flush to batch write operations.
 	AsyncFlush bool
 	// Cipher is the cipher to use when encrypting.
@@ -183,10 +187,13 @@ type fileStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
+	recovering  bool        // Timers, schedules, TTLs etc won't fire while set.
 	syncTmr     *time.Timer
+	syncMu      sync.Mutex // Serializes background and explicit block syncs.
 	cfg         FileStreamInfo
 	fcfg        FileStoreConfig
-	syncAlways  atomic.Bool // Mirrors FileStoreConfig.SyncAlways for lock-free reads from writeFileWithOptionalSync.
+	syncAlways  atomic.Bool // Effective SyncAlways behavior for lock-free reads.
+	syncOnFlush atomic.Bool // Effective sync on flush behavior. True only if SyncAlways and replicas > 1.
 	prf         keyGen
 	oldprf      keyGen
 	aek         cipher.AEAD
@@ -216,6 +223,7 @@ type fileStore struct {
 	sdm         *SDMMeta
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
+	sources     map[string]*StreamSourceState
 }
 
 // Represents a message store block and its data.
@@ -262,7 +270,6 @@ type msgBlock struct {
 	noTrack     bool
 	needSync    bool
 	needKeySync bool // Key file is written once and immutable, cleared after its one sync.
-	syncAlways  bool
 	noCompact   bool
 	closed      bool
 	ttls        uint64 // How many msgs have TTLs?
@@ -353,6 +360,11 @@ const (
 	// This is the encoded message scheduling file.
 	msgSchedulingStreamStateFile = "sched.db"
 
+	// This is the encoded sources state file. Unlike the other state files it
+	// lives at the FileStoreConfig.StoreDir root rather than under msgDir, so
+	// a full purge does not also purge this file.
+	sourcesStreamStateFile = "sources.db"
+
 	// AEK key sizes
 	minMetaKeySize = 64
 	minBlkKeySize  = 64
@@ -394,6 +406,10 @@ func newFileStore(fcfg FileStoreConfig, cfg StreamConfig) (*fileStore, error) {
 }
 
 func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen) (fs *fileStore, err error) {
+	return newFileStoreWithCreatedAndMode(fcfg, cfg, created, prf, oldprf, false)
+}
+
+func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, created time.Time, prf, oldprf keyGen, recovering bool) (fs *fileStore, err error) {
 	if cfg.Name == _EMPTY_ {
 		return nil, fmt.Errorf("name required")
 	}
@@ -437,18 +453,20 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	dios.release()
 
 	fs = &fileStore{
-		fcfg:   fcfg,
-		dios:   dios,
-		psim:   stree.NewSubjectTree[psi](),
-		bim:    make(map[uint32]*msgBlock),
-		cfg:    FileStreamInfo{Created: created, StreamConfig: cfg},
-		prf:    prf,
-		oldprf: oldprf,
-		qch:    make(chan struct{}),
-		fsld:   make(chan struct{}),
-		srv:    fcfg.srv,
+		fcfg:       fcfg,
+		dios:       dios,
+		psim:       stree.NewSubjectTree[psi](),
+		bim:        make(map[uint32]*msgBlock),
+		cfg:        FileStreamInfo{Created: created, StreamConfig: cfg},
+		prf:        prf,
+		oldprf:     oldprf,
+		qch:        make(chan struct{}),
+		fsld:       make(chan struct{}),
+		srv:        fcfg.srv,
+		recovering: recovering,
 	}
-	fs.syncAlways.Store(fcfg.SyncAlways)
+	fs.syncAlways.Store(fcfg.SyncAlways && !fcfg.SyncOnFlush)
+	fs.syncOnFlush.Store(fcfg.SyncOnFlush)
 
 	// Register with access time service.
 	ats.Register()
@@ -459,15 +477,6 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 			ats.Unregister()
 		}
 	}()
-
-	// Only create a THW if we're going to allow TTLs.
-	if cfg.AllowMsgTTL {
-		fs.ttls = thw.NewHashWheel()
-	}
-	// Only create scheduling data structure if we're going to allow message schedules.
-	if cfg.AllowMsgSchedules {
-		fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
-	}
 
 	// Set flush in place to AsyncFlush which by default is false.
 	fs.fip = !fcfg.AsyncFlush
@@ -558,18 +567,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 	}()
 
-	// See if we can bring back our TTL timed hash wheel state from disk.
-	if cfg.AllowMsgTTL {
-		if err = fs.recoverTTLState(); err != nil && !os.IsNotExist(err) {
-			fs.warn("Recovering TTL state from index errored: %v", err)
-		}
-	}
-
-	// See if we can bring back our message scheduling state from disk.
-	if cfg.AllowMsgSchedules {
-		if err = fs.recoverMsgSchedulingState(); err != nil && !os.IsNotExist(err) {
-			fs.warn("Recovering message scheduling state from index errored: %v", err)
-		}
+	// Recover per-message state like TTLs and schedules.
+	if err = fs.recoverPerMessageState(); err != nil {
+		fs.mu.Unlock()
+		return nil, err
 	}
 
 	// Also make sure we get rid of old idx and fss files on return.
@@ -676,6 +677,51 @@ func (fs *fileStore) unlockAllMsgBlocks() {
 	}
 }
 
+func (fs *fileStore) setCreatedTime(created time.Time) {
+	fs.mu.Lock()
+	fs.cfg.Created = created
+	fs.mu.Unlock()
+}
+
+func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
+	if !fs.fcfg.SyncAlways {
+		return
+	}
+	// If the stream is backed by a Raft WAL we relax the SyncAlways
+	// setting in favor of SyncOnFlush. Enable the new sync mode
+	// before disabling the old one so writes are never processed
+	// with both modes disabled.
+	if replicas > 1 {
+		fs.syncOnFlush.Store(true)
+		fs.syncAlways.Store(false)
+	} else {
+		fs.syncAlways.Store(true)
+		fs.syncOnFlush.Store(false)
+	}
+}
+
+// flushForScaleDown transitions a SyncOnFlush store back to SyncAlways.
+func (fs *fileStore) flushForScaleDown() error {
+	fs.mu.Lock()
+	if !fs.fcfg.SyncAlways {
+		fs.mu.Unlock()
+		return fs.FlushAllPending()
+	}
+	// Turn off syncOnFlush, and enable sync after every write.
+	// First enable sync after every write, so that any inflight
+	// or subsequent write gets synced
+	fs.updateDurabilitySettingsLocked(1)
+	fs.mu.Unlock()
+
+	// Sync all dirty blocks, so that we no longer have to rely
+	// on the backing Raft WAL.
+	fs.syncBlocks()
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.werr
+}
+
 func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	start := time.Now()
 	defer func() {
@@ -713,25 +759,11 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		return err
 	}
 
-	// Create or delete the THW if needed.
-	if cfg.AllowMsgTTL && fs.ttls == nil {
-		if err := fs.recoverTTLState(); err != nil {
-			fs.mu.Unlock()
-			return err
-		}
-	} else if !cfg.AllowMsgTTL && fs.ttls != nil {
-		fs.ttls = nil
+	// Recover per-message state like TTLs and schedules.
+	if err := fs.recoverPerMessageState(); err != nil {
+		fs.mu.Unlock()
+		return err
 	}
-	// Create or delete the message scheduling state if needed.
-	if cfg.AllowMsgSchedules && fs.scheduling == nil {
-		if err := fs.recoverMsgSchedulingState(); err != nil {
-			fs.mu.Unlock()
-			return err
-		}
-	} else if !cfg.AllowMsgSchedules && fs.scheduling != nil {
-		fs.scheduling = nil
-	}
-
 	// Limits checks and enforcement.
 	if err := fs.enforceMsgLimit(); err != nil {
 		fs.mu.Unlock()
@@ -759,6 +791,8 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		}
 	}
 
+	fs.updateDurabilitySettingsLocked(cfg.Replicas)
+
 	if lmb := fs.lmb; lmb != nil {
 		// Enable/disable async flush depending on if it's supported and already initialized.
 		supportsAsyncFlush := !fs.fcfg.SyncAlways && cfg.Replicas > 1
@@ -769,9 +803,6 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 			supportsAsyncFlush = true
 			fs.fcfg.SyncAlways = false
 			fs.syncAlways.Store(false)
-			lmb.mu.Lock()
-			lmb.syncAlways = false
-			lmb.mu.Unlock()
 		}
 
 		if supportsAsyncFlush && !fs.fcfg.AsyncFlush {
@@ -1122,12 +1153,11 @@ func (fs *fileStore) noTrackSubjects() bool {
 // Will init the basics for a message block.
 func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 	mb := &msgBlock{
-		fs:         fs,
-		index:      index,
-		cexp:       fs.fcfg.CacheExpire,
-		fexp:       fs.fcfg.SubjectStateExpire,
-		noTrack:    fs.noTrackSubjects(),
-		syncAlways: fs.fcfg.SyncAlways,
+		fs:      fs,
+		index:   index,
+		cexp:    fs.fcfg.CacheExpire,
+		fexp:    fs.fcfg.SubjectStateExpire,
+		noTrack: fs.noTrackSubjects(),
 	}
 
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
@@ -2207,8 +2237,217 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	return nil
 }
 
+// Recover per-message state like TTLs and schedules. Doing a linear scan through the stream
+// only once if both states need to be recovered from the same sequences.
 // Lock should be held.
-func (fs *fileStore) recoverTTLState() error {
+func (fs *fileStore) recoverPerMessageState() error {
+	scanSeq := uint64(math.MaxUint64)
+	var ttlSeq, schedSeq, sourcesSeq uint64
+	var ttlRecover, schedRecover, sourcesRecover bool
+	allowMsgTTL, allowMsgSchedules := fs.cfg.AllowMsgTTL, fs.cfg.AllowMsgSchedules
+
+	var sources map[string]*StreamSource
+	if len(fs.cfg.Sources) > 0 {
+		sources = make(map[string]*StreamSource, len(fs.cfg.Sources))
+		for _, ssi := range fs.cfg.Sources {
+			sources[ssi.composeIName()] = ssi
+		}
+	}
+
+	// Create or delete the THW if needed.
+	if allowMsgTTL && fs.ttls == nil {
+		ttlSeq = fs.recoverTTLState()
+		ttlRecover = true
+		scanSeq = min(scanSeq, ttlSeq)
+	} else if !allowMsgTTL && fs.ttls != nil {
+		fs.ttls = nil
+	}
+
+	// Create or delete the message scheduling state if needed.
+	if allowMsgSchedules && fs.scheduling == nil {
+		schedSeq = fs.recoverMsgSchedulingState()
+		schedRecover = true
+		scanSeq = min(scanSeq, schedSeq)
+	} else if !allowMsgSchedules && fs.scheduling != nil {
+		fs.scheduling = nil
+	}
+
+	// Create or delete the source tracking if needed.
+	var sourcesScan map[string]*StreamSource
+	if sources != nil && fs.sources == nil {
+		sourcesSeq = fs.recoverSourcesState()
+		sourcesRecover = true
+		scanSeq = min(scanSeq, sourcesSeq)
+		if sourcesSeq <= fs.state.LastSeq {
+			sourcesScan = sources
+		}
+	}
+	if len(sources) > 0 {
+		// Ensure the map exists even on a fresh stream that has no persisted
+		// index yet, so storeRawMsg can validate headers against the configured
+		// set (zero sequence == configured but not yet observed).
+		if fs.sources == nil {
+			fs.sources = make(map[string]*StreamSourceState, len(sources))
+		}
+		// Remove sources that are tracked but no longer exist.
+		for k := range fs.sources {
+			if _, ok := sources[k]; !ok {
+				delete(fs.sources, k)
+			}
+		}
+		// Seed sources that aren't in the map yet.
+		for k, v := range sources {
+			if _, ok := fs.sources[k]; !ok {
+				fs.sources[k] = &StreamSourceState{}
+				// Since we're adding a new source, we'll need to recover its sequence (if any).
+				sourcesSeq = fs.state.FirstSeq
+				sourcesRecover = true
+				scanSeq = min(scanSeq, sourcesSeq)
+				if sourcesScan == nil {
+					sourcesScan = make(map[string]*StreamSource)
+				}
+				if _, ok = sourcesScan[k]; !ok {
+					sourcesScan[k] = v
+				}
+			}
+		}
+	}
+	// No sources configured anymore, clear and remove the index from disk.
+	if fs.sources != nil && len(sources) == 0 {
+		fs.sources = nil
+		_ = os.Remove(fs.sourcesStatePath())
+	}
+
+	// Short-circuit if no recovering is required.
+	if !ttlRecover && !schedRecover && !sourcesRecover {
+		return nil
+	}
+
+	if allowMsgTTL {
+		defer fs.resetAgeChk(0)
+	}
+	if allowMsgSchedules {
+		defer fs.scheduling.resetTimer()
+	}
+
+	// If only sources need recovering, then we can optimize to a backward scan.
+	if sourcesRecover && !ttlRecover && !schedRecover {
+		if fs.state.Msgs > 0 && sourcesSeq <= fs.state.LastSeq {
+			fs.warn("Sourcing state is outdated; attempting to recover using backward scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
+			if err := fs.recoverSourcesBackwardScan(sourcesSeq, sourcesScan); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if fs.state.Msgs > 0 && scanSeq <= fs.state.LastSeq {
+		if ttlRecover && ttlSeq <= fs.state.LastSeq {
+			fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlSeq, fs.state.LastSeq)
+		}
+		if schedRecover && schedSeq <= fs.state.LastSeq {
+			fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
+		}
+		if sourcesRecover && sourcesSeq <= fs.state.LastSeq {
+			fs.warn("Sourcing state is outdated; attempting to recover using linear scan (seq %d to %d)", sourcesSeq, fs.state.LastSeq)
+		}
+		// Only consider sources that need recovering.
+		update := func(iName string, sseq uint64, ident string) {
+			if _, ok := sourcesScan[iName]; !ok {
+				return
+			}
+			if sss, ok := fs.sources[iName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
+			}
+		}
+		var (
+			mb     *msgBlock
+			sm     StoreMsg
+			mblseq uint64
+		)
+		for seq := scanSeq; seq <= fs.state.LastSeq; seq++ {
+		retry:
+			if mb == nil {
+				if mb = fs.selectMsgBlock(seq); mb == nil {
+					// Selecting the message block should return a block that contains this sequence,
+					// or a later block if it can't be found.
+					// It's an error if we can't find any block within the bounds of first and last seq.
+					fs.warn("Error loading msg block with seq %d for recovering per-message state", seq)
+					continue
+				}
+				seq = atomic.LoadUint64(&mb.first.seq)
+				mblseq = atomic.LoadUint64(&mb.last.seq)
+			}
+			// Check if this block can be skipped.
+			ttlBlock := ttlRecover && mblseq >= ttlSeq
+			schedBlock := schedRecover && mblseq >= schedSeq
+			sourcesBlock := sourcesRecover && mblseq >= sourcesSeq
+			if !sourcesBlock && (!ttlBlock || mb.ttls == 0) && (!schedBlock || mb.schedules == 0) {
+				// None of the messages in the block have state that needs recovering, so
+				// don't bother doing anything further with this block, skip to the end.
+				seq = mblseq + 1
+			}
+			if seq > mblseq {
+				// We've reached the end of the loaded block, so let's go back to the
+				// beginning and process the next block.
+				mb.tryForceExpireCache()
+				mb = nil
+				if seq <= fs.state.LastSeq {
+					goto retry
+				}
+				// Done.
+				break
+			}
+			mb.mu.Lock()
+			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
+			if err != nil {
+				mb.finishedWithCache()
+				mb.mu.Unlock()
+				if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+					continue
+				}
+				fs.warn("Error loading msg seq %d for recovering per-message state: %s", seq, err)
+				return err
+			}
+			if len(msg.hdr) > 0 {
+				if ttlRecover && seq >= ttlSeq {
+					if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
+						expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
+						fs.ttls.Add(seq, int64(expires))
+					}
+				}
+				if schedRecover && seq >= schedSeq {
+					if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
+						// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
+						fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
+					}
+				}
+				if sourcesRecover && seq >= sourcesSeq {
+					if ss := sliceHeader(JSStreamSource, msg.hdr); len(ss) > 0 {
+						streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+						if iName == _EMPTY_ {
+							// Pre-2.10 message header means it's a match for any source using that stream name.
+							// Such headers carry no identity, so it is left unset.
+							for _, ssi := range fs.cfg.Sources {
+								if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+									update(ssi.composeIName(), sseq, _EMPTY_)
+								}
+							}
+						} else {
+							update(iName, sseq, ident)
+						}
+					}
+				}
+			}
+			mb.finishedWithCache()
+			mb.mu.Unlock()
+		}
+	}
+	return nil
+}
+
+// Lock should be held.
+func (fs *fileStore) recoverTTLState() uint64 {
 	// See if we have a timed hash wheel for TTLs.
 	fs.dios.acquire()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
@@ -2216,7 +2455,7 @@ func (fs *fileStore) recoverTTLState() error {
 	fs.dios.release()
 
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		fs.warn("Recovering TTL state from index errored: %v", err)
 	}
 
 	fs.ttls = thw.NewHashWheel()
@@ -2235,78 +2474,23 @@ func (fs *fileStore) recoverTTLState() error {
 	if ttlseq < fs.state.FirstSeq {
 		ttlseq = fs.state.FirstSeq
 	}
-
-	defer fs.resetAgeChk(0)
-	if fs.state.Msgs > 0 && ttlseq <= fs.state.LastSeq {
-		fs.warn("TTL state is outdated; attempting to recover using linear scan (seq %d to %d)", ttlseq, fs.state.LastSeq)
-		var (
-			mb     *msgBlock
-			sm     StoreMsg
-			mblseq uint64
-		)
-		for seq := ttlseq; seq <= fs.state.LastSeq; seq++ {
-		retry:
-			if mb == nil {
-				if mb = fs.selectMsgBlock(seq); mb == nil {
-					// Selecting the message block should return a block that contains this sequence,
-					// or a later block if it can't be found.
-					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering TTL", seq)
-					continue
-				}
-				seq = atomic.LoadUint64(&mb.first.seq)
-				mblseq = atomic.LoadUint64(&mb.last.seq)
-			}
-			if mb.ttls == 0 {
-				// None of the messages in the block have message TTLs so don't
-				// bother doing anything further with this block, skip to the end.
-				seq = atomic.LoadUint64(&mb.last.seq) + 1
-			}
-			if seq > mblseq {
-				// We've reached the end of the loaded block, so let's go back to the
-				// beginning and process the next block.
-				mb.tryForceExpireCache()
-				mb = nil
-				if seq <= fs.state.LastSeq {
-					goto retry
-				}
-				// Done.
-				break
-			}
-			mb.mu.Lock()
-			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
-			if err != nil {
-				mb.finishedWithCache()
-				mb.mu.Unlock()
-				fs.warn("Error loading msg seq %d for recovering TTL: %s", seq, err)
-				continue
-			}
-			if len(msg.hdr) > 0 {
-				if ttl, _ := getMessageTTL(msg.hdr); ttl > 0 {
-					expires := time.Duration(msg.ts) + (time.Second * time.Duration(ttl))
-					fs.ttls.Add(seq, int64(expires))
-				}
-			}
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-		}
-	}
-	return nil
+	return ttlseq
 }
 
 // Lock should be held.
-func (fs *fileStore) recoverMsgSchedulingState() error {
-	// See if we have a timed hash wheel for TTLs.
+func (fs *fileStore) recoverMsgSchedulingState() uint64 {
+	// See if we have a schedule index file.
 	fs.dios.acquire()
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
 	buf, err := os.ReadFile(fn)
 	fs.dios.release()
 
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		fs.warn("Recovering message scheduling state from index errored: %v", err)
 	}
 
 	fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+	fs.scheduling.paused = fs.recovering
 
 	var schedSeq uint64
 	if err == nil {
@@ -2316,69 +2500,14 @@ func (fs *fileStore) recoverMsgSchedulingState() error {
 			// Remove the file, and reset collected state (if any).
 			_ = os.Remove(fn)
 			fs.scheduling = newMsgScheduling(fs.runMsgScheduling)
+			fs.scheduling.paused = fs.recovering
 		}
 	}
 
 	if schedSeq < fs.state.FirstSeq {
 		schedSeq = fs.state.FirstSeq
 	}
-
-	defer fs.scheduling.resetTimer()
-	if fs.state.Msgs > 0 && schedSeq <= fs.state.LastSeq {
-		fs.warn("Message scheduling state is outdated; attempting to recover using linear scan (seq %d to %d)", schedSeq, fs.state.LastSeq)
-		var (
-			mb     *msgBlock
-			sm     StoreMsg
-			mblseq uint64
-		)
-		for seq := schedSeq; seq <= fs.state.LastSeq; seq++ {
-		retry:
-			if mb == nil {
-				if mb = fs.selectMsgBlock(seq); mb == nil {
-					// Selecting the message block should return a block that contains this sequence,
-					// or a later block if it can't be found.
-					// It's an error if we can't find any block within the bounds of first and last seq.
-					fs.warn("Error loading msg block with seq %d for recovering message schedules", seq)
-					continue
-				}
-				seq = atomic.LoadUint64(&mb.first.seq)
-				mblseq = atomic.LoadUint64(&mb.last.seq)
-			}
-			if mb.schedules == 0 {
-				// None of the messages in the block have message schedules, so don't
-				// bother doing anything further with this block, skip to the end.
-				seq = atomic.LoadUint64(&mb.last.seq) + 1
-			}
-			if seq > mblseq {
-				// We've reached the end of the loaded block, so let's go back to the
-				// beginning and process the next block.
-				mb.tryForceExpireCache()
-				mb = nil
-				if seq <= fs.state.LastSeq {
-					goto retry
-				}
-				// Done.
-				break
-			}
-			mb.mu.Lock()
-			msg, _, err := mb.fetchMsgNoCopyLocked(seq, &sm)
-			if err != nil {
-				mb.finishedWithCache()
-				mb.mu.Unlock()
-				fs.warn("Error loading msg seq %d for recovering message schedules: %s", seq, err)
-				continue
-			}
-			if len(msg.hdr) > 0 {
-				if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
-					// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
-					fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
-				}
-			}
-			mb.finishedWithCache()
-			mb.mu.Unlock()
-		}
-	}
-	return nil
+	return schedSeq
 }
 
 // Grabs last checksum for the named block file.
@@ -3858,6 +3987,9 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (fs *fileStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(fs.cfg.Subjects) {
 		return false
 	}
@@ -3878,7 +4010,11 @@ func (fs *fileStore) filterIsAll(filters []string) bool {
 func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+}
 
+// Lock should be held.
+func (fs *fileStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	if fs.state.Msgs == 0 || fs.noTrackSubjects() {
 		return nil, nil
 	}
@@ -3931,6 +4067,17 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 
 	// Collect all sequences needed.
 	seqs := make([]uint64, 0, len(subs))
+
+	// If covering the whole stream, check fast path of visiting only last blocks.
+	if maxSeq >= fs.state.LastSeq {
+		if maxAllowed > 0 && len(subs) > maxAllowed {
+			return nil, ErrTooManyResults
+		}
+		if err := fs.multiLastSeqsByLastBlockLocked(subs, &seqs); err != nil {
+			return nil, err
+		}
+	}
+
 	for i, lnf := lastBlkIndex, false; i >= 0; i-- {
 		if len(subs) == 0 {
 			break
@@ -4013,6 +4160,107 @@ func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed i
 	}
 	slices.Sort(seqs)
 	return seqs, nil
+}
+
+// MultiLastMsgs delivers the last message per subject matching the filters,
+// up to maxSeq and skipping sequences below minSeq, in ascending sequence
+// order through cb, all within a single read section so the batch is a
+// point-in-time snapshot of the store.
+func (fs *fileStore) MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	seqs, err := fs.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+	if err != nil || len(seqs) == 0 {
+		return 0, 0, err
+	}
+	total := uint64(len(seqs))
+	np := total
+	for _, seq := range seqs {
+		if np > 0 {
+			np--
+		}
+		if seq < minSeq {
+			continue
+		}
+		var svp StoreMsg
+		sm, err := fs.msgForSeqLocked(seq, &svp, false)
+		if err != nil {
+			return total, np, err
+		}
+		if !cb(sm, np) {
+			break
+		}
+	}
+	return total, np, nil
+}
+
+// multiLastSeqsByLastBlockLocked resolves last sequences via each subject's
+// last block (psi.lblk), moving resolved subjects from subs into seqs and
+// leaving unresolved ones (e.g. stale lblk) in subs for the caller.
+// Lock should be held.
+func (fs *fileStore) multiLastSeqsByLastBlockLocked(subs map[string]*psi, seqs *[]uint64) error {
+	// Sort requested subjects by their last block so each block is visited
+	// once and in order, one flat slice instead of per-block map bookkeeping.
+	type lblkSubj struct {
+		lblk uint32
+		subj string
+		info *psi
+	}
+	pairs := make([]lblkSubj, 0, len(subs))
+	for subj, info := range subs {
+		pairs = append(pairs, lblkSubj{info.lblk, subj, info})
+	}
+	slices.SortFunc(pairs, func(a, b lblkSubj) int {
+		return cmp.Compare(a.lblk, b.lblk)
+	})
+
+	var unresolved []lblkSubj
+	for i := 0; i < len(pairs); {
+		blkIdx := pairs[i].lblk
+		j := i + 1
+		for j < len(pairs) && pairs[j].lblk == blkIdx {
+			j++
+		}
+		mb := fs.bim[blkIdx]
+		if mb == nil {
+			unresolved = append(unresolved, pairs[i:j]...)
+			i = j
+			continue
+		}
+		mb.mu.Lock()
+		if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
+			mb.mu.Unlock()
+			return err
+		}
+		for ; i < j; i++ {
+			subj := pairs[i].subj
+			ss, ok := mb.fss.Find(stringToBytes(subj))
+			if !ok || ss == nil {
+				unresolved = append(unresolved, pairs[i])
+				continue
+			}
+			// Check if we need to recalculate. We only care about the last sequence.
+			if ss.lastNeedsUpdate {
+				if err := mb.recalculateForSubj(subj, ss); err != nil {
+					mb.mu.Unlock()
+					return err
+				}
+			}
+			*seqs = append(*seqs, ss.Last)
+		}
+		mb.mu.Unlock()
+	}
+
+	// Shrink subs down to only the unresolved subjects, clearing wholesale
+	// rather than deleting per resolved subject.
+	if len(unresolved) < len(subs) {
+		clear(subs)
+		for _, p := range unresolved {
+			subs[p.subj] = p.info
+		}
+	}
+	return nil
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
@@ -4734,6 +4982,45 @@ func (fs *fileStore) subjectsTotalsLocked(filter string) map[string]uint64 {
 	return fst
 }
 
+// ApplySourcesState replaces the tracked sourcing state with the leader's.
+func (fs *fileStore) ApplySourcesState(sources map[string]StreamSourceState) {
+	if len(sources) == 0 {
+		return
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// Nil means no sources are configured, so there is nothing to track.
+	if fs.sources == nil {
+		return
+	}
+	clear(fs.sources)
+	for name, ss := range sources {
+		fs.sources[name] = &StreamSourceState{Seq: ss.Seq, Ident: ss.Ident}
+	}
+	// Keep every configured source present, seeded as not yet observed, which is
+	// the invariant recoverPerMessageState and storeRawMsg expect.
+	for _, ssi := range fs.cfg.Sources {
+		if iname := ssi.composeIName(); fs.sources[iname] == nil {
+			fs.sources[iname] = &StreamSourceState{}
+		}
+	}
+	fs.dirty++
+}
+
+// SourcesState return sources keys and their last known state.
+func (fs *fileStore) SourcesState() map[string]StreamSourceState {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	if len(fs.sources) == 0 {
+		return nil
+	}
+	dst := make(map[string]StreamSourceState, len(fs.sources))
+	for k, ss := range fs.sources {
+		dst[k] = *ss
+	}
+	return dst
+}
+
 // RegisterStorageUpdates registers a callback for updates to storage changes.
 // It will present number of messages and bytes as a signed integer and an
 // optional sequence number of the message if a single.
@@ -4924,7 +5211,7 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	sync := fs.syncAlways.Load()
+	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
 	err = writeAtomically(fs.dios, keyFile, encrypted, defaultFilePerms, sync)
 	if err != nil {
 		return err
@@ -5125,6 +5412,16 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 			scheduler := getMessageScheduler(hdr)
 			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
 				fs.scheduling.update(scheduler, next.UnixNano())
+			}
+		}
+	}
+
+	// Track sources.
+	if len(fs.cfg.Sources) > 0 {
+		if ss := sliceHeader(JSStreamSource, hdr); len(ss) > 0 {
+			_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+			if sss, ok := fs.sources[indexName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
 			}
 		}
 	}
@@ -5427,6 +5724,12 @@ func (fs *fileStore) FlushAllPending() error {
 	defer fs.mu.Unlock()
 	// Return previous write errors immediately.
 	if fs.werr != nil {
+		return fs.werr
+	}
+	if fs.syncOnFlush.Load() {
+		fs.mu.Unlock()
+		fs.syncBlocks()
+		fs.mu.Lock()
 		return fs.werr
 	}
 	return fs.checkAndFlushLastBlock()
@@ -6255,20 +6558,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
-	mb.fs.dios.acquire()
-	err := os.WriteFile(mfn, nbuf, defaultFilePerms)
-	mb.fs.dios.release()
-	if err != nil {
-		_ = os.Remove(mfn)
-		return err
-	}
-	if err := os.Rename(mfn, mb.mfn); err != nil {
-		_ = os.Remove(mfn)
+	sync := mb.fs.syncAlways.Load() || mb.fs.syncOnFlush.Load()
+	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
 	}
 
-	// Make sure to sync
-	mb.needSync = true
+	// Make sure to sync if we have not done so yet
+	mb.needSync = !sync
 
 	// Capture the updated rbytes.
 	if rbytes := uint64(len(nbuf)); rbytes == mb.rbytes {
@@ -6874,7 +7170,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 }
 
 func (fs *fileStore) startAgeChk() {
-	if fs.ageChk != nil {
+	if fs.recovering || fs.ageChk != nil {
 		return
 	}
 	if fs.cfg.MaxAge != 0 || fs.ttls != nil {
@@ -6884,6 +7180,9 @@ func (fs *fileStore) startAgeChk() {
 
 // Lock should be held.
 func (fs *fileStore) resetAgeChk(delta int64) {
+	if fs.recovering {
+		return
+	}
 	// If we're already expiring messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if fs.ageChkRun {
@@ -6967,6 +7266,11 @@ func (fs *fileStore) expireMsgs() {
 	var sm *StoreMsg
 
 	fs.mu.Lock()
+	if fs.recovering {
+		fs.cancelAgeChk()
+		fs.mu.Unlock()
+		return
+	}
 	maxAge := int64(fs.cfg.MaxAge)
 	minAge := ats.AccessTime() - maxAge
 	rmcb := fs.rmcb
@@ -7145,7 +7449,7 @@ func (fs *fileStore) runMsgScheduling() {
 	defer fs.mu.Unlock()
 
 	// If scheduling is enabled, but handler isn't set up yet. Try again later.
-	if fs.scheduling == nil {
+	if fs.scheduling == nil || fs.scheduling.paused {
 		return
 	}
 	if fs.pmsgcb == nil {
@@ -7833,8 +8137,40 @@ func (mb *msgBlock) ensureRawBytesLoaded() error {
 	return nil
 }
 
+// Lock should be held.
+func (mb *msgBlock) syncFile() error {
+	mb.fs.dios.acquire()
+	defer mb.fs.dios.release()
+	fd, didOpen := mb.mfd, false
+	if fd == nil {
+		var err error
+		fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		didOpen = true
+	}
+	if err := fd.Sync(); err != nil {
+		// Close fd if we opened it, but ignore its error since sync takes precedence.
+		if didOpen {
+			_ = fd.Close()
+		}
+		return err
+	}
+	if didOpen {
+		return fd.Close()
+	}
+	return nil
+}
+
 // Sync msg and index files as needed. This is called from a timer.
 func (fs *fileStore) syncBlocks() {
+	fs.syncMu.Lock()
+	defer fs.syncMu.Unlock()
+
 	if fs.isClosed() {
 		return
 	}
@@ -7858,6 +8194,7 @@ func (fs *fileStore) syncBlocks() {
 	var fsDmap *interiorDeletes
 
 	var markDirty bool
+	var needDirSync bool
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
@@ -7928,12 +8265,14 @@ func (fs *fileStore) syncBlocks() {
 			err := mb.compactWithFloor(firstSeq, fsDmap)
 			// If this compact removed all raw bytes due to tombstone cleanup, schedule to remove.
 			shouldRemove := mb.rbytes == 0
+			needSync = mb.needSync
 			mb.mu.Unlock()
 			fs.mu.RUnlock()
 			if err != nil {
 				storeFsWerr(err)
 				continue
 			}
+			needDirSync = needDirSync || needSync || shouldRemove
 
 			// Check if we should remove. This will not be common, so we will re-take fs write lock here vs changing
 			//  it above which we would prefer to be a readlock such that other lookups can occur while compacting this block.
@@ -7962,43 +8301,23 @@ func (fs *fileStore) syncBlocks() {
 		// Check if we need to sync this block.
 		if needSync {
 			mb.mu.Lock()
-			var fd *os.File
-			var err error
-			var didOpen bool
-			if mb.mfd != nil {
-				fd = mb.mfd
-			} else {
-				fs.dios.acquire()
-				fd, err = os.OpenFile(mb.mfn, os.O_RDWR, defaultFilePerms)
-				fs.dios.release()
-				didOpen = true
-				if err != nil && !os.IsNotExist(err) {
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
-			}
-			// If we have an fd.
-			if fd != nil {
-				if err = fd.Sync(); err != nil {
-					// Close fd if we opened it, but ignore its error since sync takes precedence.
-					if didOpen {
-						_ = fd.Close()
-					}
-					mb.mu.Unlock()
-					storeFsWerr(err)
-					continue
-				}
-				// If we opened the file close the fd.
-				if didOpen {
-					if err = fd.Close(); err != nil {
-						mb.mu.Unlock()
-						storeFsWerr(err)
-						continue
-					}
-				}
+			err := mb.syncFile()
+			if err == nil {
+				mb.needSync = false
 			}
 			mb.mu.Unlock()
+			if err != nil {
+				storeFsWerr(err)
+				continue
+			}
+		}
+	}
+	if needDirSync && canFsyncDirectories {
+		fs.dios.acquire()
+		err := syncDir(filepath.Join(fs.fcfg.StoreDir, msgDir))
+		fs.dios.release()
+		if err != nil {
+			storeFsWerr(err)
 		}
 	}
 
@@ -8013,7 +8332,7 @@ func (fs *fileStore) syncBlocks() {
 	}
 
 	// Sync state file if we are not running with sync always.
-	if !fs.fcfg.SyncAlways {
+	if !fs.syncAlways.Load() {
 		fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 		var fd *os.File
 		var err error
@@ -8414,7 +8733,7 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	mb.cache.wp = int(wp)
 
 	// Check if we are in sync always mode.
-	if mb.syncAlways {
+	if mb.fs.syncAlways.Load() {
 		if err = mb.mfd.Sync(); err != nil {
 			mb.werr = err
 			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
@@ -9562,7 +9881,12 @@ func (fs *fileStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	return fs.loadPrevMsgMultiLocked(sl, start, smp)
+}
 
+// loadPrevMsgMultiLocked will find the previous message matching any entry in the sublist.
+// Lock should be held.
+func (fs *fileStore) loadPrevMsgMultiLocked(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
 	if fs.state.Msgs == 0 || start < fs.state.FirstSeq {
 		return nil, fs.state.FirstSeq, ErrStoreEOF
 	}
@@ -9716,6 +10040,27 @@ func (fs *fileStore) ResetState() {
 	defer fs.mu.Unlock()
 	if fs.scheduling != nil {
 		fs.scheduling.clearInflight()
+	}
+}
+
+func (fs *fileStore) Ready() {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if !fs.recovering {
+		return
+	}
+	fs.recovering = false
+	var ageDelta int64
+	if fs.cfg.MaxAge > 0 && !fs.state.FirstTime.IsZero() {
+		ageDelta = time.Until(fs.state.FirstTime.Add(fs.cfg.MaxAge)).Nanoseconds()
+		if ageDelta <= 0 {
+			ageDelta = 1
+		}
+	}
+	fs.resetAgeChk(ageDelta)
+	if fs.scheduling != nil {
+		fs.scheduling.paused = false
+		fs.scheduling.resetTimer()
 	}
 }
 
@@ -10890,17 +11235,15 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 
 	var hasLsm bool
 	var lastTime int64
+	var lsm StoreMsg
 	smb := fs.selectMsgBlock(seq)
 	if smb != nil {
-		smb.mu.Lock()
-		lsm, _, err := smb.fetchMsgNoCopyLocked(seq, nil)
-		if lsm != nil {
+		_, _, err := smb.prevMatching(fwcs, true, seq, &lsm)
+		if err == nil && lsm.seq == seq {
 			hasLsm = true
 			lastTime = lsm.ts
 		}
-		smb.finishedWithCache()
-		smb.mu.Unlock()
-		if err != nil && err != ErrStoreMsgNotFound && err != errDeletedMsg {
+		if err != nil && err != ErrStoreMsgNotFound {
 			fs.mu.Unlock()
 			return err
 		}
@@ -11020,7 +11363,7 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 		}
 
 		// Truncate our selected message block.
-		nmsgs, nbytes, err := smb.truncate(seq, lastTime)
+		nmsgs, nbytes, err := smb.truncate(lsm.seq, lsm.ts)
 		if err != nil {
 			smb.mu.Unlock()
 			fs.mu.Unlock()
@@ -12037,13 +12380,16 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	fs.dirty -= priorDirty
 	fs.mu.Unlock()
 
-	// Attempt to write both files, an error in one should not prevent the other from being written.
+	// Attempt to write other index files, an error in one should not prevent the other from being written.
 	ttlErr := fs.writeTTLState()
 	schedErr := fs.writeMsgSchedulingState()
+	sourcesErr := fs.writeSourcesState()
 	if ttlErr != nil {
 		return ttlErr
 	} else if schedErr != nil {
 		return schedErr
+	} else if sourcesErr != nil {
+		return sourcesErr
 	}
 	return nil
 }
@@ -12074,6 +12420,198 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
+}
+
+const sourcesHeaderLen = 17 // 1 byte magic + 2x uint64s
+
+func (fs *fileStore) sourcesStatePath() string {
+	return filepath.Join(fs.fcfg.StoreDir, sourcesStreamStateFile)
+}
+
+func (fs *fileStore) writeSourcesState() error {
+	fs.mu.RLock()
+	if len(fs.sources) == 0 {
+		fs.mu.RUnlock()
+		return nil
+	}
+	fn := fs.sourcesStatePath()
+
+	// Must be lseq+1 to identify up to which sequence the sources are valid.
+	highSeq := fs.state.LastSeq + 1
+
+	count := uint64(len(fs.sources))
+	var sz uint64
+	for source, ss := range fs.sources {
+		// Length prefix + source bytes + seq varint +
+		// length prefix + identity bytes.
+		sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
+			uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
+	}
+	buf := make([]byte, 0, sourcesHeaderLen+sz)
+	buf = append(buf, 1)                                 // Magic version
+	buf = binary.LittleEndian.AppendUint64(buf, count)   // Entry count
+	buf = binary.LittleEndian.AppendUint64(buf, highSeq) // Stamp
+	for source, ss := range fs.sources {
+		buf = binary.AppendUvarint(buf, uint64(len(source)))
+		buf = append(buf, source...)
+		buf = binary.AppendUvarint(buf, ss.Seq)
+		buf = binary.AppendUvarint(buf, uint64(len(ss.Ident)))
+		buf = append(buf, ss.Ident...)
+	}
+	fs.mu.RUnlock()
+
+	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
+}
+
+// Lock should be held.
+func (fs *fileStore) recoverSourcesState() uint64 {
+	// See if we have a sources index file.
+	fs.dios.acquire()
+	fn := fs.sourcesStatePath()
+	buf, err := os.ReadFile(fn)
+	fs.dios.release()
+
+	if err != nil && !os.IsNotExist(err) {
+		fs.warn("Recovering sources state from index errored: %v", err)
+	}
+
+	var sourcesSeq uint64
+	if err == nil {
+		sourcesSeq, err = fs.decodeSourcesState(buf)
+		if err != nil {
+			fs.warn("Error decoding sources state: %s", err)
+			// Remove the file, and reset collected state (if any).
+			_ = os.Remove(fn)
+			fs.sources = nil
+		}
+	}
+
+	if sourcesSeq < fs.state.FirstSeq {
+		sourcesSeq = fs.state.FirstSeq
+	}
+	return sourcesSeq
+}
+
+var errSourcesInvalidVersion = errors.New("sources: encoded version not known")
+
+func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
+	if len(b) < sourcesHeaderLen {
+		return 0, io.ErrShortBuffer
+	}
+	if b[0] != 1 {
+		return 0, errSourcesInvalidVersion
+	}
+
+	count := binary.LittleEndian.Uint64(b[1:])
+	stamp := binary.LittleEndian.Uint64(b[9:])
+	if count > 0 && fs.sources == nil {
+		fs.sources = make(map[string]*StreamSourceState)
+	}
+	b = b[sourcesHeaderLen:]
+	readStr := func() (string, bool) {
+		n, vn := binary.Uvarint(b)
+		if vn <= 0 || uint64(len(b)-vn) < n {
+			return _EMPTY_, false
+		}
+		b = b[vn:]
+		s := string(b[:n])
+		b = b[n:]
+		return s, true
+	}
+	for i := uint64(0); i < count; i++ {
+		source, ok := readStr()
+		if !ok {
+			return 0, io.ErrUnexpectedEOF
+		}
+		seq, vn := binary.Uvarint(b)
+		if vn <= 0 {
+			return 0, io.ErrUnexpectedEOF
+		}
+		b = b[vn:]
+		ident, ok := readStr()
+		if !ok {
+			return 0, io.ErrUnexpectedEOF
+		}
+		fs.sources[source] = &StreamSourceState{Seq: seq, Ident: ident}
+	}
+	return stamp, nil
+}
+
+// recoverSourcesBackwardScan recovers fs.sources by scanning the stream backwards.
+// Lock should be held.
+func (fs *fileStore) recoverSourcesBackwardScan(stopSeq uint64, sources map[string]*StreamSource) error {
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
+	update := func(iName string, sseq uint64, ident string) {
+		// Only consider sources that are configured and not yet found. The backward
+		// scan visits the highest matching sequence first, so the first hit per source
+		// is the latest and overwrites any older decoded value.
+		if _, ok := sources[iName]; !ok {
+			return
+		}
+		if fs.sources == nil {
+			fs.sources = make(map[string]*StreamSourceState, 1)
+		}
+		fs.sources[iName] = &StreamSourceState{Seq: sseq, Ident: ident}
+		delete(sources, iName)
+		refreshSublist()
+	}
+
+	var smv StoreMsg
+	for last := fs.state.LastSeq; ; {
+		sm, seq, err := fs.loadPrevMsgMultiLocked(sl, last, &smv)
+		if err == ErrStoreEOF {
+			// Done.
+			break
+		}
+		if err != nil {
+			return err
+		}
+		// Stop if we've gone below the point where decoded state is still valid.
+		if seq < stopSeq {
+			break
+		}
+		if len(sm.hdr) > 0 {
+			if ss := sliceHeader(JSStreamSource, sm.hdr); len(ss) > 0 {
+				streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+				if iName == _EMPTY_ {
+					// Pre-2.10 message header means it's a match for any source using that stream name.
+					// Such headers carry no identity, so it is left unset.
+					for _, ssi := range fs.cfg.Sources {
+						if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+							update(ssi.composeIName(), sseq, _EMPTY_)
+						}
+					}
+				} else {
+					update(iName, sseq, ident)
+				}
+			}
+		}
+		// Done once every source has been resolved, or we've reached the floor.
+		if len(sources) == 0 || seq <= stopSeq {
+			break
+		}
+		last = seq - 1
+	}
+	return nil
 }
 
 // Stop the current filestore.
@@ -12160,7 +12698,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 const errFile = "errors.txt"
 
 // Stream our snapshot through S2 compression and tar.
-func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan string) {
+func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, errCh chan error) {
 	defer close(errCh)
 	defer w.Close()
 
@@ -12197,8 +12735,8 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		return nil
 	}
 
-	writeErr := func(err string) {
-		writeFile(errFile, []byte(err))
+	writeErr := func(err error) {
+		writeFile(errFile, []byte(err.Error()))
 		errCh <- err
 	}
 
@@ -12209,7 +12747,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 	meta, err := json.Marshal(fs.cfg)
 	if err != nil {
 		fs.mu.Unlock()
-		writeErr(fmt.Sprintf("Could not gather stream meta file: %v", err))
+		writeErr(fmt.Errorf("could not gather stream meta file: %w", err))
 		return
 	}
 	hh := fs.hh
@@ -12242,7 +12780,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		bbuf, err = mb.loadBlock(bbuf)
 		if err != nil {
 			mb.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not read message block [%d]: %v", mb.index, err))
+			writeErr(fmt.Errorf("could not read message block [%d]: %w", mb.index, err))
 			return
 		}
 		// Check for encryption.
@@ -12250,7 +12788,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 			rbek, err := genBlockEncryptionKey(fs.fcfg.Cipher, mb.seed, mb.nonce)
 			if err != nil {
 				mb.mu.Unlock()
-				writeErr(fmt.Sprintf("Could not create encryption key for message block [%d]: %v", mb.index, err))
+				writeErr(fmt.Errorf("could not create encryption key for message block [%d]: %w", mb.index, err))
 				return
 			}
 			rbek.XORKeyStream(bbuf, bbuf)
@@ -12258,7 +12796,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		// Check for compression.
 		if bbuf, err = mb.decompressIfNeeded(bbuf); err != nil {
 			mb.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not decompress message block [%d]: %v", mb.index, err))
+			writeErr(fmt.Errorf("could not decompress message block [%d]: %w", mb.index, err))
 			return
 		}
 		mb.mu.Unlock()
@@ -12314,7 +12852,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		meta, err := json.Marshal(o.cfg)
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not gather consumer meta file for %q: %v", o.name, err))
+			writeErr(fmt.Errorf("could not gather consumer meta file for %q: %w", o.name, err))
 			return
 		}
 		o.hh.Reset()
@@ -12326,7 +12864,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		state, err := o.encodeState()
 		if err != nil {
 			o.mu.Unlock()
-			writeErr(fmt.Sprintf("Could not encode consumer state for %q: %v", o.name, err))
+			writeErr(fmt.Errorf("could not encode consumer state for %q: %w", o.name, err))
 			return
 		}
 		odirPre := filepath.Join(consumerDir, o.name)
@@ -12389,7 +12927,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 	fs.FastState(&state)
 
 	// Stream in separate Go routine.
-	errCh := make(chan string, 1)
+	errCh := make(chan error, 1)
 	go fs.streamSnapshot(pw, includeConsumers, errCh)
 
 	return &SnapshotResult{pr, state, errCh}, nil
@@ -12419,9 +12957,12 @@ func (fs *fileStore) readUnlockAllMsgBlocks() {
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (fs *fileStore) EncodedStreamState(failed uint64, withSources bool) ([]byte, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+
+	withSources = withSources && len(fs.sources) > 0
+	version := streamStateVersion
 
 	// Calculate deleted.
 	var numDeleted int64
@@ -12438,6 +12979,26 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		uvarintLen(fs.state.FirstSeq) + uvarintLen(fs.state.LastSeq) +
 		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
+	var numSources uint64
+	var sourcesLen int
+	if withSources {
+		for name, ss := range fs.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			numSources++
+			// Length prefix + source bytes + seq varint +
+			// length prefix + identity bytes.
+			sourcesLen += uvarintLen(uint64(len(name))) + len(name) + uvarintLen(ss.Seq) +
+				uvarintLen(uint64(len(ss.Ident))) + len(ss.Ident)
+		}
+		// Nothing observed yet, then there is nothing to carry.
+		if withSources = numSources > 0; withSources {
+			total += uvarintLen(numSources) + sourcesLen
+			version = streamStateVersionSources
+		}
+	}
+
 	var dbs DeleteBlocks
 	if numDeleted > 0 {
 		fs.readLockAllMsgBlocks()
@@ -12448,12 +13009,25 @@ func (fs *fileStore) EncodedStreamState(failed uint64) ([]byte, error) {
 	}
 
 	b := make([]byte, 0, total)
-	b = append(b, streamStateMagic, streamStateVersion)
+	b = append(b, streamStateMagic, version)
 	b = binary.AppendUvarint(b, fs.state.Msgs)
 	b = binary.AppendUvarint(b, fs.state.Bytes)
 	b = binary.AppendUvarint(b, fs.state.FirstSeq)
 	b = binary.AppendUvarint(b, fs.state.LastSeq)
 	b = binary.AppendUvarint(b, failed)
+	if withSources {
+		b = binary.AppendUvarint(b, numSources)
+		for name, ss := range fs.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			b = binary.AppendUvarint(b, uint64(len(name)))
+			b = append(b, name...)
+			b = binary.AppendUvarint(b, ss.Seq)
+			b = binary.AppendUvarint(b, uint64(len(ss.Ident)))
+			b = append(b, ss.Ident...)
+		}
+	}
 	b = binary.AppendUvarint(b, uint64(numDeleted))
 
 	for _, db := range dbs {
@@ -12737,7 +13311,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	// We now allow overrides from a stream being a filestore type and forcing a consumer to be memory store.
 	if cfg.MemoryStorage {
 		// Create directly here.
-		o := &consumerMemStore{ms: fs, cfg: *cfg}
+		o := &consumerMemStore{ms: fs, name: name, cfg: *cfg}
 		if err := fs.AddConsumer(o); err != nil {
 			return nil, err
 		}
@@ -13243,6 +13817,14 @@ func (o *consumerFileStore) encodeState() ([]byte, error) {
 		return nil, err
 	}
 	return encodeConsumerState(state), nil
+}
+
+func (o *consumerFileStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
@@ -13839,6 +14421,19 @@ func (fs *fileStore) RemoveConsumer(o ConsumerStore) error {
 	return nil
 }
 
+func (fs *fileStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		fs.cmu.RLock()
+		defer fs.cmu.RUnlock()
+
+		for _, v := range fs.cfs {
+			if !yield(v) {
+				return
+			}
+		}
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Compression
 ////////////////////////////////////////////////////////////////////////////////
@@ -13947,7 +14542,8 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // sets O_SYNC on the open file if SyncAlways is set. The dios semaphore is
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load())
+	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
+	return writeAtomically(fs.dios, name, data, perm, sync)
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
@@ -13959,7 +14555,10 @@ func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.
 const canFsyncDirectories = runtime.GOOS != "windows"
 
 func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
-	tmp := name + ".tmp"
+	return writeAtomicallyWithTemp(dios, name+".tmp", name, data, perm, sync)
+}
+
+func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if sync {
 		flags = flags | os.O_SYNC
@@ -13987,7 +14586,7 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14013,7 +14612,7 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 		return err
 	}
 	if canFsyncDirectories {
-		if err = syncDir(name); err != nil {
+		if err = syncDir(filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -14021,10 +14620,10 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 }
 
 // Dios should already be held.
-func syncDir(name string) error {
+func syncDir(path string) error {
 	var d *os.File
 	var err error
-	if d, err = os.Open(filepath.Dir(name)); err != nil {
+	if d, err = os.Open(path); err != nil {
 		return err
 	}
 	if err = d.Sync(); err != nil {

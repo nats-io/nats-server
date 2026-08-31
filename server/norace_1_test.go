@@ -2444,17 +2444,17 @@ func TestNoRaceJetStreamSlowFilteredInitialPendingAndFirstMsg(t *testing.T) {
 	// Then 'foo.bar.baz' all contigous for 100k.
 	// Then foo.N for 1-100000
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("foo", []byte("HELLO"))
-		js.PublishAsync("bar", []byte("WORLD"))
-		js.PublishAsync("baz", []byte("AGAIN"))
+		publishAsync(t, js, "foo", []byte("HELLO"))
+		publishAsync(t, js, "bar", []byte("WORLD"))
+		publishAsync(t, js, "baz", []byte("AGAIN"))
 	}
 	// Make contiguous block of same subject.
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync("foo.bar.baz", []byte("ALL-TOGETHER"))
+		publishAsync(t, js, "foo.bar.baz", []byte("ALL-TOGETHER"))
 	}
 	// Now add some more at the end.
 	for i := 0; i < toSend; i++ {
-		js.PublishAsync(fmt.Sprintf("foo.%d", i+1), []byte("LATER"))
+		publishAsync(t, js, fmt.Sprintf("foo.%d", i+1), []byte("LATER"))
 	}
 
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
@@ -2745,7 +2745,7 @@ func TestNoRaceJetStreamStalledMirrorsAfterExpire(t *testing.T) {
 	sendBatch := func(batch int) {
 		t.Helper()
 		for i := 0; i < batch; i++ {
-			js.PublishAsync("foo.bar", []byte("Hello"))
+			publishAsync(t, js, "foo.bar", []byte("Hello"))
 		}
 		select {
 		case <-js.PublishAsyncComplete():
@@ -3837,7 +3837,7 @@ func TestNoRaceJetStreamClusterStreamReset(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	// Do a hard reset here by hand.
-	mset.resetClusteredState(nil)
+	mset.resetClusteredState(mset.raftNode(), nil)
 
 	// Wait til we have the consumer leader re-elected.
 	c.waitOnConsumerLeader("$G", "TEST", "d1")
@@ -5795,7 +5795,7 @@ func TestNoRaceJetStreamConcurrentPullConsumerBatch(t *testing.T) {
 
 	for i := 0; i < 100_000; i++ {
 		subj := fmt.Sprintf("ORDERS.%d", i+1)
-		js.PublishAsync(subj, []byte("BUY"))
+		publishAsync(t, js, subj, []byte("BUY"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
@@ -6237,6 +6237,8 @@ func TestNoRaceJetStreamClusterEnsureWALCompact(t *testing.T) {
 	node := mset.raftNode()
 	require_True(t, node != nil)
 
+	_, err = js.Publish("foo", []byte("bar"))
+	require_NoError(t, err)
 	err = node.InstallSnapshot(mset.stateSnapshot(), false)
 	require_NoError(t, err)
 
@@ -6432,13 +6434,18 @@ func TestNoRaceJetStreamClusterConsumerInfoSpeed(t *testing.T) {
 	toSend := 250_000
 	for i := 0; i < toSend; i++ {
 		subj := fmt.Sprintf("events.%d", i+1)
-		js.PublishAsync(subj, []byte("ok"))
+		publishAsync(t, js, subj, []byte("ok"))
 	}
 	select {
 	case <-js.PublishAsyncComplete():
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Did not receive completion signal")
 	}
+
+	// Confirm all messages were stored.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(toSend))
 
 	checkNumPending := func(expected int) {
 		t.Helper()

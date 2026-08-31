@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"iter"
 	"math"
 	"slices"
 	"sync"
@@ -45,14 +46,20 @@ type memStore struct {
 	ageChk      *time.Timer // Timer to expire messages.
 	ageChkRun   bool        // Whether message expiration is currently running.
 	ageChkTime  int64       // When the message expiration is scheduled to run.
-	consumers   int
+	recovering  bool        // Timers, schedules, TTLs etc won't fire while set.
+	consumers   []ConsumerStore
 	receivedAny bool
 	ttls        *thw.HashWheel
 	scheduling  *MsgScheduling
 	sdm         *SDMMeta
+	sources     map[string]*StreamSourceState
 }
 
 func newMemStore(cfg *StreamConfig) (*memStore, error) {
+	return newMemStoreWithMode(cfg, false)
+}
+
+func newMemStoreWithMode(cfg *StreamConfig, recovering bool) (*memStore, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config required")
 	}
@@ -60,10 +67,11 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 		return nil, fmt.Errorf("memStore requires memory storage type in config")
 	}
 	ms := &memStore{
-		msgs: make(map[uint64]*StoreMsg),
-		fss:  stree.NewSubjectTree[SimpleState](),
-		maxp: cfg.MaxMsgsPer,
-		cfg:  *cfg,
+		msgs:       make(map[uint64]*StoreMsg),
+		fss:        stree.NewSubjectTree[SimpleState](),
+		maxp:       cfg.MaxMsgsPer,
+		cfg:        *cfg,
+		recovering: recovering,
 	}
 	// Only create a THW if we're going to allow TTLs.
 	if cfg.AllowMsgTTL {
@@ -71,10 +79,19 @@ func newMemStore(cfg *StreamConfig) (*memStore, error) {
 	}
 	if cfg.AllowMsgSchedules {
 		ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
+		ms.scheduling.paused = recovering
 	}
 	if cfg.FirstSeq > 0 {
 		if _, err := ms.purge(cfg.FirstSeq); err != nil {
 			return nil, err
+		}
+	}
+	// Seed configured sources (zero sequence == configured but not yet observed),
+	// so storeRawMsg can validate headers against the configured set.
+	if len(cfg.Sources) > 0 {
+		ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			ms.sources[ssi.composeIName()] = &StreamSourceState{}
 		}
 	}
 
@@ -105,6 +122,41 @@ func (ms *memStore) UpdateConfig(cfg *StreamConfig) error {
 	} else if !cfg.AllowMsgSchedules && ms.scheduling != nil {
 		ms.scheduling = nil
 	}
+
+	// Refresh the source tracking to match the new config.
+	if len(cfg.Sources) == 0 {
+		// If no sources remain, clear.
+		ms.sources = nil
+	} else {
+		// Ensure the map exists even if sources were just added, so storeRawMsg
+		// can validate headers against the configured set.
+		if ms.sources == nil {
+			ms.sources = make(map[string]*StreamSourceState, len(cfg.Sources))
+		}
+		sources := make(map[string]*StreamSource, len(cfg.Sources))
+		for _, ssi := range cfg.Sources {
+			sources[ssi.composeIName()] = ssi
+		}
+		// Remove sources that are tracked but no longer exist.
+		for k := range ms.sources {
+			if _, ok := sources[k]; !ok {
+				delete(ms.sources, k)
+			}
+		}
+		// Seed sources that aren't in the map yet. Anything newly seeded needs its
+		// sequence recovered, otherwise it would re-source from the very beginning.
+		scan := make(map[string]*StreamSource)
+		for k, ssi := range sources {
+			if _, ok := ms.sources[k]; !ok {
+				ms.sources[k] = &StreamSourceState{}
+				scan[k] = ssi
+			}
+		}
+		if len(scan) > 0 && ms.state.Msgs > 0 {
+			ms.recoverSourcesBackwardScan(scan)
+		}
+	}
+
 	// Limits checks and enforcement.
 	ms.enforceMsgLimit()
 	ms.enforceBytesLimit()
@@ -171,6 +223,7 @@ func (ms *memStore) recoverTTLState() {
 // Lock should be held.
 func (ms *memStore) recoverMsgSchedulingState() {
 	ms.scheduling = newMsgScheduling(ms.runMsgScheduling)
+	ms.scheduling.paused = ms.recovering
 	if ms.state.Msgs == 0 {
 		return
 	}
@@ -321,6 +374,16 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 			scheduler := getMessageScheduler(hdr)
 			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
 				ms.scheduling.update(scheduler, next.UnixNano())
+			}
+		}
+	}
+
+	// Track sources.
+	if len(ms.cfg.Sources) > 0 {
+		if ss := sliceHeader(JSStreamSource, hdr); len(ss) > 0 {
+			_, indexName, sseq, ident := streamAndSeq(bytesToString(ss))
+			if sss, ok := ms.sources[indexName]; ok {
+				sss.Seq, sss.Ident = sseq, ident
 			}
 		}
 	}
@@ -825,6 +888,9 @@ func (ms *memStore) allLastSeqsLocked() ([]uint64, error) {
 // Most clients send in subjects even if they match the stream's ingest subjects.
 // Lock should be held.
 func (ms *memStore) filterIsAll(filters []string) bool {
+	if len(filters) == 1 && filters[0] == fwcs {
+		return true
+	}
 	if len(filters) != len(ms.cfg.Subjects) {
 		return false
 	}
@@ -845,7 +911,11 @@ func (ms *memStore) filterIsAll(filters []string) bool {
 func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
+	return ms.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+}
 
+// Write lock should be held, for recalculateForSubj.
+func (ms *memStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	if len(ms.msgs) == 0 {
 		return nil, nil
 	}
@@ -897,6 +967,39 @@ func (ms *memStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed in
 	return seqs, nil
 }
 
+// MultiLastMsgs delivers the last message per subject matching the filters,
+// up to maxSeq and skipping sequences below minSeq, in ascending sequence
+// order through cb, all within a single read section so the batch is a
+// point-in-time snapshot of the store.
+func (ms *memStore) MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	seqs, err := ms.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
+	if err != nil || len(seqs) == 0 {
+		return 0, 0, err
+	}
+	total := uint64(len(seqs))
+	np := total
+	for _, seq := range seqs {
+		if np > 0 {
+			np--
+		}
+		if seq < minSeq {
+			continue
+		}
+		var svp StoreMsg
+		sm, err := ms.loadMsgLocked(seq, &svp, false)
+		if err != nil {
+			return total, np, err
+		}
+		if !cb(sm, np) {
+			break
+		}
+	}
+	return total, np, nil
+}
+
 // SubjectsTotals return message totals per subject.
 func (ms *memStore) SubjectsTotals(filterSubject string) map[string]uint64 {
 	ms.mu.RLock()
@@ -927,6 +1030,41 @@ func (ms *memStore) subjectsTotalsLocked(filterSubject string) map[string]uint64
 		}
 	})
 	return fst
+}
+
+// ApplySourcesState replaces the tracked sourcing state with the leader's.
+func (ms *memStore) ApplySourcesState(sources map[string]StreamSourceState) {
+	if len(sources) == 0 {
+		return
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.sources == nil {
+		return
+	}
+	clear(ms.sources)
+	for name, ss := range sources {
+		ms.sources[name] = &StreamSourceState{Seq: ss.Seq, Ident: ss.Ident}
+	}
+	for _, ssi := range ms.cfg.Sources {
+		if iname := ssi.composeIName(); ms.sources[iname] == nil {
+			ms.sources[iname] = &StreamSourceState{}
+		}
+	}
+}
+
+// SourcesState return sources keys and their last known state.
+func (ms *memStore) SourcesState() map[string]StreamSourceState {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	if len(ms.sources) == 0 {
+		return nil
+	}
+	dst := make(map[string]StreamSourceState, len(ms.sources))
+	for k, ss := range ms.sources {
+		dst[k] = *ss
+	}
+	return dst
 }
 
 // NumPending will return the number of pending messages matching the filter subject starting at sequence.
@@ -1137,7 +1275,7 @@ func (ms *memStore) enforceBytesLimit() {
 // Will start the age check timer.
 // Lock should be held.
 func (ms *memStore) startAgeChk() {
-	if ms.ageChk != nil {
+	if ms.recovering || ms.ageChk != nil {
 		return
 	}
 	if ms.cfg.MaxAge != 0 || ms.ttls != nil {
@@ -1147,6 +1285,9 @@ func (ms *memStore) startAgeChk() {
 
 // Lock should be held.
 func (ms *memStore) resetAgeChk(delta int64) {
+	if ms.recovering {
+		return
+	}
 	// If we're already expiring messages, it will make sure to reset.
 	// Don't trigger again, as that could result in many expire goroutines.
 	if ms.ageChkRun {
@@ -1227,6 +1368,11 @@ func (ms *memStore) expireMsgs() {
 	var smv StoreMsg
 	var sm *StoreMsg
 	ms.mu.Lock()
+	if ms.recovering {
+		ms.cancelAgeChk()
+		ms.mu.Unlock()
+		return
+	}
 	maxAge := int64(ms.cfg.MaxAge)
 	minAge := time.Now().UnixNano() - maxAge
 	rmcb := ms.rmcb
@@ -1409,7 +1555,7 @@ func (ms *memStore) runMsgScheduling() {
 	defer ms.mu.Unlock()
 
 	// If scheduling is enabled, but handler isn't set up yet. Try again later.
-	if ms.scheduling == nil {
+	if ms.scheduling == nil || ms.scheduling.paused {
 		return
 	}
 	if ms.pmsgcb == nil {
@@ -2007,12 +2153,83 @@ func (ms *memStore) LoadPrevMsg(filter string, wc bool, start uint64, smp *Store
 	return nil, ms.state.FirstSeq, ErrStoreEOF
 }
 
+// recoverSourcesBackwardScan recovers ms.sources by scanning the stream backwards.
+// Lock should be held.
+func (ms *memStore) recoverSourcesBackwardScan(sources map[string]*StreamSource) {
+	var sl *gsl.SimpleSublist
+	refreshSublist := func() {
+		sl = gsl.NewSimpleSublist()
+		for _, src := range sources {
+			if src.FilterSubject == _EMPTY_ {
+				sl.Insert(fwcs, struct{}{})
+			} else {
+				sl.Insert(src.FilterSubject, struct{}{})
+			}
+			for _, tr := range src.SubjectTransforms {
+				if tr.Destination == _EMPTY_ {
+					sl.Insert(fwcs, struct{}{})
+				} else {
+					sl.Insert(tr.Destination, struct{}{})
+				}
+			}
+		}
+	}
+	refreshSublist()
+
+	update := func(iName string, sseq uint64, ident string) {
+		// Only consider sources that are configured and not yet found. The backward
+		// scan visits the highest matching sequence first, so the first hit per source
+		// is the latest.
+		if _, ok := sources[iName]; !ok {
+			return
+		}
+		ms.sources[iName] = &StreamSourceState{Seq: sseq, Ident: ident}
+		delete(sources, iName)
+		refreshSublist()
+	}
+
+	var smv StoreMsg
+	for last := ms.state.LastSeq; ; {
+		sm, seq, err := ms.loadPrevMsgMultiLocked(sl, last, &smv)
+		if err != nil {
+			// Done, including ErrStoreEOF.
+			return
+		}
+		if len(sm.hdr) > 0 {
+			if ss := sliceHeader(JSStreamSource, sm.hdr); len(ss) > 0 {
+				streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
+				if iName == _EMPTY_ {
+					// Pre-2.10 message header means it's a match for any source using that
+					// stream name. Such headers carry no identity, so it is left unset.
+					for _, ssi := range ms.cfg.Sources {
+						if streamName == ssi.Name || (ssi.External != nil && streamName == ssi.Name+":"+getHash(ssi.External.ApiPrefix)) {
+							update(ssi.composeIName(), sseq, _EMPTY_)
+						}
+					}
+				} else {
+					update(iName, sseq, ident)
+				}
+			}
+		}
+		// Done once every source has been resolved, or we've reached the floor.
+		if len(sources) == 0 || seq <= ms.state.FirstSeq {
+			return
+		}
+		last = seq - 1
+	}
+}
+
 // LoadPrevMsgMulti will find the previous message matching any entry in the sublist.
 func (ms *memStore) LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
-	// TODO(dlc) - for now simple linear walk to get started.
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+	return ms.loadPrevMsgMultiLocked(sl, start, smp)
+}
 
+// loadPrevMsgMultiLocked will find the previous message matching any entry in the sublist.
+// Lock should be held.
+func (ms *memStore) loadPrevMsgMultiLocked(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
+	// TODO(dlc) - for now simple linear walk to get started.
 	if start > ms.state.LastSeq {
 		start = ms.state.LastSeq
 	}
@@ -2251,7 +2468,7 @@ func (ms *memStore) FastState(state *StreamState) {
 			state.NumDeleted = 0
 		}
 	}
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	ms.mu.RUnlock()
 }
@@ -2261,7 +2478,7 @@ func (ms *memStore) State() StreamState {
 	defer ms.mu.Unlock()
 
 	state := ms.state
-	state.Consumers = ms.consumers
+	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
 	state.Deleted = nil
 
@@ -2308,6 +2525,27 @@ func (ms *memStore) ResetState() {
 	}
 }
 
+func (ms *memStore) Ready() {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if !ms.recovering {
+		return
+	}
+	ms.recovering = false
+	var ageDelta int64
+	if ms.cfg.MaxAge > 0 && !ms.state.FirstTime.IsZero() {
+		ageDelta = time.Until(ms.state.FirstTime.Add(ms.cfg.MaxAge)).Nanoseconds()
+		if ageDelta <= 0 {
+			ageDelta = 1
+		}
+	}
+	ms.resetAgeChk(ageDelta)
+	if ms.scheduling != nil {
+		ms.scheduling.paused = false
+		ms.scheduling.resetTimer()
+	}
+}
+
 // Delete is same as Stop for memory store.
 func (ms *memStore) Delete(_ bool) error {
 	return ms.Stop()
@@ -2345,6 +2583,7 @@ func (ms *memStore) isClosed() bool {
 type consumerMemStore struct {
 	mu     sync.Mutex
 	ms     StreamStore
+	name   string
 	cfg    ConsumerConfig
 	state  ConsumerState
 	closed bool
@@ -2360,25 +2599,41 @@ func (ms *memStore) ConsumerStore(name string, _ time.Time, cfg *ConsumerConfig)
 	if cfg == nil || name == _EMPTY_ {
 		return nil, fmt.Errorf("bad consumer config")
 	}
-	o := &consumerMemStore{ms: ms, cfg: *cfg}
+	o := &consumerMemStore{ms: ms, name: name, cfg: *cfg}
 	ms.AddConsumer(o)
 	return o, nil
 }
 
 func (ms *memStore) AddConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	ms.consumers++
+	ms.consumers = append(ms.consumers, o)
 	ms.mu.Unlock()
 	return nil
 }
 
 func (ms *memStore) RemoveConsumer(o ConsumerStore) error {
 	ms.mu.Lock()
-	if ms.consumers > 0 {
-		ms.consumers--
+	for i, cfs := range ms.consumers {
+		if o == cfs {
+			ms.consumers = append(ms.consumers[:i], ms.consumers[i+1:]...)
+			break
+		}
 	}
 	ms.mu.Unlock()
 	return nil
+}
+
+func (ms *memStore) Consumers() iter.Seq[ConsumerStore] {
+	return func(yield func(ConsumerStore) bool) {
+		ms.mu.RLock()
+		defer ms.mu.RUnlock()
+
+		for _, v := range ms.consumers {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error) {
@@ -2386,9 +2641,12 @@ func (ms *memStore) Snapshot(_ time.Duration, _, _ bool) (*SnapshotResult, error
 }
 
 // Binary encoded state snapshot, >= v2.10 server.
-func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
+func (ms *memStore) EncodedStreamState(failed uint64, withSources bool) ([]byte, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
+
+	withSources = withSources && len(ms.sources) > 0
+	version := streamStateVersion
 
 	// Quick calculate num deleted.
 	numDeleted := int((ms.state.LastSeq - ms.state.FirstSeq + 1) - ms.state.Msgs)
@@ -2402,17 +2660,49 @@ func (ms *memStore) EncodedStreamState(failed uint64) ([]byte, error) {
 		uvarintLen(ms.state.FirstSeq) + uvarintLen(ms.state.LastSeq) +
 		uvarintLen(failed) + uvarintLen(uint64(numDeleted))
 
+	var numSources uint64
+	var sourcesLen int
+	if withSources {
+		for name, ss := range ms.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			numSources++
+			// Length prefix + source bytes + seq varint +
+			// length prefix + identity bytes.
+			sourcesLen += uvarintLen(uint64(len(name))) + len(name) + uvarintLen(ss.Seq) +
+				uvarintLen(uint64(len(ss.Ident))) + len(ss.Ident)
+		}
+		// Nothing observed yet, then there is nothing to carry.
+		if withSources = numSources > 0; withSources {
+			total += uvarintLen(numSources) + sourcesLen
+			version = streamStateVersionSources
+		}
+	}
 	if numDeleted > 0 {
 		total += ms.dmap.EncodeLen()
 	}
 
 	b := make([]byte, 0, total)
-	b = append(b, streamStateMagic, streamStateVersion)
+	b = append(b, streamStateMagic, version)
 	b = binary.AppendUvarint(b, ms.state.Msgs)
 	b = binary.AppendUvarint(b, ms.state.Bytes)
 	b = binary.AppendUvarint(b, ms.state.FirstSeq)
 	b = binary.AppendUvarint(b, ms.state.LastSeq)
 	b = binary.AppendUvarint(b, failed)
+	if withSources {
+		b = binary.AppendUvarint(b, numSources)
+		for name, ss := range ms.sources {
+			if ss.Seq == 0 {
+				continue
+			}
+			b = binary.AppendUvarint(b, uint64(len(name)))
+			b = append(b, name...)
+			b = binary.AppendUvarint(b, ss.Seq)
+			b = binary.AppendUvarint(b, uint64(len(ss.Ident)))
+			b = append(b, ss.Ident...)
+		}
+	}
 	b = binary.AppendUvarint(b, uint64(numDeleted))
 
 	if numDeleted > 0 {
@@ -2741,6 +3031,14 @@ func (o *consumerMemStore) RemoveRedeliveredBelow(seq uint64) {
 			delete(o.state.Redelivered, s)
 		}
 	}
+}
+
+func (o *consumerMemStore) GetConfig() *ConsumerConfig {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clone := o.cfg.clone()
+	clone.Name = o.name
+	return clone
 }
 
 func (o *consumerMemStore) UpdateConfig(cfg *ConsumerConfig) error {

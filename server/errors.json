@@ -1230,10 +1230,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSStreamMoveInProgressF",
+    "constant": "JSStreamMoveInProgressErr",
     "code": 400,
     "error_code": 10124,
-    "description": "stream move already in progress: {msg}",
+    "description": "stream move already in progress",
     "comment": "",
     "help": "",
     "url": "",
@@ -1280,10 +1280,10 @@
     "deprecates": ""
   },
   {
-    "constant": "JSStreamMoveNotInProgress",
+    "constant": "JSStreamReconfigureNotInProgressErr",
     "code": 400,
     "error_code": 10129,
-    "description": "stream move not in progress",
+    "description": "stream reconfiguration not in progress",
     "comment": "",
     "help": "",
     "url": "",
@@ -2214,6 +2214,46 @@
     "code": 400,
     "error_code": 10223,
     "description": "message schedules time zone is invalid",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSClusterRescueErr",
+    "code": 400,
+    "error_code": 10224,
+    "description": "JetStream system rescue not applied: {err}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSConsumerStreamIdentityMismatchF",
+    "code": 400,
+    "error_code": 10225,
+    "description": "consumer's stream identity does not match: {msg}",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSStreamReconfigureInProgressErr",
+    "code": 400,
+    "error_code": 10226,
+    "description": "stream reconfiguration already in progress",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
+  },
+  {
+    "constant": "JSMessageSourceHdrNotAllowedErr",
+    "code": 400,
+    "error_code": 10227,
+    "description": "message stream source header is not allowed",
     "comment": "",
     "help": "",
     "url": "",

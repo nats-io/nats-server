@@ -669,8 +669,10 @@ func TestJetStreamApiErrorOnRequiredApiLevel(t *testing.T) {
 			var resp ApiResponse
 			require_NoError(t, json.Unmarshal(msg.Data, &resp))
 			require_True(t, resp.Error != nil)
-			// Peer remove or stepdown is not supported if not clustered.
-			if strings.Contains(apiSubject, ".STEPDOWN.") || strings.Contains(apiSubject, ".PEER.") {
+			// Peer remove, stepdown or cancel move is not supported if not clustered.
+			if strings.Contains(apiSubject, ".STEPDOWN.") ||
+				strings.Contains(apiSubject, ".PEER.") ||
+				strings.Contains(apiSubject, ".CANCEL_MOVE.") {
 				require_Error(t, resp.Error, NewJSClusterRequiredError())
 			} else {
 				require_Error(t, resp.Error, NewJSRequiredApiLevelError())
