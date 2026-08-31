@@ -1067,6 +1067,7 @@ func (a *Account) addClient(c *client) int {
 	} else if c.kind == LEAF {
 		a.nleafs++
 	}
+	isGlobal := a.Name == globalAccountName
 	a.mu.Unlock()
 
 	// If we added a new leaf use the list lock and add it to the list.
@@ -1076,7 +1077,7 @@ func (a *Account) addClient(c *client) int {
 		a.lmu.Unlock()
 	}
 
-	if c != nil && c.srv != nil {
+	if !isGlobal && c != nil && c.srv != nil {
 		c.srv.accConnsUpdate(a)
 	}
 
@@ -1161,13 +1162,14 @@ func (a *Account) removeClient(c *client) int {
 			}
 		}
 	}
+	isGlobal := a.Name == globalAccountName
 	a.mu.Unlock()
 
 	if c.kind == LEAF {
 		a.removeLeafNode(c)
 	}
 
-	if c != nil && c.srv != nil {
+	if !isGlobal && c != nil && c.srv != nil {
 		c.srv.accConnsUpdate(a)
 	}
 
