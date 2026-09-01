@@ -2870,17 +2870,22 @@ func (sa *streamAssignment) missingPeers() bool {
 // The peer set this stream, and its consumers, must end up on.
 // Lock should be held.
 func (sa *streamAssignment) targetPeers() []string {
-	targetPeers := sa.Group.Peers
-	if sa.Group.Desired != nil {
-		// Peers are only known if not scaling down.
-		if !sa.Group.Desired.ScaleDown {
-			targetPeers = sa.Group.Desired.Peers
-		}
-	} else if len(targetPeers) > sa.Config.Replicas {
+	targetPeers := sa.Group.targetPeers()
+	if sa.Group.Desired == nil && len(targetPeers) > sa.Config.Replicas {
 		// If the stream is already moving, without desired state, the last N peers are the target.
 		targetPeers = targetPeers[len(targetPeers)-sa.Config.Replicas:]
 	}
 	return targetPeers
+}
+
+// The peer set this group must end up on. Peers are only known if not scaling
+// down, the group leader selects which peers to scale down to.
+// Lock should be held.
+func (rg *raftGroup) targetPeers() []string {
+	if rg.Desired != nil && !rg.Desired.ScaleDown {
+		return rg.Desired.Peers
+	}
+	return rg.Peers
 }
 
 // Returns the group's peers that are no longer part of the meta peer set.
@@ -9465,17 +9470,24 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		if ca.Config == nil || ca.unsupported != nil {
 			continue
 		}
-		consumerPeers := ca.Group.Peers
-		if ca.Group.Desired != nil {
-			// Still moving toward its desired peer set.
-			done = false
-			consumerPeers = ca.Group.Desired.Peers
-		}
 		// Determine the desired replica count.
 		r := ca.Config.replicas(sa.Config)
 		// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
 		if sa.Config.Retention != LimitsPolicy {
 			r = sa.Config.Replicas
+		}
+		consumerPeers := ca.Group.targetPeers()
+		target := r
+		var scaleDown bool
+		if ca.Group.Desired != nil {
+			// Still moving toward its desired peer set.
+			done = false
+			// A pending scale down must not shrink here, only drop peers that are no
+			// longer part of the stream. The group leader selects which peers remain.
+			if ca.Group.Desired.ScaleDown {
+				target = len(consumerPeers)
+				scaleDown = true
+			}
 		}
 		// Perform a quick check, without allocating, whether this consumer needs to be remapped.
 		kept := 0
@@ -9486,10 +9498,10 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		}
 		// Backfill can only draw from the target peer set, so that bounds how far we can grow.
 		size := kept
-		if size < r {
-			size = min(r, max(kept, len(targetPeers)))
-		} else if size > r {
-			size = r
+		if size < target {
+			size = min(target, max(kept, len(targetPeers)))
+		} else if size > target {
+			size = target
 		}
 		// Leave the consumer alone if its peer set is unaffected.
 		if kept == len(consumerPeers) && kept == size {
@@ -9514,19 +9526,19 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			}
 		}
 		// Backfill from the shuffled target set until the consumer has its desired number of target peers.
-		if len(newPeers) < r {
+		if len(newPeers) < target {
 			backfill := copyStrings(targetPeers)
 			rand.Shuffle(len(backfill), func(i, j int) { backfill[i], backfill[j] = backfill[j], backfill[i] })
 			for _, p := range backfill {
-				if len(newPeers) >= r {
+				if len(newPeers) >= target {
 					break
 				}
 				if !slices.Contains(newPeers, p) {
 					newPeers = append(newPeers, p)
 				}
 			}
-		} else if len(newPeers) > r {
-			newPeers = newPeers[:r]
+		} else if len(newPeers) > target {
+			newPeers = newPeers[:target]
 		}
 		cca := ca.copyGroup()
 		// Adjust preferred as needed.
@@ -9549,23 +9561,23 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			cfg.Replicas = r
 			cca.Config = &cfg
 		}
-		// Only use desired state if the stream did as well.
-		if sa.Group.Desired != nil {
-			cca.Group = ca.Group.withDesired(cca.Group)
-			// Scaled down if we kept at least one peer, but removed others.
-			cca.Group.Desired.ScaleDown = kept > 0 && kept != len(consumerPeers)
+		// Always use desired state, so the peers and where they must
+		// converge to can never diverge.
+		cca.Group = ca.Group.withDesired(cca.Group)
+		// Scaled down if we kept at least one peer, but removed others.
+		// A scale down that was already pending stays pending.
+		cca.Group.Desired.ScaleDown = scaleDown || (kept > 0 && kept != len(consumerPeers))
 
-			// Drop any peers that are no longer part of the stream's peer set.
-			var dropped []string
-			cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
-				if slices.Contains(sa.Group.Peers, peer) {
-					return false
-				}
-				dropped = append(dropped, peer)
-				return true
-			})
-			cca.Group.Desired.addRemoved(dropped)
-		}
+		// Drop any peers that are no longer part of the stream's peer set.
+		var dropped []string
+		cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
+			if slices.Contains(sa.Group.Peers, peer) {
+				return false
+			}
+			dropped = append(dropped, peer)
+			return true
+		})
+		cca.Group.Desired.addRemoved(dropped)
 		// If a consumer lost all of its peers to removal.
 		if len(cca.Group.Peers) == 0 {
 			// Delete it if ephemeral.

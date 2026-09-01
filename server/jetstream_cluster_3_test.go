@@ -14806,3 +14806,126 @@ func TestJetStreamClusterScaleDownCancelsCatchup(t *testing.T) {
 	waitReplicas(3)
 	require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
 }
+
+func TestJetStreamClusterConsumerScaleDownDesiredAfterMetaLeaderChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R5S", 5)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	mjs.mu.RLock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, ca)
+	peers := copyStrings(ca.Group.Peers)
+	mjs.mu.RUnlock()
+	require_Len(t, len(peers), 3)
+
+	// Stop two of the consumer's peers, but keep the meta leader running. The
+	// consumer group loses quorum, the meta group keeps it.
+	var down int
+	for _, s := range c.servers {
+		if s == ml || !slices.Contains(peers, s.Node()) {
+			continue
+		}
+		s.Shutdown()
+		s.WaitForShutdown()
+		if down++; down == 2 {
+			break
+		}
+	}
+	require_Len(t, down, 2)
+
+	// Only its leader can resolve a scale down, wait for it to lose it.
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		if cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER"); cl != nil {
+			return fmt.Errorf("consumer still has leader %q", cl.Name())
+		}
+		return nil
+	})
+
+	// Scale the consumer down R3->R1. Nothing can select which peer remains,
+	// so the scale down stays pending and the request times out.
+	nc.Close()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	}, nats.MaxWait(time.Second))
+	require_Error(t, err, context.DeadlineExceeded)
+
+	// Confirm the scale down is registered, and still pending.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		if ca == nil {
+			return errors.New("no consumer assignment")
+		}
+		if ca.Group.Desired == nil || !ca.Group.Desired.ScaleDown {
+			return fmt.Errorf("expected pending scale down, got: %+v", ca.Group.Desired)
+		}
+		if len(ca.Group.Peers) != 3 {
+			return fmt.Errorf("expected 3 peers, got: %v", ca.Group.Peers)
+		}
+		return nil
+	})
+
+	// Now change the meta leader, which reconciles all peer assignments on election.
+	meta := mjs.getMetaGroup()
+	require_NoError(t, meta.StepDown())
+	c.waitOnLeader()
+
+	nml := c.leader()
+	require_NotNil(t, nml)
+	njs := nml.getJetStream()
+
+	// Reconciling and applying meta entries happen on the same goroutine. So once a
+	// stream we only add now is applied, the new meta leader must have reconciled.
+	nc.Close()
+	nc, js = jsClientConnect(t, nml)
+	defer nc.Close()
+	_, err = js.AddStream(&nats.StreamConfig{Name: "MARKER", Replicas: 1})
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		njs.mu.RLock()
+		defer njs.mu.RUnlock()
+		if njs.streamAssignment(globalAccountName, "MARKER") == nil {
+			return errors.New("marker stream not applied yet")
+		}
+		return nil
+	})
+
+	// The peers must not be scaled down already, while desired state still says to.
+	njs.mu.RLock()
+	defer njs.mu.RUnlock()
+	ca = njs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, ca)
+	require_NotNil(t, ca.Group.Desired)
+	require_True(t, ca.Group.Desired.ScaleDown)
+	if len(ca.Group.Peers) != len(ca.Group.Desired.Peers) {
+		t.Fatalf("Consumer assignment scaled down to peers=%v, while desired state is still a scale down from %v",
+			ca.Group.Peers, ca.Group.Desired.Peers)
+	}
+}
