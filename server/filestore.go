@@ -5867,7 +5867,7 @@ func (fs *fileStore) enforceMsgLimit() error {
 			msgs := fmb.msgs
 			fmb.mu.RUnlock()
 			if nmsgs-msgs > uint64(fs.cfg.MaxMsgs) {
-				if err := fs.purgeMsgBlock(fmb); err != nil {
+				if err := fs.purgeMsgBlock(fmb, nil); err != nil {
 					return err
 				}
 				continue
@@ -5899,7 +5899,7 @@ func (fs *fileStore) enforceBytesLimit() error {
 			bytes := fmb.bytes
 			fmb.mu.RUnlock()
 			if bs-bytes > uint64(fs.cfg.MaxBytes) {
-				if err := fs.purgeMsgBlock(fmb); err != nil {
+				if err := fs.purgeMsgBlock(fmb, nil); err != nil {
 					return err
 				}
 				continue
@@ -6379,8 +6379,9 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 }
 
 // Remove all messages in the range [first, last]
+// If agg is set the storage updates for fully removed blocks are aggregated.
 // Lock should be held.
-func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) error {
+func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool, agg *storeUpdateAgg) error {
 	last = min(last, fs.state.LastSeq)
 	if first > last {
 		return nil
@@ -6407,7 +6408,7 @@ func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) error
 			// purgeMgsBlock, which also removes the block from fs.blks.
 			// After purgeMsgBlock, i will be the index of the following
 			// msgBlock, if any. Therefore, continue without incrementing i.
-			if err := fs.purgeMsgBlock(mb); err != nil {
+			if err := fs.purgeMsgBlock(mb, agg); err != nil {
 				return err
 			}
 		} else {
@@ -11522,8 +11523,9 @@ func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) error {
 }
 
 // Purges and removes the msgBlock from the store.
+// If agg is set the storage updates for fully removed blocks are aggregated.
 // Lock should be held.
-func (fs *fileStore) purgeMsgBlock(mb *msgBlock) error {
+func (fs *fileStore) purgeMsgBlock(mb *msgBlock, agg *storeUpdateAgg) error {
 	mb.mu.Lock()
 	// Adjust per-subject tracking if present.
 	if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
@@ -11583,7 +11585,10 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) error {
 		return err
 	}
 
-	if cb := fs.scb; cb != nil {
+	if agg != nil {
+		// Aggregating, so no callback and no need to release fs.mu.
+		agg.md, agg.bd = agg.md-int64(msgs), agg.bd-int64(bytes)
+	} else if cb := fs.scb; cb != nil {
 		// If we have a callback registered, we need to release lock regardless since consumers will recalculate pending.
 		fs.mu.Unlock()
 		// Storage updates.
@@ -13153,6 +13158,13 @@ func deleteMap(blks []*msgBlock) *interiorDeletes {
 	return &v
 }
 
+// storeUpdateAgg aggregates storage update deltas, so removing multiple blocks
+// fires one storage callback instead of one per block.
+// fs lock should be held for all access.
+type storeUpdateAgg struct {
+	md, bd int64
+}
+
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 // This will only process deleted state within our current state.
 func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
@@ -13171,6 +13183,21 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 	if err := fs.werr; err != nil {
 		return err
 	}
+
+	// Removing a block has all consumers recalculate their pending state, so
+	// aggregate those into one callback at the end. Single message removals
+	// keep NumPending up to date incrementally, which is cheaper.
+	agg := &storeUpdateAgg{}
+	defer func() {
+		if agg.md == 0 && agg.bd == 0 {
+			return
+		}
+		if cb := fs.scb; cb != nil {
+			fs.mu.Unlock()
+			cb(agg.md, agg.bd, 0, _EMPTY_)
+			fs.mu.Lock()
+		}
+	}()
 
 	lseq := fs.state.LastSeq
 	fs.readLockAllMsgBlocks()
@@ -13197,7 +13224,7 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 
 		var err error
 		if _, ok := db.(*DeleteRange); ok {
-			err = fs.removeMsgsInRange(first, last, true)
+			err = fs.removeMsgsInRange(first, last, true, agg)
 		} else {
 			db.Range(func(dseq uint64) bool {
 				_, err = fs.removeMsg(dseq, false, true, false)
