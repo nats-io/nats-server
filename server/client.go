@@ -647,6 +647,7 @@ type subscription struct {
 	im      *streamImport // This is for import stream support.
 	rsi     bool
 	si      bool
+	leaf    bool            // Subscription interest originated from a leaf node.
 	shadow  []*subscription // This is to track shadowed accounts.
 	icb     msgHandler
 	subject []byte
@@ -5568,9 +5569,8 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					continue
 				} else {
 					// We want to favor qsubs in our own cluster. If the routed
-					// qsub has an origin, it means that is on behalf of a leaf.
-					// We need to treat it differently.
-					if len(sub.origin) > 0 {
+					// qsub is on behalf of a leaf, we need to treat it differently.
+					if sub.leaf {
 						// If we already have an rsub, nothing to do. Also, do
 						// not pick a routed qsub for a LEAF origin cluster
 						// that is the same than where the message comes from.

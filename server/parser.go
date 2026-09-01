@@ -691,12 +691,12 @@ func (c *client) parse(buf []byte) error {
 						if trace {
 							c.traceInOp("RS+", arg)
 						}
-						err = c.processRemoteSub(arg, false)
+						err = c.processRemoteSub(arg, false, false)
 					case 'L', 'l':
 						if trace {
 							c.traceInOp("LS+", arg)
 						}
-						err = c.processRemoteSub(arg, true)
+						err = c.processRemoteSub(arg, true, true)
 					}
 				case GATEWAY:
 					if trace {

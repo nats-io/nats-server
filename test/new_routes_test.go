@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"testing"
 	"time"
 
@@ -61,6 +62,186 @@ func TestNewRouteInfoOnConnect(t *testing.T) {
 	if !info.LNOCU {
 		t.Fatalf("Expected to have leafnode origin cluster in unsub protocol support")
 	}
+}
+
+func TestNewRouteLNImpliesLeafNodeOriginSupport(t *testing.T) {
+	t.Run("CONNECT", func(t *testing.T) {
+		s, opts := runNewRouteServer(t)
+		defer s.Shutdown()
+
+		rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+		defer rc.Close()
+		checkInfoMsg(t, rc)
+		send, expect := sendCommand(t, rc), expectCommand(t, rc)
+		send(`CONNECT {"name":"LN-CONNECT","cluster":"xyz","ln":true}` + "\r\n")
+		send("LS+ leaf $G foo\r\nLS- leaf $G foo\r\nPING\r\n")
+		expect(pongRe)
+	})
+
+	t.Run("INFO", func(t *testing.T) {
+		s, opts := runNewRouteServer(t)
+		defer s.Shutdown()
+
+		rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+		defer rc.Close()
+		info := checkInfoMsg(t, rc)
+		routeSend, routeExpect := setupRouteEx(t, rc, opts, "LN-INFO")
+		info.ID, info.Name = "LN-INFO", ""
+		info.LN, info.LNOC, info.LNOCU = true, false, false
+		b, err := json.Marshal(info)
+		if err != nil {
+			t.Fatalf("Could not marshal test route info: %v", err)
+		}
+		routeSend(fmt.Sprintf("INFO %s\r\n", b))
+		routeSend("LS+ leaf $G foo\r\nLS- leaf $G foo\r\nPING\r\n")
+		routeExpect(pongRe)
+	})
+}
+
+func TestNewRouteLNLeafInterestProtocol(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster { name: xyz, listen: 127.0.0.1:-1 }
+		leafnodes { listen: 127.0.0.1:-1, no_advertise: true }
+		no_sys_acc: true
+	`))
+	hub, opts := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		leafnodes { remotes: [{url: "nats-leaf://127.0.0.1:%d"}] }
+		no_sys_acc: true
+	`, opts.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+	checkLeafNodeConnected(t, hub)
+
+	lnSubRe := regexp.MustCompile(`LS\+\s+_\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\s*(\d+)?\r\n`)
+	lnUnsubRe := regexp.MustCompile(`LS\-\s+_\s+([^\s]+)\s+([^\s]+)\s*([^\s]+)?\r\n`)
+
+	for _, test := range []struct {
+		name    string
+		ln      bool
+		subRe   *regexp.Regexp
+		unsubRe *regexp.Regexp
+	}{
+		{"LN", true, lnSubRe, lnUnsubRe},
+		{"pre-LN", false, rsubRe, runsubRe},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			nc, err := nats.Connect(leaf.ClientURL())
+			if err != nil {
+				t.Fatalf("Unexpected client connect error: %v", err)
+			}
+			defer nc.Close()
+			sub, err := nc.SubscribeSync("foo")
+			if err != nil {
+				t.Fatalf("Unexpected subscribe error: %v", err)
+			}
+			if err := nc.Flush(); err != nil {
+				t.Fatalf("Unexpected flush error: %v", err)
+			}
+			checkSubInterest(t, hub, "$G", "foo", time.Second)
+
+			rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+			defer rc.Close()
+			routeID := "LN-PROTO-" + test.name
+			routeSend, routeExpect := setupRouteEx(t, rc, opts, routeID)
+			info := checkInfoMsg(t, rc)
+			info.ID, info.Name, info.LN = routeID, "", test.ln
+			b, err := json.Marshal(info)
+			if err != nil {
+				t.Fatalf("Could not marshal test route info: %v", err)
+			}
+			routeSend(fmt.Sprintf("INFO %s\r\n", b))
+			routeExpect(test.subRe)
+
+			if err := sub.Unsubscribe(); err != nil {
+				t.Fatalf("Unexpected unsubscribe error: %v", err)
+			}
+			routeExpect(test.unsubRe)
+		})
+	}
+}
+
+func TestNewRouteLNIsolatedLeafInterest(t *testing.T) {
+	hub1Conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		cluster { name: xyz, listen: 127.0.0.1:-1 }
+		leafnodes { listen: 127.0.0.1:-1, no_advertise: true }
+		no_sys_acc: true
+	`))
+	hub1, hub1Opts := RunServerWithConfig(hub1Conf)
+	defer hub1.Shutdown()
+
+	hub2Conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		cluster {
+			name: xyz
+			listen: 127.0.0.1:-1
+			routes: ["nats-route://127.0.0.1:%d"]
+		}
+		leafnodes { listen: 127.0.0.1:-1, no_advertise: true }
+		no_sys_acc: true
+	`, hub1Opts.Cluster.Port)))
+	hub2, hub2Opts := RunServerWithConfig(hub2Conf)
+	defer hub2.Shutdown()
+	checkClusterFormed(t, hub1, hub2)
+
+	startLeaf := func(name string, isolated bool) *server.Server {
+		t.Helper()
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			server_name: %s
+			listen: 127.0.0.1:-1
+			leafnodes {
+				remotes: [{
+					url: "nats-leaf://127.0.0.1:%d"
+					request_isolation: %v
+				}]
+			}
+			no_sys_acc: true
+		`, name, hub2Opts.LeafNode.Port, isolated)))
+		leaf, _ := RunServerWithConfig(conf)
+		return leaf
+	}
+
+	normalLeaf := startLeaf("NORMAL", false)
+	defer normalLeaf.Shutdown()
+	isolatedLeaf := startLeaf("ISOLATED", true)
+	defer isolatedLeaf.Shutdown()
+	checkLeafNodeConnected(t, normalLeaf)
+	checkLeafNodeConnected(t, isolatedLeaf)
+
+	// Use a raw leaf connection with no cluster in CONNECT. Its interest must
+	// cross the hub route as LS+ with the no-origin sentinel so the second hub retains leaf provenance.
+	source := createLeafConn(t, hub1Opts.LeafNode.Host, hub1Opts.LeafNode.Port)
+	defer source.Close()
+	checkInfoMsg(t, source)
+	sourceSend := sendCommand(t, source)
+	sourceSend("CONNECT {}\r\nLS+ eastwest\r\n")
+
+	checkSubInterest(t, hub2, "$G", "eastwest", time.Second)
+	checkSubInterest(t, normalLeaf, "$G", "eastwest", time.Second)
+	isolatedAcc, err := isolatedLeaf.LookupAccount("$G")
+	if err != nil {
+		t.Fatalf("Could not lookup isolated leaf account: %v", err)
+	}
+	if isolatedAcc.SubscriptionInterest("eastwest") {
+		t.Fatal("Isolated leaf unexpectedly received routed leaf interest")
+	}
+
+	sourceSend("LS- eastwest\r\n")
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		acc, err := normalLeaf.LookupAccount("$G")
+		if err != nil {
+			return err
+		}
+		if acc.SubscriptionInterest("eastwest") {
+			return fmt.Errorf("normal leaf still has east-west interest")
+		}
+		return nil
+	})
 }
 
 func TestNewRouteHeaderSupport(t *testing.T) {
@@ -1717,8 +1898,9 @@ func TestNewRouteLeafNodeOriginSupport(t *testing.T) {
 	info.Name = ""
 	info.LNOC = true
 	// Overwrite to false to check that we are getting LS- without origin
-	// if we are an old server.
+	// if we are an old server. LN implies LNOCU, so clear it too.
 	info.LNOCU = false
+	info.LN = false
 	b, err := json.Marshal(info)
 	if err != nil {
 		t.Fatalf("Could not marshal test route info: %v", err)

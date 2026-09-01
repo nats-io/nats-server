@@ -2036,6 +2036,11 @@ func parseCluster(v any, opts *Options, errors *[]error, warnings *[]error) erro
 				*errors = append(*errors, err)
 				continue
 			}
+			if cn == leafNoOriginCluster {
+				err := &configErr{tk, ErrClusterNameReserved.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
 			opts.Cluster.Name = cn
 		case "listen":
 			hp, err := parseListen(mv)
@@ -2283,6 +2288,11 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 			gn := mv.(string)
 			if strings.Contains(gn, " ") {
 				err := &configErr{tk, ErrGatewayNameHasSpaces.Error()}
+				*errors = append(*errors, err)
+				continue
+			}
+			if gn == leafNoOriginCluster {
+				err := &configErr{tk, ErrClusterNameReserved.Error()}
 				*errors = append(*errors, err)
 				continue
 			}

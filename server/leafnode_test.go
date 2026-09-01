@@ -11754,6 +11754,108 @@ func TestLeafNodeIsolatedLeafSubjectPropagationLocalIsolation(t *testing.T) {
 	}
 }
 
+func TestLeafNodeClusterIsolatedLeafSubjectPropagation(t *testing.T) {
+	spokeTmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: A, password: pwd}] }
+		}
+		leafnodes { port: -1 }
+	`
+
+	sp1Conf := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1")))
+	sp1, sp1Opts := RunServerWithConfig(sp1Conf)
+	defer sp1.Shutdown()
+
+	sp2Conf := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP2")))
+	sp2, sp2Opts := RunServerWithConfig(sp2Conf)
+	defer sp2.Shutdown()
+
+	hubTmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			HA { users: [{user: HA, password: pwd}] }
+		}
+		cluster {
+			name: HUB
+			listen: 127.0.0.1:-1
+			%s
+		}
+		leafnodes {
+			port: -1
+			%s
+		}
+	`
+	remoteTmpl := `
+		remotes: [{
+			url: "nats://A:pwd@127.0.0.1:%d"
+			local: "HA"
+			isolate: %v
+			hub: true
+		}]
+	`
+
+	h1Conf := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H1", _EMPTY_, fmt.Sprintf(remoteTmpl, sp1Opts.LeafNode.Port, false))))
+	h1, h1Opts := RunServerWithConfig(h1Conf)
+	defer h1.Shutdown()
+
+	routeToH1 := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", h1Opts.Cluster.Port)
+	h2Conf := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H2", routeToH1, _EMPTY_)))
+	h2, _ := RunServerWithConfig(h2Conf)
+	defer h2.Shutdown()
+
+	h3Conf := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "H3", routeToH1, fmt.Sprintf(remoteTmpl, sp2Opts.LeafNode.Port, true))))
+	h3, _ := RunServerWithConfig(h3Conf)
+	defer h3.Shutdown()
+
+	checkClusterFormed(t, h1, h2, h3)
+	checkLeafNodeConnected(t, h1)
+	checkLeafNodeConnected(t, h3)
+	checkLeafNodeConnected(t, sp1)
+	checkLeafNodeConnected(t, sp2)
+
+	// Hub-originated interest remains north-south even when the leaf connection
+	// is isolated. Connect the clients to different members of the hub cluster.
+	nch1 := natsConnect(t, h1.ClientURL(), nats.UserInfo("HA", "pwd"))
+	defer nch1.Close()
+
+	nch3 := natsConnect(t, h3.ClientURL(), nats.UserInfo("HA", "pwd"))
+	defer nch3.Close()
+
+	ns1, err := nch1.SubscribeSync("northsouth.h1")
+	require_NoError(t, err)
+
+	ns3, err := nch3.SubscribeSync("northsouth.h3")
+	require_NoError(t, err)
+
+	checkSubInterest(t, sp1, "A", "northsouth.h1", time.Second)
+	checkSubInterest(t, sp2, "A", "northsouth.h1", time.Second)
+	checkSubInterest(t, sp1, "A", "northsouth.h3", time.Second)
+	checkSubInterest(t, sp2, "A", "northsouth.h3", time.Second)
+
+	// Interest originating from SP1 enters the cluster through H1 and reaches
+	// H3 over a route. It must not be forwarded through H3's isolated leaf.
+	nc1 := natsConnect(t, sp1.ClientURL(), nats.UserInfo("A", "pwd"))
+	defer nc1.Close()
+
+	ew, err := nc1.SubscribeSync("eastwest")
+	require_NoError(t, err)
+
+	checkSubInterest(t, h3, "HA", "eastwest", time.Second)
+	checkSubNoInterest(t, sp2, "A", "eastwest", time.Second)
+
+	require_NoError(t, ew.Unsubscribe())
+
+	checkSubNoInterest(t, h1, "HA", "eastwest", time.Second)
+	checkSubNoInterest(t, h2, "HA", "eastwest", time.Second)
+	checkSubNoInterest(t, h3, "HA", "eastwest", time.Second)
+
+	require_NoError(t, ns1.Unsubscribe())
+	require_NoError(t, ns3.Unsubscribe())
+}
+
 func TestLeafNodeDaisyChainWithAccountImportExport(t *testing.T) {
 	hubConf := createConfFile(t, []byte(`
 		server_name: hub
