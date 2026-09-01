@@ -28,7 +28,9 @@ jobs:
         run: |
           wget https://github.com/hivemq/mqtt-cli/releases/download/v4.20.0/mqtt-cli-4.20.0.deb
           sudo apt install ./mqtt-cli-4.20.0.deb
-          go install github.com/ConnectEverything/mqtt-test@v0.1.0
+          # Pinned to the mqtt-test commit that adds --pipeline (PR #5);
+          # bump to @v0.2.0 once it is tagged.
+          go install github.com/ConnectEverything/mqtt-test@6138352776422dfd16eeb3333d078358d8b85fea
 
       - name: Run tests (3 times to detect flappers)
         shell: bash --noprofile --norc -eo pipefail {0}

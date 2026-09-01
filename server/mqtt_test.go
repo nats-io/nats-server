@@ -30,6 +30,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10294,5 +10295,173 @@ func TestMQTTCertMappedUserNotPasswordAuthenticatable(t *testing.T) {
 			defer mc.Close()
 			testMQTTCheckConnAck(t, r, mqttConnAckRCNotAuthorized, false)
 		})
+	}
+}
+
+// A burst of QoS1 PUBLISH packets must produce one PUBACK each, in publish
+// order.
+func TestMQTTQoS1PubAckPipelineOrder(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	mcp, mpr := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp.Close()
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+
+	// QoS1 interest, so the publishes flow through the JS store.
+	mcs, msr := testMQTTConnect(t, &mqttConnInfo{clientID: "pipesub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, msr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs, msr, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mcs, nil, msr)
+
+	const numMsgs = 100
+	for pi := uint16(1); pi <= numMsgs; pi++ {
+		testMQTTSendPublishPacket(t, mcp, 1, false, false, "foo", pi, []byte("msg"))
+	}
+
+	for pi := uint16(1); pi <= numMsgs; pi++ {
+		b, _ := testMQTTReadPacket(t, mpr)
+		if pt := b & mqttPacketMask; pt != mqttPacketPubAck {
+			t.Fatalf("Expected PUBACK packet %x, got %x", mqttPacketPubAck, pt)
+		}
+		rpi, err := mpr.readUint16("packet identifier")
+		if err != nil {
+			t.Fatalf("Error reading packet identifier: %v", err)
+		}
+		if rpi != pi {
+			t.Fatalf("Expected PUBACK for pi=%v, got pi=%v (out of order)", pi, rpi)
+		}
+	}
+
+	for i := 0; i < numMsgs; i++ {
+		testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("msg"))
+	}
+}
+
+// Closing a connection with pipelined stores in flight must not lose the
+// submitted messages, leak JSA reply registrations, or surface a stray
+// PUBACK on a successor connection.
+func TestMQTTQoS1PubAckPipelineConnClose(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// QoS1 interest, so the publishes are stored.
+	mcs, msr := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcs.Close()
+	testMQTTCheckConnAck(t, msr, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mcs, msr, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mcs, nil, msr)
+
+	// Wait for the server to process every PUBLISH before closing: the
+	// abrupt close (unread PUBACKs cause a TCP RST) may discard the
+	// server's unprocessed input.
+	const numMsgs = 50
+	mcp, mpr := testMQTTConnect(t, &mqttConnInfo{clientID: "pub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	testMQTTCheckConnAck(t, mpr, mqttConnAckRCConnectionAccepted, false)
+	for pi := uint16(1); pi <= numMsgs; pi++ {
+		testMQTTSendPublishPacket(t, mcp, 1, false, false, "foo", pi, []byte(fmt.Sprintf("msg-%d", pi)))
+	}
+	pc := testMQTTGetClient(t, s, "pub")
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if n := atomic.LoadInt64(&pc.inMsgs); n < numMsgs {
+			return fmt.Errorf("server processed %v of %v publishes", n, numMsgs)
+		}
+		return nil
+	})
+	mcp.Close()
+
+	for pi := uint16(1); pi <= numMsgs; pi++ {
+		testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte(fmt.Sprintf("msg-%d", pi)))
+	}
+
+	// No dangling JSA reply registrations from the abandoned pipeline.
+	jsa := s.mqttGetJSAForAccount(globalAccountName)
+	if jsa == nil {
+		t.Fatal("no JSA for the global account")
+	}
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		n := 0
+		jsa.replies.Range(func(_, _ any) bool { n++; return true })
+		if n > 0 {
+			return fmt.Errorf("%v dangling JSA reply registration(s)", n)
+		}
+		return nil
+	})
+
+	// Session takeover: a PUBACK leaked from the abandoned pipeline would
+	// show up as an extra packet here.
+	mcp2, mpr2 := testMQTTConnect(t, &mqttConnInfo{clientID: "pub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer mcp2.Close()
+	testMQTTCheckConnAck(t, mpr2, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mcp2, mpr2, 1, false, false, "foo", 77, []byte("msg2"))
+	testMQTTExpectNothing(t, mpr2)
+
+	testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("msg2"))
+}
+
+// A pipeline shut down while the readLoop is still admitting entries must
+// not leak JSA reply registrations, even when the close-time drain runs
+// concurrently with (or before) a racing push.
+func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		jsa := &mqttJSA{timeout: time.Second}
+		pipe := &mqttAckPipeline{
+			jsa:    jsa,
+			q:      make(chan *mqttPipelinedAck, 4),
+			quitCh: make(chan struct{}),
+		}
+
+		done := make(chan struct{})
+		go func() {
+			// The readLoop side: register, admit until rejected.
+			defer close(done)
+			for n := 0; ; n++ {
+				ack := &mqttPipelinedAck{pi: uint16(n%0xFFFF + 1), reply: fmt.Sprintf("reply.%d", n), done: make(chan error, 1)}
+				jsa.replies.Store(ack.reply, func(any) {})
+				if err := pipe.push(ack); err != nil {
+					return
+				}
+			}
+		}()
+
+		// The consumer side: take a few entries, then stop and drain
+		// concurrently with the pushes, as the connection-close handler
+		// does.
+		for j := 0; j < i%4; j++ {
+			ack := <-pipe.q
+			jsa.replies.Delete(ack.reply)
+		}
+		pipe.shutdown()
+		<-done
+
+		leaked := 0
+		jsa.replies.Range(func(_, _ any) bool { leaked++; return true })
+		if leaked > 0 {
+			t.Fatalf("iteration %d: %v reply registration(s) leaked after shutdown", i, leaked)
+		}
+	}
+
+	// A push after the pipeline has stopped must be rejected outright,
+	// with its registration cleaned up and nothing left in the queue.
+	jsa := &mqttJSA{timeout: time.Second}
+	pipe := &mqttAckPipeline{
+		jsa:    jsa,
+		q:      make(chan *mqttPipelinedAck, 4),
+		quitCh: make(chan struct{}),
+	}
+	pipe.shutdown()
+	ack := &mqttPipelinedAck{pi: 1, reply: "reply.stopped", done: make(chan error, 1)}
+	jsa.replies.Store(ack.reply, func(any) {})
+	if err := pipe.push(ack); err != errMQTTAckPipelineStopped {
+		t.Fatalf("Expected errMQTTAckPipelineStopped, got %v", err)
+	}
+	if _, ok := jsa.replies.Load(ack.reply); ok {
+		t.Fatal("reply registration not cleaned up on rejected push")
+	}
+	if n := len(pipe.q); n != 0 {
+		t.Fatalf("%v entry(ies) admitted into a stopped pipeline", n)
 	}
 }
