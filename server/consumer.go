@@ -2325,27 +2325,21 @@ func (o *consumer) deleteNotActive() {
 	})
 
 	// If we are clustered, check if we still have this consumer assigned.
-	// If we do forward a proposal to delete ourselves to the metacontroller leader.
+	// If we do, ask the meta leader to delete us.
 	if !isDirect && s.JetStreamIsClustered() {
 		js.mu.RLock()
-		var (
-			meta        RaftNode
-			removeEntry []byte
-		)
 		nca := js.consumerAssignment(acc, stream, name)
-		// Only propose the delete if the meta-layer assignment still refers to
+		// Only request the delete if the meta-layer assignment still refers to
 		// the consumer we captured, otherwise we'd be racing a recreated
 		// consumer with the same name.
-		if cc := js.cluster; cc != nil && ca != nil && ca.sameIdentity(nca) {
-			meta = cc.meta
-			cca := ca.clone()
-			cca.Reply = _EMPTY_
-			removeEntry = encodeDeleteConsumerAssignment(cca)
-			meta.ForwardProposal(removeEntry)
-		}
+		requested := js.cluster != nil && ca != nil && ca.sameIdentity(nca)
 		js.mu.RUnlock()
 
-		if ca != nil && meta != nil {
+		if requested {
+			// The creation time is part of the consumer's identity, so the meta leader
+			// can equally reject the request if the consumer got recreated meanwhile.
+			s.sendConsumerAssignmentDelete(acc, stream, name, ca.Created)
+
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
 			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
@@ -2374,7 +2368,7 @@ func (o *consumer) deleteNotActive() {
 				js.mu.RUnlock()
 				if match {
 					s.Warnf("Consumer assignment for '%s > %s > %s' not cleaned up, retrying", acc, stream, name)
-					meta.ForwardProposal(removeEntry)
+					s.sendConsumerAssignmentDelete(acc, stream, name, ca.Created)
 					if interval < cnaMax {
 						interval *= 2
 						ticker.Reset(interval)

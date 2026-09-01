@@ -4324,15 +4324,16 @@ func TestJetStreamClusterStreamScaleUpNoGroupCluster(t *testing.T) {
 	// Remove cluster and preferred.
 	sa.Group.Cluster = _EMPTY_
 	sa.Group.Preferred = _EMPTY_
-	// Insert into meta layer.
-	if sjs := s.getJetStream(); sjs != nil {
-		sjs.mu.RLock()
-		meta := sjs.cluster.meta
-		sjs.mu.RUnlock()
-		if meta != nil {
-			meta.ForwardProposal(encodeUpdateStreamAssignment(sa))
-		}
-	}
+	// Insert into meta layer, proposed by the meta leader itself.
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+	require_NotNil(t, mjs)
+	mjs.mu.RLock()
+	meta, term := mjs.cluster.meta, mjs.cluster.term
+	mjs.mu.RUnlock()
+	require_NotNil(t, meta)
+	require_NoError(t, meta.Propose(term, encodeUpdateStreamAssignment(sa)))
 	// Make sure it got propagated..
 	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
 		sa := mset.streamAssignment().copyGroup()
