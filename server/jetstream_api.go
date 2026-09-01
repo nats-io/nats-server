@@ -2015,7 +2015,8 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 		return
 	}
 
-	config := mset.config()
+	// Report the config as requested, the stream can still be running at its origin.
+	config := js.targetStreamConfig(mset, mset.config())
 	resp.StreamInfo = &StreamInfo{
 		Created:    mset.createdTime(),
 		State:      mset.stateWithDetail(details),
