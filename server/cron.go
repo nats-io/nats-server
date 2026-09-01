@@ -115,7 +115,15 @@ WRAP:
 			truncated = true
 			next = time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, loc)
 		}
-		if next = next.AddDate(0, 0, 1); next.Day() == 1 {
+		next = next.AddDate(0, 0, 1)
+		if next.Hour() != 0 {
+			if next.Hour() > 12 {
+				next = next.Add(time.Duration(24-next.Hour()) * time.Hour)
+			} else {
+				next = next.Add(time.Duration(-next.Hour()) * time.Hour)
+			}
+		}
+		if next.Day() == 1 {
 			goto WRAP
 		}
 	}
