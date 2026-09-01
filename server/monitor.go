@@ -3160,7 +3160,9 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 			ci := js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
-				c := stream.config()
+				// Report the config as requested, the stream can still be running at its origin.
+				// Must be consistent with the desired state reported as part of the cluster info.
+				c := js.targetStreamConfig(stream, stream.config())
 				cfg = &c
 			}
 			// Skip if we are only looking for stream leaders.
@@ -4099,7 +4101,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
+				if err := js.isConsumerHealthy(mset, sa, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
 						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)

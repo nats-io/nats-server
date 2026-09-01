@@ -8359,7 +8359,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
 	checkNodeIsClosed(sjs, ca)
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("monitor goroutine not running"))
 	checkNodeIsClosed(sjs, ca)
 
 	// We create a new RAFT group, the health check should detect this skew.
@@ -8369,7 +8369,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("cluster node skew detected"))
 
 	err = js.DeleteConsumer("TEST", "CONSUMER")
 	require_NoError(t, err)
@@ -8389,7 +8389,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
 	checkNodeIsClosed(sjs, ca)
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("consumer not found"))
 	checkNodeIsClosed(sjs, ca)
 }
 
@@ -8469,7 +8469,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 	// The health check gets the Raft node of the assignment and checks it against the
 	// Raft node of the consumer. We simulate a race condition where the consumer's Raft node
 	// is not yet initialized. The health check MUST NOT delete the node.
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Equal(t, node.State(), Follower)
 }
 
@@ -8558,7 +8558,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 	// Raft node of the consumer. We simulate a race condition where the assignment's Raft node
 	// is re-newed, but the consumer's node is still the old instance.
 	// The health check MUST NOT delete the node.
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
+	require_Error(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca), errors.New("cluster node skew detected"))
 	require_NotEqual(t, node.State(), Closed)
 }
 
@@ -8598,14 +8598,14 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	// The health check gathers all assignments and does checking after.
 	// If the consumer was deleted in the meantime, it should not report an error.
 	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
+	require_Error(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca), errors.New("consumer not found"))
 
 	// The health check could run earlier than we're able to create the consumer.
 	// In that case, wait before erroring.
 	sjs.mu.Lock()
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 }
 
 func TestJetStreamClusterStreamHealthCheckSurfacesAssignmentErr(t *testing.T) {
@@ -8679,7 +8679,7 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	require_True(t, ca != nil)
 
 	// Baseline: healthy.
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 
 	// Persisted assignment-level error must surface via the health check.
 	wantErr := errors.New("synthetic consumer assignment failure")
@@ -8687,7 +8687,7 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	ca.err = wantErr
 	sjs.mu.Unlock()
 
-	err = sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	err = sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Error(t, err)
 	require_Contains(t, err.Error(), wantErr.Error())
 
@@ -8695,13 +8695,13 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	sjs.mu.Lock()
 	ca.err = nil
 	sjs.mu.Unlock()
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 }
 
 func TestJetStreamClusterConsumerHealthCheckStreamMissingNoLockLeak(t *testing.T) {
 	js := &jetStream{}
 	ca := &consumerAssignment{}
-	err := js.isConsumerHealthy(nil, "consumer", ca)
+	err := js.isConsumerHealthy(nil, nil, "consumer", ca)
 	require_Error(t, err, errors.New("stream missing"))
 
 	// The JS lock must have been released. Attempt to acquire the write lock
@@ -9001,7 +9001,7 @@ func TestJetStreamClusterConsumerHealthCheckRecoversAfterSuccessfulUpdate(t *tes
 	sjs.mu.Lock()
 	ca.err = wantErr
 	sjs.mu.Unlock()
-	err = sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	err = sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Error(t, err)
 	require_Contains(t, err.Error(), wantErr.Error())
 
@@ -9022,7 +9022,7 @@ func TestJetStreamClusterConsumerHealthCheckRecoversAfterSuccessfulUpdate(t *tes
 	sjs.mu.RUnlock()
 	require_True(t, cur != nil)
 	require_NoError(t, gotErr)
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", cur))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", cur))
 }
 
 func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
