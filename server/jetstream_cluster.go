@@ -1075,8 +1075,8 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 }
 
 // isConsumerHealthy will determine if the consumer is up to date.
-// For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) error {
+// For R1 it will make sure the consumer is present on this server.
+func (js *jetStream) isConsumerHealthy(mset *stream, sa *streamAssignment, consumer string, ca *consumerAssignment) error {
 	js.mu.RLock()
 	if ca != nil && ca.unsupported != nil {
 		js.mu.RUnlock()
@@ -1106,6 +1106,13 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	}
 	created := ca.Created
 	node := ca.Group.node
+	// The stream may be running at its origin while its config already carries the
+	// target replica count. A consumer that has not been mapped onto the new peers
+	// yet inherits that target, so fall back on the origin count below.
+	var originReplicas int
+	if o := sa.desiredOrigin(); o != nil {
+		originReplicas = o.Replicas
+	}
 	js.mu.RUnlock()
 
 	// Check if not running at all.
@@ -1131,6 +1138,12 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return nil // No further checks for R=1 consumers
 
 	case node == nil:
+		// Not mapped onto the new peers yet, so still running at the stream's origin
+		// count. Only evaluated here, a consumer that does have a node must be checked
+		// as usual for the rest of the migration.
+		if originReplicas > 0 && originReplicas < rc {
+			return nil
+		}
 		return errors.New("group node missing")
 
 	case oNode == nil:

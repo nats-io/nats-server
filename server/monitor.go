@@ -4128,7 +4128,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
+				if err := js.isConsumerHealthy(mset, sa, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
 						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)
