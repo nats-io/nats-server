@@ -16191,7 +16191,7 @@ func TestFileStoreDeleteMapView(t *testing.T) {
 	checkView(deleteMap(staleBlks))
 }
 
-func TestFileStoreAtomicSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
+func TestFileStoreSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
 	sd := t.TempDir()
 	fcfg := FileStoreConfig{
 		StoreDir:     sd,
@@ -16215,7 +16215,7 @@ func TestFileStoreAtomicSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
 	untouched.needSync = true
 	untouched.mu.Unlock()
 
-	enabled, err := fs.beginAtomicSyncBatch()
+	enabled, err := fs.beginSyncBatch()
 	require_NoError(t, err)
 	require_True(t, enabled)
 	touched := make(map[*msgBlock]struct{})
@@ -16225,7 +16225,7 @@ func TestFileStoreAtomicSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
 		touched[fs.lmb] = struct{}{}
 	}
 	require_True(t, len(touched) >= 2)
-	require_NoError(t, fs.endAtomicSyncBatch())
+	require_NoError(t, fs.endSyncBatch())
 
 	untouched.mu.RLock()
 	untouchedNeedsSync := untouched.needSync
@@ -16239,7 +16239,7 @@ func TestFileStoreAtomicSyncBatchOnlySyncsTouchedBlocks(t *testing.T) {
 	}
 }
 
-func TestFileStoreAtomicSyncBatchRestoresConcurrentReplicaUpdate(t *testing.T) {
+func TestFileStoreSyncBatchRestoresConcurrentReplicaUpdate(t *testing.T) {
 	sd := t.TempDir()
 	fcfg := FileStoreConfig{StoreDir: sd, SyncAlways: true}
 	cfg := StreamConfig{
@@ -16252,7 +16252,7 @@ func TestFileStoreAtomicSyncBatchRestoresConcurrentReplicaUpdate(t *testing.T) {
 	require_NoError(t, err)
 	defer fs.Stop()
 
-	enabled, err := fs.beginAtomicSyncBatch()
+	enabled, err := fs.beginSyncBatch()
 	require_NoError(t, err)
 	require_True(t, enabled)
 	updated := cfg
@@ -16260,13 +16260,13 @@ func TestFileStoreAtomicSyncBatchRestoresConcurrentReplicaUpdate(t *testing.T) {
 	require_NoError(t, fs.UpdateConfig(&updated))
 	_, _, err = fs.StoreMsg("state.batch", nil, []byte("new"), 0)
 	require_NoError(t, err)
-	require_NoError(t, fs.endAtomicSyncBatch())
+	require_NoError(t, fs.endSyncBatch())
 
 	require_False(t, fs.syncAlways.Load())
 	require_True(t, fs.syncOnFlush.Load())
 }
 
-func TestFileStoreAtomicSyncBatchSyncsBlocksInOrder(t *testing.T) {
+func TestFileStoreSyncBatchSyncsBlocksInOrder(t *testing.T) {
 	sd := t.TempDir()
 	fcfg := FileStoreConfig{
 		StoreDir:     sd,
@@ -16293,7 +16293,7 @@ func TestFileStoreAtomicSyncBatchSyncsBlocksInOrder(t *testing.T) {
 	commit.needSync = true
 	commit.mu.Unlock()
 
-	err = fs.syncAtomicBatchBlocks([]*msgBlock{commit, earlier})
+	err = fs.syncBatchBlocks([]*msgBlock{commit, earlier})
 	require_Error(t, err, writeErr)
 	commit.mu.RLock()
 	commitNeedsSync := commit.needSync
@@ -16308,13 +16308,13 @@ func TestFileStoreAtomicSyncBatchSyncsBlocksInOrder(t *testing.T) {
 	fs.mu.Unlock()
 }
 
-func TestFileStoreAtomicSyncBatchFailsWhenStoreCloses(t *testing.T) {
+func TestFileStoreSyncBatchFailsWhenStoreCloses(t *testing.T) {
 	fcfg := FileStoreConfig{StoreDir: t.TempDir(), SyncAlways: true}
 	cfg := StreamConfig{Name: "TEST", Subjects: []string{"state.*"}, Storage: FileStorage}
 	fs, err := newFileStore(fcfg, cfg)
 	require_NoError(t, err)
 
-	enabled, err := fs.beginAtomicSyncBatch()
+	enabled, err := fs.beginSyncBatch()
 	require_NoError(t, err)
 	require_True(t, enabled)
 	_, _, err = fs.StoreMsg("state.batch", nil, []byte("new"), 0)
@@ -16322,10 +16322,10 @@ func TestFileStoreAtomicSyncBatchFailsWhenStoreCloses(t *testing.T) {
 
 	fs.syncMu.Lock()
 	done := make(chan error, 1)
-	go func() { done <- fs.endAtomicSyncBatch() }()
+	go func() { done <- fs.endSyncBatch() }()
 	checkFor(t, time.Second, 10*time.Millisecond, func() error {
-		if fs.atomicBatchSync.Load() {
-			return errors.New("atomic batch has not reached final sync")
+		if fs.syncBatch.active.Load() {
+			return errors.New("sync batch has not reached final sync")
 		}
 		return nil
 	})

@@ -2286,7 +2286,7 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			mset.mu.RLock()
 			lseq := mset.lseq
 			mset.mu.RUnlock()
-			if lseq != 2 || fs.atomicBatchSync.Load() {
+			if lseq != 2 || fs.syncBatch.active.Load() {
 				return fmt.Errorf("atomic batch has not reached final sync")
 			}
 			return nil

@@ -88,6 +88,15 @@ type FileStreamInfo struct {
 	StreamConfig
 }
 
+// syncBatchState tracks a bounded SyncOnFlush section. It is deliberately
+// storage-generic: callers decide which higher-level operation owns the
+// durability boundary.
+type syncBatchState struct {
+	mu     sync.Mutex
+	active atomic.Bool
+	dirty  map[*msgBlock]struct{}
+}
+
 type StoreCipher int
 
 const (
@@ -224,12 +233,9 @@ type fileStore struct {
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
 	sources     map[string]*StreamSourceState
-	// atomicBatchSync tracks the short SyncOnFlush durability section used by
-	// R1 atomic publish commits. atomicBatchMu protects the exact set of blocks
-	// dirtied in that section so the final flush does not scan the whole stream.
-	atomicBatchMu    sync.Mutex
-	atomicBatchSync  atomic.Bool
-	atomicBatchDirty map[*msgBlock]struct{}
+	// syncBatch tracks exact blocks dirtied in a bounded SyncOnFlush section so
+	// its final durability flush does not scan the whole stream.
+	syncBatch syncBatchState
 }
 
 // Represents a message store block and its data.
@@ -689,7 +695,7 @@ func (fs *fileStore) setCreatedTime(created time.Time) {
 	fs.mu.Unlock()
 }
 
-func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
+func (fs *fileStore) updateDurabilitySettingsLocked(syncOnFlush bool) {
 	if !fs.fcfg.SyncAlways {
 		return
 	}
@@ -697,13 +703,17 @@ func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
 	// setting in favor of SyncOnFlush. Enable the new sync mode
 	// before disabling the old one so writes are never processed
 	// with both modes disabled.
-	if replicas > 1 {
+	if syncOnFlush {
 		fs.syncOnFlush.Store(true)
 		fs.syncAlways.Store(false)
 	} else {
 		fs.syncAlways.Store(true)
 		fs.syncOnFlush.Store(false)
 	}
+}
+
+func (fs *fileStore) resetDurabilitySettingsLocked() {
+	fs.updateDurabilitySettingsLocked(fs.cfg.Replicas > 1)
 }
 
 // flushForScaleDown transitions a SyncOnFlush store back to SyncAlways.
@@ -716,7 +726,7 @@ func (fs *fileStore) flushForScaleDown() error {
 	// Turn off syncOnFlush, and enable sync after every write.
 	// First enable sync after every write, so that any inflight
 	// or subsequent write gets synced
-	fs.updateDurabilitySettingsLocked(1)
+	fs.updateDurabilitySettingsLocked(false)
 	fs.mu.Unlock()
 
 	// Sync all dirty blocks, so that we no longer have to rely
@@ -797,7 +807,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		}
 	}
 
-	fs.updateDurabilitySettingsLocked(cfg.Replicas)
+	fs.resetDurabilitySettingsLocked()
 
 	if lmb := fs.lmb; lmb != nil {
 		// Enable/disable async flush depending on if it's supported and already initialized.
@@ -5745,48 +5755,48 @@ func (fs *fileStore) FlushAllPending() error {
 	return fs.checkAndFlushLastBlock()
 }
 
-// beginAtomicSyncBatch temporarily uses the existing SyncOnFlush mode to
-// coalesce an R1 atomic publish commit into a single durability boundary.
-func (fs *fileStore) beginAtomicSyncBatch() (bool, error) {
+// beginSyncBatch temporarily uses the existing SyncOnFlush mode to coalesce
+// writes into a single bounded durability boundary.
+func (fs *fileStore) beginSyncBatch() (bool, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
 	if !fs.syncAlways.Load() {
 		return false, nil
 	}
-	fs.atomicBatchMu.Lock()
-	defer fs.atomicBatchMu.Unlock()
-	if fs.atomicBatchSync.Load() {
-		return false, errors.New("atomic sync batch already active")
+	fs.syncBatch.mu.Lock()
+	defer fs.syncBatch.mu.Unlock()
+	if fs.syncBatch.active.Load() {
+		return false, errors.New("sync batch already active")
 	}
-	fs.atomicBatchDirty = make(map[*msgBlock]struct{})
-	fs.atomicBatchSync.Store(true)
+	fs.syncBatch.dirty = make(map[*msgBlock]struct{})
+	fs.syncBatch.active.Store(true)
 	fs.syncOnFlush.Store(true)
 	fs.syncAlways.Store(false)
 	return true, nil
 }
 
-// endAtomicSyncBatch restores the durability mode required by the current
-// replica count, then syncs only blocks dirtied by this batch.
-func (fs *fileStore) endAtomicSyncBatch() error {
+// endSyncBatch restores the configured durability mode, then syncs only the
+// blocks dirtied in the bounded section.
+func (fs *fileStore) endSyncBatch() error {
 	fs.mu.Lock()
-	fs.atomicBatchMu.Lock()
-	if !fs.atomicBatchSync.Load() {
-		fs.atomicBatchMu.Unlock()
+	fs.syncBatch.mu.Lock()
+	if !fs.syncBatch.active.Load() {
+		fs.syncBatch.mu.Unlock()
 		fs.mu.Unlock()
 		return nil
 	}
-	fs.updateDurabilitySettingsLocked(fs.cfg.Replicas)
-	dirty := make([]*msgBlock, 0, len(fs.atomicBatchDirty))
-	for mb := range fs.atomicBatchDirty {
+	fs.resetDurabilitySettingsLocked()
+	dirty := make([]*msgBlock, 0, len(fs.syncBatch.dirty))
+	for mb := range fs.syncBatch.dirty {
 		dirty = append(dirty, mb)
 	}
-	fs.atomicBatchDirty = nil
-	fs.atomicBatchSync.Store(false)
-	fs.atomicBatchMu.Unlock()
+	fs.syncBatch.dirty = nil
+	fs.syncBatch.active.Store(false)
+	fs.syncBatch.mu.Unlock()
 	fs.mu.Unlock()
 
-	return fs.syncAtomicBatchBlocks(dirty)
+	return fs.syncBatchBlocks(dirty)
 }
 
 // markNeedsSyncLocked records a block for the batch durability flush when one
@@ -5794,14 +5804,14 @@ func (fs *fileStore) endAtomicSyncBatch() error {
 func (mb *msgBlock) markNeedsSyncLocked() {
 	mb.needSync = true
 	fs := mb.fs
-	if !fs.atomicBatchSync.Load() {
+	if !fs.syncBatch.active.Load() {
 		return
 	}
-	fs.atomicBatchMu.Lock()
-	if fs.atomicBatchSync.Load() {
-		fs.atomicBatchDirty[mb] = struct{}{}
+	fs.syncBatch.mu.Lock()
+	if fs.syncBatch.active.Load() {
+		fs.syncBatch.dirty[mb] = struct{}{}
 	}
-	fs.atomicBatchMu.Unlock()
+	fs.syncBatch.mu.Unlock()
 }
 
 // syncPendingWriteLocked applies the current durability mode to a completed
@@ -5818,7 +5828,7 @@ func (mb *msgBlock) syncPendingWriteLocked() error {
 	if fs.syncAlways.Load() {
 		return sync()
 	}
-	if !fs.atomicBatchSync.Load() {
+	if !fs.syncBatch.active.Load() {
 		// Recheck SyncAlways to close the race with the batch end transition.
 		if fs.syncAlways.Load() {
 			return sync()
@@ -5827,21 +5837,21 @@ func (mb *msgBlock) syncPendingWriteLocked() error {
 		return nil
 	}
 
-	fs.atomicBatchMu.Lock()
-	defer fs.atomicBatchMu.Unlock()
+	fs.syncBatch.mu.Lock()
+	defer fs.syncBatch.mu.Unlock()
 	if fs.syncAlways.Load() {
 		return sync()
 	}
 	mb.needSync = true
-	if fs.atomicBatchSync.Load() {
-		fs.atomicBatchDirty[mb] = struct{}{}
+	if fs.syncBatch.active.Load() {
+		fs.syncBatch.dirty[mb] = struct{}{}
 	}
 	return nil
 }
 
-func (fs *fileStore) syncAtomicBatchBlocks(blks []*msgBlock) (err error) {
-	// The block containing the commit marker must reach disk after all earlier
-	// blocks, otherwise recovery can observe a durable commit with missing data.
+func (fs *fileStore) syncBatchBlocks(blks []*msgBlock) (err error) {
+	// Preserve storage order so later records can not become durable before
+	// earlier records from the same bounded write section.
 	slices.SortFunc(blks, func(a, b *msgBlock) int {
 		return cmp.Compare(a.index, b.index)
 	})

@@ -7841,7 +7841,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		fs, hasFileStore := mset.store.(*fileStore)
 		coalesceSync := false
 		if hasFileStore {
-			coalesceSync, err = fs.beginAtomicSyncBatch()
+			coalesceSync, err = fs.beginSyncBatch()
 			if err != nil {
 				return err
 			}
@@ -7850,7 +7850,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		syncBatchEnded := !coalesceSync
 		defer func() {
 			if !syncBatchEnded {
-				_ = fs.endAtomicSyncBatch()
+				_ = fs.endSyncBatch()
 			}
 		}()
 
@@ -7877,7 +7877,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			}
 		}
 		if coalesceSync {
-			if err = fs.endAtomicSyncBatch(); err != nil {
+			if err = fs.endSyncBatch(); err != nil {
 				mset.setWriteErr(err)
 				return err
 			}
