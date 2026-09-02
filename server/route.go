@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"reflect"
@@ -2896,7 +2896,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string
 	// registers the route on the opposite TCP connection, the
 	// two connections will end-up being closed.
 	// Add some random delay to reduce risk of repeated failures.
-	delay := time.Duration(rand.Intn(100)) * time.Millisecond
+	delay := time.Duration(rand.IntN(100)) * time.Millisecond
 	if rtype == Explicit {
 		delay += DEFAULT_ROUTE_RECONNECT
 	}

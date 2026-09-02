@@ -20,7 +20,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -4021,7 +4021,7 @@ func TestRouteCompression(t *testing.T) {
 			var payloads [][]byte
 			count := 26
 			for i := 0; i < count; i++ {
-				n := rand.Intn(2048) + 1
+				n := rand.IntN(2048) + 1
 				p := make([]byte, n)
 				for j := 0; j < n; j++ {
 					p[j] = byte(i) + 'A'
@@ -5096,7 +5096,7 @@ func TestRouteMsgWithManyHeadersDoesNotCorruptJSON(t *testing.T) {
 	total := 3000
 	bodies := make([][]byte, total)
 	for i := 0; i < total; i++ {
-		filler := strings.Repeat("x", 32+rand.Intn(12*1024))
+		filler := strings.Repeat("x", 32+rand.IntN(12*1024))
 		body := fmt.Sprintf(
 			`{"branch":"main","idx":%d,`+
 				`"some_tag":"tag-aaaaaaaaaaaaaaaaaaaaaaaa",`+

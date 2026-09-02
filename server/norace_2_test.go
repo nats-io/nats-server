@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -607,7 +607,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 
 	test := func(t *testing.T, gs StreamStore) {
 		t.Parallel()
-		prand := rand.New(rand.NewSource(seed))
+		prand := rand.New(rand.NewPCG(uint64(seed), 0))
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		done := time.NewTimer(10 * time.Second)
@@ -637,7 +637,7 @@ func TestNoRaceStoreStreamEncoderDecoder(t *testing.T) {
 			case <-done.C:
 				running = false
 			default:
-				key := strconv.Itoa(prand.Intn(256_000))
+				key := strconv.Itoa(prand.IntN(256_000))
 				gs.StoreMsg(key, nil, msg, 0)
 			}
 		}
@@ -695,12 +695,12 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 
 			case <-tk.C:
 				// Pick a random key within the range.
-				k := fmt.Sprintf("key.%d", rand.Intn(numKeys))
+				k := fmt.Sprintf("key.%d", rand.IntN(numKeys))
 				// Attempt to get a key.
 				e, err := kv.Get(k)
 				// If found, attempt to update or delete.
 				if err == nil {
-					if rand.Intn(10) < 3 {
+					if rand.IntN(10) < 3 {
 						kv.Delete(k, nats.LastRevision(e.Revision()))
 					} else {
 						kv.Update(k, nil, e.Revision())
@@ -732,7 +732,7 @@ func TestNoRaceJetStreamClusterKVWithServerKill(t *testing.T) {
 		c.waitOnStreamLeader(globalAccountName, "KV_TEST")
 
 		// Wait for a bit and then start the server again.
-		time.Sleep(time.Duration(rand.Intn(1250)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.IntN(1250)) * time.Millisecond)
 		s = c.restartServer(s)
 		c.waitOnServerCurrent(s)
 		c.waitOnLeader()
@@ -916,7 +916,7 @@ func TestNoRaceJetStreamAPIDispatchQueuePending(t *testing.T) {
 	// space and wildcards for now does the trick.
 	toks := []string{"foo", "bar", "baz"} // for second token.
 	for i := 1; i <= 500_000; i++ {
-		subj := fmt.Sprintf("foo.%s.%d", toks[rand.Intn(len(toks))], i)
+		subj := fmt.Sprintf("foo.%s.%d", toks[rand.IntN(len(toks))], i)
 		_, err := js.PublishAsync(subj, nil, nats.StallWait(time.Second))
 		require_NoError(t, err)
 	}
@@ -1101,7 +1101,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 
 	// Create 50k messages randomly from 1-100
 	for i := 0; i < 50_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
+		subj := fmt.Sprintf("foo.%d", rand.IntN(100)+1)
 		publishAsync(t, js, subj, msg)
 	}
 	select {
@@ -1120,7 +1120,7 @@ func TestNoRaceJetStreamClusterStreamCatchupLargeInteriorDeletes(t *testing.T) {
 	}
 	// Do 50k random again at end.
 	for i := 0; i < 50_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(100)+1)
+		subj := fmt.Sprintf("foo.%d", rand.IntN(100)+1)
 		publishAsync(t, js, subj, msg)
 	}
 	select {
@@ -1320,7 +1320,7 @@ func TestNoRaceJetStreamKVReplaceWithServerRestart(t *testing.T) {
 		const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 		b := make([]byte, n)
 		for i := range b {
-			b[i] = letterBytes[rand.Intn(len(letterBytes))]
+			b[i] = letterBytes[rand.IntN(len(letterBytes))]
 		}
 		return b
 	}
@@ -1583,7 +1583,7 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 		for {
 			select {
 			case <-st.C:
-				subj := publishSubjects[rand.Intn(len(publishSubjects))]
+				subj := publishSubjects[rand.IntN(len(publishSubjects))]
 				_, err = js.Publish(subj, msg)
 				require_NoError(t, err)
 			case <-pdone:
@@ -1618,11 +1618,11 @@ func TestNoRaceJetStreamWQSkippedMsgsOnScaleUp(t *testing.T) {
 				}
 				require_Equal(t, len(msgs), 1)
 				m := msgs[0]
-				if rand.Intn(10) == 1 {
+				if rand.IntN(10) == 1 {
 					m.Nak()
 				} else {
 					// Wait up to 20ms to ack.
-					time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
+					time.Sleep(time.Duration(rand.IntN(20)) * time.Millisecond)
 					// This could fail and that is ok, system should recover due to low ack wait.
 					m.Ack()
 				}
@@ -2160,7 +2160,7 @@ func TestNoRaceFileStoreWriteFullStateUniqueSubjects(t *testing.T) {
 			partB := nuid.Next()
 			for k := 0; k < 500; k++ {
 				partC := nuid.Next()
-				partD := labels[rand.Intn(len(labels)-1)]
+				partD := labels[rand.IntN(len(labels)-1)]
 				subject := fmt.Sprintf("records.%s.%s.%s.%s.%s", partA, partB, partC, partD, nuid.Next())
 				start := time.Now()
 				fs.StoreMsg(subject, nil, msg, 0)

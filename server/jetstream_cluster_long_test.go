@@ -20,7 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -59,7 +59,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 	}
 
 	test := func(t *testing.T, p Parameters) {
-		rng := rand.New(rand.NewSource(Seed))
+		rng := rand.New(rand.NewPCG(uint64(Seed), 0))
 
 		// Create cluster
 		clusterName := fmt.Sprintf("C_%d-%s", p.numServers, p.storage)
@@ -126,7 +126,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 		// Pick a random key and update it with a random value
 		valueBuffer := make([]byte, ValueSize)
 		updateRandomKey := func() error {
-			key := keys[rand.Intn(NumKeys)]
+			key := keys[rand.IntN(NumKeys)]
 			_, err := rng.Read(valueBuffer)
 			require_NoError(t, err)
 			_, err = kv.Put(key, valueBuffer)
@@ -159,7 +159,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 				}
 
 			case <-restartServerTicker.C:
-				randomServer := cluster.servers[rng.Intn(len(cluster.servers))]
+				randomServer := cluster.servers[rng.IntN(len(cluster.servers))]
 				randomServer.Shutdown()
 				randomServer.WaitForShutdown()
 				restartedServer := cluster.restartServer(randomServer)
@@ -254,7 +254,7 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 	}
 
 	rngSeed := time.Now().UnixNano()
-	rng := rand.New(rand.NewSource(rngSeed))
+	rng := rand.New(rand.NewPCG(uint64(rngSeed), 0))
 	t.Logf("Seed: %d", rngSeed)
 
 	// Chose a node from the list (and remove it)
@@ -264,7 +264,7 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 			return nodes, nil
 		}
 		// Pick random node
-		i := rng.Intn(len(nodes))
+		i := rng.IntN(len(nodes))
 		node := nodes[i]
 		// Move last element in its place
 		nodes[i] = nodes[len(nodes)-1]
@@ -340,7 +340,7 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 		}
 
 		// Choose a random operation to perform in this iteration
-		nextOperation := opsWeighted[rng.Intn(len(opsWeighted))]
+		nextOperation := opsWeighted[rng.IntN(len(opsWeighted))]
 
 		// If we're about to stop one or all nodes, do some sanity checks to ensure we don't
 		// spam stops which would constantly interrupt the chance of making progress.
@@ -398,14 +398,14 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 		case Snapshot:
 			// Choose a random active node and tell it to create a snapshot
 			if len(activeNodes) > 0 {
-				n := activeNodes[rng.Intn(len(activeNodes))]
+				n := activeNodes[rng.IntN(len(activeNodes))]
 				n.(*RCOBStateMachine).createSnapshot()
 			}
 
 		case Propose:
 			// Make an active node propose the next block (if any nodes are active)
 			if len(activeNodes) > 0 {
-				n := activeNodes[rng.Intn(len(activeNodes))]
+				n := activeNodes[rng.IntN(len(activeNodes))]
 				n.(*RCOBStateMachine).proposeBlock()
 			}
 
@@ -418,7 +418,7 @@ func TestLongNRGChainOfBlocks(t *testing.T) {
 
 		case Pause:
 			// Noop, let things run undisturbed for a little bit
-			time.Sleep(time.Duration(rng.Intn(250)) * time.Millisecond)
+			time.Sleep(time.Duration(rng.IntN(250)) * time.Millisecond)
 
 		case Check:
 			// Restart any stopped node
@@ -560,7 +560,7 @@ func TestLongClusterWorkQueueMessagesNotSkipped(t *testing.T) {
 				require_NoError(t, err)
 				for msg := range msgs.Messages() {
 					go func() {
-						time.Sleep(time.Millisecond * time.Duration(rand.Int31n(100)))
+						time.Sleep(time.Millisecond * time.Duration(rand.Int32N(100)))
 						require_NoError(t, msg.Ack())
 						sig <- msg
 					}()
@@ -632,7 +632,7 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 	createData := func(n int) []byte {
 		b := make([]byte, n)
 		for i := range b {
-			b[i] = letterBytes[rand.Intn(len(letterBytes))]
+			b[i] = letterBytes[rand.IntN(len(letterBytes))]
 		}
 		return b
 	}
@@ -727,7 +727,7 @@ func TestLongClusterJetStreamKeyValueSync(t *testing.T) {
 				return
 			default:
 			}
-			r := rand.Intn(numKeys)
+			r := rand.IntN(numKeys)
 			key := fmt.Sprintf("key-%d", r)
 
 			for i := 0; i < 5; i++ {
@@ -1162,7 +1162,7 @@ func TestLongFileStoreEnforceMsgPerSubjectLimit(t *testing.T) {
 	}
 	// Now update some of them. Leave a bit of a mess with some big gaps.
 	for i := 0; i < 5_000_000; i++ {
-		n := rand.Int31n(100_000)
+		n := rand.Int32N(100_000)
 		if n < 5000 {
 			continue
 		}

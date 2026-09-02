@@ -26,7 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -1726,7 +1726,7 @@ func TestNoRaceJetStreamSuperClusterMixedModeMirrors(t *testing.T) {
 		wg.Add(mirrorsCount)
 		errCh := make(chan error, 1)
 		for m := 0; m < mirrorsCount; m++ {
-			sname := fmt.Sprintf("S%d", rand.Intn(10)+1)
+			sname := fmt.Sprintf("S%d", rand.IntN(10)+1)
 			go func(sname string, mirrorIdx int) {
 				defer wg.Done()
 				if _, err := js.AddStream(&nats.StreamConfig{
@@ -2403,7 +2403,7 @@ func TestNoRaceJetStreamSuperClusterRIPStress(t *testing.T) {
 		for _, sns := range scm {
 			rand.Shuffle(len(sns), func(i, j int) { sns[i], sns[j] = sns[j], sns[i] })
 			for _, sn := range sns {
-				js := jsc[rand.Intn(len(jsc))]
+				js := jsc[rand.IntN(len(jsc))]
 				if _, err = js.PublishAsync(sn, msg); err != nil {
 					t.Fatalf("Unexpected publish error: %v", err)
 				}
@@ -3906,7 +3906,7 @@ func TestNoRaceJetStreamKeyValueCompaction(t *testing.T) {
 
 	value := strings.Repeat("A", 128*1024)
 	for i := 0; i < 5_000; i++ {
-		key := fmt.Sprintf("K-%d", rand.Intn(256)+1)
+		key := fmt.Sprintf("K-%d", rand.IntN(256)+1)
 		if _, err := kv.PutString(key, value); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -5221,7 +5221,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 			require_NoError(t, err)
 
 			for {
-				pt := time.NewTimer(time.Duration(rand.Intn(300)) * time.Millisecond)
+				pt := time.NewTimer(time.Duration(rand.IntN(300)) * time.Millisecond)
 				select {
 				case <-pt.C:
 					msgs, err := sub.Fetch(1)
@@ -5231,7 +5231,7 @@ func TestNoRaceJetStreamClusterInterestPullConsumerStreamLimitBug(t *testing.T) 
 					}
 					if len(msgs) > 0 {
 						go func() {
-							ackDelay := time.Duration(rand.Intn(375)+15) * time.Millisecond
+							ackDelay := time.Duration(rand.IntN(375)+15) * time.Millisecond
 							m := msgs[0]
 							time.AfterFunc(ackDelay, func() { m.AckSync() })
 						}()
@@ -5335,7 +5335,7 @@ func TestNoRaceJetStreamClusterDirectAccessAllPeersSubs(t *testing.T) {
 					return
 				default:
 					// Send as fast as we can.
-					js.Publish(fmt.Sprintf("kv.%d", rand.Intn(1000)), msg)
+					js.Publish(fmt.Sprintf("kv.%d", rand.IntN(1000)), msg)
 				}
 			}
 		}()
@@ -6520,7 +6520,7 @@ func TestNoRaceJetStreamKVAccountWithServerRestarts(t *testing.T) {
 			require_NoError(t, err)
 
 			for i := 0; i < npubs; i++ {
-				subj := fmt.Sprintf("KEY-%d", rand.Intn(nsubjs))
+				subj := fmt.Sprintf("KEY-%d", rand.IntN(nsubjs))
 				if _, err := kv.PutString(subj, "hello"); err != nil {
 					nc, js := jsClientConnect(t, c.randomServer())
 					defer nc.Close()
@@ -6588,7 +6588,7 @@ func TestNoRaceJetStreamConsumerCreateTimeNumPending(t *testing.T) {
 	msg := bytes.Repeat([]byte("X"), 8*1024)
 
 	for i := 0; i < n; i++ {
-		subj := fmt.Sprintf("events.%d", rand.Intn(100_000))
+		subj := fmt.Sprintf("events.%d", rand.IntN(100_000))
 		js.PublishAsync(subj, msg)
 	}
 	select {
@@ -6933,13 +6933,13 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 					rand.Shuffle(len(msgs), func(i, j int) { msgs[i], msgs[j] = msgs[j], msgs[i] })
 
 					// Wait for a random interval up to 100ms.
-					time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+					time.Sleep(time.Duration(rand.IntN(100)) * time.Millisecond)
 
 					for _, m := range msgs {
 						// If we want to simulate max redeliveries being hit, since not acking
 						// once will cause it due to subscriber setup.
 						// 100_000 == 0.01%
-						if simulateMaxRedeliveries && rand.Intn(100_000) == 0 {
+						if simulateMaxRedeliveries && rand.IntN(100_000) == 0 {
 							md, err := m.Metadata()
 							require_NoError(t, err)
 							t.Logf("** Skipping Ack: %d **", md.Sequence.Stream)
@@ -6996,9 +6996,9 @@ func TestNoRaceJetStreamClusterF3Setup(t *testing.T) {
 
 			for {
 				// Grab a random source stream
-				stream := sources[rand.Intn(len(sources))]
+				stream := sources[rand.IntN(len(sources))]
 				// Grab random event type.
-				evt := eventTypes[rand.Intn(len(eventTypes))]
+				evt := eventTypes[rand.IntN(len(eventTypes))]
 				subj := fmt.Sprintf("%s.%s", stream, evt)
 				start := time.Now()
 				_, err := js.Publish(subj, msg)
@@ -7579,10 +7579,10 @@ func TestNoRaceFileStoreNumPending(t *testing.T) {
 	tokens := []string{"foo", "bar", "baz"}
 	genSubj := func() string {
 		return fmt.Sprintf("%s.%s.%s.%s",
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
 		)
 	}
 
@@ -8390,7 +8390,7 @@ func TestNoRaceRoutePoolAndPerAccountConfigReload(t *testing.T) {
 					default:
 					}
 					if i%300 == 0 {
-						time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+						time.Sleep(time.Duration(rand.IntN(5)) * time.Millisecond)
 					}
 				}
 			}()

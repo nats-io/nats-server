@@ -16,7 +16,7 @@ package avl
 import (
 	"encoding/base64"
 	"encoding/binary"
-	"math/rand"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -72,7 +72,7 @@ func TestSeqSetCorrectness(t *testing.T) {
 	set := make(map[uint64]struct{}, num)
 	var ss SequenceSet
 	for i := 0; i < num; i++ {
-		n := uint64(rand.Int63n(int64(max + 1)))
+		n := uint64(rand.Int64N(int64(max + 1)))
 		ss.Insert(n)
 		set[n] = struct{}{}
 	}
@@ -215,7 +215,7 @@ func TestSeqSetClone(t *testing.T) {
 
 	var ss SequenceSet
 	for i := 0; i < num; i++ {
-		ss.Insert(uint64(rand.Int63n(int64(max + 1))))
+		ss.Insert(uint64(rand.Int64N(int64(max + 1))))
 	}
 
 	ssc := ss.Clone()

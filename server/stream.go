@@ -22,7 +22,7 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3707,7 +3707,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 	next += calculateRetryBackoff(mset.mirror.fails)
 
 	// Add some jitter.
-	next += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	next += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	stopAndClearTimer(&mset.mirrorConsumerSetup)
 	mset.mirrorConsumerSetup = time.AfterFunc(next, func() {
@@ -4240,7 +4240,7 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 	}
 
 	// Always add some jitter
-	scheduleDelay += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	scheduleDelay += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	// Schedule the call to trySetupSourceConsumer
 	mset.sourceSetupSchedules[iname] = time.AfterFunc(scheduleDelay, func() {
@@ -5166,7 +5166,7 @@ func (mset *stream) subscribeToStream() error {
 		if mset.cfg.Replicas == 1 {
 			mset.setupSourceConsumers()
 		} else {
-			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
+			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.IntN(int(500*time.Millisecond)))+100*time.Millisecond, func() {
 				mset.mu.Lock()
 				mset.setupSourceConsumers()
 				mset.mu.Unlock()

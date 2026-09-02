@@ -22,7 +22,7 @@ package test
 import (
 	"bufio"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"testing"
@@ -83,7 +83,7 @@ var ch = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!
 func sizedBytes(sz int) []byte {
 	b := make([]byte, sz)
 	for i := range b {
-		b[i] = ch[rand.Intn(len(ch))]
+		b[i] = ch[rand.IntN(len(ch))]
 	}
 	return b
 }
@@ -791,7 +791,7 @@ func doS2CompressBench(b *testing.B, compress string) {
 	// Make it random so that compression code has more to do.
 	payload2 := make([]byte, 256)
 	for i := 0; i < len(payload); i++ {
-		payload2[i] = byte(rand.Intn(26) + 'A')
+		payload2[i] = byte(rand.IntN(26) + 'A')
 	}
 	b.StartTimer()
 

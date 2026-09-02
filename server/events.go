@@ -22,7 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"runtime"
 	"runtime/debug"
@@ -3005,7 +3005,7 @@ func (s *Server) newRespInbox() string {
 	var b [respInboxPrefixLen + replySuffixLen]byte
 	pres := b[:respInboxPrefixLen]
 	copy(pres, s.sys.inboxPre)
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i, l := respInboxPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base

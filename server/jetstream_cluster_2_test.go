@@ -25,7 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3390,7 +3390,7 @@ func TestJetStreamClusterRollups(t *testing.T) {
 
 	// Generate 1000 random measurements for 10 sensors
 	for i := 0; i < 1000; i++ {
-		id, temp := strconv.Itoa(rand.Intn(9)+1), rand.Int31n(42)+60 // 60-102 degrees.
+		id, temp := strconv.Itoa(rand.IntN(9)+1), rand.Int32N(42)+60 // 60-102 degrees.
 		le.PutUint16(bt[0:], uint16(temp))
 		js.PublishAsync(fmt.Sprintf("sensor.%v.temp", id), bt[:])
 	}
@@ -3401,7 +3401,7 @@ func TestJetStreamClusterRollups(t *testing.T) {
 	}
 
 	// Grab random sensor and do a rollup by averaging etc.
-	sensor := fmt.Sprintf("sensor.%v.temp", strconv.Itoa(rand.Intn(9)+1))
+	sensor := fmt.Sprintf("sensor.%v.temp", strconv.Itoa(rand.IntN(9)+1))
 	sub, err := js.SubscribeSync(sensor)
 	require_NoError(t, err)
 
@@ -5495,7 +5495,7 @@ func TestJetStreamClusterConsumerLeaderChangeDeadlock(t *testing.T) {
 			mset.mu.Lock()
 			for _, o := range mset.consumers {
 				o.mu.Lock()
-				time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.IntN(10)) * time.Millisecond)
 				o.mu.Unlock()
 			}
 			mset.mu.Unlock()
