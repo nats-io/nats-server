@@ -271,6 +271,12 @@ type msgBlock struct {
 	needSync    bool
 	needKeySync bool // Key file is written once and immutable, cleared after its one sync.
 	noCompact   bool
+	// Set once this block becomes the target of a limits-based FIFO removal,
+	// i.e. the head block of a stream evicting under DiscardOld. Scan paths
+	// will then skip force-expiring its cache, since the next eviction would
+	// have to reload and decompress the block while holding the write lock.
+	// The regular cache expiry timer still applies.
+	evictTarget bool
 	closed      bool
 	ttls        uint64 // How many msgs have TTLs?
 	schedules   uint64 // How many msgs have schedules?
@@ -6175,6 +6181,14 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 1 // ... about to be zero though.
 
+	// Removing the first message via limits means this block is the active
+	// eviction target (e.g. head block under DiscardOld at the byte or msg cap),
+	// so it will be touched again on subsequent removals. Mark it so scan paths
+	// do not force-expire its cache out from underneath us.
+	if viaLimits && fifo {
+		mb.evictTarget = true
+	}
+
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
 	// Now just load regardless.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
@@ -7076,6 +7090,13 @@ func (mb *msgBlock) tryForceExpireCache() {
 
 // We will attempt to force expire this by temporarily clearing the last load time.
 func (mb *msgBlock) tryForceExpireCacheLocked() {
+	// If this block is the active target of limits-based removals, keep the
+	// cache around, otherwise the next eviction pays a full block reload and
+	// decompress while holding the write lock. The regular expiry timer will
+	// still reclaim the cache once the block goes idle.
+	if mb.evictTarget {
+		return
+	}
 	llts := mb.llts
 	mb.llts = 0
 	mb.tryExpireCacheLocked()
