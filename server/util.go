@@ -385,14 +385,16 @@ func parallelTaskQueue(mp int) chan<- func() {
 	return tq
 }
 
-// addSaturate returns a + b, saturating at math.MaxInt64.
-// Both a and b must be non-negative.
-func addSaturate(a, b int64) int64 {
-	sum, carry := bits.Add64(uint64(a), uint64(b), 0)
-	if carry != 0 || sum > uint64(math.MaxInt64) {
-		return math.MaxInt64
+// addSaturate returns a + b, saturating at the maximum value of T.
+// Signed inputs must be non-negative.
+func addSaturate[T ~int64 | ~uint64](a, b T) T {
+	if c := a + b; c >= a {
+		return c
 	}
-	return int64(sum)
+	if ^T(0) < 0 {
+		return T(^uint64(0) >> 1)
+	}
+	return ^T(0)
 }
 
 // mulSaturate returns a * b, saturating at math.MaxInt64.
