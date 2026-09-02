@@ -6176,7 +6176,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	isEmpty := mb.msgs == 1 // ... about to be zero though.
 
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
-	// Now just load regardless.
+	// Only load from disk if the cache is not already in memory, cacheNotLoaded will also revive a weakly held cache.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
 	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
