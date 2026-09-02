@@ -7622,3 +7622,54 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
 
 }
+
+func TestConfigReloadJetStreamLimits(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				default_max_consumers: %d
+			}
+		}
+	`
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, 1)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// The limit of one consumer is reached.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Raising the limit must be picked up by a reload.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, 2))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, 2)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// As must lowering it again.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, 1))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, 1)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Unset means the server default applies, -1 means unlimited.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, -1))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, -1)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+}

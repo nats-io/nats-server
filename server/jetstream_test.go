@@ -6492,6 +6492,138 @@ func TestJetStreamTieredLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamDefaultMaxConsumers(t *testing.T) {
+	storeDir := t.TempDir()
+	confFmt := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				default_max_consumers: %d
+			}
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(confFmt, storeDir, 2)))
+	s, _ := RunServerWithConfig(conf)
+	defer func() { s.Shutdown() }()
+
+	nc, js := jsClientConnect(t, s)
+
+	// Create consumers up to the limit of 2.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"S.>"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// The limit is now reached, so creating more is rejected.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Updating or idempotently recreating existing assets does not add new
+	// ones and must still be allowed while at the limit.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Restart with the limit lowered to 1.
+	s.Shutdown()
+	conf = createConfFile(t, []byte(fmt.Sprintf(confFmt, storeDir, 1)))
+	s, _ = RunServerWithConfig(conf)
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		if _, err = js.StreamInfo("S"); err != nil {
+			return err
+		}
+		for _, dur := range []string{"C1", "C2"} {
+			if _, err = js.ConsumerInfo("S", dur); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	// Ephemerals are new consumers as well.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Existing assets can still be idempotently recreated and updated, even while
+	// above the lowered limit, since that doesn't add new assets.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 5})
+	require_NoError(t, err)
+	_, err = js.UpdateConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, MaxDeliver: 10})
+	require_NoError(t, err)
+}
+
+func TestJetStreamDefaultMaxConsumersSourcingExempt(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				default_max_consumers: 1
+			}
+		}
+	`, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	// Fill up the default limit, so no regular consumers can be added anymore.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Mirroring/sourcing "S" creates internal Direct/Sourcing consumers on it,
+	// those are not counted toward the limit and must not be rejected by it.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "S"}})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "SRC", Sources: []*nats.StreamSource{{Name: "S"}}})
+	require_NoError(t, err)
+
+	sendStreamMsg(t, nc, "foo", "hello")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, sname := range []string{"M", "SRC"} {
+			si, err := js.StreamInfo(sname)
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != 1 {
+				return fmt.Errorf("expected 1 message in %q, got %d", sname, si.State.Msgs)
+			}
+		}
+		return nil
+	})
+
+	mset, err := s.globalAccount().lookupStream("S")
+	require_NoError(t, err)
+	require_Equal(t, mset.numConsumers(), 3)
+	require_Equal(t, mset.numLimitableConsumers(), 1)
+
+	// Regular consumers must still be rejected.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+}
+
 type obsi struct {
 	cfg ConsumerConfig
 	ack int

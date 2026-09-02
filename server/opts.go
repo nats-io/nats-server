@@ -381,6 +381,9 @@ type JSLimitOpts struct {
 	MaxBatchInflightTotal     int           `json:"max_batch_inflight_total,omitempty"`      // MaxBatchInflightTotal is the maximum amount of total open batches per server
 	MaxBatchSize              int           `json:"max_batch_size,omitempty"`                // MaxBatchSize is the maximum amount of messages allowed in a batch publish to a Stream
 	MaxBatchTimeout           time.Duration `json:"max_batch_timeout,omitempty"`             // MaxBatchTimeout is the maximum time to receive the commit message after receiving the first message of a batch
+
+	// Max asset limits
+	DefaultMaxConsumers int `json:"default_max_consumers,omitempty"` // DefaultMaxConsumers is the maximum number of consumers per stream (unless overwritten on the stream) (-1=unlimited)
 }
 
 type JSTpmOpts struct {
@@ -2545,6 +2548,8 @@ func parseJetStreamLimits(v any, opts *Options, errors *[]error) error {
 			opts.JetStreamLimits.MaxHAAssets = int(mv.(int64))
 		case "max_request_batch":
 			opts.JetStreamLimits.MaxRequestBatch = int(mv.(int64))
+		case "default_max_consumers":
+			opts.JetStreamLimits.DefaultMaxConsumers = int(mv.(int64))
 		case "duplicate_window":
 			var err error
 			opts.JetStreamLimits.Duplicates, err = time.ParseDuration(mv.(string))
@@ -6195,6 +6200,9 @@ func setBaselineOptions(opts *Options) {
 	}
 	if opts.JetStreamConcurrentIOs <= 0 {
 		opts.JetStreamConcurrentIOs = defaultConcurrentIOs
+	}
+	if opts.JetStreamLimits.DefaultMaxConsumers == 0 {
+		opts.JetStreamLimits.DefaultMaxConsumers = JSDefaultMaxConsumersPerStream
 	}
 }
 

@@ -1102,13 +1102,14 @@ func TestNoRaceJetStreamDeleteStreamManyConsumers(t *testing.T) {
 	defer s.Shutdown()
 
 	mname := "MYS"
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: mname, Storage: FileStorage})
+	// Explicitly set MaxConsumers, otherwise the server default limit would kick in.
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: mname, Storage: FileStorage, MaxConsumers: 2000})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
 
 	// This number needs to be higher than the internal sendq size to trigger what this test is testing.
-	for i := 0; i < 2000; i++ {
+	for i := range 2000 {
 		_, err := mset.addConsumer(&ConsumerConfig{
 			Durable:        fmt.Sprintf("D-%d", i),
 			DeliverSubject: fmt.Sprintf("deliver.%d", i),
@@ -1269,7 +1270,7 @@ func TestNoRaceJetStreamAPIConsumerListPaging(t *testing.T) {
 	defer s.Shutdown()
 
 	sname := "MYSTREAM"
-	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: sname})
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: sname, MaxConsumers: JSApiNamesLimit})
 	if err != nil {
 		t.Fatalf("Unexpected error adding stream: %v", err)
 	}
@@ -5488,9 +5489,10 @@ func TestNoRaceJetStreamClusterConsumerListPaging(t *testing.T) {
 	defer nc.Close()
 
 	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
+		Name:         "TEST",
+		Subjects:     []string{"foo"},
+		Replicas:     3,
+		MaxConsumers: 5000,
 	})
 	require_NoError(t, err)
 	c.waitOnStreamLeader(globalAccountName, "TEST")

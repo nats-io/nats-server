@@ -769,6 +769,16 @@ func (jso *jetStreamLimitsOption) IsStatszChange() bool {
 	return true
 }
 
+// For changes to the server-wide JetStream limits.
+type jetStreamServerLimitsOption struct {
+	noopOption
+	newValue JSLimitOpts
+}
+
+func (jso *jetStreamServerLimitsOption) Apply(s *Server) {
+	s.Noticef("Reloaded: JetStream limits")
+}
+
 type defaultSentinelOption struct {
 	noopOption
 	newValue string
@@ -1861,6 +1871,15 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				default:
 					return nil, fmt.Errorf("config reload not supported for decreasing jetstream max memory and store")
 				}
+			}
+		case "jetstreamlimits":
+			// Server-wide JetStream limits are enforced when assets are created or updated.
+			// Some limits, like MaxRequestBatch, MaxAckPending, Duplicates, are materialized
+			// into the asset's config, so existing assets keep the value they had originally.
+			new := newValue.(JSLimitOpts)
+			old := oldValue.(JSLimitOpts)
+			if new != old {
+				diffOpts = append(diffOpts, &jetStreamServerLimitsOption{newValue: new})
 			}
 		case "jetstreammetacompact", "jetstreammetacompactsize", "jetstreammetacompactsync":
 			// Allowed at runtime but monitorCluster looks at s.opts directly, so no further work needed here.

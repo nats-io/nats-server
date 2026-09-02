@@ -1154,12 +1154,15 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 	// If we're clustered we've already done this check, only do this if we're a standalone server.
 	// But if we're standalone, only enforce if we're not recovering, since the MaxConsumers could've
 	// been updated while we already had more consumers on disk.
-	if standalone && !isRecovering {
+	if standalone && !isRecovering && !config.Direct && !config.Sourcing {
 		// Check for any limits, if the config for the consumer sets a limit we check against that
 		// but if not we use the value from account limits, if account limits is more restrictive
 		// than stream config we prefer the account limits to handle cases where account limits are
 		// updated during the lifecycle of the stream
 		maxc := cfg.MaxConsumers
+		if maxConsumers := srvLim.DefaultMaxConsumers; maxConsumers > 0 && maxc <= 0 {
+			maxc = maxConsumers
+		}
 		if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
 			maxc = selectedLimits.MaxConsumers
 		}
