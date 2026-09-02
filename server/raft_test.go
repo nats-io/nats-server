@@ -7964,6 +7964,85 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	require_True(t, q == q2)
 }
 
+func TestNRGCatchupRerequestLosesCatchupSignal(t *testing.T) {
+	test := func(t *testing.T, stall bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+
+		// One committed entry, so we have some log.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries}), n.aesub)
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1}), n.aesub)
+		require_Equal(t, n.commit, 1)
+
+		// Leader is at 5, we're at 1, so request a catchup.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5, entries: entries}), n.aesub)
+		require_True(t, n.catchup != nil)
+		require_False(t, n.catchup.signal)
+		require_Equal(t, n.catchup.cindex, 5)
+
+		// Snapshot at 3 installs and signals the upper layer.
+		n.RLock()
+		ps := encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+		n.RUnlock()
+		aeSnap := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3,
+			entries: []*Entry{{EntrySnapshot, []byte("snapshot")}, {EntryPeerState, ps}}})
+		n.processAppendEntry(aeSnap, n.catchup.sub)
+		require_Equal(t, n.pindex, 3)
+		require_True(t, n.catchup != nil)
+		require_True(t, n.catchup.signal)
+
+		if stall {
+			// No progress for 2s, so the catchup is stalled and re-requested.
+			hb := encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5})
+			n.processAppendEntry(hb, n.aesub)
+			require_True(t, n.catchup != nil)
+			n.Lock()
+			n.catchup.active = time.Now().Add(-3 * time.Second)
+			n.Unlock()
+			n.processAppendEntry(hb, n.aesub)
+			require_True(t, n.catchup != nil)
+			require_True(t, n.catchup.signal)
+		}
+
+		// Catchup entries 4 and 5 carry the leader's old commit, so we don't re-signal.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries}), n.catchup.sub)
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 4, entries: entries}), n.catchup.sub)
+		require_Equal(t, n.pindex, 5)
+		require_Equal(t, n.commit, 3)
+
+		// We're current now, the catchup is canceled.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5}), n.aesub)
+		require_True(t, n.catchup == nil)
+		require_Equal(t, n.commit, 5)
+
+		// Must have seen EntryCatchup followed by nil.
+		var sawCatchup, sawDone bool
+		for _, ce := range n.apply.pop() {
+			if ce == nil {
+				if sawCatchup {
+					sawDone = true
+				}
+				continue
+			}
+			for _, e := range ce.Entries {
+				if e.Type == EntryCatchup {
+					sawCatchup = true
+				}
+			}
+		}
+		require_True(t, sawCatchup)
+		require_True(t, sawDone)
+	}
+
+	t.Run("NoStall", func(t *testing.T) { test(t, false) })
+	t.Run("Stall", func(t *testing.T) { test(t, true) })
+}
+
 func TestNRGCatchupDoesNotAddPeerOnCompletion(t *testing.T) {
 	nats0 := "S1Nunr6R" // "nats-0"
 	nats1 := "yrzKKRBu" // "nats-1"
