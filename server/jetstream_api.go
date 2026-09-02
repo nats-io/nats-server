@@ -199,6 +199,16 @@ const (
 	JSApiConsumerLeaderStepDown  = "$JS.API.CONSUMER.LEADER.STEPDOWN.*.*"
 	JSApiConsumerLeaderStepDownT = "$JS.API.CONSUMER.LEADER.STEPDOWN.%s.%s"
 
+	// JSApiConsumerRemovePeer is the endpoint to remove a peer from a single clustered consumer.
+	// Will return JSON response.
+	JSApiConsumerRemovePeer  = "$JS.API.CONSUMER.PEER.REMOVE.*.*"
+	JSApiConsumerRemovePeerT = "$JS.API.CONSUMER.PEER.REMOVE.%s.%s"
+
+	// JSApiConsumerEvacuatePeer is the endpoint to evacuate a peer from a single clustered consumer.
+	// Will return JSON response.
+	JSApiConsumerEvacuatePeer  = "$JS.API.CONSUMER.PEER.EVACUATE.*.*"
+	JSApiConsumerEvacuatePeerT = "$JS.API.CONSUMER.PEER.EVACUATE.%s.%s"
+
 	// JSApiLeaderStepDown is the endpoint to have our metaleader stepdown.
 	// Only works from system account.
 	// Will return JSON response.
@@ -673,6 +683,34 @@ type JSApiConsumerLeaderStepDownResponse struct {
 
 const JSApiConsumerLeaderStepDownResponseType = "io.nats.jetstream.api.v1.consumer_leader_stepdown_response"
 
+// JSApiConsumerRemovePeerRequest is the required remove peer request for a single consumer.
+type JSApiConsumerRemovePeerRequest struct {
+	// Server name or peer ID of the peer to be removed.
+	Peer string `json:"peer"`
+}
+
+// JSApiConsumerRemovePeerResponse is the response to a consumer remove peer request.
+type JSApiConsumerRemovePeerResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiConsumerRemovePeerResponseType = "io.nats.jetstream.api.v1.consumer_remove_peer_response"
+
+// JSApiConsumerEvacuatePeerRequest is the required evacuate peer request for a single consumer.
+type JSApiConsumerEvacuatePeerRequest struct {
+	// Server name or peer ID of the peer to be evacuated.
+	Peer string `json:"peer"`
+}
+
+// JSApiConsumerEvacuatePeerResponse is the response to a consumer evacuate peer request.
+type JSApiConsumerEvacuatePeerResponse struct {
+	ApiResponse
+	Success bool `json:"success,omitempty"`
+}
+
+const JSApiConsumerEvacuatePeerResponseType = "io.nats.jetstream.api.v1.consumer_evacuate_peer_response"
+
 // JSApiLeaderStepdownRequest allows placement control over the meta leader placement.
 type JSApiLeaderStepdownRequest struct {
 	Placement *Placement `json:"placement,omitempty"`
@@ -1084,6 +1122,8 @@ func (s *Server) setJetStreamExportSubs() error {
 		{JSApiStreamCancelMove, s.jsStreamCancelMoveRequest},
 		{JSApiStreamLeaderStepDown, s.jsStreamLeaderStepDownRequest},
 		{JSApiConsumerLeaderStepDown, s.jsConsumerLeaderStepDownRequest},
+		{JSApiConsumerRemovePeer, s.jsConsumerRemovePeerRequest},
+		{JSApiConsumerEvacuatePeer, s.jsConsumerEvacuatePeerRequest},
 		{JSApiMsgDelete, s.jsMsgDeleteRequest},
 		{JSApiMsgGet, s.jsMsgGetRequest},
 		{JSApiConsumerCreateEx, s.jsConsumerCreateRequest},
@@ -2575,7 +2615,7 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 	}
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, name)
+	isLeader := cc.isLeader()
 	js.mu.RUnlock()
 
 	// Make sure we are meta leader.
@@ -2613,6 +2653,10 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 		return
 	}
 
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	sa := js.streamAssignmentOrInflight(acc.Name, name)
 	if sa == nil {
 		// No stream present.
 		resp.setError(NewJSStreamNotFoundError())
@@ -2620,8 +2664,6 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 		return
 	}
 
-	js.mu.Lock()
-	defer js.mu.Unlock()
 	isGroupMember := func(peer string) bool {
 		return sa.Group.isMember(peer) || (sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Peers, peer))
 	}
@@ -2644,6 +2686,160 @@ func (s *Server) jsStreamRemapPeerRequest(_ *subscription, c *client, _ *Account
 
 	// If we are here we have a valid peer member set for removal.
 	if !js.removePeerFromStreamLocked(sa, nodeName, peerRemoval{remove: remove, requireReplicas: true}) {
+		resp.setError(NewJSPeerRemapError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	resp.setSuccess()
+	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+}
+
+// consumerRemapPeerRequest is implemented by the consumer remove and evacuate peer
+// requests. They are distinct models carrying the same content.
+type consumerRemapPeerRequest interface {
+	// peer returns the server name or peer ID the request targets.
+	peer() string
+}
+
+func (r *JSApiConsumerRemovePeerRequest) peer() string   { return r.Peer }
+func (r *JSApiConsumerEvacuatePeerRequest) peer() string { return r.Peer }
+
+// consumerRemapPeerResponse is implemented by the consumer remove and evacuate peer
+// responses. They are distinct models carrying the same content.
+type consumerRemapPeerResponse interface {
+	setError(err *ApiError)
+	setSuccess()
+}
+
+func (r *JSApiConsumerRemovePeerResponse) setError(err *ApiError) { r.Error = err }
+func (r *JSApiConsumerRemovePeerResponse) setSuccess()            { r.Success = true }
+
+func (r *JSApiConsumerEvacuatePeerResponse) setError(err *ApiError) { r.Error = err }
+func (r *JSApiConsumerEvacuatePeerResponse) setSuccess()            { r.Success = true }
+
+// Request to remove a peer from a single clustered consumer.
+func (s *Server) jsConsumerRemovePeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	req := &JSApiConsumerRemovePeerRequest{}
+	resp := &JSApiConsumerRemovePeerResponse{ApiResponse: ApiResponse{Type: JSApiConsumerRemovePeerResponseType}}
+	s.jsConsumerRemapPeerRequest(nil, c, nil, subject, reply, rmsg, req, resp, true)
+}
+
+// Request to evacuate a peer from a single clustered consumer.
+func (s *Server) jsConsumerEvacuatePeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
+	req := &JSApiConsumerEvacuatePeerRequest{}
+	resp := &JSApiConsumerEvacuatePeerResponse{ApiResponse: ApiResponse{Type: JSApiConsumerEvacuatePeerResponseType}}
+	s.jsConsumerRemapPeerRequest(nil, c, nil, subject, reply, rmsg, req, resp, false)
+}
+
+func (s *Server) jsConsumerRemapPeerRequest(_ *subscription, c *client, _ *Account, subject, reply string, rmsg []byte, req consumerRemapPeerRequest, resp consumerRemapPeerResponse, remove bool) {
+	if c == nil || !s.JetStreamEnabled() {
+		return
+	}
+	ci, acc, hdr, msg, err := s.getRequestInfo(c, rmsg)
+	if err != nil {
+		s.Warnf(badAPIRequestT, msg)
+		return
+	}
+
+	// If we are not in clustered mode this is a failed request.
+	if !s.JetStreamIsClustered() {
+		resp.setError(NewJSClusterRequiredError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	js, cc := s.getJetStreamCluster()
+	if js == nil || cc == nil {
+		return
+	}
+	if js.isLeaderless() {
+		resp.setError(NewJSClusterNotAvailError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	// Have extra tokens for this one.
+	stream := tokenAt(subject, 6)
+	consumer := tokenAt(subject, 7)
+
+	js.mu.RLock()
+	isLeader := cc.isLeader()
+	js.mu.RUnlock()
+
+	// Only the metaleader can change assignments.
+	if !isLeader {
+		return
+	}
+
+	if errorOnRequiredApiLevel(hdr) {
+		resp.setError(NewJSRequiredApiLevelError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	if hasJS, doErr := acc.checkJetStream(); !hasJS {
+		if doErr {
+			resp.setError(NewJSNotEnabledForAccountError())
+			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		}
+		return
+	}
+	if isEmptyRequest(msg) {
+		resp.setError(NewJSBadRequestError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	if err := s.unmarshalRequest(c, acc, subject, msg, req); err != nil {
+		resp.setError(NewJSInvalidJSONError(err))
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+	if req.peer() == _EMPTY_ {
+		resp.setError(NewJSBadRequestError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	js.mu.Lock()
+	defer js.mu.Unlock()
+
+	sa := js.streamAssignmentOrInflight(acc.Name, stream)
+	if sa == nil {
+		resp.setError(NewJSStreamNotFoundError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+	ca := js.consumerAssignmentOrInflight(acc.Name, stream, consumer)
+	if ca == nil || ca.Config == nil {
+		resp.setError(NewJSConsumerNotFoundError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	isGroupMember := func(peer string) bool {
+		return ca.Group.isMember(peer) || (ca.Group.Desired != nil && slices.Contains(ca.Group.Desired.Peers, peer))
+	}
+
+	// Check to see if we are a member of the group.
+	// Peer here is either a peer ID or a server name, convert to node name.
+	nodeName := getHash(req.peer())
+	isMember := isGroupMember(nodeName)
+	if !isMember {
+		nodeName = req.peer()
+		isMember = isGroupMember(nodeName)
+	}
+
+	// Make sure we are a member.
+	if !isMember {
+		resp.setError(NewJSClusterPeerNotMemberError())
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
+		return
+	}
+
+	// If we are here we have a valid peer member set for removal.
+	if !js.remapPeerFromConsumerLocked(sa, ca, nodeName, remove) {
 		resp.setError(NewJSPeerRemapError())
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 		return

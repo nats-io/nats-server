@@ -5174,6 +5174,485 @@ func TestJetStreamClusterPeerRemoveAndEvacuateConsumersMatrix(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerPeerRemoveAndEvacuateMatrix(t *testing.T) {
+	const clusterSize = 3
+	c := createJetStreamClusterExplicit(t, "R3S", clusterSize)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	for i, test := range []struct {
+		name             string
+		evacuate         bool
+		streamReplicas   int
+		consumerReplicas int
+	}{
+		{"Remove/StreamR1/ConsumerR1", false, 1, 1},
+		{"Remove/StreamR3/ConsumerR1", false, 3, 1},
+		{"Remove/StreamR3/ConsumerR3", false, 3, 3},
+		{"Evacuate/StreamR1/ConsumerR1", true, 1, 1},
+		{"Evacuate/StreamR3/ConsumerR1", true, 3, 1},
+		{"Evacuate/StreamR3/ConsumerR3", true, 3, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// The stream's group is left alone, so the replacement has to be a stream
+			// peer the consumer is not on yet. A consumer that already spans the stream
+			// has none, and neither does one on a single peer stream.
+			replaceable := test.consumerReplicas < test.streamReplicas
+
+			// Each case gets its own stream so that the cases stay independent.
+			stream := fmt.Sprintf("TEST_%d", i)
+			subject := fmt.Sprintf("foo.%d", i)
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     stream,
+				Subjects: []string{subject},
+				Replicas: test.streamReplicas,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer(stream, &nats.ConsumerConfig{
+				Durable:           "CONSUMER",
+				AckPolicy:         nats.AckExplicitPolicy,
+				Replicas:          test.consumerReplicas,
+				InactiveThreshold: time.Hour,
+			})
+			require_NoError(t, err)
+
+			ml := c.leader()
+			require_NotNil(t, ml)
+
+			sjs := ml.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, stream)
+			streamPeers := append([]string(nil), sa.Group.Peers...)
+			sjs.mu.RUnlock()
+			require_Len(t, len(streamPeers), test.streamReplicas)
+
+			// Target a peer that hosts the consumer, so that every case actually
+			// exercises the consumer being taken off of the targeted peer. A
+			// replicated consumer sits on every stream peer, so any of them will do.
+			var rs *Server
+			if test.consumerReplicas == 1 {
+				rs = c.consumerLeader(globalAccountName, stream, "CONSUMER")
+			} else {
+				rs = c.randomNonStreamLeader(globalAccountName, stream)
+				if rs == nil {
+					rs = c.streamLeader(globalAccountName, stream)
+				}
+			}
+			require_NotNil(t, rs)
+			target := rs.Node()
+
+			subjT := JSApiConsumerRemovePeerT
+			if test.evacuate {
+				subjT = JSApiConsumerEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiConsumerRemovePeerRequest{Peer: target})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, stream, "CONSUMER"), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_Equal(t, resp.Success, replaceable)
+			if !replaceable {
+				// There was nowhere to move the consumer to, so the request is
+				// rejected and the consumer is left alone.
+				require_Error(t, resp.Error, NewJSPeerRemapError())
+			}
+
+			// The consumer moved off of the targeted peer onto another of the stream's
+			// peers, keeping its replica count. A rejected request leaves it where it was.
+			checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				ca := sjs.consumerAssignment(globalAccountName, stream, "CONSUMER")
+				if ca == nil || ca.Group == nil {
+					return fmt.Errorf("consumer not found")
+				}
+				if ca.Group.Desired != nil {
+					return fmt.Errorf("consumer still converging")
+				}
+				if len(ca.Group.Peers) != test.consumerReplicas {
+					return fmt.Errorf("expected %d consumer peers, got %v", test.consumerReplicas, ca.Group.Peers)
+				}
+				if got := slices.Contains(ca.Group.Peers, target); got != !replaceable {
+					return fmt.Errorf("peer %q in consumer peer set = %v, want %v (peers %v)", target, got, !replaceable, ca.Group.Peers)
+				}
+				for _, p := range ca.Group.Peers {
+					if !slices.Contains(streamPeers, p) {
+						return fmt.Errorf("consumer peer %q is not a stream peer %v", p, streamPeers)
+					}
+				}
+				return nil
+			})
+
+			// The consumer must still be usable.
+			_, err = js.Publish(subject, []byte("HELLO"))
+			require_NoError(t, err)
+			sub, err := js.PullSubscribe(subject, _EMPTY_, nats.Bind(stream, "CONSUMER"))
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+			msgs, err := sub.Fetch(1, nats.MaxWait(10*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+		})
+	}
+}
+
+func TestJetStreamClusterConsumerPeerRemoveNoReplacementIsRejected(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evacuate bool
+	}{
+		{"Remove", false},
+		{"Evacuate", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// An R3 consumer on an R3 stream has nowhere to hand a peer to.
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Replicas: 3,
+			})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable:   "CONSUMER",
+				AckPolicy: nats.AckExplicitPolicy,
+				Replicas:  3,
+			})
+			require_NoError(t, err)
+
+			ml := c.leader()
+			require_NotNil(t, ml)
+
+			sjs := ml.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			peers := append([]string(nil), ca.Group.Peers...)
+			sjs.mu.RUnlock()
+			require_Len(t, len(peers), 3)
+
+			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+			require_NotNil(t, rs)
+			target := rs.Node()
+
+			subjT := JSApiConsumerRemovePeerT
+			if test.evacuate {
+				subjT = JSApiConsumerEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiConsumerRemovePeerRequest{Peer: target})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, "TEST", "CONSUMER"), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_False(t, resp.Success)
+			require_Error(t, resp.Error, NewJSPeerRemapError())
+
+			checkPeers := func() {
+				t.Helper()
+				sjs := ml.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+				require_NotNil(t, ca)
+				require_True(t, ca.Group.Desired == nil)
+				require_True(t, slices.Equal(ca.Group.Peers, peers))
+			}
+			checkPeers()
+
+			// A meta leader change runs reconcilePeerAssignments, which must find
+			// nothing to heal.
+			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+			c.waitOnLeader()
+			ml = c.leader()
+			require_NotNil(t, ml)
+
+			time.Sleep(500 * time.Millisecond)
+			checkPeers()
+
+			// The consumer is untouched and still fully usable.
+			_, err = js.Publish("foo", []byte("HELLO"))
+			require_NoError(t, err)
+			sub, err := js.PullSubscribe("foo", _EMPTY_, nats.Bind("TEST", "CONSUMER"))
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+			msgs, err := sub.Fetch(1, nats.MaxWait(10*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+		})
+	}
+}
+
+func TestJetStreamClusterConsumerPeerRemoveInvalidRequestIsRejected(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	sjs := ml.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	peers := append([]string(nil), ca.Group.Peers...)
+	sjs.mu.RUnlock()
+	require_Len(t, len(peers), 1)
+
+	// A peer of the stream that the consumer does not sit on is not a member of the
+	// consumer's group, so it can not be taken out of it.
+	var notMember string
+	for _, s := range c.servers {
+		if n := s.Node(); n != peers[0] {
+			notMember = n
+			break
+		}
+	}
+	require_NotEqual(t, notMember, _EMPTY_)
+
+	for _, test := range []struct {
+		name     string
+		evacuate bool
+		stream   string
+		consumer string
+		peer     string
+		wantErr  *ApiError
+	}{
+		{"Remove/PeerNotMember", false, "TEST", "CONSUMER", notMember, NewJSClusterPeerNotMemberError()},
+		{"Remove/UnknownStream", false, "NO_STREAM", "CONSUMER", peers[0], NewJSStreamNotFoundError()},
+		{"Remove/UnknownConsumer", false, "TEST", "NO_CONSUMER", peers[0], NewJSConsumerNotFoundError()},
+		{"Remove/NoPeer", false, "TEST", "CONSUMER", _EMPTY_, NewJSBadRequestError()},
+		{"Evacuate/PeerNotMember", true, "TEST", "CONSUMER", notMember, NewJSClusterPeerNotMemberError()},
+		{"Evacuate/UnknownStream", true, "NO_STREAM", "CONSUMER", peers[0], NewJSStreamNotFoundError()},
+		{"Evacuate/UnknownConsumer", true, "TEST", "NO_CONSUMER", peers[0], NewJSConsumerNotFoundError()},
+		{"Evacuate/NoPeer", true, "TEST", "CONSUMER", _EMPTY_, NewJSBadRequestError()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			subjT := JSApiConsumerRemovePeerT
+			if test.evacuate {
+				subjT = JSApiConsumerEvacuatePeerT
+			}
+			b, err := json.Marshal(JSApiConsumerRemovePeerRequest{Peer: test.peer})
+			require_NoError(t, err)
+			msg, err := nc.Request(fmt.Sprintf(subjT, test.stream, test.consumer), b, 10*time.Second)
+			require_NoError(t, err)
+			var resp JSApiConsumerRemovePeerResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_False(t, resp.Success)
+			require_Error(t, resp.Error, test.wantErr)
+
+			// The consumer that was named is left where it was.
+			sjs.mu.RLock()
+			defer sjs.mu.RUnlock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			require_NotNil(t, ca)
+			require_True(t, slices.Equal(ca.Group.Peers, peers))
+		})
+	}
+}
+
+func TestJetStreamClusterConsumerPeerRemoveOfflinePeerIsReplaced(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	cnc, js := jsClientConnect(t, c.randomServer())
+	defer cnc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	// A single replica consumer can not be stepped down onto another server, its group has
+	// only the one peer. Move the meta leader instead, the server we take down must not be
+	// the one that has to serve the request once it is gone.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	ml := c.leader()
+	if ml == cl {
+		require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+		ml = c.leader()
+	}
+	require_NotNil(t, ml)
+	require_NotEqual(t, ml, cl)
+	target := cl.Node()
+
+	// Connect to the meta leader, it is the one server we know stays up below.
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Take the consumer's only peer down and wait for the meta leader to see it go.
+	cl.Shutdown()
+	cl.WaitForShutdown()
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		si, ok := ml.nodeToInfo.Load(target)
+		if !ok || si == nil || !si.(nodeInfo).offline {
+			return fmt.Errorf("peer %q not offline yet", target)
+		}
+		return nil
+	})
+
+	b, err := json.Marshal(JSApiConsumerRemovePeerRequest{Peer: target})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiConsumerRemovePeerT, "TEST", "CONSUMER"), b, 2*time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerRemovePeerResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// It must move onto a server that is up. Handing it to the other downed peer would
+	// leave it exactly as unservable as it was.
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		if ca == nil || ca.Group == nil {
+			return errors.New("consumer not found")
+		}
+		if slices.Contains(ca.Group.Peers, target) {
+			return fmt.Errorf("consumer still on removed peer %q", target)
+		}
+		if len(ca.Group.Peers) != 1 {
+			return fmt.Errorf("expected 1 consumer peer, got %v", ca.Group.Peers)
+		}
+		return nil
+	})
+
+	// And it must actually come back to life on its new peer.
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	_, err = js.ConsumerInfo("TEST", "CONSUMER")
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterRemapConsumerPendingScaleDown(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	cc := &jetStreamCluster{s: &Server{}}
+	// The stream has scaled down onto A and B, so C is no longer one of its peers.
+	// The consumer is following it down, C is still one of its actual peers but the set it
+	// is converging to has already dropped it.
+	newAssignments := func(replicas int) (*streamAssignment, *consumerAssignment) {
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 2, Retention: LimitsPolicy},
+			Group:  &raftGroup{Name: "S", Peers: []string{a, b}},
+		}
+		ca := &consumerAssignment{
+			Name:   "CONSUMER",
+			Stream: "TEST",
+			Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: replicas},
+			Group: &raftGroup{
+				Name:  "C",
+				Peers: []string{a, b, c},
+				Desired: &desiredRaftGroup{
+					Peers:     []string{a, b},
+					ScaleDown: true,
+				},
+			},
+		}
+		sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+		return sa, ca
+	}
+
+	// Take A out of a consumer heading for a single peer. B alone still satisfies that, and
+	// the stream has nothing to replace A with.
+	sa, ca := newAssignments(1)
+	cca := cc.remapConsumerAssignment(sa, ca, a, true)
+	require_NotNil(t, cca)
+
+	// C must not come back into the set the consumer converges to, the stream is not on it.
+	require_False(t, slices.Contains(cca.Group.Desired.Peers, c))
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{b}))
+	require_True(t, cca.Group.Desired.ScaleDown)
+
+	// The removal itself is recorded, so a group below quorum can evict the peer.
+	require_False(t, slices.Contains(cca.Group.Peers, a))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, a))
+
+	// The group keeps its name. Renaming a single node group belongs to the reconcile,
+	// which does it once the desired state lands.
+	require_Equal(t, cca.Group.Name, ca.Group.Name)
+
+	// A pending scale down is no license to shrink. Those desired peers are what the group
+	// leader still has to choose from, so taking one out of a consumer heading for two
+	// peers would leave it unable to pick a full set, and is refused.
+	sa, ca = newAssignments(2)
+	require_True(t, cc.remapConsumerAssignment(sa, ca, a, true) == nil)
+
+	// Evacuating a peer that the consumer is already converging away from changes nothing,
+	// so it must not be proposed as a no-op migration.
+	sa, ca = newAssignments(1)
+	require_True(t, cc.remapConsumerAssignment(sa, ca, c, false) == nil)
+
+	// Removing that same peer is not a no-op, it still has to be recorded as removed.
+	sa, ca = newAssignments(1)
+	cca = cc.remapConsumerAssignment(sa, ca, c, true)
+	require_NotNil(t, cca)
+	require_False(t, slices.Contains(cca.Group.Peers, c))
+	require_True(t, slices.Contains(cca.Group.Desired.Removed, c))
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
+}
+
+func TestJetStreamClusterRemapConsumerOverReplicated(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	cc := &jetStreamCluster{s: &Server{}}
+	sa := &streamAssignment{
+		Config: &StreamConfig{Name: "TEST", Replicas: 3, Retention: LimitsPolicy},
+		Group:  &raftGroup{Name: "S", Peers: []string{a, b, c}},
+	}
+	// Assigned three peers while its config asks for two, for instance a replica count
+	// that was lowered but not reconciled yet.
+	ca := &consumerAssignment{
+		Name:   "CONSUMER",
+		Stream: "TEST",
+		Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: 2},
+		Group:  &raftGroup{Name: "C", Peers: []string{a, b, c}},
+	}
+	sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+
+	// Every stream peer is taken, so there is no replacement, but dropping to two still
+	// satisfies the configured count.
+	cca := cc.remapConsumerAssignment(sa, ca, a, true)
+	require_NotNil(t, cca)
+	require_False(t, slices.Contains(cca.Group.Desired.Peers, a))
+	require_Len(t, len(cca.Group.Desired.Peers), 2)
+}
+
 func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
 		func(serverName, clusterName, storeDir, conf string) string {
