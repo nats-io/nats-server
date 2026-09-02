@@ -117,6 +117,15 @@ type Placement struct {
 	Preferred string   `json:"preferred,omitempty"`
 }
 
+func (p *Placement) clone() *Placement {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Tags = copyStrings(p.Tags)
+	return &cp
+}
+
 // Define types of the entry.
 type entryOp uint8
 
@@ -163,8 +172,116 @@ type raftGroup struct {
 	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
 	ScaleUp   bool        `json:"scale_up,omitempty"`
+	// Excluded peers are evacuated and can't be added to this group as part of the meta
+	// leader's reconciliation. Cleared when this group is at the configured replicas.
+	Excluded []string `json:"excluded,omitempty"`
+	// Desired holds the target placement while this group is being moved or
+	// scaled; it is nil when the group is stable.
+	Desired *desiredRaftGroup `json:"desired,omitempty"`
 	// Internal
 	node RaftNode
+	// migration reports what the group leader is currently doing to move this group
+	// toward its desired state. Local to the group leader and not replicated: only
+	// the leader drives the migration, and only the leader answers INFO requests.
+	migration *DesiredClusterInfoStatus
+}
+
+// desiredGroupPlacement specifies the desired peer set.
+// A stream or consumer raftGroup can be scaled or moved safely based on this desired state.
+type desiredRaftGroup struct {
+	Created time.Time `json:"created"`
+	ID      string    `json:"id"`
+	// Term is the raft term of the group leader driving this desired state. It acts as a
+	// fencing token; reconcile requests from older leadership terms are rejected.
+	Term      uint64   `json:"term,omitempty"`
+	Peers     []string `json:"peers"`
+	Cluster   string   `json:"cluster,omitempty"`
+	Preferred string   `json:"preferred,omitempty"`
+
+	// ScaleDown marks this desired state as a scale down. The Peers field is the
+	// total set that can be scaled down from.
+	ScaleDown bool `json:"scale_down,omitempty"`
+
+	// Move marks this desired state as retargeting placement.
+	Move bool `json:"move,omitempty"`
+
+	// Removed are peers an operator peer-removed from this group. A group that
+	// can't reach quorum may only evict what's recorded here.
+	Removed []string `json:"removed,omitempty"`
+
+	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
+}
+
+// desiredRaftGroupOrigin specifies the original properties of the asset before any desired state changes were made.
+// Multiple desired state changes MUST NOT update these values, only the initial values must be set, allowing to
+// revert to before any changes were made.
+type desiredRaftGroupOrigin struct {
+	Peers     []string   `json:"peers"`
+	Cluster   string     `json:"cluster,omitempty"`
+	Replicas  int        `json:"replicas"`
+	Placement *Placement `json:"placement,omitempty"`
+	// When changing between retention policies, this retention remains active until unset.
+	Retention *RetentionPolicy `json:"retention,omitempty"`
+}
+
+// desiredOrigin returns the origin the asset is still running at while a desired
+// state is pending, or nil if there is none. This server persists and exposes
+// desired state, it never acts on it, so an asset stays at its origin until a
+// v2.15 server drives the migration.
+// Lock should be held.
+func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
+	if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
+		return nil
+	}
+	return sa.Group.Desired.Origin
+}
+
+// atDesiredOrigin returns a copy of the config with the desired origin applied (if any).
+func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
+	if rg.Desired == nil || rg.Desired.Origin == nil {
+		return cfg
+	}
+	newCfg := cfg.clone()
+	if rg.Desired.Origin.Placement != nil {
+		newCfg.Placement = rg.Desired.Origin.Placement.clone()
+	}
+	if rg.Desired.Origin.Retention != nil {
+		newCfg.Retention = *rg.Desired.Origin.Retention
+	}
+	return newCfg
+}
+
+// atDesiredTarget returns a copy of the running config with the fields that atDesiredOrigin can
+// hold back restored from target, which is the config as the user requested it. While the desired
+// state is pending the stream runs at its origin, but clients MUST be reported the config they
+// requested. Restoring unconditionally is safe, target always holds the requested values, whether
+// the desired state is still pending or was already reached.
+func (cfg StreamConfig) atDesiredTarget(target *StreamConfig) StreamConfig {
+	if target == nil {
+		return cfg
+	}
+	// Must copy, the target can be owned by the meta layer and outlive its lock here.
+	cfg.Placement = target.Placement.clone()
+	cfg.Retention = target.Retention
+	return cfg
+}
+
+// targetStreamConfig returns the stream's cfg as the user requested it, looking up the requested config
+// from the meta layer. Can differ from the running config while the desired state is still pending,
+// or while an update was committed but not applied onto the stream yet.
+func (js *jetStream) targetStreamConfig(mset *stream, cfg StreamConfig) StreamConfig {
+	// Only a clustered stream can differ from what was requested.
+	if js == nil || js.cluster == nil || mset == nil {
+		return cfg
+	}
+	accName := mset.accName()
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	sa := js.streamAssignment(accName, cfg.Name)
+	if sa == nil {
+		return cfg
+	}
+	return cfg.atDesiredTarget(sa.Config)
 }
 
 // streamAssignment is what the meta controller uses to assign streams to peers.
@@ -740,6 +857,13 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 	}
 	streamName := sa.Config.Name
 	node := sa.Group.node
+	// The config holds the target replica count while a desired state is pending,
+	// but the group is still at its origin and we don't act on desired state, so
+	// judge the stream against the replica count it is actually running at.
+	var originReplicas int
+	if o := sa.desiredOrigin(); o != nil {
+		originReplicas = o.Replicas
+	}
 	js.mu.RUnlock()
 
 	// First lookup stream and make sure its there.
@@ -762,6 +886,11 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 		return nil // No further checks for R=1 streams
 
 	case node == nil:
+		// Still running at an origin that needs no node. Only checked here, so a group
+		// that does have a node is checked as usual for the rest of the migration.
+		if originReplicas > 0 && originReplicas < replicas {
+			return nil
+		}
 		return errors.New("group node missing")
 
 	case msetNode == nil:
@@ -793,8 +922,8 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 }
 
 // isConsumerHealthy will determine if the consumer is up to date.
-// For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) error {
+// For R1 it will make sure the consumer is present on this server.
+func (js *jetStream) isConsumerHealthy(mset *stream, sa *streamAssignment, consumer string, ca *consumerAssignment) error {
 	js.mu.RLock()
 	if ca != nil && ca.unsupported != nil {
 		js.mu.RUnlock()
@@ -824,6 +953,13 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	}
 	created := ca.Created
 	node := ca.Group.node
+	// The stream may be running at its origin while its config already carries the
+	// target replica count. A consumer that has not been mapped onto the new peers
+	// yet inherits that target, so fall back on the origin count below.
+	var originReplicas int
+	if o := sa.desiredOrigin(); o != nil {
+		originReplicas = o.Replicas
+	}
 	js.mu.RUnlock()
 
 	// Check if not running at all.
@@ -848,6 +984,12 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return nil // No further checks for R=1 consumers
 
 	case node == nil:
+		// Not mapped onto the new peers yet, so still running at the stream's origin
+		// count. Only checked here, so a consumer that does have a node is checked as
+		// usual for the rest of the migration.
+		if originReplicas > 0 && originReplicas < rc {
+			return nil
+		}
 		return errors.New("group node missing")
 
 	case oNode == nil:
@@ -2435,7 +2577,11 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	sa.Restore = nil
 	if sa.Group != nil {
 		sa.Group.Preferred = _EMPTY_
-		sa.Group.ScaleUp = false
+		// Must be preserved while a migration is inflight, so peers that create
+		// their raft node late keep the empty-log protection.
+		if sa.Group.Desired == nil {
+			sa.Group.ScaleUp = false
+		}
 	}
 }
 
@@ -2447,7 +2593,11 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	ca.recovering = true
 	if ca.Group != nil {
 		ca.Group.Preferred = _EMPTY_
-		ca.Group.ScaleUp = false
+		// Must be preserved while a migration is inflight, so peers that create
+		// their raft node late keep the empty-log protection.
+		if ca.Group.Desired == nil {
+			ca.Group.ScaleUp = false
+		}
 	}
 }
 
@@ -2874,8 +3024,10 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 		return nil, NewJSClusterNotActiveError()
 	}
 
+	// While a desired state is pending the group keeps a node even at a single peer, so
+	// scaling down doesn't lose the Raft term a newer server resumes the migration from.
 	// If this is a single peer raft group or we are not a member return.
-	if len(rg.Peers) <= 1 || !rg.isMember(cc.meta.ID()) {
+	if (rg.Desired == nil && len(rg.Peers) <= 1) || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.
 		return nil, nil
 	}
@@ -3026,8 +3178,12 @@ retry:
 	}
 	// Need JS lock to be held for the assignment to avoid data-race reports
 	rg.node = n
+	preferred := rg.Preferred
+	if rg.Desired != nil {
+		preferred = rg.Desired.Preferred
+	}
 	// See if we are preferred and should start campaign immediately.
-	if n.ID() == rg.Preferred && n.Term() == 0 {
+	if n.ID() == preferred && n.Term() == 0 {
 		n.CampaignImmediately()
 	}
 	return n, nil
@@ -3901,6 +4057,12 @@ func (mset *stream) isMigrating() bool {
 	if sa == nil || sa.Group == nil || sa.Group.node == nil {
 		return false
 	}
+	// Desired state is driven by a v2.15 meta leader, which reconciles the group itself.
+	// We can't complete that migration, and the peer count deliberately lags the replica
+	// count while it's pending, so the legacy signature below would fire and never converge.
+	if sa.Group.Desired != nil {
+		return false
+	}
 	// The sign of migration is if our group peer count != configured replica count.
 	if sa.Config.Replicas != len(sa.Group.Peers) {
 		return true
@@ -4764,7 +4926,8 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term
 		resp.Error = NewJSStreamCreateError(err, Unless(err))
 		s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 	} else {
-		msetCfg := mset.config()
+		// Report the config as requested, the stream can still be running at its origin.
+		msetCfg := js.targetStreamConfig(mset, mset.config())
 		resp.StreamInfo = &StreamInfo{
 			Created:   mset.createdTime(),
 			State:     mset.state(),
@@ -5114,7 +5277,8 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	sa.err = osa.err
 
 	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
-	if sa.Config.Replicas == 1 && sa.Group.node != nil {
+	// Note the group can converge onto one peer without the config scaling down based on peer-removes.
+	if len(sa.Group.Peers) == 1 && sa.Group.node != nil && sa.Group.Desired == nil {
 		sa.Group.node = nil
 	}
 
@@ -5221,11 +5385,16 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	js.mu.RLock()
-	s, rg := js.srv, sa.Group
+	s, rg, desired := js.srv, sa.Group, sa.Group.Desired
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
-	alreadyRunning, oldNumReplicas, numReplicas := osa.Group.node != nil, len(osa.Group.Peers), len(rg.Peers)
+	alreadyRunning, numReplicas := osa.Group.node != nil, len(rg.Peers)
+	// A remap below clears alreadyRunning, but we must still know whether we were
+	// running clustered before, or we'd skip the cleanup we owe on a downgrade.
+	wasRunning := alreadyRunning
+	wasClustered := len(osa.Group.Peers) > 1 || osa.Group.Desired != nil
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
+	newCfg := cfg.atDesiredOrigin(rg)
 	recovering := sa.recovering
 	hasResponded := sa.markResponded()
 	hadErr := sa.err != nil
@@ -5246,7 +5415,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			js.mu.Unlock()
 		}
 
-		if !alreadyRunning && numReplicas > 1 {
+		if !alreadyRunning && (numReplicas > 1 || desired != nil) {
 			if needsNode {
 				// Must run before startClusterSubs reads mset.sa.Sync.
 				mset.setStreamAssignment(sa)
@@ -5276,7 +5445,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			if !started {
 				mset.monitorWg.Done()
 			}
-		} else if numReplicas == 1 && alreadyRunning {
+		} else if numReplicas == 1 && desired == nil && wasRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
 			mset.stopMonitoring()
@@ -5296,7 +5465,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		mset.setStreamAssignment(sa)
 
 		// Call update.
-		err = mset.updateWithAdvisory(cfg, !recovering, false)
+		err = mset.updateWithAdvisory(newCfg, !recovering, false)
 	}
 
 	// If not found we must be expanding into this node since if we are here we know we are a member.
@@ -5330,7 +5499,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	isLeader := mset.IsLeader()
 
 	// If the stream is scaled down, there is a chance we weren't already the leader.
-	if isLeader && numReplicas == 1 && oldNumReplicas > 1 {
+	if isLeader && numReplicas == 1 && desired == nil && wasClustered {
 		js.processStreamLeaderChange(mset, true, 0)
 	}
 
@@ -5354,7 +5523,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 	// Send our response.
 	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
-	msetCfg := mset.config()
+	// Report the config as requested, the stream can still be running at its origin.
+	// Reading cfg without js.mu is safe, an assignment's config is never changed in place.
+	msetCfg := mset.config().atDesiredTarget(cfg)
 	resp.StreamInfo = &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
@@ -5378,6 +5549,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	js.mu.RLock()
 	s, rg, created := js.srv, sa.Group, sa.Created
 	alreadyRunning := rg.node != nil
+	newCfg := sa.Config.atDesiredOrigin(rg)
 	storage := sa.Config.Storage
 	restore := sa.Restore
 	recovering := sa.recovering
@@ -5416,7 +5588,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			// If we already have a stream assignment and they are the same exact config, short circuit here.
 			if osa != nil {
 				if reflect.DeepEqual(osa.Config, sa.Config) {
-					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) {
+					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) &&
+						reflect.DeepEqual(sa.Group.Desired, osa.Group.Desired) {
 						// Since this already exists we know it succeeded, just respond to this caller.
 						js.mu.RLock()
 						client, subject, reply, recovering := sa.Client, sa.Subject, sa.Reply, sa.recovering
@@ -5424,7 +5597,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 
 						if !recovering {
 							var resp = JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}}
-							msetCfg := mset.config()
+							// Report the config as requested, the stream can still be running at its origin.
+							msetCfg := js.targetStreamConfig(mset, mset.config())
 							resp.StreamInfo = &StreamInfo{
 								Created:   mset.createdTime(),
 								State:     mset.state(),
@@ -5437,11 +5611,13 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 						}
 						return
-					} else {
+					} else if sa.Group.Name != osa.Group.Name {
 						// We had a bug where we could have multiple assignments for the same
 						// stream but with different group assignments, including multiple raft
 						// groups. So check for that here. We can only bet on the last one being
 						// consistent in the long run, so let it continue if we see this condition.
+						// Only a differing group name means a duplicate group; a differing peer
+						// set or desired state is a normal peer change and must fall through.
 						s.Warnf("JetStream cluster detected duplicate assignment for stream %q for account %q", sa.Config.Name, acc.Name)
 						if osa.Group.node != nil && osa.Group.node != sa.Group.node {
 							osa.Group.node.Delete()
@@ -5453,8 +5629,8 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			mset.setStreamAssignment(sa)
 			// Check if our config has really been updated.
 			cfg := mset.config()
-			if !reflect.DeepEqual(&cfg, sa.Config) {
-				if err = mset.updateWithAdvisory(sa.Config, false, false); err != nil {
+			if !reflect.DeepEqual(&cfg, newCfg) {
+				if err = mset.updateWithAdvisory(newCfg, false, false); err != nil {
 					if js.isShuttingDown() {
 						s.Debugf("Could not update stream, JetStream shutting down")
 						return
@@ -5476,7 +5652,7 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			}
 		} else if err == NewJSStreamNotFoundError() {
 			// Add in the stream here.
-			mset, err = acc.addStreamWithAssignment(sa.Config, nil, sa, false, true)
+			mset, err = acc.addStreamWithAssignment(newCfg, nil, sa, false, true)
 		}
 		if mset != nil {
 			mset.setCreatedTime(created)
@@ -6144,7 +6320,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				needsLocalResponse = true
 			}
 			// If we look like we are scaling up, let's send our current state to the group.
-			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && o.IsLeader() && n != nil
+			sendState = (len(ca.Group.Peers) > len(oca.Group.Peers) || ca.Group.Desired != nil) && o.IsLeader() && n != nil
 			// Signal that this is an update
 			if ca.Reply != _EMPTY_ {
 				isConfigUpdate = true
@@ -6239,7 +6415,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			o.setCreatedTime(ca.Created)
 		} else {
 			// Check for scale down to 1..
-			if node != nil && len(rg.Peers) == 1 {
+			if node != nil && len(rg.Peers) == 1 && rg.Desired == nil {
 				o.clearNode()
 				o.stopMonitoring()
 				// Need to clear from rg too.
@@ -6861,6 +7037,12 @@ func (o *consumer) isMigrating() bool {
 	// During migration we will always be R>1, even when we start R1.
 	// So if we do not have a group or node, we know we are not migrating.
 	if ca == nil || ca.Group == nil || ca.Group.node == nil {
+		return false
+	}
+	// Desired state is driven by a v2.15 meta leader, which reconciles the group itself.
+	// We can't complete that migration, and the peer count deliberately lags the replica
+	// count while it's pending, so the legacy signature below would fire and never converge.
+	if ca.Group.Desired != nil {
 		return false
 	}
 	// The sign of migration is if our group peer count != configured replica count.
@@ -7679,6 +7861,9 @@ func (js *jetStream) processLeaderChange(isLeader bool, term uint64) {
 
 // Lock should be held.
 func (cc *jetStreamCluster) remapStreamAssignment(sa *streamAssignment, removePeer string) bool {
+	// We're reassigning the peers ourselves, so any desired state is moot.
+	sa.Group.Desired = nil
+
 	// Invoke placement algo passing RG peers that stay (existing) and the peer that is being removed (ignore)
 	var retain, ignore []string
 	for _, v := range sa.Group.Peers {
@@ -8465,12 +8650,26 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 	// Make copy so to not change original.
 	rg := osa.copyGroup().Group
 
+	// We don't act on desired state recorded by a newer server, so the stream is still at
+	// its origin while the config already holds the target. Compare against where it
+	// actually is, or asking for the target it's reported to have would be a no-op, and
+	// drop the desired state so we reconcile the group ourselves.
+	oldReplicas, oldPlacement := osa.Config.Replicas, osa.Config.Placement
+	if d := rg.Desired; d != nil {
+		// The peer set is how far the migration got, not necessarily the origin.
+		oldReplicas = len(rg.Peers)
+		if d.Origin != nil {
+			oldPlacement = d.Origin.Placement
+		}
+		rg.Desired = nil
+	}
+
 	// Check for a move request.
 	var isMoveRequest, isMoveCancel bool
 	if lPeerSet := len(peerSet); lPeerSet > 0 {
 		isMoveRequest = true
 		// check if this is a cancellation
-		if lPeerSet == osa.Config.Replicas && lPeerSet <= len(rg.Peers) {
+		if lPeerSet == oldReplicas && lPeerSet <= len(rg.Peers) {
 			isMoveCancel = true
 			// can only be a cancellation if the peer sets overlap as expected
 			for i := 0; i < lPeerSet; i++ {
@@ -8481,17 +8680,17 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			}
 		}
 	} else {
-		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
+		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(oldPlacement, newCfg.Placement)
 	}
 
 	// Check for replica changes.
-	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
+	isReplicaChange := newCfg.Replicas != oldReplicas
 
 	// We stage consumer updates and do them after the stream update.
 	var consumers []*consumerAssignment
 
 	// Check if this is a move request, but no cancellation, and we are already moving this stream.
-	if isMoveRequest && !isMoveCancel && osa.Config.Replicas != len(rg.Peers) {
+	if isMoveRequest && !isMoveCancel && oldReplicas != len(rg.Peers) {
 		// obtain stats to include in error message
 		msg := _EMPTY_
 		if s.allPeersOffline(rg) {
@@ -8562,7 +8761,7 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 				return
 			}
 			// Single nodes are not recorded by the NRG layer so we can rename.
-			if len(peers) == 1 || osa.Config.Replicas == 1 {
+			if len(peers) == 1 || oldReplicas == 1 {
 				rg.Name = groupNameForStream(peers, rg.Storage)
 			}
 			if len(rg.Peers) == 1 {
@@ -9795,6 +9994,12 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		rBefore := nca.Config.replicas(sa.Config)
 		rAfter := cfg.replicas(sa.Config)
 
+		// Not acting on desired state, so the consumer is still at its own peer set.
+		if nca.Group.Desired != nil {
+			rBefore = len(nca.Group.Peers)
+			nca.Group.Desired = nil
+		}
+
 		var curLeader string
 		if rBefore != rAfter {
 			// We are modifying nodes here. We want to do our best to preserve the current leader.
@@ -10974,12 +11179,17 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	}
 	js.mu.RLock()
 	s := js.srv
-	if rg == nil || rg.node == nil {
+	if rg == nil || (rg.node == nil && rg.Desired == nil) {
 		js.mu.RUnlock()
 		return &ClusterInfo{
 			Name:   s.cachedClusterName(),
 			Leader: s.Name(),
 		}
+	}
+	// Use v2.15-compatible cluster info if desired state is known.
+	if rg.Desired != nil {
+		js.mu.RUnlock()
+		return js.clusterInfoDesired(rg)
 	}
 
 	// Capture what we need and let go of the lock to ensure that
@@ -11040,6 +11250,162 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			}
 			ci.Replicas = append(ci.Replicas, pi)
 		}
+	}
+	// Order the result based on the name so that we get something consistent
+	// when doing repeated stream info in the CLI, etc...
+	slices.SortFunc(ci.Replicas, func(i, j *PeerInfo) int { return cmp.Compare(i.Name, j.Name) })
+	return ci
+}
+
+// clusterInfoDesired returns v2.15-compatible cluster info based on desired state existing.
+func (js *jetStream) clusterInfoDesired(rg *raftGroup) *ClusterInfo {
+	if js == nil {
+		return nil
+	}
+	js.mu.RLock()
+	s := js.srv
+	if rg == nil || (rg.node == nil && rg.Desired == nil) {
+		js.mu.RUnlock()
+		return &ClusterInfo{
+			Name:   s.cachedClusterName(),
+			Leader: s.Name(),
+		}
+	}
+	// Capture what we need and let go of the lock to ensure that
+	// contention on Raft locks can't happen while holding JS lock.
+	n := rg.node
+	rgName := rg.Name
+	rgPeers := copyStrings(rg.Peers)
+	var (
+		desired      *DesiredClusterInfo
+		desiredPeers []string
+	)
+	if d := rg.Desired; d != nil {
+		desired = &DesiredClusterInfo{
+			Created: d.Created,
+			Name:    d.Cluster,
+		}
+		// If desired state can be rolled back, include what can be rolled back to.
+		// Must copy, the origin is owned by the meta layer but reported without its lock.
+		if d.Origin != nil {
+			desired.Origin = &DesiredClusterInfoOrigin{
+				Replicas:  d.Origin.Replicas,
+				Placement: d.Origin.Placement.clone(),
+			}
+			if r := d.Origin.Retention; r != nil {
+				retention := *r
+				desired.Origin.Retention = &retention
+			}
+		}
+		// Don't populate peers if scaling down, since the peers aren't the desired set, it's
+		// the set that the group leader selects the peers to scale down to from.
+		if !d.ScaleDown {
+			desiredPeers = copyStrings(d.Peers)
+		}
+	}
+	// The group leader can have a status before desired state exists, most importantly
+	// when it's still requesting it from the meta leader. Report that on its own.
+	if status := rg.migration; status != nil {
+		if desired == nil {
+			desired = &DesiredClusterInfo{}
+		}
+		cp := *status
+		desired.Status = &cp
+	}
+	js.mu.RUnlock()
+
+	ci := &ClusterInfo{
+		Name:      s.cachedClusterName(),
+		RaftGroup: rgName,
+	}
+
+	id := s.Node()
+	if n != nil {
+		ci.Leader = s.serverNameForNode(n.GroupLeader())
+		ci.LeaderSince = n.LeaderSince()
+		ci.SystemAcc = n.IsSystemAccount()
+		ci.TrafficAcc = n.GetTrafficAccountName()
+
+		// If we are leaderless, do not suppress putting us in the peer list.
+		if ci.Leader == _EMPTY_ {
+			id = _EMPTY_
+		}
+
+		now := time.Now()
+		for _, rp := range n.Peers() {
+			// The peer is either in the actual or desired peer set.
+			if rp.ID != id && (slices.Contains(rgPeers, rp.ID) || slices.Contains(desiredPeers, rp.ID)) {
+				var lastSeen time.Duration
+				if now.After(rp.Last) && !rp.Last.IsZero() {
+					lastSeen = now.Sub(rp.Last)
+				}
+				current := rp.Current
+				if current && lastSeen > lostQuorumInterval {
+					current = false
+				}
+				// Create a peer info with common settings if the peer has not been seen
+				// yet (which can happen after the whole cluster is stopped and only some
+				// of the nodes are restarted).
+				pi := &PeerInfo{
+					Current: current,
+					Offline: true,
+					Active:  lastSeen,
+					Lag:     rp.Lag,
+					Peer:    rp.ID,
+				}
+				// If node is found, complete/update the settings.
+				if sir, ok := s.nodeToInfo.Load(rp.ID); ok && sir != nil {
+					si := sir.(nodeInfo)
+					pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+				} else {
+					// If not, then add a name that indicates that the server name
+					// is unknown at this time, and clear the lag since it is misleading
+					// (the node may not have that much lag).
+					// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+					// would technically not be required, but keeping it for now.
+					pi.Name, pi.Lag = fmt.Sprintf("Server name unknown at this time (peerID: %s)", rp.ID), 0
+				}
+				ci.Replicas = append(ci.Replicas, pi)
+			}
+		}
+	}
+
+	generatePeer := func(peer string) *PeerInfo {
+		pi := &PeerInfo{
+			Current: false,
+			Offline: true,
+			Peer:    peer,
+		}
+		// If node is found, complete/update the settings.
+		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
+			si := sir.(nodeInfo)
+			pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+		} else {
+			// If not, then add a name that indicates that the server name
+			// is unknown at this time, and clear the lag since it is misleading
+			// (the node may not have that much lag).
+			// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
+			// would technically not be required, but keeping it for now.
+			pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
+		}
+		return pi
+	}
+	if desired != nil {
+		ci.Desired = desired
+		for _, peer := range desiredPeers {
+			ci.Desired.Replicas = append(ci.Desired.Replicas, generatePeer(peer))
+		}
+	}
+	for _, peer := range rgPeers {
+		// Skip if the peer is already present.
+		if peer == id || slices.ContainsFunc(ci.Replicas, func(info *PeerInfo) bool { return info.Peer == peer }) {
+			continue
+		}
+		pi := generatePeer(peer)
+		// We know the peer is part of the assignment, but if we have a Raft node it
+		// wasn't reported as one of its peers, so it hasn't joined the group (yet).
+		pi.Pending = n != nil
+		ci.Replicas = append(ci.Replicas, pi)
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...
@@ -11133,6 +11499,9 @@ func (mset *stream) processClusterStreamInfoRequest(reply string) {
 	if !isLeader {
 		time.Sleep(500 * time.Millisecond)
 	}
+
+	// Report the config as requested, the stream can still be running at its origin.
+	config = js.targetStreamConfig(mset, config)
 
 	si := &StreamInfo{
 		Created:   mset.createdTime(),
