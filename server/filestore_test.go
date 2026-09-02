@@ -16348,3 +16348,39 @@ func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
 	require_NotNil(t, seeded)
 	require_Equal(t, seeded.Seq, 0)
 }
+
+// https://github.com/nats-io/nats-server/issues/8505
+func TestFileStoreMaxMsgsPerRevivedByTombstoneOnRebuild(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Storage: FileStorage, MaxMsgsPer: 1}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// The second message removes the first via limits, which writes no tombstone.
+		_, _, err = fs.StoreMsg("foo.a", nil, []byte("v1"), 0)
+		require_NoError(t, err)
+		seq, _, err := fs.StoreMsg("foo.a", nil, []byte("v2"), 0)
+		require_NoError(t, err)
+
+		// Explicit delete of the surviving message, which does write a tombstone.
+		removed, err := fs.RemoveMsg(seq)
+		require_NoError(t, err)
+		require_True(t, removed)
+		before := fs.State()
+
+		require_NoError(t, fs.Stop())
+		require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		var sm StoreMsg
+		_, err = fs.LoadLastMsg("foo.a", &sm)
+		require_Error(t, err, ErrStoreMsgNotFound)
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state of\n %+v, got\n %+v after rebuild", before, state)
+		}
+	})
+}

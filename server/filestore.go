@@ -581,6 +581,14 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}()
 
+	// If we have max msgs per subject make sure that is also enforced.
+	// Do so before tombstones, since removals via limits don't write them.
+	if fs.cfg.MaxMsgsPer > 0 {
+		if err = fs.enforceMsgPerSubjectLimit(false); err != nil {
+			return nil, err
+		}
+	}
+
 	// Check if we have any left over tombstones to process.
 	if len(fs.tombs) > 0 {
 		for _, seq := range fs.tombs {
@@ -608,13 +616,6 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 			return nil, err
 		}
 		fs.startAgeChk()
-	}
-
-	// If we have max msgs per subject make sure the is also enforced.
-	if fs.cfg.MaxMsgsPer > 0 {
-		if err = fs.enforceMsgPerSubjectLimit(false); err != nil {
-			return nil, err
-		}
 	}
 
 	// Grab first sequence for check below while we have lock.
