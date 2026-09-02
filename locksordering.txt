@@ -59,3 +59,9 @@ mirrors/sources, info requests, etc.) are sequentially consistent and may observ
 an inflight batch. It must be acquired before the stream lock, never while holding it.
 
     isolateMu -> stream
+
+The "eventIdsMu" lock protects the server's event ID generator. It may be acquired
+while holding the Server lock, but the Server lock must not be acquired while
+holding eventIdsMu.
+
+    Server -> eventIdsMu

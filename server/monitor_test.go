@@ -1205,14 +1205,12 @@ func TestMonitorConnzSortedByStopTimeClosedConn(t *testing.T) {
 	checkClosedConns(t, s, 4, time.Second)
 
 	// Now adjust the Stop times for these with some random values.
-	s.mu.Lock()
 	now := time.Now().UTC()
 	ccs := s.closed.closedClients()
 	for _, cc := range ccs {
 		newStop := now.Add(time.Duration(rand.Int()%120) * -time.Minute)
 		cc.Stop = &newStop
 	}
-	s.mu.Unlock()
 
 	url = fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
@@ -1250,13 +1248,11 @@ func TestMonitorConnzSortedByReason(t *testing.T) {
 	checkClosedConns(t, s, 20, time.Second)
 
 	// Now adjust the Reasons for these with some random values.
-	s.mu.Lock()
 	ccs := s.closed.closedClients()
 	max := int(ServerShutdown)
 	for _, cc := range ccs {
 		cc.Reason = ClosedState(rand.Int() % max).String()
 	}
-	s.mu.Unlock()
 
 	url = fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
 	for mode := 0; mode < 2; mode++ {
@@ -7008,9 +7004,7 @@ func TestConnzClosedSubsDetailNoSharedMutation(t *testing.T) {
 	cc.Cid = 1
 	cc.subs = []SubDetail{{Subject: "foo.bar"}}
 	cc.NumSubs = 1
-	s.mu.Lock()
 	s.closed.append(cc)
-	s.mu.Unlock()
 
 	// Concurrently request closed connections with subscription detail.
 	var wg sync.WaitGroup

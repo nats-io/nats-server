@@ -881,8 +881,11 @@ func (c *client) registerWithAccount(acc *Account) error {
 		return ErrBadAccount
 	}
 	// If we were previously registered, usually to $G, do accounting here to remove.
-	if c.acc != nil {
-		if prev := c.acc.removeClient(c); prev == 1 && c.srv != nil {
+	c.mu.Lock()
+	prevAcc := c.acc
+	c.mu.Unlock()
+	if prevAcc != nil {
+		if prev := prevAcc.removeClient(c); prev == 1 && c.srv != nil {
 			c.srv.decActiveAccounts()
 		}
 	}
