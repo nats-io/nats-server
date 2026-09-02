@@ -2,7 +2,7 @@ module github.com/nats-io/nats-server/v2
 
 go 1.26.0
 
-toolchain go1.26.7
+toolchain go1.26.8
 
 require (
 	github.com/antithesishq/antithesis-sdk-go v0.7.2-default-no-op
