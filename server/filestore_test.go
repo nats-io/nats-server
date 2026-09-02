@@ -16398,3 +16398,37 @@ func TestFileStoreEvictionTargetCacheNotForceExpired(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, !loaded)
 }
+
+func TestFileStorePerSubjectLimitRemovalDoesNotMarkEvictTarget(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 64)
+	for i := 1; i <= 20; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("%d", i), nil, msg, 0)
+		require_NoError(t, err)
+	}
+	require_True(t, fs.numMsgBlocks() > 2)
+
+	// Pick the subject whose only message is the first message of an interior
+	// block, then store it again so the per-subject limit removes that message.
+	fs.mu.RLock()
+	mb := fs.blks[1]
+	fs.mu.RUnlock()
+	fseq := atomic.LoadUint64(&mb.first.seq)
+	_, _, err = fs.StoreMsg(fmt.Sprintf("%d", fseq), nil, msg, 0)
+	require_NoError(t, err)
+
+	mb.mu.Lock()
+	evictTarget := mb.evictTarget
+	fseqAfter := atomic.LoadUint64(&mb.first.seq)
+	mb.mu.Unlock()
+	// Confirm the removal actually happened in this block, but that it was
+	// not marked as an eviction target since it is not the head block.
+	require_True(t, fseqAfter != fseq)
+	require_True(t, !evictTarget)
+}

@@ -6181,11 +6181,15 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	isLastBlock := mb == fs.lmb
 	isEmpty := mb.msgs == 1 // ... about to be zero though.
 
-	// Removing the first message via limits means this block is the active
-	// eviction target (e.g. head block under DiscardOld at the byte or msg cap),
-	// so it will be touched again on subsequent removals. Mark it so scan paths
-	// do not force-expire its cache out from underneath us.
-	if viaLimits && fifo {
+	// Removing the stream's first message via limits means this block is the
+	// active eviction target (the head block under DiscardOld at the byte or
+	// msg cap, or age expiry), so it will be touched again on subsequent
+	// removals. Mark it so scan paths do not force-expire its cache out from
+	// underneath us. This deliberately checks the stream's first seq and not
+	// the block's: per-subject limit removals scatter across interior blocks,
+	// where keeping the cache warm does not help the next removal and the
+	// flag would never be cleared.
+	if viaLimits && seq == fs.state.FirstSeq {
 		mb.evictTarget = true
 	}
 
