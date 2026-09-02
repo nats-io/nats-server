@@ -44,6 +44,7 @@ Server Options:
 Logging Options:
     -l, --log <file>                 File to redirect log output
     -T, --logtime                    Timestamp log entries (default: true)
+        --logtime_utc                Timestamps in UTC instead of local timezone (default: false)
     -s, --syslog                     Log to syslog or windows event log
     -r, --remote_syslog <addr>       Syslog server addr (udp://localhost:514)
     -D, --debug                      Enable debugging output
