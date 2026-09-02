@@ -211,7 +211,6 @@ type Server struct {
 	users               map[string]*User
 	nkeys               map[string]*NkeyUser
 	totalClients        uint64
-	closedMu            sync.Mutex // Protects the closedRingBuffer
 	closed              *closedRingBuffer
 	done                chan bool
 	start               time.Time
@@ -3622,11 +3621,9 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, subs map[string]*subsc
 	c.mu.Unlock()
 
 	// Place in the ring buffer
-	s.closedMu.Lock()
 	if s.closed != nil {
 		s.closed.append(cc)
 	}
-	s.closedMu.Unlock()
 }
 
 // Adds to the list of client and websocket clients connect URLs.
@@ -4113,24 +4110,6 @@ func (s *Server) startGoRoutine(f func(), tags ...pprofLabels) bool {
 		started = true
 	}
 	return started
-}
-
-func (s *Server) numClosedConns() int {
-	s.closedMu.Lock()
-	defer s.closedMu.Unlock()
-	return s.closed.len()
-}
-
-func (s *Server) totalClosedConns() uint64 {
-	s.closedMu.Lock()
-	defer s.closedMu.Unlock()
-	return s.closed.totalConns()
-}
-
-func (s *Server) closedClients() []*closedClient {
-	s.closedMu.Lock()
-	defer s.closedMu.Unlock()
-	return s.closed.closedClients()
 }
 
 // getClientConnectURLs returns suitable URLs for clients to connect to the listen
