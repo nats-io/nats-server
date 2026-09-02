@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3740,7 +3740,7 @@ func Benchmark_GetHash(b *testing.B) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < b.N; i++ {
-				idx := rand.Intn(100)
+				idx := rand.IntN(100)
 				if h := getHash(names[idx]); h != hashes[idx] {
 					errCh <- fmt.Errorf("Hash for name %q was %q, but should be %q", names[idx], h, hashes[idx])
 					return

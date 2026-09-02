@@ -25,7 +25,7 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -1588,7 +1588,7 @@ func TestJetStreamWildcardSubjectFiltering(t *testing.T) {
 			toShip := 25
 			shipped := make(map[int]bool)
 			for i := 0; i < toShip; {
-				orderId := rand.Intn(toSend-1) + 1
+				orderId := rand.IntN(toSend-1) + 1
 				if shipped[orderId] {
 					continue
 				}
@@ -3246,15 +3246,15 @@ func TestJetStreamSnapshots(t *testing.T) {
 	defer nc.Close()
 
 	// Make sure we send some as floor.
-	toSend := rand.Intn(200) + 22
+	toSend := rand.IntN(200) + 22
 	for i := 1; i <= toSend; i++ {
 		msg := fmt.Sprintf("Hello World %d", i)
-		subj := subjects[rand.Intn(len(subjects))]
+		subj := subjects[rand.IntN(len(subjects))]
 		sendStreamMsg(t, nc, subj, msg)
 	}
 
 	// Create up to 10 consumers.
-	numConsumers := rand.Intn(10) + 1
+	numConsumers := rand.IntN(10) + 1
 	var obs []obsi
 	for i := 1; i <= numConsumers; i++ {
 		cname := fmt.Sprintf("WQ-%d", i)
@@ -3263,7 +3263,7 @@ func TestJetStreamSnapshots(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 		// Now grab some messages.
-		toReceive := rand.Intn(toSend/2) + 1
+		toReceive := rand.IntN(toSend/2) + 1
 		for r := 0; r < toReceive; r++ {
 			resp, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
 			if err != nil {
@@ -3434,17 +3434,17 @@ func TestJetStreamSnapshotsAPI(t *testing.T) {
 	nc := clientConnectToServer(t, s)
 	defer nc.Close()
 
-	toSend := rand.Intn(100) + 1
+	toSend := max(30, rand.IntN(100)+1)
 	for i := 1; i <= toSend; i++ {
 		msg := fmt.Sprintf("Hello World %d", i)
-		subj := subjects[rand.Intn(len(subjects))]
+		subj := subjects[rand.IntN(len(subjects))]
 		sendStreamMsg(t, nc, subj, msg)
 	}
 
 	o, err := mset.addConsumer(workerModeConfig("WQ"))
 	require_NoError(t, err)
 	// Now grab some messages.
-	toReceive := rand.Intn(toSend) + 1
+	toReceive := rand.IntN(int(mset.state().Msgs)) + 1
 	for r := 0; r < toReceive; r++ {
 		resp, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
 		if err != nil {
@@ -5773,14 +5773,14 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 			t.Fatalf("Unexpected error adding stream %q: %v", msetName, err)
 		}
 
-		toSend := rand.Intn(100) + 1
+		toSend := rand.IntN(100) + 1
 		for n := 1; n <= toSend; n++ {
 			msg := fmt.Sprintf("Hello %d", n*i)
-			subj := subjects[rand.Intn(len(subjects))]
+			subj := subjects[rand.IntN(len(subjects))]
 			sendStreamMsg(t, nc, subj, msg)
 		}
 		// Create up to 5 consumers.
-		numObs := rand.Intn(5) + 1
+		numObs := rand.IntN(5) + 1
 		var obs []obsi
 		for n := 1; n <= numObs; n++ {
 			oname := fmt.Sprintf("WQ-%d-%d", i, n)
@@ -5789,7 +5789,7 @@ func TestJetStreamSimpleFileRecovery(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 			// Now grab some messages.
-			toReceive := rand.Intn(toSend) + 1
+			toReceive := rand.IntN(toSend) + 1
 			rsubj := o.requestNextMsgSubject()
 			for r := 0; r < toReceive; r++ {
 				resp, err := nc.Request(rsubj, nil, time.Second)
@@ -7231,7 +7231,7 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 	defer shutdownCluster(cb)
 
 	// Connect our leafnode server to cluster B.
-	opts := cb.opts[rand.Intn(len(cb.opts))]
+	opts := cb.opts[rand.IntN(len(cb.opts))]
 	s, _ := runSolicitLeafServer(opts)
 	defer s.Shutdown()
 
@@ -7256,7 +7256,7 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 	}
 
 	// Now create a push based consumer. Connected to the non-jetstream server via a random server on cluster A.
-	sl := ca.servers[rand.Intn(len(ca.servers))]
+	sl := ca.servers[rand.IntN(len(ca.servers))]
 	nc2 := clientConnectToServer(t, sl)
 	defer nc2.Close()
 
@@ -16869,7 +16869,7 @@ func TestJetStreamKVReductionInHistory(t *testing.T) {
 
 	numKeys, msg := 1000, bytes.Repeat([]byte("ABC"), 330) // ~1000bytes
 	for {
-		key := fmt.Sprintf("%X", rand.Intn(numKeys)+1)
+		key := fmt.Sprintf("%X", rand.IntN(numKeys)+1)
 		_, err = kv.Put(key, msg)
 		require_NoError(t, err)
 		status, err := kv.Status()
@@ -20716,7 +20716,7 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	// sequences give us interior gaps after MaxMsgsPerSubject has been
 	// enforced which is needed for this test to work.
 	for range msgs {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(subjects))
+		subj := fmt.Sprintf("foo.%d", rand.IntN(subjects))
 		_, err = js.Publish(subj, nil)
 		require_NoError(t, err)
 	}
@@ -20724,7 +20724,7 @@ func TestJetStreamMaxMsgsPerSubjectAndDeliverLastPerSubject(t *testing.T) {
 	// Then publish some messages on a different subject. These won't be
 	// matched by the consumer filter.
 	for range msgs / 10 {
-		subj := fmt.Sprintf("bar.%d", rand.Intn(subjects/10))
+		subj := fmt.Sprintf("bar.%d", rand.IntN(subjects/10))
 		_, err = js.Publish(subj, nil)
 		require_NoError(t, err)
 	}

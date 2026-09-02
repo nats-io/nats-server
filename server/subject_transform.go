@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"strconv"
@@ -463,7 +463,7 @@ func (tr *subjectTransform) getRandomPartition(ceiling int) string {
 		return "0"
 	}
 
-	return strconv.Itoa(int(rand.Int31()) % ceiling)
+	return strconv.Itoa(int(rand.Int32()) % ceiling)
 }
 
 func (tr *subjectTransform) getHashPartition(key []byte, numBuckets int) string {

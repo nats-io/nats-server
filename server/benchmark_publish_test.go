@@ -15,7 +15,7 @@ package server
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync/atomic"
 	"testing"
 
@@ -26,7 +26,6 @@ func BenchmarkPublish(b *testing.B) {
 
 	const (
 		verbose     = false
-		seed        = 12345
 		minMessages = 10_000
 		subject     = "S"
 		queue       = "Q"
@@ -149,7 +148,7 @@ func BenchmarkPublish(b *testing.B) {
 							}
 							defer nc.Close()
 
-							rng := rand.New(rand.NewSource(int64(seed)))
+							rng := rand.NewChaCha8([32]byte{42})
 							message := make([]byte, bc.messageSize)
 							var published, errors int
 

@@ -23,11 +23,12 @@ package server
 
 import (
 	"encoding"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash"
 	"hash/crc32"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 )
 
@@ -56,7 +57,7 @@ type RCOBStateMachine struct {
 	wg                         sync.WaitGroup
 	leader                     bool
 	proposalSequence           uint64
-	rng                        *rand.Rand
+	rng                        *rand.ChaCha8
 	hash                       hash.Hash
 	blocksApplied              uint64
 	blocksAppliedSinceSnapshot uint64
@@ -205,7 +206,7 @@ func (sm *RCOBStateMachine) proposeBlock() {
 	sm.proposalSequence += 1
 
 	// Create a block
-	blockSize := 1 + sm.rng.Intn(RCOBOptions.maxBlockSize)
+	blockSize := 1 + rand.New(sm.rng).IntN(RCOBOptions.maxBlockSize)
 	block := RCOBBlock{
 		Proposer:         sm.s.Name(),
 		ProposerSequence: sm.proposalSequence,
@@ -366,7 +367,9 @@ func newRaftChainStateMachine(s *Server, cfg *RaftConfig, n RaftNode) stateMachi
 	for _, c := range []byte(n.ID()) {
 		seed += int64(c)
 	}
-	rng := rand.New(rand.NewSource(seed))
+	var seedBytes [32]byte
+	binary.LittleEndian.PutUint64(seedBytes[:8], uint64(seed))
+	rng := rand.NewChaCha8(seedBytes)
 
 	// Initialize empty hash block
 	hashBlock := crc32.NewIEEE()

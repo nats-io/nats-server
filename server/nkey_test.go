@@ -20,10 +20,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	crand "crypto/rand"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 
 	"github.com/nats-io/nkeys"
 )
@@ -256,7 +255,7 @@ func BenchmarkCryptoRandGeneration(b *testing.B) {
 
 func BenchmarkMathRandGeneration(b *testing.B) {
 	data := make([]byte, 16)
-	prng := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	prng := mrand.NewChaCha8([32]byte{42})
 	for i := 0; i < b.N; i++ {
 		prng.Read(data)
 	}
@@ -265,7 +264,7 @@ func BenchmarkMathRandGeneration(b *testing.B) {
 func BenchmarkNonceGeneration(b *testing.B) {
 	data := make([]byte, nonceRawLen)
 	b64 := make([]byte, nonceLen)
-	prand := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	prand := mrand.NewChaCha8([32]byte{42})
 	for i := 0; i < b.N; i++ {
 		prand.Read(data)
 		base64.RawURLEncoding.Encode(b64, data)

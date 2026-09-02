@@ -19,7 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"runtime"
 	"runtime/debug"
 	"testing"
@@ -37,7 +37,7 @@ func TestNoRaceSeqSetSizeComparison(t *testing.T) {
 
 	seqs := make([]uint64, 0, num)
 	for i := 0; i < num; i++ {
-		n := uint64(rand.Int63n(int64(max + 1)))
+		n := uint64(rand.Int64N(int64(max + 1)))
 		seqs = append(seqs, n)
 	}
 
@@ -85,7 +85,7 @@ func TestNoRaceSeqSetEncodeLarge(t *testing.T) {
 	dmap := make(map[uint64]struct{}, num)
 	var ss SequenceSet
 	for i := 0; i < num; i++ {
-		n := uint64(rand.Int63n(int64(max + 1)))
+		n := uint64(rand.Int64N(int64(max + 1)))
 		ss.Insert(n)
 		dmap[n] = struct{}{}
 	}
@@ -126,7 +126,7 @@ func TestNoRaceSeqSetRelativeSpeed(t *testing.T) {
 
 	seqs := make([]uint64, 0, num)
 	for i := 0; i < num; i++ {
-		n := uint64(rand.Int63n(int64(max + 1)))
+		n := uint64(rand.Int64N(int64(max + 1)))
 		seqs = append(seqs, n)
 	}
 

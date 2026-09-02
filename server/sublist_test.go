@@ -17,7 +17,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"runtime"
 	"strconv"
@@ -2346,7 +2346,7 @@ func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) 
 	// Removers
 	for i := 0; i < numRemovers; i++ {
 		go func() {
-			prand := rand.New(rand.NewSource(time.Now().UnixNano()))
+			prand := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 			swg.Done()
 			swg.Wait()
 			for {
@@ -2357,7 +2357,7 @@ func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) 
 				default:
 					mu.RLock()
 					lh := len(subs) - 1
-					index := prand.Intn(lh)
+					index := prand.IntN(lh)
 					sub := subs[index]
 					mu.RUnlock()
 					s.Remove(sub)

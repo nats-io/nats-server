@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1913,7 +1913,7 @@ func TestJetStreamSuperClusterSourceAndMirrorConsumersLeaderChange(t *testing.T)
 
 	// Now make sure we only have a single direct consumer on our origin streams.
 	// Pick one at random.
-	name := fmt.Sprintf("O%d", rand.Intn(numStreams-1)+1)
+	name := fmt.Sprintf("O%d", rand.IntN(numStreams-1)+1)
 	c1.waitOnStreamLeader("$G", name)
 	s := c1.streamLeader("$G", name)
 	a, err := s.lookupAccount("$G")

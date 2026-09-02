@@ -24,7 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -5613,7 +5613,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			js := conns[rand.Intn(numConnections)]
+			js := conns[rand.IntN(numConnections)]
 			<-startCh
 			for i := 0; i < int(toSend)/numProducers; i++ {
 				if _, err = js.Publish("foo", payload); err != nil {

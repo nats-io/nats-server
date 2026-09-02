@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	os "os"
 	"path/filepath"
@@ -261,13 +261,13 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 		go func(subject string, messages int, wc bool) {
 			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
-			time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Millisecond)
+			time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Millisecond)
 			for i := 0; i < messages; i++ {
-				time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Microsecond)
+				time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Microsecond)
 				// If subject has wildcard, add random last subject token.
 				pubSubject := subject
 				if wc {
-					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int63n(10))
+					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int64N(10))
 				}
 				_, err := js.PublishAsync(pubSubject, []byte("data"))
 				require_NoError(t, err)
@@ -373,13 +373,13 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 		go func(subject string, messages int, wc bool) {
 			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
-			time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Millisecond)
+			time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Millisecond)
 			for i := 0; i < messages; i++ {
-				time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Microsecond)
+				time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Microsecond)
 				// If subject has wildcard, add random last subject token.
 				pubSubject := subject
 				if wc {
-					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int63n(10))
+					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int64N(10))
 				}
 				ack, err := js.PublishAsync(pubSubject, []byte("data"))
 				require_NoError(t, err)
@@ -4781,7 +4781,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 				lst = time.Now()
 				nc.Publish("DC", []byte("OK!"))
 				// Calculate a gap between messages.
-				gap := 10*time.Millisecond + time.Duration(rand.Intn(20))*time.Millisecond
+				gap := 10*time.Millisecond + time.Duration(rand.IntN(20))*time.Millisecond
 				time.Sleep(gap)
 			}
 
@@ -4891,7 +4891,7 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			totalMsgs := 10
 			for i := 0; i < totalMsgs; i++ {
 				nc.Request("DC", []byte("Hello World"), time.Second)
-				time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.IntN(5)) * time.Millisecond)
 			}
 			if state := mset.state(); state.Msgs != uint64(totalMsgs) {
 				t.Fatalf("Expected %d messages, got %d", totalMsgs, state.Msgs)
@@ -4908,7 +4908,7 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			}
 			defer o.delete()
 			// Sleep a random amount of time.
-			time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
+			time.Sleep(time.Duration(rand.IntN(20)) * time.Millisecond)
 
 			sub, _ := nc.SubscribeSync(subj)
 			nc.Flush()
