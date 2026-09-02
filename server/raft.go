@@ -5917,6 +5917,18 @@ func (n *raft) switchToCandidate() {
 		return
 	}
 
+	// If no one is going to hear our campaign, don't bother initiating it. It is
+	// possible that we may become unisolated, hear the current leader again and
+	// continue participating in the current term without another election.
+	// A single-node group can elect itself without any peer interest, which is
+	// needed to expand a group.
+	if n.csz > 1 && !n.t.HasPeerInterest(n.vsubj) {
+		n.debug("Not switching to candidate, currently isolated")
+		n.updateLeader(noLeader)
+		n.resetElect(minElectionTimeout)
+		return
+	}
+
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
 	} else {
