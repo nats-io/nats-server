@@ -382,6 +382,7 @@ type ClusterInfo struct {
 // DesiredClusterInfo shows information of the desired set of servers
 // that should make up the stream or consumer.
 type DesiredClusterInfo struct {
+	Created  time.Time                 `json:"created"`
 	Name     string                    `json:"name,omitempty"`
 	Replicas []*PeerInfo               `json:"replicas,omitempty"`
 	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
@@ -1266,6 +1267,7 @@ func (mset *stream) streamAssignment() *streamAssignment {
 
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	var node RaftNode
+	var peers []string
 
 	mset.mu.RLock()
 	js := mset.js
@@ -1275,6 +1277,7 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		js.mu.RLock()
 		if sa.Group != nil {
 			node = sa.Group.node
+			peers = copyStrings(sa.Group.Peers)
 		}
 		js.mu.RUnlock()
 	}
@@ -1289,6 +1292,18 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 
 	// Set our node.
 	mset.node = node
+
+	// Stop tracking peers for catchup if they're no longer part of the group.
+	if len(mset.catchups) > 0 {
+		for peer := range mset.catchups {
+			if !slices.Contains(peers, peer) {
+				delete(mset.catchups, peer)
+			}
+		}
+		if len(mset.catchups) == 0 {
+			mset.catchups = nil
+		}
+	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {

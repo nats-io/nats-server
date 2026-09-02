@@ -3631,13 +3631,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 				n.progress = nil
 			}
 		}
-		// Check if this is a new peer and if so go ahead and propose adding them.
-		_, exists := n.peers[peer]
 		n.Unlock()
-		if !exists {
-			n.debug("Catchup done for %q, will add into peers", peer)
-			n.ProposeAddPeer(peer)
-		}
 		indexUpdatesQ.unregister()
 	}()
 
@@ -4112,7 +4106,7 @@ func (n *raft) trackPeer(peer string) error {
 				n.observed = nil
 			}
 		}
-	} else if n.managed && !isRemoved {
+	} else if n.managed {
 		// For managed groups the meta layer can assign peers before they've been
 		// added to our peer set. Track when we hear from them, so the upper layer
 		// can prefer adding peers that are demonstrably up.

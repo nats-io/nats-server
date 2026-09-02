@@ -205,7 +205,8 @@ type raftGroup struct {
 // desiredGroupPlacement specifies the desired peer set.
 // A stream or consumer raftGroup can be scaled or moved safely based on this desired state.
 type desiredRaftGroup struct {
-	ID string `json:"id"`
+	Created time.Time `json:"created"`
+	ID      string    `json:"id"`
 	// Term is the raft term of the group leader driving this desired state. It acts as a
 	// fencing token; reconcile requests from older leadership terms are rejected.
 	Term      uint64   `json:"term,omitempty"`
@@ -305,21 +306,21 @@ func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
 		// Don't carry a stale preferred into the desired group.
 		target.Preferred = _EMPTY_
 	}
-	var term uint64
-	if target.Desired != nil {
-		term = target.Desired.Term
-	}
 	ng := rg.copyGroup()
 	ng.Name = target.Name
 	ng.Desired = &desiredRaftGroup{
+		Created:   time.Now().UTC(),
 		ID:        nuid.Next(),
-		Term:      term,
+		Term:      0,
 		Peers:     target.Peers,
 		Cluster:   target.Cluster,
 		Preferred: target.Preferred,
 	}
 	if rg.Desired != nil {
-		// Must preserve whether an in-flight move is being retargeted.
+		// Must preserve the original created timestamp, term,
+		// and whether an in-flight move is being retargeted.
+		ng.Desired.Created = rg.Desired.Created
+		ng.Desired.Term = rg.Desired.Term
 		ng.Desired.Move = rg.Desired.Move
 		// Must preserve the prior origin (if any).
 		if rg.Desired.Origin != nil {
@@ -1074,8 +1075,8 @@ func (js *jetStream) isStreamHealthy(acc *Account, sa *streamAssignment) error {
 }
 
 // isConsumerHealthy will determine if the consumer is up to date.
-// For R1 it will make sure the consunmer is present on this server.
-func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consumerAssignment) error {
+// For R1 it will make sure the consumer is present on this server.
+func (js *jetStream) isConsumerHealthy(mset *stream, sa *streamAssignment, consumer string, ca *consumerAssignment) error {
 	js.mu.RLock()
 	if ca != nil && ca.unsupported != nil {
 		js.mu.RUnlock()
@@ -1105,6 +1106,13 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 	}
 	created := ca.Created
 	node := ca.Group.node
+	// The stream may be running at its origin while its config already carries the
+	// target replica count. A consumer that has not been mapped onto the new peers
+	// yet inherits that target, so fall back on the origin count below.
+	var originReplicas int
+	if o := sa.desiredOrigin(); o != nil {
+		originReplicas = o.Replicas
+	}
 	js.mu.RUnlock()
 
 	// Check if not running at all.
@@ -1130,6 +1138,12 @@ func (js *jetStream) isConsumerHealthy(mset *stream, consumer string, ca *consum
 		return nil // No further checks for R=1 consumers
 
 	case node == nil:
+		// Not mapped onto the new peers yet, so still running at the stream's origin
+		// count. Only evaluated here, a consumer that does have a node must be checked
+		// as usual for the rest of the migration.
+		if originReplicas > 0 && originReplicas < rc {
+			return nil
+		}
 		return errors.New("group node missing")
 
 	case oNode == nil:
@@ -2856,17 +2870,22 @@ func (sa *streamAssignment) missingPeers() bool {
 // The peer set this stream, and its consumers, must end up on.
 // Lock should be held.
 func (sa *streamAssignment) targetPeers() []string {
-	targetPeers := sa.Group.Peers
-	if sa.Group.Desired != nil {
-		// Peers are only known if not scaling down.
-		if !sa.Group.Desired.ScaleDown {
-			targetPeers = sa.Group.Desired.Peers
-		}
-	} else if len(targetPeers) > sa.Config.Replicas {
+	targetPeers := sa.Group.targetPeers()
+	if sa.Group.Desired == nil && len(targetPeers) > sa.Config.Replicas {
 		// If the stream is already moving, without desired state, the last N peers are the target.
 		targetPeers = targetPeers[len(targetPeers)-sa.Config.Replicas:]
 	}
 	return targetPeers
+}
+
+// The peer set this group must end up on. Peers are only known if not scaling
+// down, the group leader selects which peers to scale down to.
+// Lock should be held.
+func (rg *raftGroup) targetPeers() []string {
+	if rg.Desired != nil && !rg.Desired.ScaleDown {
+		return rg.Desired.Peers
+	}
+	return rg.Peers
 }
 
 // Returns the group's peers that are no longer part of the meta peer set.
@@ -3209,6 +3228,135 @@ func (js *jetStream) removePeerFromStreamLocked(sa *streamAssignment, peer strin
 	return true
 }
 
+// Removes or evacuates the given peer from the consumer's group.
+// Reports whether the removal was applied.
+// Lock should be held.
+func (js *jetStream) remapPeerFromConsumerLocked(sa *streamAssignment, ca *consumerAssignment, peer string, remove bool) bool {
+	cc := js.cluster
+	if cc == nil || cc.meta == nil || sa == nil || ca == nil {
+		return false
+	}
+	cca := cc.remapConsumerAssignment(sa, ca, peer, remove)
+	if cca == nil {
+		return false
+	}
+	accName := ca.Client.serviceAccount()
+	if err := cc.meta.Propose(cc.term, encodeAddConsumerAssignment(cca)); err != nil {
+		return false
+	}
+	cc.trackInflightConsumerProposal(accName, sa.Config.Name, cca, false)
+	return true
+}
+
+// Removes or evacuates the given peer from a single consumer, replacing it with one of the
+// stream's other peers. The stream's own group is left alone, so the replacement can only
+// come from where the stream already is.
+// Returns nil if nothing changes, or if the consumer would be left short.
+// Lock should be held.
+func (cc *jetStreamCluster) remapConsumerAssignment(sa *streamAssignment, ca *consumerAssignment, peer string, remove bool) *consumerAssignment {
+	// A single peer stream has nowhere to hand this consumer to.
+	streamPeers := sa.targetPeers()
+	if len(streamPeers) < 2 {
+		return nil
+	}
+
+	// The peer must exist in the actual or desired peer set, otherwise there's nothing to do.
+	if !ca.Group.isMember(peer) && (ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Peers, peer)) {
+		return nil
+	}
+
+	// A group that's already converging is driven by its desired peers, so base on those.
+	// The actual peers would hand back the ones the migration is dropping.
+	basePeers := ca.Group.Peers
+	if d := ca.Group.Desired; d != nil {
+		basePeers = d.Peers
+	}
+
+	// A scale down that's already pending stays pending, its leader picks which peers remain.
+	scaleDown := ca.Group.Desired != nil && ca.Group.Desired.ScaleDown
+
+	// The count the consumer must come out at, interest/workqueue require peer parity.
+	replicas := ca.Config.replicas(sa.Config)
+	if sa.Config.Retention != LimitsPolicy {
+		replicas = sa.Config.Replicas
+	}
+
+	retain := make([]string, 0, len(basePeers))
+	for _, p := range basePeers {
+		if p != peer {
+			retain = append(retain, p)
+		}
+	}
+
+	// The replacement must be a stream peer this consumer is not on yet. Prefer one that's
+	// up, but take one that's down over none at all.
+	var online, offline []string
+	for _, p := range streamPeers {
+		if p == peer || slices.Contains(retain, p) {
+			continue
+		}
+		if si, ok := cc.s.nodeToInfo.Load(p); ok && si != nil && si.(nodeInfo).offline {
+			offline = append(offline, p)
+			continue
+		}
+		online = append(online, p)
+	}
+	candidates := online
+	if len(candidates) == 0 {
+		candidates = offline
+	}
+
+	newPeers := retain
+	if len(retain) < len(basePeers) && len(candidates) > 0 {
+		rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+		newPeers = append(retain, candidates[0])
+	}
+	// Reject if the consumer would be left short. A pending scale down is no exception, its
+	// desired peers are what the leader still has to pick a full replica set out of.
+	if len(newPeers) < replicas {
+		return nil
+	}
+
+	cca := ca.copyGroup()
+	cca.Group.Peers = newPeers
+	// Always use desired state, so peers and where they converge to can never diverge.
+	// Reconciling that state renames a single node group once it lands.
+	cca.Group = ca.Group.withDesired(cca.Group)
+	cca.Group.Desired.ScaleDown = scaleDown
+
+	if remove {
+		removeFrom := func(from []string) []string {
+			return slices.DeleteFunc(from, func(p string) bool { return p == peer })
+		}
+		cca.Group.Peers = removeFrom(cca.Group.Peers)
+		cca.Group.Desired.Peers = removeFrom(cca.Group.Desired.Peers)
+		cca.Group.Desired.addRemoved([]string{peer})
+	}
+	// Don't allow moving to an empty set.
+	if len(cca.Group.Desired.Peers) == 0 {
+		return nil
+	}
+	// Don't carry a stale preferred into the remaining group.
+	isMember := func(p string) bool {
+		return slices.Contains(cca.Group.Peers, p) || slices.Contains(cca.Group.Desired.Peers, p)
+	}
+	if cca.Group.Preferred != _EMPTY_ && !isMember(cca.Group.Preferred) {
+		cca.Group.Preferred = _EMPTY_
+	}
+	if cca.Group.Desired.Preferred != _EMPTY_ && !isMember(cca.Group.Desired.Preferred) {
+		cca.Group.Desired.Preferred = _EMPTY_
+	}
+	// Nothing actually changes, don't propose a no-op migration.
+	if slices.Equal(cca.Group.Peers, ca.Group.Peers) && slices.Equal(cca.Group.Desired.Peers, basePeers) {
+		return nil
+	}
+	// If no peers remain, immediately jump to the desired set.
+	if len(cca.Group.Peers) == 0 {
+		cca.Group.Peers = copyStrings(cca.Group.Desired.Peers)
+	}
+	return cca
+}
+
 // Check if we have peer related entries.
 func (js *jetStream) hasPeerEntries(entries []*Entry) bool {
 	for _, e := range entries {
@@ -3446,6 +3594,8 @@ func (js *jetStream) createRaftGroup(accName string, rg *raftGroup, recovering b
 		return nil, NewJSClusterNotActiveError()
 	}
 
+	// While a desired state is pending the group keeps a node even at a single peer, so
+	// scaling down doesn't lose the Raft term a newer server resumes the migration from.
 	// If this is a single peer raft group or we are not a member return.
 	if (rg.Desired == nil && len(rg.Peers) <= 1) || !rg.isMember(cc.meta.ID()) {
 		// Nothing to do here.
@@ -4557,6 +4707,13 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			js.mu.RUnlock()
 			return mstat(MigrationStatusMeta, "desired state changed, reassessing")
 		}
+		// Peers that were already in the group before this desired state began. They have a
+		// copy of the stream data, which is what lets us shed the surplus before the peers
+		// we're moving to have caught up.
+		var originPeers []string
+		if o := sa.Group.Desired.Origin; o != nil {
+			originPeers = copyStrings(o.Peers)
+		}
 		var blockedBy string
 		for name, c := range sa.consumers {
 			if c.unsupported != nil {
@@ -4584,29 +4741,51 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		// Remove old peers one at a time, the leader selected last.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
 
-		// Only remove a peer if the group left after the removal retains a
-		// store-current majority; otherwise wait for catchups to complete.
-		var currentCount int
+		// Tally up what we can rely on before removing a peer.
+		// - currentDesired: desired peers that are current and caught up. We can only
+		//   transfer leadership to a peer that's current, so it's what we can step down to.
+		// - caughtUpDesired: desired peers that are caught up, they might not all be
+		//   current. We use this where we only need them to have the data.
+		// - copiesAfterRemoval: whether we have sufficient copies of the data after
+		//   having removed the peer, so it's tallied without it.
 		var currentDesired []string
+		var caughtUpDesired, copiesAfterRemoval int
 		for _, p := range actual {
-			if p.Current && p.Lag == 0 && !slices.Contains(catchups, p.ID) {
-				if p.ID != remove {
-					currentCount++
-				}
-				if slices.Contains(desiredPeers, p.ID) {
-					currentDesired = append(currentDesired, p.ID)
-				}
+			inCatchup := slices.Contains(catchups, p.ID)
+			isDesired := slices.Contains(desiredPeers, p.ID)
+			if isDesired && !inCatchup {
+				caughtUpDesired++
+			}
+			if p.Current && !inCatchup && isDesired {
+				currentDesired = append(currentDesired, p.ID)
+			}
+			if p.ID == remove {
+				continue
+			}
+			// A peer has the stream if it was in the group before this desired state
+			// began, or if it was added and has caught up since.
+			if !inCatchup && (slices.Contains(originPeers, p.ID) || p.Current) {
+				copiesAfterRemoval++
 			}
 		}
-		if quorum := (len(actual)-1)/2 + 1; currentCount < quorum {
-			return mstat(MigrationStatusCatchup, "waiting for peers to catch up")
+		// We only need to weigh the peers we're keeping, we already have Raft quorum, or
+		// we couldn't have grown the group to get here. Peers outside the desired set are
+		// on their way out, and we don't want them to block us.
+		if quorum := len(desiredPeers)/2 + 1; caughtUpDesired < quorum {
+			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
+		}
+		// The group left after the removal must still be able to commit.
+		if !s.canRemovePeer(ourPeerId, remove, actual) {
+			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
+		}
+		// Backstop for peers that are neither catching up nor caught up, they're down or
+		// haven't started. Origin peers still have a copy of the data, so this only bites
+		// once we get to removing the last of them.
+		if quorum := len(desiredPeers)/2 + 1; copiesAfterRemoval < quorum {
+			return mstat(MigrationStatusCatchup, "waiting for more peers to catch up")
 		}
 		// If we have current desired peers, and we're not a desired peer ourselves, step down.
 		if len(currentDesired) > 0 && !slices.Contains(desiredPeers, ourPeerId) {
-			// If desired peers are still catching up, we wait for a quorum of them to complete for now.
-			if quorum := len(desiredPeers)/2 + 1; len(currentDesired) < quorum {
-				return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
-			}
 			preferred := s.selectStepDownPreferred(ourPeerId, actual, currentDesired)
 			if preferred == _EMPTY_ {
 				return mstat(MigrationStatusMembership, "waiting for a desired peer to step down to")
@@ -4636,7 +4815,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 	// Before publishing a stable R1 assignment, make the store independently durable
 	// because applying the assignment will remove the Raft node and its WAL.
-	if exactMatch && replicas == 1 {
+	if exactMatch && len(current) == 1 {
 		if err := mset.flushForScaleDown(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
@@ -5908,7 +6087,8 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	sa.err = osa.err
 
 	// If we detect we are scaling down to 1, non-clustered, and we had a previous node, clear it here.
-	if sa.Config.Replicas == 1 && sa.Group.node != nil && sa.Group.Desired == nil {
+	// Note the group can converge onto one peer without the config scaling down based on peer-removes.
+	if len(sa.Group.Peers) == 1 && sa.Group.node != nil && sa.Group.Desired == nil {
 		sa.Group.node = nil
 	}
 
@@ -6018,6 +6198,9 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	s, rg, desired := js.srv, sa.Group, sa.Group.Desired
 	client, subject, reply := sa.Client, sa.Subject, sa.Reply
 	alreadyRunning, numReplicas := osa.Group.node != nil, len(rg.Peers)
+	// A remap below clears alreadyRunning, but we must still know whether we were
+	// running clustered before, or we'd skip the cleanup we owe on a downgrade.
+	wasRunning := alreadyRunning
 	wasClustered := len(osa.Group.Peers) > 1 || osa.Group.Desired != nil
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
@@ -6076,7 +6259,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			if !started {
 				mset.monitorWg.Done()
 			}
-		} else if numReplicas == 1 && desired == nil && alreadyRunning {
+		} else if numReplicas == 1 && desired == nil && wasRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
 			mset.stopMonitoring()
@@ -7769,6 +7952,10 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
+		// The group left after the removal must still be able to commit.
+		if !s.canRemovePeer(ourPeerId, remove, actual) {
+			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
+		}
 		if remove == ourPeerId {
 			err := n.StepDown()
 			return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
@@ -9370,6 +9557,10 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 		csa.Group.Desired.Peers = removeFrom(csa.Group.Desired.Peers)
 		csa.Group.Desired.addRemoved(peers)
 	}
+	// Don't allow moving to an empty set.
+	if len(csa.Group.Desired.Peers) == 0 {
+		return nil, false
+	}
 	// Don't carry a stale preferred into the remaining group.
 	isMember := func(peer string) bool {
 		return slices.Contains(csa.Group.Peers, peer) || slices.Contains(csa.Group.Desired.Peers, peer)
@@ -9379,10 +9570,6 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 	}
 	if csa.Group.Desired.Preferred != _EMPTY_ && !isMember(csa.Group.Desired.Preferred) {
 		csa.Group.Desired.Preferred = _EMPTY_
-	}
-	// Don't allow moving to an empty set.
-	if len(csa.Group.Desired.Peers) == 0 {
-		return nil, false
 	}
 	// Preserve excluded peer set only if the group is still missing peers.
 	csa.Group.Excluded = excluded
@@ -9412,17 +9599,24 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		if ca.Config == nil || ca.unsupported != nil {
 			continue
 		}
-		consumerPeers := ca.Group.Peers
-		if ca.Group.Desired != nil {
-			// Still moving toward its desired peer set.
-			done = false
-			consumerPeers = ca.Group.Desired.Peers
-		}
 		// Determine the desired replica count.
 		r := ca.Config.replicas(sa.Config)
 		// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
 		if sa.Config.Retention != LimitsPolicy {
 			r = sa.Config.Replicas
+		}
+		consumerPeers := ca.Group.targetPeers()
+		target := r
+		var scaleDown bool
+		if ca.Group.Desired != nil {
+			// Still moving toward its desired peer set.
+			done = false
+			// A pending scale down must not shrink here, only drop peers that are no
+			// longer part of the stream. The group leader selects which peers remain.
+			if ca.Group.Desired.ScaleDown {
+				target = len(consumerPeers)
+				scaleDown = true
+			}
 		}
 		// Perform a quick check, without allocating, whether this consumer needs to be remapped.
 		kept := 0
@@ -9433,10 +9627,10 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		}
 		// Backfill can only draw from the target peer set, so that bounds how far we can grow.
 		size := kept
-		if size < r {
-			size = min(r, max(kept, len(targetPeers)))
-		} else if size > r {
-			size = r
+		if size < target {
+			size = min(target, max(kept, len(targetPeers)))
+		} else if size > target {
+			size = target
 		}
 		// Leave the consumer alone if its peer set is unaffected.
 		if kept == len(consumerPeers) && kept == size {
@@ -9461,19 +9655,19 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			}
 		}
 		// Backfill from the shuffled target set until the consumer has its desired number of target peers.
-		if len(newPeers) < r {
+		if len(newPeers) < target {
 			backfill := copyStrings(targetPeers)
 			rand.Shuffle(len(backfill), func(i, j int) { backfill[i], backfill[j] = backfill[j], backfill[i] })
 			for _, p := range backfill {
-				if len(newPeers) >= r {
+				if len(newPeers) >= target {
 					break
 				}
 				if !slices.Contains(newPeers, p) {
 					newPeers = append(newPeers, p)
 				}
 			}
-		} else if len(newPeers) > r {
-			newPeers = newPeers[:r]
+		} else if len(newPeers) > target {
+			newPeers = newPeers[:target]
 		}
 		cca := ca.copyGroup()
 		// Adjust preferred as needed.
@@ -9496,23 +9690,23 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			cfg.Replicas = r
 			cca.Config = &cfg
 		}
-		// Only use desired state if the stream did as well.
-		if sa.Group.Desired != nil {
-			cca.Group = ca.Group.withDesired(cca.Group)
-			// Scaled down if we kept at least one peer, but removed others.
-			cca.Group.Desired.ScaleDown = kept > 0 && kept != len(consumerPeers)
+		// Always use desired state, so the peers and where they must
+		// converge to can never diverge.
+		cca.Group = ca.Group.withDesired(cca.Group)
+		// Scaled down if we kept at least one peer, but removed others.
+		// A scale down that was already pending stays pending.
+		cca.Group.Desired.ScaleDown = scaleDown || (kept > 0 && kept != len(consumerPeers))
 
-			// Drop any peers that are no longer part of the stream's peer set.
-			var dropped []string
-			cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
-				if slices.Contains(sa.Group.Peers, peer) {
-					return false
-				}
-				dropped = append(dropped, peer)
-				return true
-			})
-			cca.Group.Desired.addRemoved(dropped)
-		}
+		// Drop any peers that are no longer part of the stream's peer set.
+		var dropped []string
+		cca.Group.Peers = slices.DeleteFunc(cca.Group.Peers, func(peer string) bool {
+			if slices.Contains(sa.Group.Peers, peer) {
+				return false
+			}
+			dropped = append(dropped, peer)
+			return true
+		})
+		cca.Group.Desired.addRemoved(dropped)
 		// If a consumer lost all of its peers to removal.
 		if len(cca.Group.Peers) == 0 {
 			// Delete it if ephemeral.
@@ -10336,11 +10530,12 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 		isMoveRequest = newCfg.Placement != nil && !reflect.DeepEqual(osa.Config.Placement, newCfg.Placement)
 	}
 
-	// Check for replica changes.
+	// Check for replica or retention changes.
 	isReplicaChange := newCfg.Replicas != osa.Config.Replicas
+	isRetentionChange := newCfg.Retention != osa.Config.Retention
 
 	// Combining a move and a scale in a single update is not allowed.
-	if isMoveRequest && isReplicaChange {
+	if isMoveRequest && (isReplicaChange || isRetentionChange) {
 		resp.Error = NewJSStreamMoveAndScaleError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
@@ -10364,7 +10559,7 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 			return
 		}
-	} else if isReplicaChange && moveInFlight {
+	} else if (isReplicaChange || isRetentionChange) && moveInFlight {
 		// A scale can't combine with an inflight move either. Scales may freely stack
 		// onto an inflight scale or retention change, but not with a move.
 		resp.Error = NewJSStreamMoveInProgressError()
@@ -10697,6 +10892,25 @@ func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining
 		return _EMPTY_
 	}
 	return sorted[len(sorted)-1]
+}
+
+// canRemovePeer reports whether the group can still commit after removing the
+// given peer. Only current peers we've heard from recently are counted as
+// voters; we always count ourselves. This is the removal counterpart to the
+// quorum check in selectPeerToAdd.
+func (s *Server) canRemovePeer(ourPeerId, remove string, actual []*Peer) bool {
+	cutoff := time.Now().Add(-hbInterval * 3)
+	var voters int
+	for _, p := range actual {
+		if p.ID == remove {
+			continue
+		}
+		heard := p.ID == ourPeerId || (!p.Last.IsZero() && p.Last.After(cutoff))
+		if p.Current && heard {
+			voters++
+		}
+	}
+	return voters >= (len(actual)-1)/2+1
 }
 
 // selectPeerToAdd picks the peer from candidates that is most preferable to
@@ -12842,7 +13056,8 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 	)
 	if d := rg.Desired; d != nil {
 		desired = &DesiredClusterInfo{
-			Name: d.Cluster,
+			Created: d.Created,
+			Name:    d.Cluster,
 		}
 		// If desired state can be rolled back, include what can be rolled back to.
 		// Must copy, the origin is owned by the meta layer but reported without its lock.
