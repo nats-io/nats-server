@@ -255,7 +255,7 @@ func TestNoRaceClosedSlowConsumerWriteDeadline(t *testing.T) {
 
 	// At this point server should have closed connection c.
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
@@ -303,7 +303,7 @@ func TestNoRaceClosedSlowConsumerPendingBytes(t *testing.T) {
 
 	// At this point server should have closed connection c.
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
