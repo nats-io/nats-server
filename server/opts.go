@@ -6284,7 +6284,7 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster", _EMPTY_, "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.ListenStr, "cluster_listen", _EMPTY_, "Cluster url from which members can solicit routes.")
 	fs.StringVar(&opts.Cluster.Advertise, "cluster_advertise", _EMPTY_, "Cluster URL to advertise to other servers.")
-	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Advertise known cluster IPs to clients.")
+	fs.BoolVar(&opts.Cluster.NoAdvertise, "no_advertise", false, "Do not advertise known cluster IPs to clients.")
 	fs.IntVar(&opts.Cluster.ConnectRetries, "connect_retries", 0, "For implicit routes, number of connect retries.")
 	fs.StringVar(&opts.Cluster.Name, "cluster_name", _EMPTY_, "Cluster Name, if not set one will be dynamically generated.")
 	fs.BoolVar(&showTLSHelp, "help_tls", false, "TLS help.")
