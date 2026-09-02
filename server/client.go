@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,7 +39,6 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/nats-server/v2/internal/fastrand"
 )
 
 // Type of client connection.
@@ -229,6 +228,7 @@ const (
 
 // Some flags passed to processMsgResults
 const pmrNoFlag int = 0
+
 const (
 	pmrCollectQueueNames int = 1 << iota
 	pmrIgnoreEmptyQueueFilter
@@ -362,9 +362,11 @@ type outbound struct {
 
 const nbMaxVectorSize = 1024 // == IOV_MAX on Linux/Darwin and most other Unices (except Solaris/AIX)
 
-const nbPoolSizeSmall = 512   // Underlying array size of small buffer
-const nbPoolSizeMedium = 4096 // Underlying array size of medium buffer
-const nbPoolSizeLarge = 65536 // Underlying array size of large buffer
+const (
+	nbPoolSizeSmall  = 512   // Underlying array size of small buffer
+	nbPoolSizeMedium = 4096  // Underlying array size of medium buffer
+	nbPoolSizeLarge  = 65536 // Underlying array size of large buffer
+)
 
 var nbPoolSmall = &sync.Pool{
 	New: func() any {
@@ -704,8 +706,10 @@ type ClientOpts struct {
 	ProxySig string `json:"proxy_sig,omitempty"`
 }
 
-var defaultOpts = ClientOpts{Verbose: true, Pedantic: true, Echo: true}
-var internalOpts = ClientOpts{Verbose: false, Pedantic: false, Echo: false}
+var (
+	defaultOpts  = ClientOpts{Verbose: true, Pedantic: true, Echo: true}
+	internalOpts = ClientOpts{Verbose: false, Pedantic: false, Echo: false}
+)
 
 func (c *client) setTraceLevel() {
 	if c.kind == SYSTEM && !(atomic.LoadInt32(&c.srv.logging.traceSysAcc) != 0) {
@@ -721,7 +725,7 @@ func (c *client) initClient() {
 	c.cid = atomic.AddUint64(&s.gcid, 1)
 
 	// Outbound data structure setup
-	c.out.sg = sync.NewCond(&(c.mu))
+	c.out.sg = sync.NewCond(&c.mu)
 	opts := s.getOpts()
 	// Snapshots to avoid mutex access in fast paths.
 	c.out.wdl = opts.WriteDeadline
@@ -1692,7 +1696,7 @@ func (c *client) readLoop(pre []byte) {
 			return
 		}
 
-		if cpacc && (c.in.start.Sub(lpacc)) >= closedSubsCheckInterval {
+		if cpacc && c.in.start.Sub(lpacc) >= closedSubsCheckInterval {
 			c.pruneClosedSubFromPerAccountCache()
 			lpacc = time.Now()
 		}
@@ -5240,7 +5244,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	}
 
 	var rplyHasGWPrefix bool
-	var creply = reply
+	creply := reply
 
 	// If the reply subject is a GW routed reply, we will perform some
 	// tracking in deliverMsg(). We also want to send to the user the
@@ -5514,7 +5518,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 						// We already have a LEAF and this is another one.
 						// Flip a coin to see if we swap it or not.
 						// See https://github.com/nats-io/nats-server/issues/6040
-						if fastrand.Uint32()%2 == 1 {
+						if rand.Uint32()%2 == 1 {
 							rsub = sub
 						}
 					}
@@ -5528,7 +5532,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		sindex := 0
 		lqs := len(qsubs)
 		if lqs > 1 {
-			sindex = int(fastrand.Uint32() % uint32(lqs))
+			sindex = int(rand.Uint32() % uint32(lqs))
 		}
 
 		// Find a subscription that is able to deliver this message starting at a random index.
@@ -6326,12 +6330,12 @@ func (c *client) clearAccountSubs(close bool) {
 		// Process any qsubs here.
 		for _, esub := range qsubs {
 			if !spoke {
-				srv.updateRouteSubscriptionMap(acc, esub.sub, -(esub.n))
+				srv.updateRouteSubscriptionMap(acc, esub.sub, -esub.n)
 				if srv.gateway.enabled {
-					srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -(esub.n))
+					srv.gatewayUpdateSubInterest(acc.Name, esub.sub, -esub.n)
 				}
 			}
-			acc.updateLeafNodes(esub.sub, -(esub.n))
+			acc.updateLeafNodes(esub.sub, -esub.n)
 		}
 	}
 
@@ -7030,7 +7034,7 @@ func (c *client) setFirstPingTimer() {
 		}
 	}
 	// We randomize the first one by an offset up to 20%, e.g. 2m ~= max 24s.
-	addDelay := rand.Int63n(int64(d / 5))
+	addDelay := rand.Int64N(int64(d / 5))
 	d += time.Duration(addDelay)
 	// In the case of ROUTER/LEAF and when compression is configured, it is possible
 	// that this timer was already set, but just to detect a stale connection

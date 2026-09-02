@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,17 +31,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats-server/v2/internal/fastrand"
 	"github.com/nats-io/nats.go"
 )
 
 func BenchmarkJetStreamConsume(b *testing.B) {
-
 	const (
 		verbose          = false
 		streamName       = "S"
 		subject          = "s"
-		seed             = 12345
+		seed             = 42
 		publishTimeout   = 30 * time.Second
 		PublishBatchSize = 10000
 	)
@@ -270,7 +268,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		{3, 3, 1024, 1_000}, // Cluster, R3, 1KB messages, ~1MiB minimum
 	}
 
-	//Each of the cases above is run with each of the consumer types
+	// Each of the cases above is run with each of the consumer types
 	consumerTypes := []ConsumerType{
 		PushSync,
 		PushAsync,
@@ -292,7 +290,6 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 		b.Run(
 			name,
 			func(b *testing.B) {
-
 				for _, ct := range consumerTypes {
 					name := fmt.Sprintf(
 						"%v",
@@ -339,7 +336,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							}
 
 							message := make([]byte, bc.messageSize)
-							rand.New(rand.NewSource(int64(seed))).Read(message)
+							rand.NewChaCha8([32]byte{seed}).Read(message)
 
 							// Publish b.N messages to the stream (in batches)
 							for i := 1; i <= b.N; i++ {
@@ -446,7 +443,7 @@ func BenchmarkJetStreamConsumeFilteredContiguous(b *testing.B) {
 			defer shutdown()
 			defer nc.Close()
 
-			var msgs = b.N
+			msgs := b.N
 			payload := make([]byte, 1024)
 
 			_, err := js.AddStream(&nats.StreamConfig{
@@ -502,7 +499,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		verbose          = false
 		streamName       = "S"
 		subjectPrefix    = "s"
-		seed             = 123456
+		seed             = 42
 		messageSize      = 32
 		consumerReplicas = 1
 		domainNameLength = 36 // Length of domain portion of subject, must be an even number
@@ -526,7 +523,6 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		subjectsPerDomain   int // Number of distinct subjects within each domain
 		filters             int // Number of filters (<prefix>.<domain>.>) per consumer
 		concurrentConsumers int // Number of consumer running
-
 	}{
 		{100, 10, 5, 12},
 		{1000, 10, 25, 12},
@@ -543,7 +539,6 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 		b.Run(
 			name,
 			func(b *testing.B) {
-
 				for _, bc := range benchmarksCases {
 
 					name := fmt.Sprintf(
@@ -557,7 +552,6 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 					b.Run(
 						name,
 						func(b *testing.B) {
-
 							cl, s, shutdown, nc, js := startJSClusterAndConnect(b, cs.clusterSize)
 							defer shutdown()
 							defer nc.Close()
@@ -592,7 +586,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 								_, js = jsClientConnectURL(b, connectURL)
 							}
 
-							rng := rand.New(rand.NewSource(int64(seed)))
+							rng := rand.NewChaCha8([32]byte{seed})
 							message := make([]byte, messageSize)
 							domain := make([]byte, domainNameLength/2)
 
@@ -640,12 +634,11 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 							// - Consume expected number of messages
 							// - Unsubscribe
 							subscribeConsumeUnsubscribe := func(js nats.JetStreamContext, rng *rand.Rand) {
-
 								// Select F unique domains to create F non-overlapping filters
 								filterDomains := make(map[string]bool, bc.filters)
 								filters := make([]string, 0, bc.filters)
 								for len(filterDomains) < bc.filters {
-									domain := domains[rng.Intn(len(domains))]
+									domain := domains[rng.IntN(len(domains))]
 									if _, found := filterDomains[domain]; found {
 										// Collision with existing filter, try again
 										continue
@@ -711,7 +704,6 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 							// Start a pool of C goroutines, each one with a dedicated connection.
 							for i := 1; i <= bc.concurrentConsumers; i++ {
 								go func(consumerId int) {
-
 									// Connect
 									nc, js := jsClientConnectURL(b, connectURL)
 									defer nc.Close()
@@ -719,8 +711,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 									// Signal completion of work
 									defer wgCompleted.Done()
 
-									rng := rand.New(rand.NewSource(int64(seed + consumerId)))
-
+									rng := rand.New(rand.NewPCG(seed, uint64(consumerId)))
 									// Ready, wait for everyone else
 									wgReady.Done()
 									wgReady.Wait()
@@ -749,7 +740,7 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 
 							// Throughput is not very important in this benchmark since each operation includes
 							// subscribe, unsubscribe and retrieves just a few bytes
-							//b.SetBytes(int64(messageSize * messagesPerIteration))
+							// b.SetBytes(int64(messageSize * messagesPerIteration))
 						},
 					)
 				}
@@ -759,23 +750,22 @@ func BenchmarkJetStreamConsumeWithFilters(b *testing.B) {
 }
 
 func BenchmarkJetStreamPublish(b *testing.B) {
-
 	const (
 		verbose    = false
-		seed       = 12345
+		seed       = 42
 		streamName = "S"
 	)
 
 	runSyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string) (int, int) {
 		published, errors := 0, 0
 		message := make([]byte, messageSize)
-		rand.New(rand.NewSource(int64(seed))).Read(message)
+		rand.NewChaCha8([32]byte{seed}).Read(message)
 
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
 			fastRandomMutation(message, 10)
-			subject := subjects[fastrand.Uint32n(uint32(len(subjects)))]
+			subject := subjects[rand.Uint32N(uint32(len(subjects)))]
 			_, pubErr := js.Publish(subject, message)
 			if pubErr != nil {
 				errors++
@@ -795,9 +785,10 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 
 	runAsyncPublisher := func(b *testing.B, js nats.JetStreamContext, messageSize int, subjects []string, asyncWindow int) (int, int) {
 		const publishCompleteMaxWait = 30 * time.Second
-		rng := rand.New(rand.NewSource(int64(seed)))
 		message := make([]byte, messageSize)
-		rng.Read(message)
+		src := rand.NewChaCha8([32]byte{seed})
+		src.Read(message)
+		rng := rand.New(src)
 
 		published, errors := 0, 0
 
@@ -816,7 +807,7 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 
 			for i := 0; i < publishBatchSize; i++ {
 				fastRandomMutation(message, 10)
-				subject := subjects[rng.Intn(len(subjects))]
+				subject := subjects[rng.IntN(len(subjects))]
 				pubAckFuture, err := js.PublishAsync(subject, message)
 				if err != nil {
 					errors++
@@ -896,7 +887,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 		b.Run(
 			name,
 			func(b *testing.B) {
-
 				for _, pc := range publisherCases {
 					name := fmt.Sprintf("%v", pc.pType)
 					if pc.pType == Async && pc.asyncWindow > 0 {
@@ -906,7 +896,6 @@ func BenchmarkJetStreamPublish(b *testing.B) {
 					b.Run(
 						name,
 						func(b *testing.B) {
-
 							subjects := make([]string, bc.numSubjects)
 							for i := 0; i < bc.numSubjects; i++ {
 								subjects[i] = fmt.Sprintf("s-%d", i+1)
@@ -1121,7 +1110,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
+			msg.Subject = subjects[rand.Uint32N(uint32(len(subjects)))]
 			if _, pubErr := js.PublishMsg(msg); pubErr != nil {
 				errors++
 			} else {
@@ -1155,7 +1144,7 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 			pending := make([]nats.PubAckFuture, 0, publishBatchSize)
 
 			for range publishBatchSize {
-				msg.Subject = subjects[fastrand.Uint32n(uint32(len(subjects)))]
+				msg.Subject = subjects[rand.Uint32N(uint32(len(subjects)))]
 				pubAckFuture, err := js.PublishMsgAsync(msg)
 				if err != nil {
 					errors++
@@ -1339,10 +1328,9 @@ func BenchmarkJetStreamCounters(b *testing.B) {
 }
 
 func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
-
 	const (
 		verbose          = true
-		seed             = 12345
+		seed             = 42
 		publishBatchSize = 100
 		messageSize      = 256
 		numSubjects      = 2500
@@ -1417,11 +1405,11 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 		defer ctx.completedWg.Done()
 		errors := 0
 		messageBuf := make([]byte, messageSize)
-		rand.New(rand.NewSource(int64(seed + publisherId))).Read(messageBuf)
+		rand.NewChaCha8([32]byte{0: seed, 1: byte(publisherId)}).Read(messageBuf)
 
 		// Warm up: publish a few messages
 		for i := 0; i < warmupMessages; i++ {
-			subject := fmt.Sprintf("%s.%d", subjectPrefix, fastrand.Uint32n(numSubjects))
+			subject := fmt.Sprintf("%s.%d", subjectPrefix, rand.Uint32N(numSubjects))
 			if randomData {
 				fastRandomMutation(messageBuf, 10)
 			}
@@ -1458,7 +1446,7 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 
 			// Publish a batch of messages
 			for i := 0; i < batchSize; i++ {
-				subject := fmt.Sprintf("%s.%d", subjectPrefix, fastrand.Uint32n(numSubjects))
+				subject := fmt.Sprintf("%s.%d", subjectPrefix, rand.Uint32N(numSubjects))
 				if randomData {
 					fastRandomMutation(messageBuf, 10)
 				}
@@ -1483,12 +1471,10 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 					b.Run(
 						fmt.Sprintf("Storage=%v", storageType),
 						func(b *testing.B) {
-
 							for limitDescription, limitConfigFunc := range limitConfigCases {
 								b.Run(
 									limitDescription,
 									func(b *testing.B) {
-
 										// Print benchmark parameters
 										if verbose {
 											b.Logf(
@@ -1587,22 +1573,21 @@ func BenchmarkJetStreamInterestStreamWithLimit(b *testing.B) {
 }
 
 func BenchmarkJetStreamKV(b *testing.B) {
-
 	const (
 		verbose   = false
 		kvName    = "BUCKET"
 		keyPrefix = "K_"
-		seed      = 12345
+		seed      = 42
 	)
 
 	runKVGet := func(b *testing.B, kv nats.KeyValue, keys []string) int {
-		rng := rand.New(rand.NewSource(int64(seed)))
+		rng := rand.New(rand.NewChaCha8([32]byte{seed}))
 		errors := 0
 
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			key := keys[rng.Intn(len(keys))]
+			key := keys[rng.IntN(len(keys))]
 			_, err := kv.Get(key)
 			if err != nil {
 				errors++
@@ -1619,15 +1604,14 @@ func BenchmarkJetStreamKV(b *testing.B) {
 	}
 
 	runKVPut := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
-
 		value := make([]byte, valueSize)
-		rand.New(rand.NewSource(int64(seed))).Read(value)
+		rand.NewChaCha8([32]byte{seed}).Read(value)
 		errors := 0
 
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			key := keys[fastrand.Uint32n(uint32(len(keys)))]
+			key := keys[rand.Uint32N(uint32(len(keys)))]
 			fastRandomMutation(value, 10)
 			_, err := kv.Put(key, value)
 			if err != nil {
@@ -1646,13 +1630,12 @@ func BenchmarkJetStreamKV(b *testing.B) {
 
 	runKVUpdate := func(b *testing.B, kv nats.KeyValue, keys []string, valueSize int) int {
 		value := make([]byte, valueSize)
-		rand.New(rand.NewSource(int64(seed))).Read(value)
+		rand.NewChaCha8([32]byte{seed}).Read(value)
 		errors := 0
-
 		b.ResetTimer()
 
 		for i := 1; i <= b.N; i++ {
-			key := keys[fastrand.Uint32n(uint32(len(keys)))]
+			key := keys[rand.Uint32N(uint32(len(keys)))]
 
 			kve, getErr := kv.Get(key)
 			if getErr != nil {
@@ -1720,7 +1703,6 @@ func BenchmarkJetStreamKV(b *testing.B) {
 					b.Run(
 						wName,
 						func(b *testing.B) {
-
 							if verbose {
 								b.Logf("Running %s workload %s with %d messages", wName, bName, b.N)
 							}
@@ -1755,7 +1737,7 @@ func BenchmarkJetStreamKV(b *testing.B) {
 							}
 
 							// Initialize all keys
-							rng := rand.New(rand.NewSource(int64(seed)))
+							rng := rand.NewChaCha8([32]byte{seed})
 							value := make([]byte, bc.valueSize)
 							for _, key := range keys {
 								rng.Read(value)
@@ -1815,7 +1797,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		verbose      = false
 		objStoreName = "B"
 		keyPrefix    = "K_"
-		seed         = 12345
+		seed         = 42
 		initKeys     = true
 
 		// read/write ratios
@@ -1844,8 +1826,10 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		)
 
 		dataBuf := make([]byte, maxObjSz)
-		rng := rand.New(rand.NewSource(int64(seed)))
-		rng.Read(dataBuf)
+		src := rand.NewChaCha8([32]byte{seed})
+		src.Read(dataBuf)
+
+		rng := rand.New(src)
 
 		// Each operation is processing a random amount of bytes within a size range which
 		// will be either read from or written to an object store bucket. However, here we are
@@ -1853,7 +1837,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 		b.SetBytes(int64((minObjSz + maxObjSz) / 2))
 
 		for i := 1; i <= b.N; i++ {
-			key := fmt.Sprintf("%s_%d", keyPrefix, rng.Intn(numKeys))
+			key := fmt.Sprintf("%s_%d", keyPrefix, rng.IntN(numKeys))
 			var err error
 
 			rwOp := rng.Float64()
@@ -1865,7 +1849,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 			case rwOp > rwRatio:
 				// Write Op
 				// dataSz is a random value between min-max object size and cannot be less than 1 byte
-				dataSz := rng.Intn(maxObjSz-minObjSz+1) + minObjSz
+				dataSz := rng.IntN(maxObjSz-minObjSz+1) + minObjSz
 				data := dataBuf[:dataSz]
 				fastRandomMutation(data, 10)
 				_, err = objStore.PutBytes(key, data)
@@ -1922,10 +1906,7 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 								b.Run(
 									bName,
 									func(b *testing.B) {
-
 										// Test setup
-										rng := rand.New(rand.NewSource(int64(seed)))
-
 										if verbose {
 											b.Logf("Setting up %d nodes", replicas)
 										}
@@ -1963,9 +1944,10 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 
 										// Initialize keys
 										if initKeys {
+											rng := rand.NewChaCha8([32]byte{seed})
 											for n := 0; n < bc.numKeys; n++ {
 												key := fmt.Sprintf("%s_%d", keyPrefix, n)
-												dataSz := rng.Intn(bc.maxObjSz-bc.minObjSz+1) + bc.minObjSz
+												dataSz := rand.New(rng).IntN(bc.maxObjSz-bc.minObjSz+1) + bc.minObjSz
 												value := make([]byte, dataSz)
 												rng.Read(value)
 												_, err := objStore.PutBytes(key, value)
@@ -1984,7 +1966,6 @@ func BenchmarkJetStreamObjStore(b *testing.B) {
 										b.ReportMetric(float64(errors)*100/float64(b.N), "%error")
 										b.ReportMetric(float64(reads), "reads")
 										b.ReportMetric(float64(writes), "writes")
-
 									},
 								)
 							}
@@ -2034,7 +2015,6 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 	}
 
 	workload := func(b *testing.B, numPubs int, messageSize int64, clientUrl string) {
-
 		// create N publishers
 		publishers := make([]BenchPublisher, numPubs)
 		for i := range publishers {
@@ -2057,7 +2037,7 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 				publishCalls:  0,
 				publishErrors: 0,
 			}
-			rand.New(rand.NewSource(int64(i))).Read(publishers[i].messageData)
+			rand.NewChaCha8([32]byte{byte(i)}).Read(publishers[i].messageData)
 		}
 
 		// waits for all publishers sub-routines and for main thread to be ready
@@ -2074,7 +2054,6 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 
 		// start go routines for all publishers, wait till all publishers are initialized before starting publish workload
 		for i := range publishers {
-
 			go func(pubId int) {
 				// signal that this publisher has been torn down
 				defer finishedPublishersWg.Done()
@@ -2151,7 +2130,6 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 								b.Run(
 									fmt.Sprintf("pubs=%d", numPubs),
 									func(b *testing.B) {
-
 										// start jetstream cluster
 										cl, ls, shutdown, nc, js := startJSClusterAndConnect(b, replicasCase.clusterSize)
 										defer shutdown()
@@ -2183,9 +2161,11 @@ func BenchmarkJetStreamPublishConcurrent(b *testing.B) {
 									},
 								)
 							}
-						})
+						},
+					)
 				}
-			})
+			},
+		)
 	}
 }
 
