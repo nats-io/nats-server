@@ -22,6 +22,9 @@ type raftTransport interface {
 	// Account returns the NATS Account this transport operates within.
 	Account() *Account
 
+	// HasPeerInterest reports whether another node can receive this subject.
+	HasPeerInterest(subject string) bool
+
 	// Reset reconfigures the transport for a new account.
 	// This involves tearing down existing client resources and
 	// setting up new ones for the provided account.
@@ -63,6 +66,15 @@ func (t *defaultTransport) Node() RaftNode {
 
 func (t *defaultTransport) Account() *Account {
 	return t.acc
+}
+
+func (t *defaultTransport) HasPeerInterest(subject string) bool {
+	if t.acc == nil || t.acc.sl == nil {
+		return false
+	}
+	np, _ := t.acc.sl.NumInterest(subject)
+	// The Raft node itself owns one subscription for the vote subject.
+	return np > 1
 }
 
 func (t *defaultTransport) Reset(acc *Account) {

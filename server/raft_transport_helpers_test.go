@@ -84,6 +84,18 @@ func (h *raftTransportHub) healPartitions() {
 	clear(h.partitions)
 }
 
+func (h *raftTransportHub) hasPeerInterest(nodeID, subject string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	partition := h.partitions[nodeID]
+	for id, transport := range h.transports {
+		if id != nodeID && h.partitions[id] == partition && transport.sub != nil && transport.sub.HasInterest(subject) {
+			return true
+		}
+	}
+	return false
+}
+
 // Set a hook that is called back after a message is published. The after
 // message hook can expect the raftTransportHub to be unlocked. It is OK
 // to interact with the raftTransportHub inside the message hook. On the
@@ -154,6 +166,10 @@ func (t *mockTransport) Node() RaftNode {
 
 func (t *mockTransport) Account() *Account {
 	return t.acc
+}
+
+func (t *mockTransport) HasPeerInterest(subject string) bool {
+	return t.hub.hasPeerInterest(t.Node().ID(), subject)
 }
 
 func (t *mockTransport) Publish(subject string, reply string, msg []byte) {
