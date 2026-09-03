@@ -1831,7 +1831,12 @@ func (ru *recoveryUpdates) removeConsumer(ca *consumerAssignment) {
 	if _, ok := ru.removeConsumers[skey]; !ok {
 		ru.removeConsumers[skey] = map[string]*consumerAssignment{}
 	}
-	ru.removeConsumers[skey][key] = ca
+	// Keep the first staged removal; it's for the consumer we hold. Later
+	// removals are for a same-name recreate, and processConsumerRemoval
+	// ignores a removal whose raft group doesn't match ours.
+	if _, ok := ru.removeConsumers[skey][key]; !ok {
+		ru.removeConsumers[skey][key] = ca
+	}
 	if consumers, ok := ru.updateConsumers[skey]; ok {
 		delete(consumers, key)
 	}
