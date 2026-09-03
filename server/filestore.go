@@ -683,7 +683,7 @@ func (fs *fileStore) setCreatedTime(created time.Time) {
 	fs.mu.Unlock()
 }
 
-func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
+func (fs *fileStore) updateDurabilitySettingsLocked(syncOnFlush bool) {
 	if !fs.fcfg.SyncAlways {
 		return
 	}
@@ -691,13 +691,17 @@ func (fs *fileStore) updateDurabilitySettingsLocked(replicas int) {
 	// setting in favor of SyncOnFlush. Enable the new sync mode
 	// before disabling the old one so writes are never processed
 	// with both modes disabled.
-	if replicas > 1 {
+	if syncOnFlush {
 		fs.syncOnFlush.Store(true)
 		fs.syncAlways.Store(false)
 	} else {
 		fs.syncAlways.Store(true)
 		fs.syncOnFlush.Store(false)
 	}
+}
+
+func (fs *fileStore) resetDurabilitySettingsLocked() {
+	fs.updateDurabilitySettingsLocked(fs.cfg.Replicas > 1)
 }
 
 // flushForScaleDown transitions a SyncOnFlush store back to SyncAlways.
@@ -710,7 +714,7 @@ func (fs *fileStore) flushForScaleDown() error {
 	// Turn off syncOnFlush, and enable sync after every write.
 	// First enable sync after every write, so that any inflight
 	// or subsequent write gets synced
-	fs.updateDurabilitySettingsLocked(1)
+	fs.updateDurabilitySettingsLocked(false)
 	fs.mu.Unlock()
 
 	// Sync all dirty blocks, so that we no longer have to rely
@@ -791,7 +795,7 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		}
 	}
 
-	fs.updateDurabilitySettingsLocked(cfg.Replicas)
+	fs.resetDurabilitySettingsLocked()
 
 	if lmb := fs.lmb; lmb != nil {
 		// Enable/disable async flush depending on if it's supported and already initialized.
