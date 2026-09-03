@@ -7114,6 +7114,30 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 	}
 
+	// Header processing above may have changed the message, such as when a
+	// counter increment generates its value payload. Check the resulting size
+	// against the stream limit as well as checking the inbound size early.
+	// Subtract to prevent against overflows.
+	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			response, _ = json.Marshal(resp)
+			outq.sendMsg(reply, response)
+		}
+		return ErrMaxPayload
+	}
+
+	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
+			response, _ = json.Marshal(resp)
+			outq.sendMsg(reply, response)
+		}
+		return ErrMaxPayload
+	}
+
 	// Check to see if we have exceeded our limits.
 	// Don't error and log/stepdown if we're tracing when clustered.
 	if !isClustered && js.limitsExceeded(stype) {
