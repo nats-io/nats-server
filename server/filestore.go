@@ -30,7 +30,7 @@ import (
 	"io/fs"
 	"iter"
 	"math"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -6194,7 +6194,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	}
 
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
-	// Now just load regardless.
+	// Only load from disk if the cache is not already in memory, cacheNotLoaded will also revive a weakly held cache.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
 	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
@@ -6268,6 +6268,14 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 
 	// Must always perform the erase, even if the block is empty as it could contain tombstones.
 	if secure {
+		// The cache may have been expired or recycled while we dropped mb.mu above.
+		if mb.cacheNotLoaded() {
+			if err := mb.loadMsgsWithLock(); err != nil {
+				finishedWithCache()
+				mb.mu.Unlock()
+				return false, err
+			}
+		}
 		// Grab record info, but use the pre-computed record length.
 		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
@@ -12118,7 +12126,7 @@ func (fs *fileStore) setSyncTimer() {
 		// First time this fires will be between SyncInterval/2 and SyncInterval,
 		// so that different stores are spread out, rather than having many of
 		// them trying to all sync at once, causing blips and contending dios.
-		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval / 2))))
+		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int64N(int64(fs.fcfg.SyncInterval / 2))))
 		fs.syncTmr = time.AfterFunc(start, fs.syncBlocks)
 	}
 }
@@ -12148,7 +12156,7 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	// Make sure we do not try to write these out too fast.
 	// Spread these out for large numbers on a server restart.
 	const writeThreshold = 2 * time.Minute
-	writeJitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+	writeJitter := time.Duration(mrand.Int64N(int64(30 * time.Second)))
 	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 

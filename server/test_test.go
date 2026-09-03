@@ -16,7 +16,7 @@ package server
 import (
 	"cmp"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"reflect"

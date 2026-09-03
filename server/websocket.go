@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -656,7 +656,7 @@ func wsFillFrameHeader(fh []byte, useMasking, first, final, compressed bool, fra
 	if useMasking {
 		var keyBuf [4]byte
 		if _, err := io.ReadFull(crand.Reader, keyBuf[:4]); err != nil {
-			kv := mrand.Int31()
+			kv := mrand.Int32()
 			binary.LittleEndian.PutUint32(keyBuf[:4], uint32(kv))
 		}
 		copy(fh[n:], keyBuf[:4])

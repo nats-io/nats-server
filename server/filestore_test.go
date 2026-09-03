@@ -30,7 +30,7 @@ import (
 	"io/fs"
 	"math"
 	"math/bits"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1438,7 +1438,7 @@ func TestFileStoreBitRot(t *testing.T) {
 
 			var index int
 			for {
-				index = rand.Intn(len(contents))
+				index = rand.IntN(len(contents))
 				// Reverse one byte anywhere.
 				b := contents[index]
 				contents[index] = bits.Reverse8(b)
@@ -2245,7 +2245,7 @@ func TestFileStoreSnapshot(t *testing.T) {
 		total := int64(toSend - 100)
 		// Delete 50 random messages.
 		for i := 0; i < 50; i++ {
-			seq := uint64(rand.Int63n(total) + 101)
+			seq := uint64(rand.Int64N(total) + 101)
 			fs.RemoveMsg(seq)
 		}
 
@@ -2431,7 +2431,7 @@ func TestFileStoreConsumer(t *testing.T) {
 		// Generate 8k pending.
 		state.Pending = make(map[uint64]*Pending)
 		for len(state.Pending) < 8192 {
-			seq := uint64(rand.Intn(9890) + 101)
+			seq := uint64(rand.IntN(9890) + 101)
 			if _, ok := state.Pending[seq]; !ok {
 				state.Pending[seq] = nt()
 			}
@@ -5362,12 +5362,12 @@ func TestFileStoreSubjectsTotals(t *testing.T) {
 
 	for i := 0; i < 10_000; i++ {
 		// Flip coin for prefix
-		if rand.Intn(2) == 0 {
+		if rand.IntN(2) == 0 {
 			ft, m = "foo", fmap
 		} else {
 			ft, m = "bar", bmap
 		}
-		dt := rand.Intn(100)
+		dt := rand.IntN(100)
 		subj := fmt.Sprintf("%s.%d", ft, dt)
 		m[dt]++
 
@@ -5724,7 +5724,7 @@ func TestFileStoreErrPartialLoad(t *testing.T) {
 		lmb.mu.Unlock()
 
 		if spread := int(last - first); spread > 0 {
-			seq := first + uint64(rand.Intn(spread))
+			seq := first + uint64(rand.IntN(spread))
 			_, err = fs.LoadMsg(seq, &smv)
 			require_NoError(t, err)
 		}
@@ -6706,9 +6706,9 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		var b strings.Builder
 		// 1-6 tokens.
-		numTokens := rand.Intn(6) + 1
+		numTokens := rand.IntN(6) + 1
 		for i := 0; i < numTokens; i++ {
-			tlen := rand.Intn(4) + 2
+			tlen := rand.IntN(4) + 2
 			tok := buf[:tlen]
 			crand.Read(tok)
 			b.WriteString(hex.EncodeToString(tok))
@@ -6742,7 +6742,7 @@ func TestFileStoreTrackSubjLenForPSIM(t *testing.T) {
 	// Delete ~half
 	var smv StoreMsg
 	for i := 0; i < 500; i++ {
-		seq := uint64(rand.Intn(1000) + 1)
+		seq := uint64(rand.IntN(1000) + 1)
 		sm, err := fs.LoadMsg(seq, &smv)
 		if err != nil {
 			continue
@@ -6782,9 +6782,9 @@ func TestFileStoreLargeFullStatePSIM(t *testing.T) {
 	for i := 0; i < 100_000; i++ {
 		var b strings.Builder
 		// 1-6 tokens.
-		numTokens := rand.Intn(6) + 1
+		numTokens := rand.IntN(6) + 1
 		for i := 0; i < numTokens; i++ {
-			tlen := rand.Intn(8) + 2
+			tlen := rand.IntN(8) + 2
 			tok := buf[:tlen]
 			crand.Read(tok)
 			b.WriteString(hex.EncodeToString(tok))
@@ -6879,8 +6879,8 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 	numSubjects := 100
 	msgs := [][]byte{bytes.Repeat([]byte("ABC"), 333), bytes.Repeat([]byte("ABC"), 888), bytes.Repeat([]byte("ABC"), 555)}
 	for i := 0; i < 10_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(numSubjects)+1)
-		msg := msgs[rand.Intn(len(msgs))]
+		subj := fmt.Sprintf("foo.%d", rand.IntN(numSubjects)+1)
+		msg := msgs[rand.IntN(len(msgs))]
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 	fs.Stop()
@@ -6914,7 +6914,7 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 	numSubjects := 20
 	msg := bytes.Repeat([]byte("ABC"), 25)
 	for i := 1; i <= 1000; i++ {
-		subj := fmt.Sprintf("foo.%d.%d", rand.Intn(numSubjects)+1, i)
+		subj := fmt.Sprintf("foo.%d.%d", rand.IntN(numSubjects)+1, i)
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 	// Each block has ~8 msgs.
@@ -6953,7 +6953,7 @@ func TestFileStoreNumPendingLastBySubject(t *testing.T) {
 
 	// Make sure partials work properly.
 	for _, filter := range []string{"foo.10.*", "*.22.*", "*.*.222", "foo.5.999", "*.2.*"} {
-		sseq := uint64(rand.Intn(250) + 200) // Between 200-450
+		sseq := uint64(rand.IntN(250) + 200) // Between 200-450
 		total, _, err = fs.NumPending(sseq, filter, true)
 		require_NoError(t, err)
 		checkResult(sseq, total, filter)
@@ -8663,7 +8663,7 @@ func Benchmark_FileStoreLoadNextMsgSameFilterAsStream(b *testing.B) {
 
 	// Add in a bunch of msgs
 	for i := 0; i < 100_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
+		subj := fmt.Sprintf("foo.%d", rand.IntN(1024))
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 
@@ -8689,7 +8689,7 @@ func Benchmark_FileStoreLoadNextMsgLiteralSubject(b *testing.B) {
 
 	// Add in a bunch of msgs
 	for i := 0; i < 100_000; i++ {
-		subj := fmt.Sprintf("foo.%d", rand.Intn(1024))
+		subj := fmt.Sprintf("foo.%d", rand.IntN(1024))
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 	// This is the one we will try to match.
@@ -8858,7 +8858,7 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsInBetweenWithWildcard(b *testin
 	// Add in a bunch of msgs.
 	// We need to make sure we have a range of subjects that could kick in a linear scan.
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		subj := fmt.Sprintf("foo.%d.bar", rand.IntN(100_000)+2)
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 	// Make last msg one that would match as well.
@@ -8889,7 +8889,7 @@ func Benchmark_FileStoreLoadNextManySubjectsWithWildcardNearLastBlock(b *testing
 	// Add in a bunch of msgs.
 	// We need to make sure we have a range of subjects that could kick in a linear scan.
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(100_000)+2)
+		subj := fmt.Sprintf("foo.%d.bar", rand.IntN(100_000)+2)
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 	// Make last msg one that would match as well.
@@ -8920,7 +8920,7 @@ func Benchmark_FileStoreLoadNextMsgVerySparseMsgsLargeTail(b *testing.B) {
 	// Add in a bunch of msgs.
 	// We need to make sure we have a range of subjects that could kick in a linear scan.
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("foo.%d.bar", rand.Intn(64_000)+2)
+		subj := fmt.Sprintf("foo.%d.bar", rand.IntN(64_000)+2)
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 
@@ -9356,7 +9356,7 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	totalMsgs := 100_000
 	totalSubjects := 10_000
 	numFiltered := 5000
-	startSeq := uint64(5_000 + rand.Intn(90_000))
+	startSeq := uint64(5_000 + rand.IntN(90_000))
 
 	subjects := make([]string, 0, totalSubjects)
 	for i := 0; i < totalSubjects; i++ {
@@ -9366,14 +9366,14 @@ func TestFileStoreNumPendingMulti(t *testing.T) {
 	// Put in 100k msgs with random subjects.
 	msg := bytes.Repeat([]byte("ZZZ"), 333)
 	for i := 0; i < totalMsgs; i++ {
-		_, _, err = fs.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg, 0)
+		_, _, err = fs.StoreMsg(subjects[rand.IntN(totalSubjects)], nil, msg, 0)
 		require_NoError(t, err)
 	}
 
 	// Now we want to do a calculate NumPendingMulti.
 	filters := gsl.NewSublist[struct{}]()
 	for filters.Count() < uint32(numFiltered) {
-		filter := subjects[rand.Intn(totalSubjects)]
+		filter := subjects[rand.IntN(totalSubjects)]
 		if !filters.HasInterest(filter) {
 			filters.Insert(filter, struct{}{})
 		}
@@ -10479,7 +10479,7 @@ func TestFileStoreAllLastSeqs(t *testing.T) {
 	msg := []byte("abc")
 
 	for i := 0; i < 100_000; i++ {
-		subj := subjs[rand.Intn(len(subjs))]
+		subj := subjs[rand.IntN(len(subjs))]
 		fs.StoreMsg(subj, nil, msg, 0)
 	}
 
@@ -14883,7 +14883,7 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 			}
 		}()
 
-		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.IntN(10)) * time.Millisecond)
 
 		err = obs.Delete()
 		require_NoError(t, err)
@@ -15332,7 +15332,7 @@ func TestFileStoreSubjectForSeqAliasRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for !stop.Load() {
-				seq := uint64(rand.Intn(N) + 1)
+				seq := uint64(rand.IntN(N) + 1)
 				got, err := fs.SubjectForSeq(seq)
 				if err != nil {
 					continue
@@ -16144,9 +16144,9 @@ func TestFileStoreDeleteMapView(t *testing.T) {
 			}
 		}
 		// Random probes mix both paths.
-		rng := rand.New(rand.NewSource(0))
+		rng := rand.New(rand.NewPCG(0, 0))
 		for i := 0; i < numMsgs*4; i++ {
-			seq := uint64(rng.Intn(numMsgs + 2))
+			seq := uint64(rng.IntN(numMsgs + 2))
 			require_Equal(t, v.Exists(seq), expected[seq])
 		}
 	}
@@ -16349,6 +16349,7 @@ func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
 	require_Equal(t, seeded.Seq, 0)
 }
 
+// https://github.com/nats-io/nats-server/issues/8552
 func TestFileStoreEvictionTargetCacheNotForceExpired(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256},
@@ -16431,4 +16432,64 @@ func TestFileStorePerSubjectLimitRemovalDoesNotMarkEvictTarget(t *testing.T) {
 	// not marked as an eviction target since it is not the head block.
 	require_True(t, fseqAfter != fseq)
 	require_True(t, !evictTarget)
+  
+// https://github.com/nats-io/nats-server/issues/8547
+// A secure remove drops mb.mu while it writes the delete tombstone into the last block.
+// If the block cache expires in that window, the secure branch used to dereference a nil mb.cache.
+func TestFileStoreEraseMsgCacheExpiredDuringTombstoneWrite(t *testing.T) {
+	defer require_NoPanic(t)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+
+	msg := []byte("Hello World")
+	for i := 0; i < 200; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+	// We need more than one block so tombstones land in the last block, not the one we erase from.
+	require_True(t, fs.numMsgBlocks() > 1)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.Lock()
+	first, last := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	// Pretend the last write was long ago so a forced expire actually drops the cache.
+	mb.lwts = 0
+	mb.mu.Unlock()
+
+	// Expire the cache as fast as we can, like the expiration timer or a linear scan ending on this block.
+	// TryLock so a panicking erase that still holds mb.mu cannot hang the test on wg.Wait.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if mb.mu.TryLock() {
+					mb.tryForceExpireCacheLocked()
+					mb.mu.Unlock()
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		wg.Wait()
+	}()
+
+	// Keep one message so the block is not removed as empty.
+	for seq := first; seq < last; seq++ {
+		removed, err := fs.EraseMsg(seq)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+	fs.Stop()
 }

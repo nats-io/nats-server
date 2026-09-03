@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1914,7 +1914,7 @@ func TestJetStreamSuperClusterSourceAndMirrorConsumersLeaderChange(t *testing.T)
 
 	// Now make sure we only have a single direct consumer on our origin streams.
 	// Pick one at random.
-	name := fmt.Sprintf("O%d", rand.Intn(numStreams-1)+1)
+	name := fmt.Sprintf("O%d", rand.IntN(numStreams-1)+1)
 	c1.waitOnStreamLeader("$G", name)
 	s := c1.streamLeader("$G", name)
 	a, err := s.lookupAccount("$G")
@@ -4395,10 +4395,11 @@ func TestJetStreamSuperClusterLegacyMoveCancel(t *testing.T) {
 	})
 }
 
-// A legacy move is inflight just like one expressed as desired state, so a move or scale
-// on top of it must be rejected. Retargeting instead would record the over-replicated peer
-// set as the origin to roll back to, growing the assignment the guard is meant to bound.
-func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
+// A legacy move is inflight just like one expressed as desired state, so any other
+// reconfiguration on top of it must be rejected. Retargeting instead would record the
+// over-replicated peer set as the origin to roll back to, growing the assignment the
+// guard is meant to bound.
+func TestJetStreamSuperClusterLegacyMoveRejectsReconfigure(t *testing.T) {
 	sc := moveTestSuperCluster(t)
 	defer sc.shutdown()
 
@@ -4444,7 +4445,7 @@ func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
 	mjs.mu.RUnlock()
 	require_False(t, hasDesired)
 
-	// Both a scale and a placement induced move must be rejected while it is in progress.
+	// A scale, placement induced move and retention change must be rejected while it is in progress.
 	scaled := *cfg
 	scaled.Replicas = 3
 	_, err = js.UpdateStream(&scaled)
@@ -4455,47 +4456,29 @@ func TestJetStreamSuperClusterLegacyMoveRejectsMoveAndScale(t *testing.T) {
 	_, err = js.UpdateStream(&moved)
 	require_Error(t, err, NewJSStreamMoveInProgressError())
 
-	// The peer set must be untouched by the rejected requests.
+	retention := *cfg
+	retention.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(&retention)
+	require_Error(t, err, NewJSStreamMoveInProgressError())
+
+	// The peer set must be untouched by the rejected requests, and none of them may
+	// have registered desired state or changed the config.
 	legacyPeers := append(copyStrings(originPeers), destPeers...)
 	peers, _, replicas := moveTestStreamGroup(t, sc.leader(), globalAccountName, "TEST")
 	require_Equal(t, replicas, 1)
 	require_True(t, moveTestSamePeers(peers, legacyPeers))
 
-	// A retention change does not retarget the peer set, so it is allowed and registers desired
-	// state. The origin it captures must be the peer set the legacy move started from, not the
-	// over-replicated set it is moving through, or a rollback would restore the enlarged set.
-	// The stream can't respond while its only peer is down, only the assignment matters here.
-	retention := *cfg
-	retention.Retention = nats.InterestPolicy
-	_, _ = js.UpdateStream(&retention, nats.MaxWait(time.Second))
-
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
-		mjs := sc.leader().getJetStream()
-		mjs.mu.RLock()
-		defer mjs.mu.RUnlock()
-		sa := mjs.streamAssignment(globalAccountName, "TEST")
-		if sa == nil || sa.Group == nil {
-			return errors.New("no stream assignment")
-		}
-		if sa.Config == nil || sa.Config.Retention != InterestPolicy {
-			return fmt.Errorf("retention change not applied yet: %+v", sa.Config)
-		}
-		d := sa.Group.Desired
-		if d == nil || d.Origin == nil {
-			return fmt.Errorf("no desired origin yet: %+v", d)
-		}
-		if !moveTestSamePeers(d.Origin.Peers, originPeers) {
-			return fmt.Errorf("expected origin peers %+v, got %+v", originPeers, d.Origin.Peers)
-		}
-		if d.Origin.Cluster != "C1" {
-			return fmt.Errorf("expected origin cluster %q, got %q", "C1", d.Origin.Cluster)
-		}
-		// The move itself is still in progress, so the assignment keeps both peer sets.
-		if !moveTestSamePeers(sa.Group.Peers, legacyPeers) {
-			return fmt.Errorf("expected peers %+v, got %+v", legacyPeers, sa.Group.Peers)
-		}
-		return nil
-	})
+	mjs = sc.leader().getJetStream()
+	mjs.mu.RLock()
+	sa = mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	require_NotNil(t, sa.Group)
+	require_NotNil(t, sa.Config)
+	hasDesired = sa.Group.Desired != nil
+	retentionPolicy := sa.Config.Retention
+	mjs.mu.RUnlock()
+	require_False(t, hasDesired)
+	require_Equal(t, retentionPolicy, LimitsPolicy)
 }
 
 // A legacy move that is stalled must remain cancellable. Only the stream's group leader
@@ -6174,4 +6157,284 @@ func TestJetStreamSuperClusterConsumerAckSubjectWithStreamImportProtocolError(t 
 	msg = msgs[0]
 	require_Equal(t, msg.Subject, "TEST")
 	require_NoError(t, msg.AckSync())
+}
+
+// Canceling a move reverts to the peers we started on, which already hold the data,
+// so it must not wait on the catchup to the peers we're abandoning. Not even when
+// that catchup can't complete and one of the peers we're reverting to is down.
+func TestJetStreamClusterMoveCancelWithStalledCatchup(t *testing.T) {
+	// Speed up catchup stall/retry cycles.
+	streamCatchupActivityInterval = 2 * time.Second
+	t.Cleanup(func() {
+		streamCatchupActivityInterval = defaultStreamCatchupActivityInterval
+	})
+
+	sc := moveTestSuperCluster(t)
+	defer sc.shutdown()
+
+	c1 := sc.clusterForName("C1")
+	nc, js := jsClientConnect(t, c1.randomNonLeader())
+	defer nc.Close()
+
+	ncsys, err := nats.Connect(sc.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Tags: []string{"C1"}},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	toSend := 1_000
+	for range toSend {
+		_, err = js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	// Pick a peer we're reverting to that isn't the leader, we'll take it down.
+	victim := _EMPTY_
+	for _, r := range si.Cluster.Replicas {
+		if r.Name != si.Cluster.Leader && strings.HasPrefix(r.Name, "C1") {
+			victim = r.Name
+			break
+		}
+	}
+	require_NotEqual(t, victim, _EMPTY_)
+
+	sl := c1.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Exhaust the leader's outbound catchup budget, as if another large catchup holds
+	// all of it, so the peers we move to can never complete their store catchup. We
+	// never release it, canceling must not depend on it.
+	hold := new(int64)
+	sl.gcbAdd(hold, int64(1)<<30)
+	defer sl.gcbSubLast(hold)
+
+	// Compact the log, so the peers we move to must pull the data through the stalled
+	// upper layer catchup instead of replaying our Raft log.
+	node := mset.raftNode()
+	require_NotNil(t, node)
+	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot(), true))
+
+	// Move to C2.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Tags: []string{"C2"}},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Wait for the combined group, with store catchups in flight.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if peers := node.PeerNames(); len(peers) != 6 {
+			return fmt.Errorf("expected 6 peers, got %d", len(peers))
+		}
+		if !mset.hasCatchupPeers() {
+			return fmt.Errorf("no store catchups in flight yet")
+		}
+		return nil
+	})
+
+	// Take down one of the peers we'd be reverting to. The remaining two still hold
+	// all the data, and are a quorum of the peer set we're canceling back to.
+	vs := c1.serverByName(victim)
+	require_NotNil(t, vs)
+	vs.Shutdown()
+	vs.WaitForShutdown()
+
+	// The cancel must converge back onto C1, it can only wait on the peers it's
+	// reverting to, and those are caught up already.
+	moveTestCancelMove(t, ncsys, globalAccountName, "TEST")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil {
+			return fmt.Errorf("no cluster info")
+		}
+		if si.Cluster.Name != "C1" {
+			return fmt.Errorf("expected to be back on C1, got %q", si.Cluster.Name)
+		}
+		// One of the three peers is down, so only one replica reports.
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d", len(si.Cluster.Replicas))
+		}
+		if si.State.Msgs != uint64(toSend) {
+			return fmt.Errorf("expected %d msgs, got %d", toSend, si.State.Msgs)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerMoveWaitsForQuorumUntilPeerRemoved(t *testing.T) {
+	// Five servers per cluster, so a peer-remove has a live peer to remap onto.
+	sc := createJetStreamSuperClusterWithTemplateAndModHook(t, jsClusterTempl, 5, 2,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, clusterName)
+		}, nil)
+	defer sc.shutdown()
+
+	c1 := sc.clusterForName("C1")
+	// A server that stays up for the whole test, we only take C2 servers down.
+	probe := c1.randomServer()
+	nc, js := jsClientConnect(t, c1.randomNonLeader())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Tags: []string{"C1"}},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	for range 10 {
+		_, err = js.Publish("foo", []byte("HELLO WORLD"))
+		require_NoError(t, err)
+	}
+
+	// Reports the migration status and peer set of the stream and the consumer.
+	groupState := func(s *Server) (streamPeers, consumerPeers []string, streamStatus, consumerStatus *DesiredClusterInfoStatus) {
+		t.Helper()
+		sjs := s.getJetStream()
+		if sjs == nil {
+			return nil, nil, nil, nil
+		}
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if sa := sjs.streamAssignment(globalAccountName, "TEST"); sa != nil && sa.Group != nil {
+			streamPeers, streamStatus = copyStrings(sa.Group.Peers), sa.Group.migration
+		}
+		if ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER"); ca != nil && ca.Group != nil {
+			consumerPeers, consumerStatus = copyStrings(ca.Group.Peers), ca.Group.migration
+		}
+		return streamPeers, consumerPeers, streamStatus, consumerStatus
+	}
+	onC1 := func(peers []string) int {
+		t.Helper()
+		var n int
+		for _, p := range peers {
+			if strings.HasPrefix(probe.serverNameForNode(p), "C1") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Move to C2.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Tags: []string{"C2"}},
+		Replicas:  3,
+	})
+	require_NoError(t, err)
+
+	// Wait for the stream to grow onto C2, so we know which peers it's moving to.
+	c2 := sc.clusterForName("C2")
+	var target []string
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		peers, _, _, _ := groupState(probe)
+		if len(peers) != 6 {
+			return fmt.Errorf("expected 6 stream peers, got %d", len(peers))
+		}
+		target = nil
+		for _, p := range peers {
+			if strings.HasPrefix(probe.serverNameForNode(p), "C2") {
+				target = append(target, p)
+			}
+		}
+		if len(target) != 3 {
+			return fmt.Errorf("expected 3 target peers, got %d", len(target))
+		}
+		return nil
+	})
+
+	// Take down two of the three peers we're moving to. The group can't shrink onto
+	// what's left without losing the ability to commit, so it must wait.
+	var down []string
+	for _, p := range target[:2] {
+		name := probe.serverNameForNode(p)
+		s := c2.serverByName(name)
+		require_NotNil(t, s)
+		s.Shutdown()
+		s.WaitForShutdown()
+		down = append(down, name)
+	}
+
+	// The consumer must refuse the removal outright. Proposing it instead would
+	// leave a membership change in flight that can never commit, since the group
+	// it'd be left with can't reach quorum.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		var cs *DesiredClusterInfoStatus
+		for _, c := range []*cluster{c1, c2} {
+			if cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER"); cl != nil {
+				_, _, _, cs = groupState(cl)
+			}
+		}
+		if cs == nil || cs.Type != MigrationStatusQuorum {
+			return fmt.Errorf("consumer not refusing the removal, status %+v", cs)
+		}
+		return nil
+	})
+
+	// And it must hold there, neither the consumer nor the stream behind it may
+	// shed the origin peers they still need.
+	for range 12 {
+		sp, cp, ss, _ := groupState(probe)
+		if n := onC1(cp); n < 2 {
+			t.Fatalf("consumer shed origin peers it needed for quorum, %d left", n)
+		}
+		if n := onC1(sp); n < 2 {
+			t.Fatalf("stream shed origin peers it needed for quorum, %d left, status %+v", n, ss)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	// The operator peer-removes the peers that aren't coming back, which remaps the
+	// stream and its consumers onto peers that are up.
+	for _, name := range down {
+		req, err := json.Marshal(&JSApiStreamRemovePeerRequest{Peer: name})
+		require_NoError(t, err)
+		resp, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), req, 5*time.Second)
+		require_NoError(t, err)
+		var rpResp JSApiStreamRemovePeerResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &rpResp))
+		if rpResp.Error != nil {
+			t.Fatalf("peer remove of %s failed: %+v", name, rpResp.Error)
+		}
+	}
+
+	// Both must now converge onto C2 and off the origin cluster.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		sp, cp, ss, cs := groupState(probe)
+		if len(sp) != 3 || onC1(sp) != 0 {
+			return fmt.Errorf("stream not converged: %d peers, %d on C1, status %+v", len(sp), onC1(sp), ss)
+		}
+		if len(cp) != 3 || onC1(cp) != 0 {
+			return fmt.Errorf("consumer not converged: %d peers, %d on C1, status %+v", len(cp), onC1(cp), cs)
+		}
+		return nil
+	})
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(10))
 }

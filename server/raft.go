@@ -2528,9 +2528,6 @@ func (n *raft) Reset() {
 
 	n.stepdownLocked(_EMPTY_)
 
-	// Cancel any in-flight catchup so it does not race the reset.
-	n.cancelCatchup()
-
 	// Drop proposals and inbound entries; they are no longer meaningful
 	// against whatever log this node ends up following.
 	n.prop.drain()
@@ -2539,6 +2536,10 @@ func (n *raft) Reset() {
 	n.apply.drain()
 	n.reqs.drain()
 	n.votes.drain()
+
+	// Cancel any in-flight catchup so it does not race the reset.
+	// Cancel after draining, we might have sent EntryCatchup and need to get them the nil entry.
+	n.cancelCatchup()
 
 	// Remove every snapshot under our snapshots dir, not just the one referenced
 	// by n.snapfile. Orphans (e.g. from a crash between install and the previous
@@ -3631,13 +3632,7 @@ func (n *raft) runCatchup(ar *appendEntryResponse, indexUpdatesQ *ipQueue[uint64
 				n.progress = nil
 			}
 		}
-		// Check if this is a new peer and if so go ahead and propose adding them.
-		_, exists := n.peers[peer]
 		n.Unlock()
-		if !exists {
-			n.debug("Catchup done for %q, will add into peers", peer)
-			n.ProposeAddPeer(peer)
-		}
 		indexUpdatesQ.unregister()
 	}()
 
@@ -4112,7 +4107,7 @@ func (n *raft) trackPeer(peer string) error {
 				n.observed = nil
 			}
 		}
-	} else if n.managed && !isRemoved {
+	} else if n.managed {
 		// For managed groups the meta layer can assign peers before they've been
 		// added to our peer set. Track when we hear from them, so the upper layer
 		// can prefer adding peers that are demonstrably up.
@@ -4280,9 +4275,13 @@ func (n *raft) catchupStalled() bool {
 // to it. The remote side will stream entries to that subject.
 // Lock should be held.
 func (n *raft) createCatchup(ae *appendEntry) string {
-	// Cleanup any old ones.
-	if n.catchup != nil && n.catchup.sub != nil {
-		n.unsubscribe(n.catchup.sub)
+	// Cleanup any old ones, but preserve whether we signaled the upper layer.
+	var signal bool
+	if n.catchup != nil {
+		if n.catchup.sub != nil {
+			n.unsubscribe(n.catchup.sub)
+		}
+		signal = n.catchup.signal
 	}
 	// Snapshot term and index.
 	n.catchup = &catchupState{
@@ -4291,6 +4290,7 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		pterm:  n.pterm,
 		pindex: n.pindex,
 		active: time.Now(),
+		signal: signal,
 	}
 	inbox := n.newCatchupInbox()
 	sub, _ := n.subscribe(inbox, n.handleAppendEntry)

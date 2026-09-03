@@ -15,7 +15,7 @@ package test
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"strconv"
 	"strings"
@@ -29,8 +29,8 @@ import (
 const dbgSubs = "$SYS.DEBUG.SUBSCRIBERS"
 
 func (sc *supercluster) selectRandomServer() *server.Options {
-	ci := rand.Int31n(int32(len(sc.clusters)))
-	si := rand.Int31n(int32(len(sc.clusters[ci].servers)))
+	ci := rand.Int32N(int32(len(sc.clusters)))
+	si := rand.Int32N(int32(len(sc.clusters[ci].servers)))
 	return sc.clusters[ci].opts[si]
 }
 
@@ -204,8 +204,8 @@ func TestSystemServiceSubscribersLeafNodesWithoutSystem(t *testing.T) {
 
 	sc.setupSystemServicesImports(t, "FOO")
 
-	ci := rand.Int31n(int32(len(sc.clusters)))
-	si := rand.Int31n(int32(len(sc.clusters[ci].servers)))
+	ci := rand.Int32N(int32(len(sc.clusters)))
+	si := rand.Int32N(int32(len(sc.clusters[ci].servers)))
 	s, opts := sc.clusters[ci].servers[si], sc.clusters[ci].opts[si]
 	url := fmt.Sprintf("nats://%s:pass@%s:%d", "foo", opts.Host, opts.LeafNode.Port)
 	ls, lopts := runSolicitLeafServerToURL(url)
@@ -297,8 +297,8 @@ func TestSystemServiceSubscribersLeafNodesWithSystem(t *testing.T) {
 
 	sc.setupSystemServicesImports(t, "FOO")
 
-	ci := rand.Int31n(int32(len(sc.clusters)))
-	si := rand.Int31n(int32(len(sc.clusters[ci].servers)))
+	ci := rand.Int32N(int32(len(sc.clusters)))
+	si := rand.Int32N(int32(len(sc.clusters[ci].servers)))
 	s, opts := sc.clusters[ci].servers[si], sc.clusters[ci].opts[si]
 	url := fmt.Sprintf("nats://%s:pass@%s:%d", "foo", opts.Host, opts.LeafNode.Port)
 	ls, lopts := runSolicitLeafServerWithSystemToURL(url)

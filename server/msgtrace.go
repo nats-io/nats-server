@@ -17,7 +17,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -548,7 +548,7 @@ func sample(sampling int) bool {
 	if sampling <= 0 || sampling >= 100 {
 		return true
 	}
-	return rand.Int31n(100) <= int32(sampling)
+	return rand.Int32N(100) <= int32(sampling)
 }
 
 // This function will return the header as a map (instead of http.Header because

@@ -26,7 +26,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"os"
@@ -459,8 +459,8 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 
 	startClusterPorts := []int{20_022, 22_022, 24_022}
 	startGatewayPorts := []int{20_122, 22_122, 24_122}
-	startClusterPort := startClusterPorts[rand.Intn(len(startClusterPorts))]
-	startGWPort := startGatewayPorts[rand.Intn(len(startGatewayPorts))]
+	startClusterPort := startClusterPorts[rand.IntN(len(startClusterPorts))]
+	startGWPort := startGatewayPorts[rand.IntN(len(startGatewayPorts))]
 
 	// Make the GWs form faster for the tests.
 	SetGatewaysSolicitDelay(10 * time.Millisecond)
@@ -805,7 +805,7 @@ func createJetStreamClusterWithTemplate(t testing.TB, tmpl string, clusterName s
 
 func createJetStreamClusterWithTemplateAndModHook(t testing.TB, tmpl string, clusterName string, numServers int, modify modifyCb) *cluster {
 	startPorts := []int{7_022, 9_022, 11_022, 15_022}
-	port := startPorts[rand.Intn(len(startPorts))]
+	port := startPorts[rand.IntN(len(startPorts))]
 	return createJetStreamClusterAndModHook(t, tmpl, clusterName, _EMPTY_, numServers, port, true, modify)
 }
 
@@ -821,7 +821,7 @@ func createJetStreamClusterAndModHook(t testing.TB, tmpl, cName, snPre string, n
 
 func createJetStreamClusterWithNetProxy(t testing.TB, cName string, numServers int, cnp *clusterProxy) *cluster {
 	startPorts := []int{7_122, 9_122, 11_122, 15_122}
-	port := startPorts[rand.Intn(len(startPorts))]
+	port := startPorts[rand.IntN(len(startPorts))]
 	return createJetStreamClusterEx(t, jsClusterTempl, cName, _EMPTY_, numServers, port, true, nil, cnp)
 }
 

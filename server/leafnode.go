@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -818,7 +818,7 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 			}
 		}
 		if err != nil {
-			jitter := time.Duration(rand.Int63n(int64(reconnectDelay)))
+			jitter := time.Duration(rand.Int64N(int64(reconnectDelay)))
 			delay := reconnectDelay + jitter
 			attempts++
 			if s.shouldReportConnectErr(firstConnect, attempts) {
@@ -2673,7 +2673,7 @@ func (acc *Account) updateLeafNodesEx(sub *subscription, delta int32, hubOnly bo
 	nleafs := len(acc.lleafs)
 	start := 0
 	if nleafs > 1 {
-		start = rand.Intn(nleafs)
+		start = rand.IntN(nleafs)
 	}
 	for i := 0; i < nleafs; i++ {
 		ln := acc.lleafs[(start+i)%nleafs]

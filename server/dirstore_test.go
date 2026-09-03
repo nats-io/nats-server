@@ -18,7 +18,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -634,7 +634,7 @@ func TestLruVolume(t *testing.T) {
 		keys[i], err = k.PublicKey()
 		require_NoError(t, err)
 
-		createTestAccount(t, dirStore, 10000+rand.Intn(10000), k) // not intended to expire
+		createTestAccount(t, dirStore, 10000+rand.IntN(10000), k) // not intended to expire
 		assertStoreSize(t, dirStore, 2)
 		_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, keys[i-2]))
 		require_Error(t, err)

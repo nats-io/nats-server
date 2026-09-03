@@ -22,7 +22,7 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -382,6 +382,7 @@ type ClusterInfo struct {
 // DesiredClusterInfo shows information of the desired set of servers
 // that should make up the stream or consumer.
 type DesiredClusterInfo struct {
+	Created  time.Time                 `json:"created"`
 	Name     string                    `json:"name,omitempty"`
 	Replicas []*PeerInfo               `json:"replicas,omitempty"`
 	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
@@ -1266,6 +1267,7 @@ func (mset *stream) streamAssignment() *streamAssignment {
 
 func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	var node RaftNode
+	var peers []string
 
 	mset.mu.RLock()
 	js := mset.js
@@ -1275,6 +1277,7 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		js.mu.RLock()
 		if sa.Group != nil {
 			node = sa.Group.node
+			peers = copyStrings(sa.Group.Peers)
 		}
 		js.mu.RUnlock()
 	}
@@ -1289,6 +1292,18 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 
 	// Set our node.
 	mset.node = node
+
+	// Stop tracking peers for catchup if they're no longer part of the group.
+	if len(mset.catchups) > 0 {
+		for peer := range mset.catchups {
+			if !slices.Contains(peers, peer) {
+				delete(mset.catchups, peer)
+			}
+		}
+		if len(mset.catchups) == 0 {
+			mset.catchups = nil
+		}
+	}
 
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {
@@ -3692,7 +3707,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 	next += calculateRetryBackoff(mset.mirror.fails)
 
 	// Add some jitter.
-	next += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	next += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	stopAndClearTimer(&mset.mirrorConsumerSetup)
 	mset.mirrorConsumerSetup = time.AfterFunc(next, func() {
@@ -4225,7 +4240,7 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 	}
 
 	// Always add some jitter
-	scheduleDelay += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	scheduleDelay += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	// Schedule the call to trySetupSourceConsumer
 	mset.sourceSetupSchedules[iname] = time.AfterFunc(scheduleDelay, func() {
@@ -5151,7 +5166,7 @@ func (mset *stream) subscribeToStream() error {
 		if mset.cfg.Replicas == 1 {
 			mset.setupSourceConsumers()
 		} else {
-			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
+			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.IntN(int(500*time.Millisecond)))+100*time.Millisecond, func() {
 				mset.mu.Lock()
 				mset.setupSourceConsumers()
 				mset.mu.Unlock()
@@ -6550,6 +6565,28 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var incr *big.Int
 	var rollupSub, rollupAll bool
 
+	// Check to see if we are over the max msg size.
+	// Subtract to prevent against overflows.
+	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
+	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
 	if len(hdr) > 0 {
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
@@ -7077,7 +7114,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 	}
 
-	// Check to see if we are over the max msg size.
+	// Header processing above may have changed the message, such as when a
+	// counter increment generates its value payload. Check the resulting size
+	// against the stream limit as well as checking the inbound size early.
 	// Subtract to prevent against overflows.
 	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		if canRespond {

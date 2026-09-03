@@ -23,7 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -3514,7 +3514,7 @@ func TestMQTTClusterConnectDisconnectClean(t *testing.T) {
 	// specified.
 	N := 100
 	for n := 0; n < N; n++ {
-		testMQTTConnectDisconnect(t, cl.opts[rand.Intn(nServers)], clientID, true, false)
+		testMQTTConnectDisconnect(t, cl.opts[rand.IntN(nServers)], clientID, true, false)
 	}
 }
 
@@ -7014,7 +7014,7 @@ type chunkWriteConn struct {
 
 func (cwc *chunkWriteConn) Write(p []byte) (int, error) {
 	max := len(p)
-	cs := rand.Intn(max) + 1
+	cs := rand.IntN(max) + 1
 	if cs < max {
 		if pn, perr := cwc.Conn.Write(p[:cs]); perr != nil {
 			return pn, perr

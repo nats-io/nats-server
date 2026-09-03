@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path"
 	"path/filepath"
@@ -1356,7 +1356,7 @@ func TestJetStreamClusterBusyStreams(t *testing.T) {
 				for i := 0; i < test.restarts; i++ {
 					switch {
 					case test.restartAny:
-						s := c.servers[rand.Intn(len(c.servers))]
+						s := c.servers[rand.IntN(len(c.servers))]
 						if test.ldmRestart {
 							s.lameDuckMode()
 						} else {
@@ -2415,8 +2415,8 @@ func TestJetStreamClusterPubAckSequenceDupe(t *testing.T) {
 		msgSubject := "TEST_SUBJECT." + strconv.FormatUint(seq, 10)
 		msgIdOpt := nats.MsgId(nuid.Next())
 
-		firstPublisherClient := &clients[rand.Intn(len(clients))]
-		secondPublisherClient := &clients[rand.Intn(len(clients))]
+		firstPublisherClient := &clients[rand.IntN(len(clients))]
+		secondPublisherClient := &clients[rand.IntN(len(clients))]
 
 		pubAck1, err := firstPublisherClient.js.Publish(msgSubject, msgData, msgIdOpt)
 		require_NoError(t, err)
@@ -3290,11 +3290,11 @@ func TestJetStreamClusterConsumerReplicasAfterScale(t *testing.T) {
 	sub, err := js.PullSubscribe("foo", "r1")
 	require_NoError(t, err)
 
-	fetch := rand.Intn(99) + 1 // Needs to be at least 1.
+	fetch := rand.IntN(99) + 1 // Needs to be at least 1.
 	msgs, err := sub.Fetch(fetch, nats.MaxWait(10*time.Second))
 	require_NoError(t, err)
 	require_Equal(t, len(msgs), fetch)
-	ack := rand.Intn(fetch)
+	ack := rand.IntN(fetch)
 	for i := 0; i <= ack; i++ {
 		msgs[i].AckSync()
 	}
@@ -6111,7 +6111,7 @@ func TestJetStreamClusterObserverNotElectedMetaLeader(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Add some random delay before changing state and stepping down.
-			time.Sleep(time.Duration(rand.Intn(25)) * time.Millisecond)
+			time.Sleep(time.Duration(rand.IntN(25)) * time.Millisecond)
 			setToObserverAndStepDown(other)
 		}()
 		setToObserverAndStepDown(leader)

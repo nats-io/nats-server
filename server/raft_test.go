@@ -19,7 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"path"
@@ -63,7 +63,7 @@ func TestNRGSnapshotAndRestart(t *testing.T) {
 	sm := rg.nonLeader().(*stateAdder)
 
 	for i := 0; i < 1000; i++ {
-		delta := rand.Int63n(222)
+		delta := rand.Int64N(222)
 		expectedTotal += delta
 		leader.proposeDelta(delta)
 
@@ -145,7 +145,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		b := copyBytes(buf)
 		// modifying the header (idx < 42) will not result in an error by decodeAppendEntry
-		bi := 42 + rand.Intn(len(b)-42)
+		bi := 42 + rand.IntN(len(b)-42)
 		if b[bi] != 0 && bi != 40 {
 			b[bi] = 0
 			_, err = decodeAppendEntry(b, nil, _EMPTY_)
@@ -3945,10 +3945,11 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	require_Len(t, len(n.observed), 0)
 	require_False(t, n.LastHeardFromPeer("B").IsZero())
 
-	// Removed peers are not observed.
+	// Removed peers are still observed, as otherwise a peer that's removed
+	// and re-added shortly after will stall until the timer expires.
 	n.removed = map[string]time.Time{"C": time.Now()}
 	require_NoError(t, n.trackPeer("C"))
-	require_True(t, n.LastHeardFromPeer("C").IsZero())
+	require_False(t, n.LastHeardFromPeer("C").IsZero())
 }
 
 func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
@@ -7900,11 +7901,26 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 
 	// Follower requests a catchup, which starts a catchup run that blocks
 	// waiting for index updates after sending up to 2MB of entries.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("$NRG.CR.TEST.1")
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
 	n.catchupFollower(&appendEntryResponse{term: 1, index: 0, peer: nats1, reply: "$NRG.CR.TEST.1"})
 	n.RLock()
 	q1 := n.progress[nats1]
 	n.RUnlock()
 	require_True(t, q1 != nil)
+
+	// Grab the progress inbox of the first run, its subscription going away is
+	// how we know the run's deferred cleanup has completed.
+	pmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	progressInbox := pmsg.Reply
+	require_True(t, strings.HasPrefix(progressInbox, "$NRG.CP."))
 
 	// Wait for the first run to consume the initial index update, so we know
 	// it has started and captured its view of the last index (4) before we
@@ -7931,11 +7947,9 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	require_True(t, q2 != nil)
 	require_True(t, q1 != q2)
 
-	// Wait for the first run's deferred cleanup. On exit it proposes adding
-	// the (unknown) peer, which is observable on the proposal queue since the
-	// run loop isn't started in this test.
-	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if n.prop.len() == 0 {
+	// Wait for the first run's deferred cleanup, which unsubscribes its progress inbox.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if r := n.s.SystemAccount().sl.Match(progressInbox); len(r.psubs) > 0 {
 			return errors.New("first catchup run still active")
 		}
 		return nil
@@ -7948,6 +7962,150 @@ func TestNRGCatchupRerequestDoesNotOrphanProgressQueue(t *testing.T) {
 	q := n.progress[nats1]
 	n.RUnlock()
 	require_True(t, q == q2)
+}
+
+func TestNRGCatchupRerequestLosesCatchupSignal(t *testing.T) {
+	test := func(t *testing.T, stall bool) {
+		n, cleanup := initSingleMemRaftNode(t)
+		defer cleanup()
+
+		esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+
+		nats0 := "S1Nunr6R" // "nats-0"
+
+		// One committed entry, so we have some log.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries}), n.aesub)
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 1}), n.aesub)
+		require_Equal(t, n.commit, 1)
+
+		// Leader is at 5, we're at 1, so request a catchup.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5, entries: entries}), n.aesub)
+		require_True(t, n.catchup != nil)
+		require_False(t, n.catchup.signal)
+		require_Equal(t, n.catchup.cindex, 5)
+
+		// Snapshot at 3 installs and signals the upper layer.
+		n.RLock()
+		ps := encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
+		n.RUnlock()
+		aeSnap := encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3,
+			entries: []*Entry{{EntrySnapshot, []byte("snapshot")}, {EntryPeerState, ps}}})
+		n.processAppendEntry(aeSnap, n.catchup.sub)
+		require_Equal(t, n.pindex, 3)
+		require_True(t, n.catchup != nil)
+		require_True(t, n.catchup.signal)
+
+		if stall {
+			// No progress for 2s, so the catchup is stalled and re-requested.
+			hb := encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5})
+			n.processAppendEntry(hb, n.aesub)
+			require_True(t, n.catchup != nil)
+			n.Lock()
+			n.catchup.active = time.Now().Add(-3 * time.Second)
+			n.Unlock()
+			n.processAppendEntry(hb, n.aesub)
+			require_True(t, n.catchup != nil)
+			require_True(t, n.catchup.signal)
+		}
+
+		// Catchup entries 4 and 5 carry the leader's old commit, so we don't re-signal.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3, entries: entries}), n.catchup.sub)
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 4, entries: entries}), n.catchup.sub)
+		require_Equal(t, n.pindex, 5)
+		require_Equal(t, n.commit, 3)
+
+		// We're current now, the catchup is canceled.
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 5, pterm: 1, pindex: 5}), n.aesub)
+		require_True(t, n.catchup == nil)
+		require_Equal(t, n.commit, 5)
+
+		// Must have seen EntryCatchup followed by nil.
+		var sawCatchup, sawDone bool
+		for _, ce := range n.apply.pop() {
+			if ce == nil {
+				if sawCatchup {
+					sawDone = true
+				}
+				continue
+			}
+			for _, e := range ce.Entries {
+				if e.Type == EntryCatchup {
+					sawCatchup = true
+				}
+			}
+		}
+		require_True(t, sawCatchup)
+		require_True(t, sawDone)
+	}
+
+	t.Run("NoStall", func(t *testing.T) { test(t, false) })
+	t.Run("Stall", func(t *testing.T) { test(t, true) })
+}
+
+func TestNRGCatchupDoesNotAddPeerOnCompletion(t *testing.T) {
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	for _, test := range []struct {
+		title   string
+		prepare func(n *raft)
+	}{
+		{
+			title: "Managed",
+			// The meta layer owns membership, the group must never add peers itself.
+			prepare: func(n *raft) { n.managed = true },
+		},
+		{
+			title: "Removed",
+			// The peer was just removed, catching it up must not bring it back.
+			prepare: func(n *raft) { n.removed = map[string]time.Time{nats1: time.Now()} },
+		},
+		{
+			title: "Unmanaged",
+			// Even here the catchup itself doesn't add, hearing from the peer does.
+			prepare: func(n *raft) {},
+		},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			// Create a sample entry, the content doesn't matter, just that it's stored.
+			esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+			entries := []*Entry{newEntry(EntryNormal, esm)}
+			aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+			require_NoError(t, n.storeToWAL(aeMsg))
+
+			n.Lock()
+			test.prepare(n)
+			n.term = 1
+			n.Unlock()
+			n.switchToLeader()
+
+			// The run loop isn't started in this test, so proposals stay observable.
+			n.prop.drain()
+
+			// Catch up a peer that is not a member of the group. The catchup has the
+			// whole WAL available, so it runs to completion on its own.
+			n.catchupFollower(&appendEntryResponse{term: 1, index: 0, peer: nats1, reply: "$NRG.CR.TEST.1"})
+			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				n.RLock()
+				defer n.RUnlock()
+				if n.progress[nats1] != nil {
+					return errors.New("catchup still running")
+				}
+				return nil
+			})
+
+			// Finishing the catchup must not have proposed the peer into the group.
+			require_Equal(t, n.prop.len(), 0)
+			n.RLock()
+			_, isPeer := n.peers[nats1]
+			n.RUnlock()
+			require_False(t, isPeer)
+		})
+	}
 }
 
 func TestNRGCatchupFollowerNoWaitGroupLeakWhenGoRoutineFails(t *testing.T) {
