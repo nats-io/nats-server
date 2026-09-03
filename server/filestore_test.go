@@ -16348,3 +16348,64 @@ func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
 	require_NotNil(t, seeded)
 	require_Equal(t, seeded.Seq, 0)
 }
+
+// https://github.com/nats-io/nats-server/issues/8547
+// A secure remove drops mb.mu while it writes the delete tombstone into the last block.
+// If the block cache expires in that window, the secure branch used to dereference a nil mb.cache.
+func TestFileStoreEraseMsgCacheExpiredDuringTombstoneWrite(t *testing.T) {
+	defer require_NoPanic(t)
+
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+
+	msg := []byte("Hello World")
+	for i := 0; i < 200; i++ {
+		_, _, err = fs.StoreMsg("foo", nil, msg, 0)
+		require_NoError(t, err)
+	}
+	// We need more than one block so tombstones land in the last block, not the one we erase from.
+	require_True(t, fs.numMsgBlocks() > 1)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	mb.mu.Lock()
+	first, last := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq)
+	// Pretend the last write was long ago so a forced expire actually drops the cache.
+	mb.lwts = 0
+	mb.mu.Unlock()
+
+	// Expire the cache as fast as we can, like the expiration timer or a linear scan ending on this block.
+	// TryLock so a panicking erase that still holds mb.mu cannot hang the test on wg.Wait.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if mb.mu.TryLock() {
+					mb.tryForceExpireCacheLocked()
+					mb.mu.Unlock()
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		wg.Wait()
+	}()
+
+	// Keep one message so the block is not removed as empty.
+	for seq := first; seq < last; seq++ {
+		removed, err := fs.EraseMsg(seq)
+		require_NoError(t, err)
+		require_True(t, removed)
+	}
+	fs.Stop()
+}

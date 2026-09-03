@@ -6250,6 +6250,14 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 
 	// Must always perform the erase, even if the block is empty as it could contain tombstones.
 	if secure {
+		// The cache may have been expired or recycled while we dropped mb.mu above.
+		if mb.cacheNotLoaded() {
+			if err := mb.loadMsgsWithLock(); err != nil {
+				finishedWithCache()
+				mb.mu.Unlock()
+				return false, err
+			}
+		}
 		// Grab record info, but use the pre-computed record length.
 		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
