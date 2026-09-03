@@ -14767,62 +14767,85 @@ func TestJetStreamClusterNoInterestDesyncOnConsumerCreate(t *testing.T) {
 }
 
 func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
+	test := func(t *testing.T, stall bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
 
-	rs := c.randomNonLeader()
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
-			return errors.New("not assigned")
+		rs := c.randomNonLeader()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return errors.New("not assigned")
+			}
+			return nil
+		})
+
+		sjs := rs.getJetStream()
+		sjs.mu.Lock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		encodedDelete := encodeDeleteStreamAssignment(sa)
+		sjs.mu.Unlock()
+		meta := sjs.getMetaGroup().(*raft)
+		apply := meta.ApplyQ()
+
+		// Should not panic if we receive a nil entry "randomly".
+		_, err = apply.push(nil)
+		require_NoError(t, err)
+
+		// Should put us in upper-layer recovery mode.
+		// For this test using two large values so we remain in catchup.
+		meta.Lock()
+		meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+		meta.sendCatchupSignal()
+		meta.Unlock()
+
+		// Deleting a stream should be staged, not immediately performed.
+		_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
+		require_NoError(t, err)
+		time.Sleep(200 * time.Millisecond)
+		require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
+
+		// Healthz reports the in-flight catchup.
+		hs := rs.healthz(nil)
+		require_Equal(t, hs.Error, "JetStream is not current with the meta leader")
+
+		if stall {
+			// A stalled catchup is re-requested through createCatchup, which
+			// replaces the catchup state. The upper layer was already signaled,
+			// so completing this catchup must still signal it back.
+			meta.Lock()
+			meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+			meta.Unlock()
 		}
-		return nil
-	})
 
-	sjs := rs.getJetStream()
-	sjs.mu.Lock()
-	sa := sjs.streamAssignment(globalAccountName, "TEST")
-	encodedDelete := encodeDeleteStreamAssignment(sa)
-	sjs.mu.Unlock()
-	meta := sjs.getMetaGroup().(*raft)
-	apply := meta.ApplyQ()
+		// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+		meta.Lock()
+		meta.cancelCatchup()
+		meta.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return errors.New("still assigned")
+			}
+			return nil
+		})
 
-	// Should not panic if we receive a nil entry "randomly".
-	_, err = apply.push(nil)
-	require_NoError(t, err)
+		// And healthz is healthy again.
+		hs = rs.healthz(nil)
+		require_Equal(t, hs.StatusCode, 200)
+		require_Equal(t, hs.Error, _EMPTY_)
+	}
 
-	// Should put us in upper-layer recovery mode.
-	// For this test using two large values so we remain in catchup.
-	meta.Lock()
-	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
-	meta.sendCatchupSignal()
-	meta.Unlock()
-
-	// Deleting a stream should be staged, not immediately performed.
-	_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
-	require_NoError(t, err)
-	time.Sleep(200 * time.Millisecond)
-	require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
-
-	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
-	meta.Lock()
-	meta.cancelCatchup()
-	meta.Unlock()
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
-			return errors.New("still assigned")
-		}
-		return nil
-	})
+	t.Run("NoStall", func(t *testing.T) { test(t, false) })
+	t.Run("Stall", func(t *testing.T) { test(t, true) })
 }
 
 func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateStream(t *testing.T) {
