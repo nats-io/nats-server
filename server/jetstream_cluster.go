@@ -4511,17 +4511,29 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	}
 }
 
+type desiredNeed int
+
+const (
+	desiredReady desiredNeed = iota
+	desiredMissing
+	desiredStaleTerm
+)
+
 // desiredSnapshot copies the group's desired state, so it stays usable after the
-// JetStream lock is released. needDesired is true if desired state is missing or was
-// recorded under another leader term, and the meta leader must record it first.
+// JetStream lock is released. needDesired encodes whether desired state is missing
+// or was recorded under another leader term, and the meta leader must record it first.
 // Lock should be held.
-func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers []string, needDesired bool) {
+func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers []string, needDesired desiredNeed) {
 	desired := rg.Desired
 	if desired != nil {
 		// MUST copy the peers, the assignment can be updated once we release.
 		id, scaleDown, peers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
 	}
-	needDesired = desired == nil || desired.ID == _EMPTY_ || desired.Term != leaderTerm
+	if desired == nil || desired.ID == _EMPTY_ {
+		needDesired = desiredMissing
+	} else if desired.Term != leaderTerm {
+		needDesired = desiredStaleTerm
+	}
 	return id, scaleDown, peers, needDesired
 }
 
@@ -4631,9 +4643,13 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		reconcile := &streamAssignmentReconcile{Account: accName, Stream: streamName, desiredAssignmentUpdate: update}
 		s.sendInternalMsgLocked(streamAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
 	}
-	if needDesired {
+	if needDesired != desiredReady {
 		sendMetaUpdate()
-		return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
+		// Will only happen on legacy moves or peer sets having drifted outside desired state.
+		if needDesired == desiredMissing {
+			return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
+		}
+		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
@@ -7924,9 +7940,13 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		reconcile := &consumerAssignmentReconcile{Account: accName, Stream: streamName, Consumer: consumerName, desiredAssignmentUpdate: update}
 		s.sendInternalMsgLocked(consumerAssignmentReconcileSubj, _EMPTY_, nil, reconcile)
 	}
-	if needDesired {
+	if needDesired != desiredReady {
 		sendMetaUpdate()
-		return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
+		// Will only happen on legacy moves or peer sets having drifted outside desired state.
+		if needDesired == desiredMissing {
+			return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
+		}
+		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
