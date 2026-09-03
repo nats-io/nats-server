@@ -6565,6 +6565,28 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var incr *big.Int
 	var rollupSub, rollupAll bool
 
+	// Check to see if we are over the max msg size.
+	// Subtract to prevent against overflows.
+	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
+	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
 	if len(hdr) > 0 {
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
@@ -7090,28 +7112,6 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			}
 			return ErrMaxPayload
 		}
-	}
-
-	// Check to see if we are over the max msg size.
-	// Subtract to prevent against overflows.
-	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
-		if canRespond {
-			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = NewJSStreamMessageExceedsMaximumError()
-			response, _ = json.Marshal(resp)
-			outq.sendMsg(reply, response)
-		}
-		return ErrMaxPayload
-	}
-
-	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
-		if canRespond {
-			resp.PubAck = &PubAck{Stream: name}
-			resp.Error = NewJSStreamHeaderExceedsMaximumError()
-			response, _ = json.Marshal(resp)
-			outq.sendMsg(reply, response)
-		}
-		return ErrMaxPayload
 	}
 
 	// Check to see if we have exceeded our limits.
