@@ -1185,6 +1185,59 @@ func TestLeafNodeRemoteWrongPort(t *testing.T) {
 	}
 }
 
+func TestLeafNodeNoAdvertiseDoesNotAdvertiseListener(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			no_advertise: true
+		}
+	`))
+	hub, hubOpts := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			reconnect: "50ms"
+			remotes: [
+				{
+					url: "nats://localhost:%d"
+				}
+			]
+		}
+	`, hubOpts.LeafNode.Port)))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	configURL := fmt.Sprintf("nats://localhost:%d", hubOpts.LeafNode.Port)
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		leaf.mu.RLock()
+		defer leaf.mu.RUnlock()
+		var remote *leafNodeCfg
+		for cfg := range leaf.leafRemoteCfgs {
+			remote = cfg
+			break
+		}
+		if remote == nil {
+			return fmt.Errorf("expected a leaf remote config")
+		}
+		remote.RLock()
+		defer remote.RUnlock()
+		if got, want := len(remote.urls), 1; got != want {
+			return fmt.Errorf("expected %d reconnect URL, got %d: %v", want, got, remote.urls)
+		}
+		if got := remote.urls[0].String(); got != configURL {
+			return fmt.Errorf("expected reconnect URL %q, got %q", configURL, got)
+		}
+		return nil
+	})
+}
+
 func TestLeafNodeRemoteIsHub(t *testing.T) {
 	oa := testDefaultOptionsForGateway("A")
 	oa.Accounts = []*Account{NewAccount("sys")}
@@ -1514,6 +1567,42 @@ func TestLeafNodeInfoPermissionUpdatesAllowedForSolicitedLeaf(t *testing.T) {
 	require_True(t, c.canSubscribe("import.foo"))
 	require_False(t, c.pubAllowed("other.foo"))
 	require_False(t, c.canSubscribe("other.foo"))
+}
+
+func TestLeafNodeInfoOnConnectWithoutLeafNodeURLsAccepted(t *testing.T) {
+	s := &Server{}
+	s.setOpts(DefaultOptions())
+	cli, srv := net.Pipe()
+	defer cli.Close()
+	defer srv.Close()
+
+	c := &client{
+		kind: LEAF,
+		srv:  s,
+		nc:   cli,
+		acc:  NewAccount("TEST"),
+		leaf: &leaf{
+			remote: func() *leafNodeCfg {
+				cfg := newLeafNodeCfg(&RemoteLeafOpts{})
+				cfg.curURL = &url.URL{}
+				return cfg
+			}(),
+		},
+	}
+	c.initClient()
+	c.flags.set(handshakeComplete)
+
+	c.processLeafnodeInfo(&Info{
+		ID:            "hub",
+		Name:          "hub",
+		CID:           1,
+		InfoOnConnect: true,
+		Nonce:         "nonce",
+	})
+
+	require_False(t, c.isClosed())
+	require_True(t, c.flags.isSet(infoReceived))
+	require_Equal(t, "hub", c.leaf.remoteServer)
 }
 
 func TestLeafNodePubAllowedPruning(t *testing.T) {
