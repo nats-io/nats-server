@@ -7841,16 +7841,20 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		fs, hasFileStore := mset.store.(*fileStore)
 		coalesceSync := false
 		if hasFileStore {
-			coalesceSync, err = fs.beginSyncBatch()
-			if err != nil {
-				return err
+			fs.mu.Lock()
+			coalesceSync = fs.syncAlways.Load()
+			if coalesceSync {
+				fs.updateDurabilitySettingsLocked(true)
 			}
+			fs.mu.Unlock()
 		}
 		deferTrace = coalesceSync
-		syncBatchEnded := !coalesceSync
+		durabilityReset := !coalesceSync
 		defer func() {
-			if !syncBatchEnded {
-				_ = fs.endSyncBatch()
+			if !durabilityReset {
+				fs.mu.Lock()
+				fs.resetDurabilitySettingsLocked()
+				fs.mu.Unlock()
 			}
 		}()
 
@@ -7877,11 +7881,14 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			}
 		}
 		if coalesceSync {
-			if err = fs.endSyncBatch(); err != nil {
+			if err = fs.FlushAllPending(); err != nil {
 				mset.setWriteErr(err)
 				return err
 			}
-			syncBatchEnded = true
+			fs.mu.Lock()
+			fs.resetDurabilitySettingsLocked()
+			fs.mu.Unlock()
+			durabilityReset = true
 			// Stream configuration and leadership may have changed while the
 			// batch was being made durable. Do not use the state captured before
 			// the commit when deciding whether to send its delayed response.

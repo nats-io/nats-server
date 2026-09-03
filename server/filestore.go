@@ -88,15 +88,6 @@ type FileStreamInfo struct {
 	StreamConfig
 }
 
-// syncBatchState tracks a bounded SyncOnFlush section. It is deliberately
-// storage-generic: callers decide which higher-level operation owns the
-// durability boundary.
-type syncBatchState struct {
-	mu     sync.Mutex
-	active atomic.Bool
-	dirty  map[*msgBlock]struct{}
-}
-
 type StoreCipher int
 
 const (
@@ -233,9 +224,6 @@ type fileStore struct {
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
 	sources     map[string]*StreamSourceState
-	// syncBatch tracks exact blocks dirtied in a bounded SyncOnFlush section so
-	// its final durability flush does not scan the whole stream.
-	syncBatch syncBatchState
 }
 
 // Represents a message store block and its data.
@@ -5755,158 +5743,6 @@ func (fs *fileStore) FlushAllPending() error {
 	return fs.checkAndFlushLastBlock()
 }
 
-// beginSyncBatch temporarily uses the existing SyncOnFlush mode to coalesce
-// writes into a single bounded durability boundary.
-func (fs *fileStore) beginSyncBatch() (bool, error) {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	if !fs.syncAlways.Load() {
-		return false, nil
-	}
-	fs.syncBatch.mu.Lock()
-	defer fs.syncBatch.mu.Unlock()
-	if fs.syncBatch.active.Load() {
-		return false, errors.New("sync batch already active")
-	}
-	fs.syncBatch.dirty = make(map[*msgBlock]struct{})
-	fs.syncBatch.active.Store(true)
-	fs.syncOnFlush.Store(true)
-	fs.syncAlways.Store(false)
-	return true, nil
-}
-
-// endSyncBatch restores the configured durability mode, then syncs only the
-// blocks dirtied in the bounded section.
-func (fs *fileStore) endSyncBatch() error {
-	fs.mu.Lock()
-	fs.syncBatch.mu.Lock()
-	if !fs.syncBatch.active.Load() {
-		fs.syncBatch.mu.Unlock()
-		fs.mu.Unlock()
-		return nil
-	}
-	fs.resetDurabilitySettingsLocked()
-	dirty := make([]*msgBlock, 0, len(fs.syncBatch.dirty))
-	for mb := range fs.syncBatch.dirty {
-		dirty = append(dirty, mb)
-	}
-	fs.syncBatch.dirty = nil
-	fs.syncBatch.active.Store(false)
-	fs.syncBatch.mu.Unlock()
-	fs.mu.Unlock()
-
-	return fs.syncBatchBlocks(dirty)
-}
-
-// markNeedsSyncLocked records a block for the batch durability flush when one
-// is active. The caller must hold the block lock.
-func (mb *msgBlock) markNeedsSyncLocked() {
-	mb.needSync = true
-	fs := mb.fs
-	if !fs.syncBatch.active.Load() {
-		return
-	}
-	fs.syncBatch.mu.Lock()
-	if fs.syncBatch.active.Load() {
-		fs.syncBatch.dirty[mb] = struct{}{}
-	}
-	fs.syncBatch.mu.Unlock()
-}
-
-// syncPendingWriteLocked applies the current durability mode to a completed
-// block write. The caller must hold the block lock.
-func (mb *msgBlock) syncPendingWriteLocked() error {
-	fs := mb.fs
-	sync := func() error {
-		err := mb.mfd.Sync()
-		if err == nil {
-			mb.needSync = false
-		}
-		return err
-	}
-	if fs.syncAlways.Load() {
-		return sync()
-	}
-	if !fs.syncBatch.active.Load() {
-		// Recheck SyncAlways to close the race with the batch end transition.
-		if fs.syncAlways.Load() {
-			return sync()
-		}
-		mb.needSync = true
-		return nil
-	}
-
-	fs.syncBatch.mu.Lock()
-	defer fs.syncBatch.mu.Unlock()
-	if fs.syncAlways.Load() {
-		return sync()
-	}
-	mb.needSync = true
-	if fs.syncBatch.active.Load() {
-		fs.syncBatch.dirty[mb] = struct{}{}
-	}
-	return nil
-}
-
-func (fs *fileStore) syncBatchBlocks(blks []*msgBlock) (err error) {
-	// Preserve storage order so later records can not become durable before
-	// earlier records from the same bounded write section.
-	slices.SortFunc(blks, func(a, b *msgBlock) int {
-		return cmp.Compare(a.index, b.index)
-	})
-
-	fs.syncMu.Lock()
-	defer fs.syncMu.Unlock()
-	defer func() {
-		if err != nil {
-			fs.mu.Lock()
-			fs.setWriteErr(err)
-			fs.mu.Unlock()
-		}
-	}()
-
-	for _, mb := range blks {
-		mb.mu.Lock()
-		if mb.closed {
-			mb.mu.Unlock()
-			continue
-		}
-		if err = mb.werr; err != nil {
-			mb.mu.Unlock()
-			return err
-		}
-		if _, err = mb.flushPendingMsgsLocked(); err != nil {
-			mb.mu.Unlock()
-			return err
-		}
-		if mb.needKeySync && mb.kfn != _EMPTY_ {
-			if err = fs.syncFileAndDir(mb.kfn); err != nil {
-				mb.mu.Unlock()
-				return err
-			}
-			mb.needKeySync = false
-		}
-		if mb.needSync {
-			if err = mb.syncFile(); err != nil {
-				mb.mu.Unlock()
-				return err
-			}
-			mb.needSync = false
-		}
-		mb.mu.Unlock()
-	}
-
-	fs.mu.RLock()
-	if fs.closing || fs.closed.Load() {
-		err = ErrStoreClosed
-	} else {
-		err = fs.werr
-	}
-	fs.mu.RUnlock()
-	return err
-}
-
 // Lock should be held.
 func (fs *fileStore) rebuildFirst() error {
 	if len(fs.blks) == 0 {
@@ -8905,15 +8741,20 @@ func (mb *msgBlock) flushPendingMsgsLocked() (*LostStreamData, error) {
 	// Update write pointer.
 	mb.cache.wp = int(wp)
 
-	if err = mb.syncPendingWriteLocked(); err != nil {
-		mb.werr = err
-		assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
-			"name":     mb.fs.cfg.Name,
-			"mb.index": mb.index,
-			"err":      err,
-			"stack":    string(debug.Stack()),
-		})
-		return nil, err
+	// Check if we are in sync always mode.
+	if mb.fs.syncAlways.Load() {
+		if err = mb.mfd.Sync(); err != nil {
+			mb.werr = err
+			assert.Unreachable("Filestore msg block encountered sync error", map[string]any{
+				"name":     mb.fs.cfg.Name,
+				"mb.index": mb.index,
+				"err":      err,
+				"stack":    string(debug.Stack()),
+			})
+			return nil, err
+		}
+	} else {
+		mb.needSync = true
 	}
 
 	// Check for additional writes while we were writing to the disk.
@@ -11071,7 +10912,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			deleted++
 		} else {
 			// Make sure to sync changes.
-			smb.markNeedsSyncLocked()
+			smb.needSync = true
 		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
@@ -11079,7 +10920,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 	} else {
 		// Make sure to sync changes.
-		smb.markNeedsSyncLocked()
+		smb.needSync = true
 		// Just for start condition for selectNextFirst.
 		if smb.first.seq < seq {
 			atomic.StoreUint64(&smb.first.seq, seq-1)

@@ -2126,6 +2126,64 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchStoreReadyForCommitSyncs(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.jsa.mu.RLock()
+	storeDir := mset.jsa.storeDir
+	mset.jsa.mu.RUnlock()
+
+	store, err := newBatchStore(mset, "durable-staging", 1, FileStorage, storeDir, "TEST")
+	require_NoError(t, err)
+	defer store.Delete(true)
+
+	fs := store.(*fileStore)
+	require_True(t, fs.fcfg.AsyncFlush)
+	require_True(t, fs.syncOnFlush.Load())
+
+	_, _, err = store.StoreMsg("foo", nil, []byte("payload"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	blks := append([]*msgBlock(nil), fs.blks...)
+	fs.mu.RUnlock()
+	require_NotEqual(t, len(blks), 0)
+
+	var pendingOrDirty bool
+	for _, mb := range blks {
+		mb.mu.RLock()
+		pendingOrDirty = pendingOrDirty || mb.pendingWriteSizeLocked() > 0 || mb.needSync
+		mb.mu.RUnlock()
+	}
+	require_True(t, pendingOrDirty)
+
+	b := &atomicBatch{timer: time.NewTimer(time.Minute), store: store}
+	require_True(t, b.readyForCommit() == nil)
+
+	for _, mb := range blks {
+		mb.mu.RLock()
+		pending, needsSync := mb.pendingWriteSizeLocked(), mb.needSync
+		mb.mu.RUnlock()
+		require_Equal(t, pending, 0)
+		require_False(t, needsSync)
+	}
+}
+
 func TestJetStreamAtomicBatchPublishSyncAlwaysRollupRecovery(t *testing.T) {
 	storeDir := t.TempDir()
 	conf := createConfFile(t, []byte(fmt.Sprintf(`
@@ -2286,11 +2344,30 @@ func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
 			mset.mu.RLock()
 			lseq := mset.lseq
 			mset.mu.RUnlock()
-			if lseq != 2 || fs.syncBatch.active.Load() {
+			if lseq != 2 || !fs.syncOnFlush.Load() {
 				return fmt.Errorf("atomic batch has not reached final sync")
 			}
 			return nil
 		})
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		batches.mu.Lock()
+		batch := batches.atomic["sync-state"]
+		batches.mu.Unlock()
+		require_NotNil(t, batch)
+		staging := batch.store.(*fileStore)
+		staging.mu.RLock()
+		stagingBlocks := append([]*msgBlock(nil), staging.blks...)
+		staging.mu.RUnlock()
+		require_NotEqual(t, len(stagingBlocks), 0)
+		for _, mb := range stagingBlocks {
+			mb.mu.RLock()
+			pending, needsSync := mb.pendingWriteSizeLocked(), mb.needSync
+			mb.mu.RUnlock()
+			require_Equal(t, pending, 0)
+			require_False(t, needsSync)
+		}
 		traceMsg, traceErr := traceSub.NextMsg(50 * time.Millisecond)
 		traceBeforeSync := traceErr == nil
 		if traceErr != nil {
