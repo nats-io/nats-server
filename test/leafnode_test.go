@@ -19,7 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"os"
@@ -2898,7 +2898,7 @@ func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 	// Create queue subscribers
 	createQS := func(c *cluster) *nats.Conn {
 		t.Helper()
-		opts := c.opts[rand.Intn(len(c.opts))]
+		opts := c.opts[rand.IntN(len(c.opts))]
 		url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
 		nc, err := nats.Connect(url)
 		if err != nil {
@@ -2939,7 +2939,7 @@ func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 	checkClientDQ := func(c *cluster, nreqs int) {
 		t.Helper()
 		// Pick one at random.
-		opts := c.opts[rand.Intn(len(c.opts))]
+		opts := c.opts[rand.IntN(len(c.opts))]
 		url := fmt.Sprintf("nats://dlc:pass@%s:%d", opts.Host, opts.Port)
 		connectAndRequest(url, c.name, nreqs)
 	}
@@ -2952,7 +2952,7 @@ func TestLeafNodeDistributedQueueAcrossGWs(t *testing.T) {
 	createLNS := func(c *cluster) (*server.Server, *server.Options) {
 		t.Helper()
 		// Pick one at random.
-		copts := c.opts[rand.Intn(len(c.servers))]
+		copts := c.opts[rand.IntN(len(c.servers))]
 		s, opts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://dlc:pass@%s:%d", copts.LeafNode.Host, copts.LeafNode.Port))
 		checkLeafNodeConnected(t, s)
 		return s, opts
@@ -2984,7 +2984,7 @@ func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
 	// Create queue subscribers
 	createQS := func(c *cluster) *nats.Conn {
 		t.Helper()
-		opts := c.opts[rand.Intn(len(c.opts))]
+		opts := c.opts[rand.IntN(len(c.opts))]
 		url := fmt.Sprintf("nats://ngs:pass@%s:%d", opts.Host, opts.Port)
 		nc, err := nats.Connect(url)
 		if err != nil {
@@ -3032,7 +3032,7 @@ func TestLeafNodeDistributedQueueEvenly(t *testing.T) {
 	createLNS := func(c *cluster) (*server.Server, *server.Options) {
 		t.Helper()
 		// Pick one at random.
-		copts := c.opts[rand.Intn(len(c.servers))]
+		copts := c.opts[rand.IntN(len(c.servers))]
 		s, opts := runSolicitLeafServerToURL(fmt.Sprintf("nats-leaf://dlc:pass@%s:%d", copts.LeafNode.Host, copts.LeafNode.Port))
 		checkLeafNodeConnected(t, s)
 		return s, opts
@@ -3231,7 +3231,7 @@ func runSolicitLeafCluster(t *testing.T, clusterName string, d1, d2 *cluster) *c
 	c := &cluster{servers: make([]*server.Server, 0, 2), opts: make([]*server.Options, 0, 2), name: clusterName}
 
 	// Who we will solicit for server 1
-	ci := rand.Intn(len(d1.opts))
+	ci := rand.IntN(len(d1.opts))
 	opts := d1.opts[ci]
 	surl := fmt.Sprintf("nats-leaf://%s:%d", opts.LeafNode.Host, opts.LeafNode.Port)
 
@@ -3254,7 +3254,7 @@ func runSolicitLeafCluster(t *testing.T, clusterName string, d1, d2 *cluster) *c
 	curl, _ := url.Parse(routeAddr)
 
 	// Who we will solicit for server 2
-	ci = rand.Intn(len(d2.opts))
+	ci = rand.IntN(len(d2.opts))
 	opts = d2.opts[ci]
 	surl = fmt.Sprintf("nats-leaf://%s:%d", opts.LeafNode.Host, opts.LeafNode.Port)
 
@@ -3288,7 +3288,7 @@ func runSolicitLeafCluster(t *testing.T, clusterName string, d1, d2 *cluster) *c
 
 func clientForCluster(t *testing.T, c *cluster) *nats.Conn {
 	t.Helper()
-	opts := c.opts[rand.Intn(len(c.opts))]
+	opts := c.opts[rand.IntN(len(c.opts))]
 	url := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
 	nc, err := nats.Connect(url)
 	if err != nil {

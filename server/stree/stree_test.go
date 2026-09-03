@@ -18,7 +18,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"runtime"
 	"strconv"
 	"strings"
@@ -492,7 +492,7 @@ func TestSubjectTreeMatchSubjectParam(t *testing.T) {
 func TestSubjectTreeMatchRandomDoublePWC(t *testing.T) {
 	st := NewSubjectTree[int]()
 	for i := 1; i <= 10_000; i++ {
-		subj := fmt.Sprintf("foo.%d.%d", rand.Intn(20)+1, i)
+		subj := fmt.Sprintf("foo.%d.%d", rand.IntN(20)+1, i)
 		st.Insert(b(subj), 42)
 	}
 	match(t, st, "foo.*.*", 10_000)
@@ -700,9 +700,9 @@ func TestSubjectTreeRandomTrackEntries(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		var sb strings.Builder
 		// 1-6 tokens.
-		numTokens := rand.Intn(6) + 1
+		numTokens := rand.IntN(6) + 1
 		for i := 0; i < numTokens; i++ {
-			tlen := rand.Intn(4) + 2
+			tlen := rand.IntN(4) + 2
 			tok := buf[:tlen]
 			crand.Read(tok)
 			sb.WriteString(hex.EncodeToString(tok))
@@ -755,7 +755,7 @@ func TestSubjectTreeMatchAllPerf(t *testing.T) {
 	st := NewSubjectTree[int]()
 
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
+		subj := fmt.Sprintf("subj.%d.%d", rand.IntN(100)+1, i)
 		st.Insert(b(subj), 22)
 	}
 
@@ -785,7 +785,7 @@ func TestSubjectTreeIterPerf(t *testing.T) {
 	st := NewSubjectTree[int]()
 
 	for i := 0; i < 1_000_000; i++ {
-		subj := fmt.Sprintf("subj.%d.%d", rand.Intn(100)+1, i)
+		subj := fmt.Sprintf("subj.%d.%d", rand.IntN(100)+1, i)
 		st.Insert(b(subj), 22)
 	}
 

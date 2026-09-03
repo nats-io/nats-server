@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -1465,7 +1465,7 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 			if uname == _EMPTY_ {
 				// Create a unique name so we do not collide.
 				var b [8]byte
-				rn := rand.Int63()
+				rn := rand.Int64()
 				for i, l := 0, rn; i < len(b); i++ {
 					b[i] = digits[l%base]
 					l /= base
@@ -4556,7 +4556,7 @@ func (s *Server) lameDuckMode() {
 		}
 		if batch == 1 || i%batch == 0 {
 			// We pick a random interval which will be at least si/2
-			v := rand.Int63n(si)
+			v := rand.Int64N(si)
 			if v < si/2 {
 				v = si / 2
 			}
@@ -4688,7 +4688,7 @@ func (s *Server) getRandomIP(resolver netResolver, url string, excludedAddresses
 		if len(ips) == 1 {
 			ip = ips[0]
 		} else {
-			ip = ips[rand.Int31n(int32(len(ips)))]
+			ip = ips[rand.Int32N(int32(len(ips)))]
 		}
 		// add the port
 		address = net.JoinHostPort(ip, port)

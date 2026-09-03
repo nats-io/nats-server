@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1513,13 +1513,13 @@ func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
 	// Ephemerals will always have inactive thresholds.
 	if !o.isDurable() && cfg.InactiveThreshold <= 0 {
 		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int64N(900))*time.Millisecond
 		// Only stamp config with default sans jitter.
 		cfg.InactiveThreshold = JsDeleteWaitTimeDefault
 	} else if cfg.InactiveThreshold > 0 {
 		// Add in up to 1 sec of jitter if pull mode.
 		if o.isPullMode() {
-			o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+			o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int64N(900))*time.Millisecond
 		} else {
 			o.dthresh = cfg.InactiveThreshold
 		}
@@ -2345,7 +2345,7 @@ func (o *consumer) deleteNotActive() {
 
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
-			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
+			jitter := time.Duration(rand.Int64N(int64(cnaStart)))
 			interval := cnaStart + jitter
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -3449,7 +3449,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 	if o.isLeader() && len(o.pending) > 0 {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
-		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
+		delay := 500*time.Millisecond + time.Duration(rand.Int64N(1000))*time.Millisecond
 
 		// If normal is lower than this just use that.
 		if o.cfg.AckWait < delay {
@@ -3688,7 +3688,7 @@ func (o *consumer) shouldSample() bool {
 
 	// TODO(ripienaar) this is a tad slow so we need to rethink here, however this will only
 	// hit for those with sampling enabled and its not the default
-	return rand.Int31n(100) <= o.sfreq
+	return rand.Int32N(100) <= o.sfreq
 }
 
 func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
@@ -5275,7 +5275,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 
 	// How often we will check for ack floor drift.
 	// Spread these out for large numbers on a server restart.
-	delta := time.Duration(rand.Int63n(int64(time.Minute)))
+	delta := time.Duration(rand.Int64N(int64(time.Minute)))
 	ticker := time.NewTicker(time.Minute + delta)
 	defer ticker.Stop()
 
@@ -5912,7 +5912,7 @@ func (o *consumer) fcReply() string {
 	sb.WriteString(o.name)
 	sb.WriteByte(btsep)
 	var b [4]byte
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base

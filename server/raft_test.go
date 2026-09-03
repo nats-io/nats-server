@@ -19,7 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"path"
@@ -63,7 +63,7 @@ func TestNRGSnapshotAndRestart(t *testing.T) {
 	sm := rg.nonLeader().(*stateAdder)
 
 	for i := 0; i < 1000; i++ {
-		delta := rand.Int63n(222)
+		delta := rand.Int64N(222)
 		expectedTotal += delta
 		leader.proposeDelta(delta)
 
@@ -145,7 +145,7 @@ func TestNRGAppendEntryDecode(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		b := copyBytes(buf)
 		// modifying the header (idx < 42) will not result in an error by decodeAppendEntry
-		bi := 42 + rand.Intn(len(b)-42)
+		bi := 42 + rand.IntN(len(b)-42)
 		if b[bi] != 0 && bi != 40 {
 			b[bi] = 0
 			_, err = decodeAppendEntry(b, nil, _EMPTY_)

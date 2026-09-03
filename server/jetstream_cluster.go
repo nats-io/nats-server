@@ -24,7 +24,7 @@ import (
 	"iter"
 	"maps"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3571,14 +3571,14 @@ func (rg *raftGroup) setPreferred(s *Server) {
 
 		if len(online) == 0 {
 			// No online servers, just randomly select a peer for the preferred.
-			pi := rand.Int31n(int32(len(rg.Peers)))
+			pi := rand.Int32N(int32(len(rg.Peers)))
 			rg.Preferred = rg.Peers[pi]
 		} else if len(online) == 1 {
 			// Only one online server.
 			rg.Preferred = online[0]
 		} else {
 			// Randomly select an online peer.
-			pi := rand.Int31n(int32(len(online)))
+			pi := rand.Int32N(int32(len(online)))
 			rg.Preferred = online[pi]
 		}
 	}
@@ -3917,7 +3917,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	)
 
 	// Spread these out for large numbers on server restart.
-	rci := time.Duration(rand.Int63n(int64(time.Minute)))
+	rci := time.Duration(rand.Int64N(int64(time.Minute)))
 	t := time.NewTicker(compactInterval + rci)
 	defer t.Stop()
 
@@ -4147,7 +4147,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	var cist *time.Ticker
 	var cistc <-chan time.Time
 
-	checkInterestInterval := checkInterestStateT + time.Duration(rand.Intn(checkInterestStateJ))*time.Second
+	checkInterestInterval := checkInterestStateT + time.Duration(rand.IntN(checkInterestStateJ))*time.Second
 
 	if mset != nil && mset.isInterestRetention() {
 		// Wait on our consumers to be assigned and running before proceeding.
@@ -4211,7 +4211,7 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 					// If we are interest based make sure to check consumers if interest retention policy.
 					// This is to make sure we process any outstanding acks from all consumers.
 					if mset != nil && mset.isInterestRetention() {
-						fire := time.Duration(rand.Intn(5)+5) * time.Second
+						fire := time.Duration(rand.IntN(5)+5) * time.Second
 						time.AfterFunc(fire, mset.checkInterestState)
 					}
 					// If we became leader during this time and we need to send a snapshot to our
@@ -7609,7 +7609,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	)
 
 	// Spread these out for large numbers on server restart.
-	rci := time.Duration(rand.Int63n(int64(time.Minute)))
+	rci := time.Duration(rand.Int64N(int64(time.Minute)))
 	t := time.NewTicker(compactInterval + rci)
 	defer t.Stop()
 
@@ -12675,7 +12675,7 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 		// If we are interest based make sure to check our ack floor state.
 		// We will delay a bit to allow consumer states to also catchup.
 		if mset.isInterestRetention() {
-			fire := time.Duration(rand.Intn(10)+5) * time.Second
+			fire := time.Duration(rand.IntN(10)+5) * time.Second
 			time.AfterFunc(fire, mset.checkInterestState)
 		}
 	}()
@@ -13716,7 +13716,7 @@ func syncSubject(pre string) string {
 	sb.WriteByte(btsep)
 
 	var b [replySuffixLen]byte
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base

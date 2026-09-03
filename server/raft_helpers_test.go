@@ -20,7 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"testing"
 	"time"
@@ -84,7 +84,7 @@ func (sg smGroup) waitOnLeader() stateMachine {
 
 // Pick a random member.
 func (sg smGroup) randomMember() stateMachine {
-	return sg[rand.Intn(len(sg))]
+	return sg[rand.IntN(len(sg))]
 }
 
 // Return a non-leader

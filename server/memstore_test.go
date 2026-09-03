@@ -19,7 +19,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"reflect"
 	"slices"
 	"testing"
@@ -572,12 +572,12 @@ func TestMemStoreSubjectsTotals(t *testing.T) {
 
 	for i := 0; i < 10_000; i++ {
 		// Flip coin for prefix
-		if rand.Intn(2) == 0 {
+		if rand.IntN(2) == 0 {
 			ft, m = "foo", fmap
 		} else {
 			ft, m = "bar", bmap
 		}
-		dt := rand.Intn(100)
+		dt := rand.IntN(100)
 		subj := fmt.Sprintf("%s.%d", ft, dt)
 		m[dt]++
 
@@ -647,10 +647,10 @@ func TestMemStoreNumPending(t *testing.T) {
 	tokens := []string{"foo", "bar", "baz"}
 	genSubj := func() string {
 		return fmt.Sprintf("%s.%s.%s.%s",
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
-			tokens[rand.Intn(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
+			tokens[rand.IntN(len(tokens))],
 		)
 	}
 
@@ -818,7 +818,7 @@ func TestMemStoreDeleteBlocks(t *testing.T) {
 	delete := 5000
 	deleteMap := make(map[int]struct{}, delete)
 	for len(deleteMap) < delete {
-		deleteMap[rand.Intn(total)+1] = struct{}{}
+		deleteMap[rand.IntN(total)+1] = struct{}{}
 	}
 	// Now remove?
 	for seq := range deleteMap {
@@ -1095,7 +1095,7 @@ func TestMemStoreNumPendingMulti(t *testing.T) {
 	totalMsgs := 100_000
 	totalSubjects := 10_000
 	numFiltered := 5000
-	startSeq := uint64(5_000 + rand.Intn(90_000))
+	startSeq := uint64(5_000 + rand.IntN(90_000))
 
 	subjects := make([]string, 0, totalSubjects)
 	for i := 0; i < totalSubjects; i++ {
@@ -1105,14 +1105,14 @@ func TestMemStoreNumPendingMulti(t *testing.T) {
 	// Put in 100k msgs with random subjects.
 	msg := bytes.Repeat([]byte("ZZZ"), 333)
 	for i := 0; i < totalMsgs; i++ {
-		_, _, err = ms.StoreMsg(subjects[rand.Intn(totalSubjects)], nil, msg, 0)
+		_, _, err = ms.StoreMsg(subjects[rand.IntN(totalSubjects)], nil, msg, 0)
 		require_NoError(t, err)
 	}
 
 	// Now we want to do a calculate NumPendingMulti.
 	filters := gsl.NewSublist[struct{}]()
 	for filters.Count() < uint32(numFiltered) {
-		filter := subjects[rand.Intn(totalSubjects)]
+		filter := subjects[rand.IntN(totalSubjects)]
 		if !filters.HasInterest(filter) {
 			filters.Insert(filter, struct{}{})
 		}
@@ -1279,7 +1279,7 @@ func TestMemStoreAllLastSeqs(t *testing.T) {
 	msg := []byte("abc")
 
 	for i := 0; i < 100_000; i++ {
-		subj := subjs[rand.Intn(len(subjs))]
+		subj := subjs[rand.IntN(len(subjs))]
 		ms.StoreMsg(subj, nil, msg, 0)
 	}
 

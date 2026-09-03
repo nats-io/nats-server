@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -4020,7 +4020,7 @@ func TestJetStreamClusterInterestStreamFilteredConsumersWithNoInterest(t *testin
 
 	// Now send 100 messages, randomly picking foo or bar, but never baz.
 	for i := 0; i < 100; i++ {
-		if rand.Intn(2) > 0 {
+		if rand.IntN(2) > 0 {
 			sendStreamMsg(t, nc, "foo", "HELLO")
 		} else {
 			sendStreamMsg(t, nc, "bar", "WORLD")

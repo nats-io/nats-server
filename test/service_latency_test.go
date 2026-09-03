@@ -16,7 +16,7 @@ package test
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,7 +53,7 @@ const cnlen = 8
 
 func randClusterName() string {
 	var name []byte
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i := 0; i < cnlen; i++ {
 		name = append(name, digits[rn%base])
 		rn /= base

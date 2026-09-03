@@ -30,7 +30,7 @@ import (
 	"io/fs"
 	"iter"
 	"math"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -12101,7 +12101,7 @@ func (fs *fileStore) setSyncTimer() {
 		// First time this fires will be between SyncInterval/2 and SyncInterval,
 		// so that different stores are spread out, rather than having many of
 		// them trying to all sync at once, causing blips and contending dios.
-		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval / 2))))
+		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int64N(int64(fs.fcfg.SyncInterval / 2))))
 		fs.syncTmr = time.AfterFunc(start, fs.syncBlocks)
 	}
 }
@@ -12131,7 +12131,7 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	// Make sure we do not try to write these out too fast.
 	// Spread these out for large numbers on a server restart.
 	const writeThreshold = 2 * time.Minute
-	writeJitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+	writeJitter := time.Duration(mrand.Int64N(int64(30 * time.Second)))
 	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 
