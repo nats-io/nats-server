@@ -127,6 +127,18 @@ func (alg StoreCompression) String() string {
 	}
 }
 
+// compresses returns true for algorithms that actually compress the block
+// contents. We only ever write a compression metadata header for these, so this
+// also tells us whether a header we just read is one that we could have written.
+func (alg StoreCompression) compresses() bool {
+	switch alg {
+	case S2Compression:
+		return true
+	default:
+		return false
+	}
+}
+
 func (alg StoreCompression) MarshalJSON() ([]byte, error) {
 	var str string
 	switch alg {
@@ -8111,10 +8123,9 @@ func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
 		// compressed and return it as-is.
 		return buf, nil
 	} else {
-		// Metadata was present so it's quite likely the block contents
-		// are compressed. If by any chance the metadata claims that the
-		// block is uncompressed, then the input slice is just returned
-		// unmodified.
+		// Metadata was present, so the block contents are compressed. Note that
+		// UnmarshalMetadata never reports a header for NoCompression, so we can
+		// not strip metadata bytes off a block that was never compressed.
 		return meta.Algorithm.Decompress(buf[n:])
 	}
 }
@@ -14499,8 +14510,22 @@ func (c *CompressionInfo) UnmarshalMetadata(b []byte) (int, error) {
 	if b[0] != 'c' || b[1] != 'm' || b[2] != 'p' {
 		return 0, nil
 	}
+	// The magic is only three bytes long, so it can collide with the start of an
+	// uncompressed block. An uncompressed block starts with a message record and
+	// the first four bytes of that record hold the record length as a
+	// little-endian uint32, with hbit set when the message carries headers. A
+	// record length of 7368035 (0x706D63) therefore writes 'c', 'm' and 'p' into
+	// the first three bytes and leaves byte three holding 0 or hbit>>24 (0x80).
+	// Byte three has to name an algorithm that we could have written a header
+	// for, which means an algorithm that actually compresses. We never write a
+	// header for NoCompression, so anything else is a block that just happens to
+	// begin with the same three bytes and must be read as uncompressed.
+	alg := StoreCompression(b[3])
+	if !alg.compresses() {
+		return 0, nil
+	}
 	var n int
-	c.Algorithm = StoreCompression(b[3])
+	c.Algorithm = alg
 	c.OriginalSize, n = binary.Uvarint(b[4:])
 	if n <= 0 {
 		return 0, fmt.Errorf("metadata incomplete")

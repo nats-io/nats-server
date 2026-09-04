@@ -11035,6 +11035,117 @@ func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 	}
 }
 
+func TestFileStoreUncompressedBlockLengthCollision(t *testing.T) {
+	// The first four bytes of a message record hold the record length as a
+	// little-endian uint32, with the high bit set when the message carries
+	// headers. A record length of 7368035 is 0x706D63, which little-endian puts
+	// 'c', 'm', 'p' into the first three bytes of the block. That is the same
+	// magic the compression metadata header uses, so an uncompressed block whose
+	// first record is exactly this long must still be read back as uncompressed.
+	const collidingRecordLen = 7368035
+
+	for _, test := range []struct {
+		title string
+		hdr   []byte
+	}{
+		// Byte three of the record length is 0x00, which reads as NoCompression.
+		{"NoHeaders", nil},
+		// Byte three of the record length is 0x80 (hbit), which reads as an
+		// unknown compression algorithm.
+		{"WithHeaders", []byte("NATS/1.0\r\nHdr: value\r\n\r\n")},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				fcfg.BlockSize = 8 * 1024 * 1024 // Large enough to hold the record.
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				subj, hdr := "foo", test.hdr
+				msg := bytes.Repeat([]byte("A"), collidingRecordLen-int(fileStoreMsgSize(subj, hdr, nil)))
+				require_Equal(t, fileStoreMsgSize(subj, hdr, msg), collidingRecordLen)
+
+				seq, _, err := fs.StoreMsg(subj, hdr, msg, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, 1)
+
+				var smv StoreMsg
+				sm, err := fs.LoadMsg(seq, &smv)
+				require_NoError(t, err)
+				require_True(t, bytes.Equal(sm.msg, msg))
+				require_True(t, bytes.Equal(sm.hdr, hdr))
+
+				require_NoError(t, fs.Stop())
+
+				// Confirm the block really does start with the colliding magic,
+				// otherwise this test proves nothing. Only the plaintext and
+				// uncompressed permutation stores the record verbatim at offset 0.
+				if fcfg.Cipher == NoCipher && fcfg.Compression == NoCompression {
+					blk, err := os.ReadFile(filepath.Join(fcfg.StoreDir, msgDir, fmt.Sprintf(blkScan, 1)))
+					require_NoError(t, err)
+					require_True(t, bytes.HasPrefix(blk, []byte("cmp")))
+				}
+
+				fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				state := fs.State()
+				require_Equal(t, state.Msgs, 1)
+				require_Equal(t, state.FirstSeq, 1)
+				require_Equal(t, state.LastSeq, 1)
+
+				sm, err = fs.LoadMsg(seq, &smv)
+				require_NoError(t, err)
+				require_Equal(t, sm.subj, subj)
+				require_True(t, bytes.Equal(sm.hdr, hdr))
+				require_True(t, bytes.Equal(sm.msg, msg))
+
+				// The message must also stay removable after the restart.
+				removed, err := fs.RemoveMsg(seq)
+				require_NoError(t, err)
+				require_True(t, removed)
+			})
+		})
+	}
+}
+
+func TestCompressionInfoUnmarshalMetadataRecordLengthCollision(t *testing.T) {
+	// Build the start of an uncompressed block whose first record is exactly
+	// 7368035 bytes long, which is the length that collides with the 'cmp' magic.
+	recordStart := func(rl uint32) []byte {
+		b := make([]byte, 22)
+		binary.LittleEndian.PutUint32(b[0:], rl)
+		binary.LittleEndian.PutUint64(b[4:], 1)                          // Sequence.
+		binary.LittleEndian.PutUint64(b[12:], uint64(time.Now().Unix())) // Timestamp.
+		binary.LittleEndian.PutUint16(b[20:], 3)                         // Subject length.
+		return b
+	}
+
+	for _, test := range []struct {
+		title string
+		buf   []byte
+		n     int
+		alg   StoreCompression
+	}{
+		{"S2Header", (&CompressionInfo{Algorithm: S2Compression, OriginalSize: 12345}).MarshalMetadata(), 6, S2Compression},
+		{"NoMagic", recordStart(1024), 0, NoCompression},
+		{"CollidingLength", recordStart(7368035), 0, NoCompression},
+		{"CollidingLengthWithHeaders", recordStart(7368035 | hbit), 0, NoCompression},
+		{"UnknownAlgorithm", []byte{'c', 'm', 'p', 9, 1}, 0, NoCompression},
+		{"TooShort", []byte("cmp"), 0, NoCompression},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			var meta CompressionInfo
+			n, err := meta.UnmarshalMetadata(test.buf)
+			require_NoError(t, err)
+			require_Equal(t, n, test.n)
+			require_Equal(t, meta.Algorithm, test.alg)
+		})
+	}
+}
+
 func TestFileStoreTruncateRemovedBlock(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
