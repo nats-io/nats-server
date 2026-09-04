@@ -6274,9 +6274,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.setStreamAssignment(sa)
 			}
 			mset.startMonitorWg()
+			// Only snapshot for a legacy scale up.
+			sendSnapshot := needsNode && desired == nil
 			// Start monitoring..
 			started := s.startGoRoutine(
-				func() { js.monitorStream(mset, sa, needsNode) },
+				func() { js.monitorStream(mset, sa, sendSnapshot) },
 				pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
@@ -7149,8 +7151,8 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				cca = cac
 				needsLocalResponse = true
 			}
-			// If we look like we are scaling up, let's send our current state to the group.
-			sendState = (len(ca.Group.Peers) > len(oca.Group.Peers) || ca.Group.Desired != nil) && o.IsLeader() && n != nil
+			// If we look like we are scaling up (legacy), let's send our current state to the group.
+			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && ca.Group.Desired == nil && o.IsLeader() && n != nil
 			// Signal that this is an update
 			if ca.Reply != _EMPTY_ {
 				isConfigUpdate = true
