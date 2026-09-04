@@ -1313,6 +1313,11 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	}
 
 	// Trigger update chan.
+	mset.signalUpdate()
+}
+
+// signalUpdate wakes the monitor routine so it re-evaluates the stream assignment.
+func (mset *stream) signalUpdate() {
 	select {
 	case mset.uch <- struct{}{}:
 	default:

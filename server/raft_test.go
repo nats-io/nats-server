@@ -3926,12 +3926,36 @@ func TestNRGDoesntRequestVoteOnWriteError(t *testing.T) {
 }
 
 func TestNRGTrackPeerObserved(t *testing.T) {
-	n := &raft{managed: true, id: "A", peers: map[string]*lps{"A": {}}}
+	n := &raft{managed: true, id: "A", term: 2, peers: map[string]*lps{"A": {}}, leadc: make(chan leadChange, 1)}
+
+	requireNudge := func() {
+		t.Helper()
+		select {
+		case lc := <-n.leadc:
+			require_True(t, lc.nudge)
+			require_True(t, lc.isLeader)
+			require_Equal(t, lc.term, n.term)
+		default:
+			t.Fatalf("Expected a nudge on leader change channel")
+		}
+	}
+	requireNoSignal := func() {
+		t.Helper()
+		select {
+		case lc := <-n.leadc:
+			t.Fatalf("Unexpected signal on leader change channel: %+v", lc)
+		default:
+		}
+	}
 
 	// Untracked peers of managed groups are observed when we hear from them.
 	require_True(t, n.LastHeardFromPeer("B").IsZero())
 	require_NoError(t, n.trackPeer("B"))
 	require_False(t, n.LastHeardFromPeer("B").IsZero())
+
+	// We're not the leader, so there's nothing to nudge about. Only the leader
+	// can act on a newly observed peer by adding it to the group.
+	requireNoSignal()
 
 	// Members are tracked through their own peer state.
 	require_True(t, n.LastHeardFromPeer("A").IsZero())
@@ -3950,6 +3974,43 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	n.removed = map[string]time.Time{"C": time.Now()}
 	require_NoError(t, n.trackPeer("C"))
 	require_False(t, n.LastHeardFromPeer("C").IsZero())
+	requireNoSignal()
+
+	// As leader, first contact with a peer we hadn't observed yet nudges the
+	// upper layer, so it can check right away if this unblocks adding the peer.
+	n.leaderState.Store(true)
+	require_NoError(t, n.trackPeer("D"))
+	require_False(t, n.LastHeardFromPeer("D").IsZero())
+	requireNudge()
+
+	// Only first contact nudges, we'd otherwise signal for every response.
+	require_NoError(t, n.trackPeer("D"))
+	requireNoSignal()
+
+	// Hearing from a member doesn't nudge either, membership doesn't change.
+	require_NoError(t, n.trackPeer("A"))
+	requireNoSignal()
+
+	// A pending leader change must not be replaced by a nudge. The upper layer
+	// re-assesses membership when it processes the leader change anyway.
+	n.Lock()
+	n.updateLeadChange(true)
+	n.Unlock()
+	require_NoError(t, n.trackPeer("E"))
+	select {
+	case lc := <-n.leadc:
+		require_False(t, lc.nudge)
+	default:
+		t.Fatalf("Expected the pending leader change to be preserved")
+	}
+	// The peer is still observed, even though the nudge was dropped.
+	require_False(t, n.LastHeardFromPeer("E").IsZero())
+
+	// Stepping down stops the nudges, we can't act on them anymore.
+	n.leaderState.Store(false)
+	require_NoError(t, n.trackPeer("F"))
+	require_False(t, n.LastHeardFromPeer("F").IsZero())
+	requireNoSignal()
 }
 
 func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {

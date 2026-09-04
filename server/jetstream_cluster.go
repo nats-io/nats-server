@@ -4299,6 +4299,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 
 		case lc := <-lch:
+			// Not a change in leadership, just a nudge about a newly observed peer.
+			if lc.nudge {
+				if mset.isMigrating() {
+					startMigrationMonitoring()
+				}
+				continue
+			}
 			isLeader, leaderTerm = lc.isLeader, lc.term
 			// Process our leader change.
 			js.processStreamLeaderChange(mset, isLeader, lc.term)
@@ -4425,6 +4432,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
 			status := js.runStreamMigration(mset, sa, n, leaderTerm)
+			// Only retry meta leader requests slowly, their reply wakes us on the fast path.
+			if status != nil && status.Type == MigrationStatusMeta {
+				resetMigrationMonitoring(migrateMetaRetryInterval)
+			}
 			// Resolve after determining the status, so that we don't set it on a stale group.
 			js.setMigrationStatus(mset.raftGroup(), status)
 
@@ -4571,6 +4582,9 @@ func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current,
 	}
 	add := s.selectPeerToAdd(n, n.ID(), actual, candidates)
 	if add == _EMPTY_ {
+		// We haven't heard from any candidates, send a heartbeat now to get them to respond
+		// if they were waiting. We'll be signaled right away after a new peer is observed.
+		n.SendHeartbeat()
 		return mstat(MigrationStatusQuorum, "waiting for quorum to add peer")
 	}
 	err := n.ProposeAddPeer(add)
@@ -4632,7 +4646,8 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
-		return mstat(MigrationStatusSnapshot, "installing snapshot")
+		// The snapshot is installed, continue right away so new peers can be added
+		// and catch up from it without waiting for another check.
 	}
 	// If a membership change is in progress, we just wait for it to clear.
 	if n.MembershipChangeInProgress() {
@@ -5749,6 +5764,7 @@ const lostQuorumAdvInterval = 10 * time.Second
 const (
 	migrateFastCheckInterval     = 50 * time.Millisecond
 	migrateFallbackCheckInterval = 500 * time.Millisecond
+	migrateMetaRetryInterval     = 5 * time.Second
 )
 
 // Determines if we should send lost quorum advisory. We throttle these after first one.
@@ -6742,6 +6758,23 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	}
 }
 
+// consumersConverged reports whether the stream is still migrating while none of its
+// consumers has desired state anymore. The stream can't finalize until all of its
+// consumers have moved, and the meta leader proposes nothing for the stream when only
+// consumers change, so the last consumer to converge must wake the stream monitor.
+// Lock should be held.
+func (sa *streamAssignment) consumersConverged() bool {
+	if sa.Group == nil || sa.Group.Desired == nil {
+		return false
+	}
+	for _, ca := range sa.consumers {
+		if ca.Group != nil && ca.Group.Desired != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // processConsumerAssignment is called when followers have replicated an assignment for a consumer.
 func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	js.mu.RLock()
@@ -6811,6 +6844,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 	sa.consumers[ca.Name] = ca
 	cc.removeInflightConsumerProposal(accName, stream, consumerName)
 
+	// If this consumer just finished converging and it was the last one the stream's
+	// migration was waiting on, the stream monitor needs to know right away.
+	nudgeStream := oca != nil && oca.Group != nil && oca.Group.Desired != nil && sa.consumersConverged()
+
 	// If unsupported, we can't register any further.
 	if ca.unsupported != nil {
 		ca.unsupported.setupInfoSub(s, ca)
@@ -6871,6 +6908,12 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 			s.removeConsumer(o, ca)
 		}
 	}
+
+	if nudgeStream {
+		if mset, _ := acc.lookupStream(stream); mset != nil {
+			mset.signalUpdate()
+		}
+	}
 }
 
 // Common function to remove ourselves from this server.
@@ -6917,7 +6960,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 	wasLeader := cc.isConsumerLeader(accName, stream, name)
 
 	// Delete from our state.
-	var needDelete bool
+	var needDelete, nudgeStream bool
 	if accStreams := cc.streams[accName]; accStreams != nil {
 		if sa := accStreams[ca.Stream]; sa != nil && sa.consumers != nil && sa.consumers[ca.Name] != nil {
 			oca := sa.consumers[ca.Name]
@@ -6925,6 +6968,9 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
 				needDelete = true
 				delete(sa.consumers, ca.Name)
+				// A consumer dropped during a stream migration could be the last one
+				// the stream was waiting on, the stream monitor needs to know right away.
+				nudgeStream = sa.consumersConverged()
 				// Remember we used to be unsupported, just so we can send a successful delete response.
 				if ca.unsupported == nil {
 					ca.unsupported = oca.unsupported
@@ -6950,6 +6996,14 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 
 	if needDelete {
 		js.processClusterDeleteConsumer(ca, wasLeader)
+	}
+
+	if nudgeStream {
+		if acc, err := s.LookupAccount(accName); err == nil {
+			if mset, _ := acc.lookupStream(stream); mset != nil {
+				mset.signalUpdate()
+			}
+		}
 	}
 }
 
@@ -7755,6 +7809,13 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			aq.recycle(&ces)
 
 		case lc := <-lch:
+			// Not a change in leadership, just a nudge about a newly observed peer.
+			if lc.nudge {
+				if o.isMigrating() {
+					startMigrationMonitoring()
+				}
+				continue
+			}
 			isLeader, leaderTerm = lc.isLeader, lc.term
 			if recovering && !isLeader {
 				js.setConsumerAssignmentRecovering(ca)
@@ -7806,6 +7867,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
 			status := js.runConsumerMigration(o, ca, n, leaderTerm)
+			// Only retry meta leader requests slowly, their reply wakes us on the fast path.
+			if status != nil && status.Type == MigrationStatusMeta {
+				resetMigrationMonitoring(migrateMetaRetryInterval)
+			}
 			// Resolve after determining the status, so that we don't set it on a stale group.
 			js.setMigrationStatus(o.raftGroup(), status)
 
@@ -7875,7 +7940,8 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		if err := n.InstallSnapshot(snap, true); err != nil {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
-		return mstat(MigrationStatusSnapshot, "installing snapshot")
+		// The snapshot is installed, continue right away so new peers can be added
+		// and catch up from it without waiting for another check.
 	}
 	// If a membership change is in progress, we just wait for it to clear.
 	if n.MembershipChangeInProgress() {
