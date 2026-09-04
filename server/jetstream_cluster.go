@@ -4710,7 +4710,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 	slices.Sort(current)
 	slices.Sort(actualPeers)
-	exactMatch := slices.Equal(current, actualPeers)
+	peersMatch := slices.Equal(current, actualPeers)
 
 	// Remove peers not in our desired peer set.
 	var remaining []string
@@ -4721,7 +4721,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	}
 
 	// If the peer sets are an exact match, we can remove a peer.
-	if len(remaining) > 0 && exactMatch {
+	if len(remaining) > 0 && peersMatch {
 		// Removing a peer is destructive, so re-validate our snapshot against the
 		// assignment before acting on it. While we hold the lock, look up the live
 		// assignment and also check on any consumers and make sure they have moved
@@ -4841,7 +4841,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 	// Before publishing a stable R1 assignment, make the store independently durable
 	// because applying the assignment will remove the Raft node and its WAL.
-	if exactMatch && len(current) == 1 {
+	if peersMatch && len(current) == 1 {
 		if err := mset.flushForScaleDown(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
@@ -4850,14 +4850,11 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		}
 	}
 
-	// We're done.
+	// We're a step closer to being done.
 	update.MetaPeers = actualPeers
-	update.PeersMatch = exactMatch
+	update.PeersMatch = peersMatch
 	sendMetaUpdate()
-	if !exactMatch {
-		return mstat(MigrationStatusMeta, "waiting for peer set to settle")
-	}
-	return nil
+	return mstat(MigrationStatusMeta, "waiting for peer set to settle")
 }
 
 // setMigrationStatus records what the group leader is currently doing to converge
@@ -8019,7 +8016,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 
 	slices.Sort(current)
 	slices.Sort(actualPeers)
-	exactMatch := slices.Equal(current, actualPeers)
+	peersMatch := slices.Equal(current, actualPeers)
 
 	// Remove peers not in our desired peer set.
 	var remaining []string
@@ -8030,7 +8027,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	}
 
 	// If the peer sets are an exact match, we can remove a peer.
-	if len(remaining) > 0 && exactMatch {
+	if len(remaining) > 0 && peersMatch {
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
@@ -8051,14 +8048,11 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
 	}
 
-	// We're done.
+	// We're a step closer to being done.
 	update.MetaPeers = actualPeers
-	update.PeersMatch = exactMatch
+	update.PeersMatch = peersMatch
 	sendMetaUpdate()
-	if !exactMatch {
-		return mstat(MigrationStatusMeta, "waiting for peer set to settle")
-	}
-	return nil
+	return mstat(MigrationStatusMeta, "waiting for peer set to settle")
 }
 
 // Determine if we are migrating
