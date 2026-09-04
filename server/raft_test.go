@@ -4702,6 +4702,54 @@ func TestNRGProcessed(t *testing.T) {
 	require_Equal(t, n.applied, 4)
 }
 
+func TestNRGProcessedSingleNodeTriggersEarlyElection(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Simulate a R1 node that recovered committed entries from its log on startup,
+	// but that hasn't observed a leader yet. Only when it has processed everything
+	// up to the commit index should it be allowed to become leader early.
+	n.Lock()
+	n.pterm, n.pindex, n.commit = 1, 3, 3
+	n.Unlock()
+	require_Equal(t, len(n.peers), 1)
+	require_Equal(t, n.leader, noLeader)
+	require_False(t, n.pleader.Load())
+
+	requireElectionTimerFired := func(expected bool) {
+		t.Helper()
+		select {
+		case <-n.elect.C:
+			if !expected {
+				t.Fatalf("Expected election timer to not have fired")
+			}
+		case <-time.After(250 * time.Millisecond):
+			if expected {
+				t.Fatalf("Expected election timer to have fired")
+			}
+		}
+	}
+
+	// Not everything is processed yet, must still wait out the election timeout.
+	n.Processed(1, 0)
+	requireElectionTimerFired(false)
+	n.Processed(2, 1)
+	requireElectionTimerFired(false)
+
+	// Everything up to the commit index is processed, don't wait out the election timeout.
+	n.Processed(3, 2)
+	requireElectionTimerFired(true)
+
+	// Once a leader has been observed, we must not shortcut the election timeout anymore.
+	n.Lock()
+	n.resetElectionTimeout()
+	n.updateLeader(noLeader)
+	n.pleader.Store(true)
+	n.Unlock()
+	n.Processed(3, 3)
+	requireElectionTimerFired(false)
+}
+
 func TestNRGSendAppendEntryNotLeader(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

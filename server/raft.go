@@ -1532,6 +1532,13 @@ func (n *raft) Processed(index uint64, applied uint64) (entries uint64, bytes ui
 		}
 	}
 
+	// If we're a R1 node, and we've processed all that we needed to commit, make sure we can become
+	// leader as quickly as possible, so we don't wait out the election timeout.
+	if n.processed == n.commit && n.leader == _EMPTY_ && len(n.peers) == 1 && !n.pleader.Load() {
+		// Need to lower the election timeout, since only the run loop can transition.
+		n.resetElect(0)
+	}
+
 	// Calculate the number of entries and estimate the byte size that
 	// we can now remove with a compaction/snapshot.
 	if n.applied > n.papplied {
