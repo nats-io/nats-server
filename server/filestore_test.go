@@ -16349,6 +16349,90 @@ func TestFileStoreEncodedStreamStateWithSources(t *testing.T) {
 	require_Equal(t, seeded.Seq, 0)
 }
 
+// https://github.com/nats-io/nats-server/issues/8552
+func TestFileStoreEvictionTargetCacheNotForceExpired(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 64)
+	for i := 0; i < 20; i++ {
+		_, _, err := fs.StoreMsg("A", nil, msg, 0)
+		require_NoError(t, err)
+	}
+	require_True(t, fs.numMsgBlocks() > 2)
+
+	// Remove the first message via limits, as DiscardOld does at the cap.
+	fs.mu.Lock()
+	_, err = fs.removeMsgViaLimits(fs.state.FirstSeq)
+	fs.mu.Unlock()
+	require_NoError(t, err)
+
+	// The head block is now the active eviction target, so a scan-path
+	// force-expire should leave its cache alone.
+	mb := fs.getFirstBlock()
+	require_NotNil(t, mb)
+	mb.mu.Lock()
+	evictTarget := mb.evictTarget
+	err = mb.loadMsgsWithLock()
+	mb.tryForceExpireCacheLocked()
+	loaded := mb.cacheAlreadyLoaded()
+	mb.mu.Unlock()
+	require_True(t, evictTarget)
+	require_NoError(t, err)
+	require_True(t, loaded)
+
+	// A block not involved in limits-based removals still force-expires.
+	fs.mu.RLock()
+	mb2 := fs.blks[1]
+	fs.mu.RUnlock()
+	mb2.mu.Lock()
+	evictTarget = mb2.evictTarget
+	err = mb2.loadMsgsWithLock()
+	mb2.tryForceExpireCacheLocked()
+	loaded = mb2.cacheAlreadyLoaded()
+	mb2.mu.Unlock()
+	require_True(t, !evictTarget)
+	require_NoError(t, err)
+	require_True(t, !loaded)
+}
+
+func TestFileStorePerSubjectLimitRemovalDoesNotMarkEvictTarget(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256},
+		StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := bytes.Repeat([]byte("Z"), 64)
+	for i := 1; i <= 20; i++ {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("%d", i), nil, msg, 0)
+		require_NoError(t, err)
+	}
+	require_True(t, fs.numMsgBlocks() > 2)
+
+	// Pick the subject whose only message is the first message of an interior
+	// block, then store it again so the per-subject limit removes that message.
+	fs.mu.RLock()
+	mb := fs.blks[1]
+	fs.mu.RUnlock()
+	fseq := atomic.LoadUint64(&mb.first.seq)
+	_, _, err = fs.StoreMsg(fmt.Sprintf("%d", fseq), nil, msg, 0)
+	require_NoError(t, err)
+
+	mb.mu.Lock()
+	evictTarget := mb.evictTarget
+	fseqAfter := atomic.LoadUint64(&mb.first.seq)
+	mb.mu.Unlock()
+	// Confirm the removal actually happened in this block, but that it was
+	// not marked as an eviction target since it is not the head block.
+	require_True(t, fseqAfter != fseq)
+	require_True(t, !evictTarget)
+  
 // https://github.com/nats-io/nats-server/issues/8547
 // A secure remove drops mb.mu while it writes the delete tombstone into the last block.
 // If the block cache expires in that window, the secure branch used to dereference a nil mb.cache.
