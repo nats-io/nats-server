@@ -2945,6 +2945,58 @@ func TestJetStreamPublishExpect(t *testing.T) {
 	}
 }
 
+func TestJetStreamRestoreLastMsgIDPastDedupeWindow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	const (
+		streamName = "TEST"
+		subject    = "foo"
+		lastMsgID  = "A"
+	)
+	duplicateWindow := 100 * time.Millisecond
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       streamName,
+		Subjects:   []string{subject},
+		Storage:    nats.FileStorage,
+		Duplicates: duplicateWindow,
+	})
+	require_NoError(t, err)
+
+	pa, err := js.Publish(subject, nil, nats.MsgId(lastMsgID))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 1)
+
+	mset, err := s.GlobalAccount().lookupStream(streamName)
+	require_NoError(t, err)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if seq := mset.store.GetSeqFromTime(time.Now().Add(-duplicateWindow)); seq <= pa.Sequence {
+			return fmt.Errorf("last message still inside duplicate window at sequence %d", seq)
+		}
+		return nil
+	})
+
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	msg := nats.NewMsg(subject)
+	msg.Header.Set(JSExpectedLastMsgId, lastMsgID)
+	pa, err = js.PublishMsg(msg)
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, 2)
+}
+
 func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

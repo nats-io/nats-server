@@ -1601,6 +1601,16 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // headers and msgId in them. Would need signaling from the storage layer.
 // mset.mu and mset.ddMu locks should be held.
 func (mset *stream) rebuildDedupe() {
+	var smv StoreMsg
+	var state StreamState
+	mset.store.FastState(&state)
+
+	if state.LastSeq > 0 {
+		if sm, err := mset.store.LoadMsg(state.LastSeq, &smv); err == nil {
+			mset.lmsgId = getMsgId(sm.hdr)
+		}
+	}
+
 	duplicates := mset.cfg.Duplicates
 	if duplicates <= 0 {
 		return
@@ -1612,10 +1622,6 @@ func (mset *stream) rebuildDedupe() {
 		return
 	}
 
-	var smv StoreMsg
-	var state StreamState
-	mset.store.FastState(&state)
-
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		sm, err := mset.store.LoadMsg(seq, &smv)
 		if err != nil {
@@ -1626,9 +1632,6 @@ func (mset *stream) rebuildDedupe() {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
 				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
-		}
-		if seq == state.LastSeq {
-			mset.lmsgId = msgId
 		}
 	}
 }
