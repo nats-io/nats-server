@@ -148,6 +148,7 @@ const (
 var (
 	routeConnectDelay    = DEFAULT_ROUTE_CONNECT
 	routeConnectMaxDelay = DEFAULT_ROUTE_CONNECT_MAX
+	routeReconnectDelay  = DEFAULT_ROUTE_RECONNECT
 	routeMaxPingInterval = defaultRouteMaxPingInterval
 )
 
@@ -2898,7 +2899,7 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string
 	// Add some random delay to reduce risk of repeated failures.
 	delay := time.Duration(rand.IntN(100)) * time.Millisecond
 	if rtype == Explicit {
-		delay += DEFAULT_ROUTE_RECONNECT
+		delay += routeReconnectDelay
 	}
 	select {
 	case <-time.After(delay):

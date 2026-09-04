@@ -6571,8 +6571,7 @@ func TestJetStreamDefaultMaxConsumers(t *testing.T) {
 
 	// The limit is now reached, so creating more is rejected.
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
 
 	// Updating or idempotently recreating existing assets does not add new
 	// ones and must still be allowed while at the limit.
@@ -6603,12 +6602,10 @@ func TestJetStreamDefaultMaxConsumers(t *testing.T) {
 	})
 
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
 	// Ephemerals are new consumers as well.
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{AckPolicy: nats.AckExplicitPolicy})
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
 
 	// Existing assets can still be idempotently recreated and updated, even while
 	// above the lowered limit, since that doesn't add new assets.
@@ -6641,8 +6638,7 @@ func TestJetStreamDefaultMaxConsumersSourcingExempt(t *testing.T) {
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
 	require_NoError(t, err)
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
 
 	// Mirroring/sourcing "S" creates internal Direct/Sourcing consumers on it,
 	// those are not counted toward the limit and must not be rejected by it.
@@ -6672,8 +6668,67 @@ func TestJetStreamDefaultMaxConsumersSourcingExempt(t *testing.T) {
 
 	// Regular consumers must still be rejected.
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "maximum consumers limit reached")
+	require_Error(t, err, NewJSMaximumConsumersLimitError())
+}
+
+func TestJetStreamDefaultMaxConsumersOnlyWithoutStreamOrAccountLimit(t *testing.T) {
+	// The default only applies when neither the stream nor the account sets
+	// a max consumers limit. If either is set, that takes precedence, even
+	// when it's higher than the default.
+	for _, test := range []struct {
+		name       string
+		accountMax int // 0 leaves the account limit unset, -1 is unlimited.
+		streamMax  int // 0 leaves the stream limit unset, -1 is unlimited.
+		expected   int
+	}{
+		{"neither set, default applies", 0, 0, 2},
+		{"stream above default", 0, 4, 4},
+		{"stream below default", 0, 1, 1},
+		{"account above default", 4, 0, 4},
+		{"account below default", 1, 0, 1},
+		{"both set, stream lowest", 4, 3, 3},
+		{"both set, equal", 3, 3, 3},
+		// Unlimited counts as not set, the default can't be opted out of.
+		{"stream unlimited, default applies", 0, -1, 2},
+		{"account unlimited, default applies", -1, 0, 2},
+		{"both unlimited, default applies", -1, -1, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			accountLimit := "enabled"
+			if test.accountMax != 0 {
+				accountLimit = fmt.Sprintf("{ max_consumers: %d }", test.accountMax)
+			}
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: 127.0.0.1:-1
+				jetstream: {
+					store_dir: %q
+					limits: {
+						default_max_consumers: 2
+					}
+				}
+				accounts {
+					A {
+						jetstream: %s
+						users = [ { user: "a", pass: "pwd" } ]
+					}
+				}
+			`, t.TempDir(), accountLimit)))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"S.>"}, MaxConsumers: test.streamMax})
+			require_NoError(t, err)
+			for i := range test.expected {
+				_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), AckPolicy: nats.AckExplicitPolicy})
+				require_NoError(t, err)
+			}
+			_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "OVER", AckPolicy: nats.AckExplicitPolicy})
+			require_Error(t, err, NewJSMaximumConsumersLimitError())
+		})
+	}
 }
 
 type obsi struct {

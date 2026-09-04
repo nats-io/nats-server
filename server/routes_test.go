@@ -43,6 +43,7 @@ import (
 func init() {
 	routeConnectDelay = 15 * time.Millisecond
 	routeConnectMaxDelay = 15 * time.Millisecond
+	routeReconnectDelay = 15 * time.Millisecond
 }
 
 func checkNumRoutes(t *testing.T, s *Server, expected int) {
@@ -339,7 +340,7 @@ func checkClusterFormed(t testing.TB, servers ...*Server) {
 			enr = append(enr, total)
 		}
 	}
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 15*time.Millisecond, func() error {
 		for i, s := range servers {
 			if numRoutes := s.NumRoutes(); numRoutes != enr[i] {
 				return fmt.Errorf("Expected %d routes for server %q, got %d", enr[i], s, numRoutes)
@@ -1785,7 +1786,7 @@ func TestRouteReconnectExponentialBackoff(t *testing.T) {
 	s2.SetLogger(l, true, false)
 
 	// Remove initial delay before reconnect, and allow for some skew.
-	now := time.Now().Add(DEFAULT_ROUTE_RECONNECT).Add(-100 * time.Millisecond)
+	now := time.Now().Add(routeReconnectDelay).Add(-100 * time.Millisecond)
 	var delay time.Duration
 
 	// S2 should retry ConnectRetries+1 times and then stop
@@ -1959,7 +1960,7 @@ func TestRoutePoolAndPerAccountErrors(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("Did not get expected error regarding no route for account")
 		}
-		time.Sleep(DEFAULT_ROUTE_RECONNECT + 100*time.Millisecond)
+		time.Sleep(routeReconnectDelay + 100*time.Millisecond)
 	}
 }
 
@@ -2149,7 +2150,7 @@ func TestRoutePoolConnectRace(t *testing.T) {
 							t.Fatalf("Routes are constantly reconnecting: %v", e)
 						}
 					}
-				case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
+				case <-time.After(routeReconnectDelay + 500*time.Millisecond):
 					// More than reconnect and some, and no reconnect, so we are good.
 					done = true
 				}
@@ -2838,7 +2839,7 @@ func TestRoutePerAccountConnectRace(t *testing.T) {
 					t.Fatalf("Routes are constantly reconnecting: %v", e)
 				}
 			}
-		case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
+		case <-time.After(routeReconnectDelay + 500*time.Millisecond):
 			// More than reconnect and some, and no reconnect, so we are good.
 			done = true
 		}
@@ -3743,6 +3744,11 @@ func TestRoutePoolWithOlderServerConnectAndReconnect(t *testing.T) {
 }
 
 func TestRoutePoolBadAuthNoRunawayCreateRoute(t *testing.T) {
+	// This test checks the reconnect rate, so use the default reconnect delay.
+	oRouteReconnectDelay := routeReconnectDelay
+	routeReconnectDelay = DEFAULT_ROUTE_RECONNECT
+	defer func() { routeReconnectDelay = oRouteReconnectDelay }()
+
 	conf1 := createConfFile(t, []byte(`
 		server_name: "S1"
 		listen: "127.0.0.1:-1"

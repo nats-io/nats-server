@@ -538,6 +538,7 @@ func createJetStreamSuperClusterWithTemplateAndModHook(t *testing.T, tmpl string
 	}
 
 	sc := &supercluster{t, clusters, nproxies}
+	sc.campaignMetaImmediately()
 	sc.waitOnLeader()
 	sc.waitOnAllCurrent()
 
@@ -601,7 +602,7 @@ func (sc *supercluster) waitOnLeader() {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnStreamLeader", nil)
+	antithesis.AssertUnreachable(sc.t, "Timeout in supercluster.waitOnLeader", nil)
 	sc.t.Fatalf("Expected a cluster leader, got none")
 }
 
@@ -624,6 +625,14 @@ func (sc *supercluster) waitOnAccount(account string) {
 	}
 
 	sc.t.Fatalf("Expected account %q to exist but didn't", account)
+}
+
+func (sc *supercluster) campaignMetaImmediately() {
+	var servers []*Server
+	for _, c := range sc.clusters {
+		servers = append(servers, c.servers...)
+	}
+	campaignMetaImmediately(servers)
 }
 
 func (sc *supercluster) waitOnAllCurrent() {
@@ -787,6 +796,7 @@ func createMixedModeCluster(t testing.TB, tmpl string, clusterName, snPre string
 	// Wait til we are formed and have a leader.
 	c.checkClusterFormed()
 	if numJsServers > 0 {
+		c.campaignMetaImmediately()
 		c.waitOnPeerCount(numJsServers)
 	}
 
@@ -884,10 +894,39 @@ func createJetStreamClusterEx(t testing.TB, tmpl, cName, snPre string, numServer
 	// Wait til we are formed and have a leader.
 	c.checkClusterFormed()
 	if wait {
+		c.campaignMetaImmediately()
 		c.waitOnClusterReady()
 	}
 
 	return c
+}
+
+func (c *cluster) campaignMetaImmediately() {
+	campaignMetaImmediately(c.servers)
+}
+
+func campaignMetaImmediately(servers []*Server) {
+	// Only campaign on a single meta group, but check all servers first
+	// since one could already know of a leader. Pick the campaigning server
+	// at random so tests don't always end up with the same meta leader.
+	var nodes []RaftNode
+	for _, s := range servers {
+		js := s.getJetStream()
+		if js == nil {
+			continue
+		}
+		n := js.getMetaGroup()
+		if n == nil {
+			continue
+		}
+		if n.GroupLeader() != _EMPTY_ {
+			return
+		}
+		nodes = append(nodes, n)
+	}
+	if len(nodes) > 0 {
+		nodes[rand.IntN(len(nodes))].CampaignImmediately()
+	}
 }
 
 func (c *cluster) addInNewServer() *Server {
@@ -1623,9 +1662,27 @@ func (c *cluster) waitOnServerCurrent(s *Server) {
 
 func (c *cluster) waitOnAllCurrent() {
 	c.t.Helper()
-	for _, cs := range c.servers {
-		c.waitOnServerCurrent(cs)
+	// Callers use this to wait for a proposal they just made to be applied,
+	// so give it a chance to be committed before checking for currency.
+	time.Sleep(100 * time.Millisecond)
+	expires := time.Now().Add(30 * time.Second)
+	for time.Now().Before(expires) {
+		current := true
+		for _, s := range c.servers {
+			if s.JetStreamEnabled() && !s.JetStreamIsCurrent() {
+				current = false
+				break
+			}
+		}
+		if current {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	antithesis.AssertUnreachable(c.t, "Timeout in cluster.waitOnAllCurrent", map[string]any{
+		"cluster": c.name,
+	})
+	c.t.Fatalf("Expected all servers in cluster %q to eventually be current", c.name)
 }
 
 func (c *cluster) serverByName(sname string) *Server {
@@ -1719,7 +1776,6 @@ func (c *cluster) waitOnAccount(account string) {
 func (c *cluster) waitOnClusterReady() {
 	c.t.Helper()
 	c.waitOnClusterReadyWithNumPeers(len(c.servers))
-	c.waitOnLeader()
 }
 
 func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
@@ -1733,8 +1789,16 @@ func (c *cluster) waitOnClusterReadyWithNumPeers(numPeersExpected int) {
 			continue
 		}
 		if len(leader.JetStreamClusterPeers()) == numPeersExpected {
-			time.Sleep(100 * time.Millisecond)
-			return
+			current := true
+			for _, s := range c.servers {
+				if s.Running() && s.JetStreamEnabled() && !s.JetStreamIsCurrent() {
+					current = false
+					break
+				}
+			}
+			if current {
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1812,6 +1876,8 @@ func (c *cluster) restartAll() {
 			c.opts[i] = o
 		}
 	}
+	c.checkClusterFormed()
+	c.campaignMetaImmediately()
 	c.waitOnClusterReady()
 }
 
@@ -1829,6 +1895,8 @@ func (c *cluster) lameDuckRestartAll() {
 			c.opts[i] = o
 		}
 	}
+	c.checkClusterFormed()
+	c.campaignMetaImmediately()
 	c.waitOnClusterReady()
 }
 
@@ -1841,6 +1909,8 @@ func (c *cluster) restartAllSamePorts() {
 			c.servers[i] = s
 		}
 	}
+	c.checkClusterFormed()
+	c.campaignMetaImmediately()
 	c.waitOnClusterReady()
 }
 
