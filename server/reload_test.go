@@ -15,9 +15,13 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -1879,6 +1883,129 @@ func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
 	if err := s.Reload(); err != nil {
 		t.Fatalf("Error on reload: %v", err)
 	}
+}
+
+func TestConfigReloadPinnedCertsDisconnectsClientsWithOldPins(t *testing.T) {
+	opts := DefaultOptions()
+	opts.NoLog = true
+	opts.NoSigs = true
+	s := New(opts)
+	defer s.Shutdown()
+
+	oldPin := pinnedCertSetFromFile(t, "../test/configs/certs/tlsauth/client.pem")
+	newPin := pinnedCertSetFromFile(t, "../test/configs/certs/tlsauth/client2.pem")
+
+	curOpts := &Options{TLSPinnedCerts: oldPin}
+	curOpts.MQTT.TLSPinnedCerts = oldPin
+	curOpts.Websocket.TLSPinnedCerts = oldPin
+	newOpts := &Options{TLSPinnedCerts: newPin}
+	newOpts.MQTT.TLSPinnedCerts = newPin
+	newOpts.Websocket.TLSPinnedCerts = newPin
+
+	for _, test := range []struct {
+		name       string
+		clientType int
+	}{
+		{"nats", NATS},
+		{"mqtt", MQTT},
+		{"websocket", WS},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createPinnedCertReloadClient(t, s, test.clientType)
+			if !c.matchesPinnedCert(oldPin) {
+				t.Fatal("Expected client to match original pinned cert")
+			}
+			if c.matchesPinnedCert(newPin) {
+				t.Fatal("Expected client not to match reloaded pinned cert")
+			}
+		})
+	}
+
+	if n := s.NumClients(); n != 3 {
+		t.Fatalf("Expected 3 registered clients, got %d", n)
+	}
+
+	s.recheckPinnedCerts(curOpts, newOpts)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if n := s.NumClients(); n != 0 {
+			return fmt.Errorf("Expected all clients to disconnect, got %d", n)
+		}
+		return nil
+	})
+}
+
+func createPinnedCertReloadClient(t *testing.T, s *Server, clientType int) *client {
+	t.Helper()
+
+	serverTLS, err := GenTLSConfig(&TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/server.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+		CaFile:   "../test/configs/certs/tlsauth/ca.pem",
+		Verify:   true,
+	})
+	if err != nil {
+		t.Fatalf("Error generating server TLS config: %v", err)
+	}
+	clientTLS, err := GenTLSConfig(&TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/client.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+	})
+	if err != nil {
+		t.Fatalf("Error generating client TLS config: %v", err)
+	}
+	clientTLS.InsecureSkipVerify = true
+
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() { clientConn.Close() })
+
+	tlsServerConn := tls.Server(serverConn, serverTLS)
+	c := &client{srv: s, nc: tlsServerConn, kind: CLIENT}
+	switch clientType {
+	case MQTT:
+		c.mqtt = &mqtt{}
+	case WS:
+		c.ws = &websocket{}
+	}
+	c.initClient()
+	c.flags.set(noReconnect)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- tlsServerConn.Handshake()
+	}()
+
+	tlsClientConn := tls.Client(clientConn, clientTLS)
+	if err := tlsClientConn.Handshake(); err != nil {
+		t.Fatalf("Error during client TLS handshake: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("Error during server TLS handshake: %v", err)
+	}
+
+	s.mu.Lock()
+	s.clients[c.cid] = c
+	s.mu.Unlock()
+
+	return c
+}
+
+func pinnedCertSetFromFile(t *testing.T, certFile string) PinnedCertSet {
+	t.Helper()
+
+	data, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatalf("Error reading certificate %q: %v", certFile, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		t.Fatalf("Error decoding certificate %q", certFile)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("Error parsing certificate %q: %v", certFile, err)
+	}
+	sha := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return PinnedCertSet{hex.EncodeToString(sha[:]): struct{}{}}
 }
 
 func TestConfigReloadClusterAdvertise(t *testing.T) {
