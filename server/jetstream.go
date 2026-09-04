@@ -594,6 +594,24 @@ func (s *Server) canExtendOtherDomain() bool {
 	return false
 }
 
+// jetStreamNotExtendable returns true if the configuration has this server
+// running standalone JetStream (no meta controller), so it can never take
+// part in a shared JetStream meta group. Config-derived only; see
+// jetStreamLeafNoExtend for the combined check.
+//
+// A standalone server soliciting extension via will_extend reports
+// extendable: leaves chained below it extend through it and must not isolate.
+func (s *Server) jetStreamNotExtendable() bool {
+	opts := s.getOpts()
+	if !opts.JetStream || !s.standAloneMode() {
+		return false
+	}
+	if s.SystemAccount() == nil {
+		return true
+	}
+	return !s.canExtendOtherDomain() || opts.JetStreamExtHint != jsWillExtend
+}
+
 func (s *Server) updateJetStreamInfoStatus(enabled bool) {
 	s.mu.Lock()
 	s.info.JetStream = enabled
@@ -947,6 +965,34 @@ func (s *Server) configAllJetStreamAccounts(tq chan<- func()) error {
 	}
 
 	return nil
+}
+
+// jetStreamStartedWithoutMetaController returns true if JetStream completed
+// startup without a meta controller. Extension is then impossible until a
+// restart, whatever the current configuration claims (e.g. a system account
+// remote added by config reload).
+func (s *Server) jetStreamStartedWithoutMetaController() bool {
+	if !s.getOpts().JetStream {
+		return false
+	}
+	js := s.getJetStream()
+	if js == nil || !js.isStarted() {
+		return false
+	}
+	return js.getMetaGroup() == nil
+}
+
+// jetStreamLeafNoExtend returns true if this server can not take part in a
+// shared JetStream meta group, per configuration or runtime state.
+func (s *Server) jetStreamLeafNoExtend() bool {
+	return s.jetStreamNotExtendable() || s.jetStreamStartedWithoutMetaController()
+}
+
+// Returns whether JetStream startup has fully completed.
+func (js *jetStream) isStarted() bool {
+	js.mu.RLock()
+	defer js.mu.RUnlock()
+	return !js.started.IsZero()
 }
 
 // Mark our started time.

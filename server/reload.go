@@ -1224,6 +1224,9 @@ func (l *leafNodeOption) Apply(s *Server) {
 			checkRemovedLeafNodeCfgsAsync(s)
 		}
 	}
+	// Changed remotes can change whether this server could take part in a
+	// shared JetStream meta group; refresh what is advertised to leafnodes.
+	s.updateLeafNodeJSNoExtInfo()
 }
 
 // Go through the removed remote leafnode configs map to check if the

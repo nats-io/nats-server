@@ -29,6 +29,7 @@ import (
 	"path"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,10 @@ type leaf struct {
 	remoteServer string
 	// domain name of remote server
 	remoteDomain string
+	// remote runs standalone JetStream and can never be part of a shared meta
+	// group. From the hub's INFO when solicited, from the CONNECT echo when
+	// accepted.
+	remoteNoExt bool
 	// account name of remote server
 	remoteAccName string
 	// Whether or not we want to propagate east-west interest from other LNs.
@@ -1001,6 +1006,10 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		return
 	}
 
+	// Compute before taking the server lock: the runtime part reads JetStream
+	// state under its own lock.
+	jsNoExt := s.jetStreamLeafNoExtend()
+
 	s.mu.Lock()
 	hp := net.JoinHostPort(opts.LeafNode.Host, strconv.Itoa(port))
 	l, e := natsListen("tcp", hp)
@@ -1034,6 +1043,8 @@ func (s *Server) startLeafNodeAcceptLoop() {
 		Proto:         s.getServerProto(),
 		InfoOnConnect: true,
 		JSApiLevel:    JSApiLevel,
+
+		JetStreamNotExtendable: jsNoExt,
 	}
 	// If we have selected a random port...
 	if port == 0 {
@@ -1082,9 +1093,10 @@ func (s *Server) startLeafNodeAcceptLoop() {
 // RegEx to match a creds file with user JWT and Seed.
 var credsRe = regexp.MustCompile(`\s*(?:(?:[-]{3,}.*[-]{3,}\r?\n)([\w\-.=]+)(?:\r?\n[-]{3,}.*[-]{3,}(\r?\n|\z)))`)
 
-// clusterName is provided as argument to avoid lock ordering issues with the locked client c
+// clusterName and jsNoExt are provided as arguments to avoid lock ordering
+// issues with the locked client c.
 // Lock should be held entering here.
-func (c *client) sendLeafConnect(clusterName string, headers bool) error {
+func (c *client) sendLeafConnect(clusterName string, headers, jsNoExt bool) error {
 	// We support basic user/pass and operator based user JWT with signatures.
 	cinfo := leafConnectInfo{
 		Version:       VERSION,
@@ -1100,6 +1112,8 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 		RemoteAccount: c.acc.GetName(),
 		Proto:         c.srv.getServerProto(),
 		Isolate:       c.leaf.remote.RequestIsolation,
+
+		JetStreamNotExtendable: jsNoExt,
 	}
 
 	// If a signature callback is specified, this takes precedence over anything else.
@@ -1242,6 +1256,20 @@ func (s *Server) generateLeafNodeInfoJSON() {
 	s.leafNodeInfo.LeafNodeURLs = s.leafURLsMap.getAsStringSlice()
 	s.leafNodeInfo.WSConnectURLs = s.websocket.connectURLsMap.getAsStringSlice()
 	s.leafNodeInfoJSON = generateInfoJSON(&s.leafNodeInfo)
+}
+
+// updateLeafNodeJSNoExtInfo recomputes whether this leaf can extend the
+// remote's meta group over a shared system account.
+func (s *Server) updateLeafNodeJSNoExtInfo() {
+	// Compute before taking the server lock: the runtime part reads JetStream
+	// state under its own lock.
+	noExt := s.jetStreamLeafNoExtend()
+	s.mu.Lock()
+	if s.leafNodeInfo.JetStreamNotExtendable != noExt {
+		s.leafNodeInfo.JetStreamNotExtendable = noExt
+		s.generateLeafNodeInfoJSON()
+	}
+	s.mu.Unlock()
 }
 
 // Sends an async INFO protocol so that the connected servers can update
@@ -1702,6 +1730,7 @@ func (c *client) processLeafnodeInfo(info *Info) {
 			c.leaf.remoteServer = info.Name
 		}
 		c.leaf.remoteDomain = info.Domain
+		c.leaf.remoteNoExt = info.JetStreamNotExtendable
 		c.leaf.remoteCluster = info.Cluster
 		// We send the protocol version in the INFO protocol.
 		// Keep track of it, so we know if this connection supports message
@@ -1965,6 +1994,7 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		accName = acc.Name
 	}
 	myRemoteDomain := c.leaf.remoteDomain
+	myRemoteNoExt := c.leaf.remoteNoExt
 	mySrvName := c.leaf.remoteServer
 	remoteAccName := c.leaf.remoteAccName
 	myClustName := c.leaf.remoteCluster
@@ -2062,6 +2092,15 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		}
 	}
 
+	// A standalone JetStream server (no meta controller) on either side can
+	// never be part of a shared meta group: treat it like a domain mismatch
+	// and isolate.
+	confNoExt := s.jetStreamNotExtendable()
+	// Runtime state: JetStream started without a meta controller (e.g. the
+	// system account remote was added by config reload), only a restart helps.
+	localNoExtRestart := !confNoExt && s.jetStreamStartedWithoutMetaController()
+	localNoExt := confNoExt || localNoExtRestart
+
 	// If the server has JS disabled, it may still be part of a JetStream that could be extended.
 	// This is either signaled by js being disabled and a domain set,
 	// or in cases where no domain name exists, an extension hint is set.
@@ -2069,27 +2108,57 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 	//
 	// If the system account connects but default domains are present, JetStream can't be extended.
 	if opts.JetStreamDomain != myRemoteDomain || (!opts.JetStream && (opts.JetStreamDomain == _EMPTY_ && opts.JetStreamExtHint != jsWillExtend)) ||
-		sysAcc == nil || acc == nil || forceSysAccDeny {
+		sysAcc == nil || acc == nil || forceSysAccDeny || myRemoteNoExt || localNoExt {
 		// If domain names mismatch always deny. This applies to system accounts as well as non system accounts.
 		// Not having a system account, account or JetStream disabled is considered a mismatch as well.
 		if acc != nil && acc == sysAcc {
 			c.Noticef("System account connected from %s", srvDecorated())
-			c.Noticef("JetStream not extended, domains differ")
+			if opts.JetStreamDomain == myRemoteDomain && (myRemoteNoExt || localNoExt) {
+				if localNoExt {
+					c.Noticef("JetStream not extended, this server runs standalone JetStream and can not take part in a JetStream meta group")
+					if localNoExtRestart {
+						c.Noticef("Restart the server to be able to extend the JetStream domain")
+					} else if s.canExtendOtherDomain() {
+						c.Noticef(`To extend instead, set the JetStream Option "extension_hint: %s"`, jsWillExtend)
+					}
+				} else {
+					c.Noticef("JetStream not extended, remote server runs standalone JetStream and can not be extended")
+				}
+			} else {
+				c.Noticef("JetStream not extended, domains differ")
+			}
 			c.mergeDenyPermissionsLocked(both, denyAllJs)
 			// When a remote with a system account is present in a server, unless otherwise disabled, the server will be
 			// started in observer mode. Now that it is clear that this not used, turn the observer mode off.
 			if solicited && meta != nil && meta.IsObserver() {
-				meta.setObserver(false, extNotExtended)
-				c.Debugf("Turning JetStream metadata controller Observer Mode off")
-				// Take note that the domain was not extended to avoid this state from startup.
-				writePeerState(c.srv.diskIOSemaphore(), js.config.StoreDir, meta.currentPeerState())
-				// Meta controller can't be leader yet.
-				// Yet it is possible that due to observer mode every server already stopped campaigning.
-				// Therefore this server needs to be kicked into campaigning gear explicitly.
-				meta.Campaign()
+				if s.standAloneMode() {
+					// A standalone server runs a meta controller solely to join the remote's
+					// meta group (soliciting extension via will_extend). A single server must
+					// not form a meta group of its own, so stay in observer mode: JetStream
+					// remains unavailable until the configuration is corrected.
+					c.Warnf("JetStream can not be extended over this connection and a single standalone server can not form its own meta group, JetStream will be unavailable")
+					c.Warnf(`Remove the JetStream Option "extension_hint: %s" and restart to run JetStream standalone instead`, jsWillExtend)
+				} else {
+					meta.setObserver(false, extNotExtended)
+					c.Debugf("Turning JetStream metadata controller Observer Mode off")
+					// Take note that the domain was not extended to avoid this state from startup.
+					writePeerState(c.srv.diskIOSemaphore(), js.config.StoreDir, meta.currentPeerState())
+					// Meta controller can't be leader yet.
+					// Yet it is possible that due to observer mode every server already stopped campaigning.
+					// Therefore this server needs to be kicked into campaigning gear explicitly.
+					meta.Campaign()
+				}
 			}
 		} else {
-			c.Noticef("JetStream using domains: local %q, remote %q", opts.JetStreamDomain, myRemoteDomain)
+			if opts.JetStreamDomain == myRemoteDomain {
+				if opts.JetStreamDomain != _EMPTY_ {
+					c.Noticef("JetStream isolated: remote server uses the same JetStream domain %q but is not part of this JetStream", opts.JetStreamDomain)
+				} else {
+					c.Noticef("JetStream isolated: remote server is not part of this JetStream")
+				}
+			} else {
+				c.Noticef("JetStream using domains: local %q, remote %q", opts.JetStreamDomain, myRemoteDomain)
+			}
 			c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 		}
 		blockMappingOutgoing = true
@@ -2101,6 +2170,25 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		// Therefore, server with a remote that are not already in observer mode, need to be put into it.
 		if solicited && meta != nil && !meta.IsObserver() {
 			c.Debugf("Turning JetStream metadata controller Observer Mode on - System Account Connected")
+			// If this server operated its own meta group before extending, for example because
+			// it ran isolated while the remote could not be extended, or it was started with a
+			// wrong extension hint, all of its own assignments are orphaned and locally created
+			// assets will be deleted.
+			var nStreams, nConsumers int
+			js.mu.RLock()
+			if cc := js.cluster; cc != nil {
+				for _, asa := range cc.streams {
+					nStreams += len(asa)
+					for _, sa := range asa {
+						nConsumers += len(sa.consumers)
+					}
+				}
+			}
+			js.mu.RUnlock()
+			if nStreams > 0 || nConsumers > 0 {
+				c.Warnf("Extending JetStream domain %q orphans local JetStream state: %d stream(s) and %d consumer(s) created while not part of the extended JetStream will be deleted",
+					myRemoteDomain, nStreams, nConsumers)
+			}
 			// Discard any local metagroup state accumulated before the SYS-account
 			// leaf came up (e.g. the wrong-hint case where this server bootstrapped
 			// its own metagroup). The parent's view is now authoritative; without
@@ -2117,6 +2205,21 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 		c.Debugf("Adding deny %+v for account %q", denyAllClientJs, accName)
 		c.mergeDenyPermissionsLocked(both, denyAllClientJs)
 	}
+	// Two servers can use the same domain name without sharing the system
+	// account, in which case they are two independent JetStreams that both
+	// claim the same domain name, and the domain no longer uniquely identifies
+	// one JetStream. Only the soliciting side can detect this, by knowing that
+	// none of its remotes binds the system account.
+	if solicited && acc != nil && acc != sysAcc && sysAcc != nil &&
+		opts.JetStream && opts.JetStreamDomain != _EMPTY_ && opts.JetStreamDomain == myRemoteDomain {
+		sysName := sysAcc.GetName()
+		hasSysRemote := slices.ContainsFunc(opts.LeafNode.Remotes, func(r *RemoteLeafOpts) bool {
+			return r.LocalAccount == sysName
+		})
+		if !hasSysRemote {
+			c.Warnf("Remote server uses the same JetStream domain %q without sharing the system account, both JetStreams remain independent", opts.JetStreamDomain)
+		}
+	}
 	// If we have a specified JetStream domain we will want to add a mapping to
 	// allow access cross domain for each non-system account. The system account
 	// is mapped in setupJetStreamExports, it only needs the outgoing block here.
@@ -2130,13 +2233,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 				}
 			}
 		}
-		if blockMappingOutgoing {
+		// When the remote reports the SAME domain name (an isolated connection
+		// due to a standalone JetStream server on either end), the remote has
+		// identical domain mappings and propagates subscription interest for
+		// them. A deny for the domain API would then trigger permission
+		// violations that close the connection. Domain mappings rewrite the
+		// subject at the entry server anyway, so nothing crosses in that case.
+		if blockMappingOutgoing && opts.JetStreamDomain != myRemoteDomain {
 			src := fmt.Sprintf(jsDomainAPI, opts.JetStreamDomain)
-			// make sure that messages intended for this domain, do not leave the cluster via this leaf node connection
-			// This is a guard against a miss-config with two identical domain names and will only cover some forms
-			// of this issue, not all of them.
-			// This guards against a hub and a spoke having the same domain name.
-			// But not two spokes having the same one and the request coming from the hub.
+			// Make sure that messages intended for this domain do not leave the
+			// cluster via this leaf node connection.
 			c.mergeDenyPermissionsLocked(pub, []string{src})
 			c.Debugf("Adding deny %q for outgoing messages to account %q", src, accName)
 		}
@@ -2196,6 +2302,10 @@ type leafConnectInfo struct {
 	JetStream bool     `json:"jetstream,omitempty"`
 	DenyPub   []string `json:"deny_pub,omitempty"`
 	Isolate   bool     `json:"isolate,omitempty"`
+
+	// Mirror of Info.JetStreamNotExtendable, so the accept side can isolate
+	// the connection as well. Old servers never set this.
+	JetStreamNotExtendable bool `json:"js_no_ext,omitempty"`
 
 	// There was an existing field called:
 	// >> Comp bool `json:"compression,omitempty"`
@@ -2319,6 +2429,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	c.leaf.remoteDomain = proto.Domain
+	c.leaf.remoteNoExt = proto.JetStreamNotExtendable
 
 	// When a leaf solicits a connection to a hub, the perms that it will use on the soliciting leafnode's
 	// behalf are correct for them, but inside the hub need to be reversed since data is flowing in the opposite direction.
@@ -3721,13 +3832,16 @@ const connectProcessTimeout = 2 * time.Second
 // protocol.
 func (s *Server) leafNodeResumeConnectProcess(c *client) {
 	clusterName := s.ClusterName()
+	// Advertise the standalone state, so the accept side isolates the
+	// connection just like we do.
+	jsNoExt := s.jetStreamLeafNoExtend()
 
 	c.mu.Lock()
 	if c.isClosed() {
 		c.mu.Unlock()
 		return
 	}
-	if err := c.sendLeafConnect(clusterName, c.headers); err != nil {
+	if err := c.sendLeafConnect(clusterName, c.headers, jsNoExt); err != nil {
 		c.mu.Unlock()
 		c.closeConnection(WriteError)
 		return
