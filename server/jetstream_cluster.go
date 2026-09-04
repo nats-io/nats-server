@@ -13225,22 +13225,12 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		}
 	}
 
-	generatePeer := func(peer string) *PeerInfo {
-		pi := &PeerInfo{
-			Current: false,
-			Offline: true,
-			Peer:    peer,
-		}
-		// If node is found, complete/update the settings.
+	generatePeer := func(peer string) *DesiredPeerInfo {
+		pi := &DesiredPeerInfo{Offline: true, Peer: peer}
 		if sir, ok := s.nodeToInfo.Load(peer); ok && sir != nil {
 			si := sir.(nodeInfo)
-			pi.Name, pi.Offline, pi.cluster = si.name, si.offline, si.cluster
+			pi.Name, pi.Offline = si.name, si.offline
 		} else {
-			// If not, then add a name that indicates that the server name
-			// is unknown at this time, and clear the lag since it is misleading
-			// (the node may not have that much lag).
-			// Note: We return now the Peer ID in PeerInfo, so the "(peerID: %s)"
-			// would technically not be required, but keeping it for now.
 			pi.Name = fmt.Sprintf("Server name unknown at this time (peerID: %s)", peer)
 		}
 		return pi
@@ -13257,10 +13247,11 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 			continue
 		}
 		pi := generatePeer(peer)
+		p := &PeerInfo{Name: pi.Name, Offline: pi.Offline, Peer: pi.Peer}
 		// We know the peer is part of the assignment, but if we have a Raft node it
 		// wasn't reported as one of its peers, so it hasn't joined the group (yet).
-		pi.Pending = n != nil
-		ci.Replicas = append(ci.Replicas, pi)
+		p.Pending = n != nil
+		ci.Replicas = append(ci.Replicas, p)
 	}
 	// Order the result based on the name so that we get something consistent
 	// when doing repeated stream info in the CLI, etc...

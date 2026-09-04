@@ -384,7 +384,7 @@ type ClusterInfo struct {
 type DesiredClusterInfo struct {
 	Created  time.Time                 `json:"created"`
 	Name     string                    `json:"name,omitempty"`
-	Replicas []*PeerInfo               `json:"replicas,omitempty"`
+	Replicas []*DesiredPeerInfo        `json:"replicas,omitempty"`
 	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
 	Status   *DesiredClusterInfoStatus `json:"status,omitempty"`
 }
@@ -396,6 +396,13 @@ type DesiredClusterInfoOrigin struct {
 	Placement *Placement `json:"placement,omitempty"`
 	// When changing between retention policies, this retention remains active until unset.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
+}
+
+// DesiredPeerInfo is a minimal version of PeerInfo that shows information about the desired peer set.
+type DesiredPeerInfo struct {
+	Name    string `json:"name"`              // Name is the unique name for the peer
+	Offline bool   `json:"offline,omitempty"` // Offline indicates if it has not been seen recently
+	Peer    string `json:"peer"`              // Peer is the unique ID for the peer
 }
 
 // MigrationStatusType classifies a migration status by what has to change for the
