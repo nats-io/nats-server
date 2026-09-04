@@ -4159,16 +4159,6 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		cistc = cist.C
 	}
 
-	// This is triggered during a scale up from R1 to clustered mode. We need the new followers to catchup,
-	// similar to how we trigger the catchup mechanism post a backup/restore.
-	// We can arrive here NOT being the leader, so we send the snapshot only if we are, and in this case
-	// reset the notion that we need to send the snapshot. If we are not, then the first time the server
-	// will switch to leader (in the loop below), we will send the snapshot.
-	if sendSnapshot && isLeader && mset != nil && n != nil && !isRecovering {
-		n.SendSnapshot(mset.stateSnapshot())
-		sendSnapshot = false
-	}
-
 	// State to check for atomic batch completeness before applying it.
 	batch := &batchApply{}
 	defer func() {
