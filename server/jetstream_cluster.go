@@ -9772,7 +9772,8 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		cca.Group = ca.Group.withDesired(cca.Group)
 		// Scaled down if we kept at least one peer, but removed others.
 		// A scale down that was already pending stays pending.
-		cca.Group.Desired.ScaleDown = scaleDown || (kept > 0 && kept != len(consumerPeers))
+		// If the stream has desired state it dictates where the consumer ends up, that's a move.
+		cca.Group.Desired.ScaleDown = scaleDown || (sa.Group.Desired == nil && kept > 0 && kept != len(consumerPeers))
 
 		// Drop any peers that are no longer part of the stream's peer set.
 		var dropped []string

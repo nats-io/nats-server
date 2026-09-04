@@ -13352,6 +13352,102 @@ func TestJetStreamClusterRemapConsumerRecordsRemovedActualPeer(t *testing.T) {
 	require_True(t, slices.Contains(cca.Group.Peers, b))
 }
 
+// A consumer following a stream move is moving, not scaling down, the stream
+// dictates its peers. A pending scale down stays pending regardless.
+func TestJetStreamClusterRemapConsumerFollowingStreamMoveIsNotScaleDown(t *testing.T) {
+	const a, b, c, d, e = "A", "B", "C", "D", "E"
+
+	js := &jetStream{cluster: &jetStreamCluster{}}
+	// Stream and consumer are both R3 on A, B and C.
+	newAssignments := func() (*streamAssignment, *consumerAssignment) {
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 3, Retention: LimitsPolicy},
+			Group:  &raftGroup{Name: "S", Peers: []string{a, b, c}},
+		}
+		ca := &consumerAssignment{
+			Name:   "CONSUMER",
+			Stream: "TEST",
+			Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: 3},
+			Group:  &raftGroup{Name: "C", Peers: []string{a, b, c}},
+		}
+		sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+		return sa, ca
+	}
+
+	// B and C went down. The consumer is scaled down to R1, but without a leader
+	// nothing can select which peer remains, so the scale down stays pending.
+	sa, ca := newAssignments()
+	ca.Config.Replicas = 1
+	ca.Group.Desired = &desiredRaftGroup{Peers: []string{a, b, c}, ScaleDown: true}
+
+	// Then the stream is moved, peer-removing B and C hands it D and E instead.
+	sa.Group.Peers = []string{a}
+	sa.Group.Desired = &desiredRaftGroup{Peers: []string{a, d, e}, Removed: []string{b, c}}
+
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca := consumers[0]
+	// The consumer follows the stream, but the scale down stays pending. It keeps A and
+	// backfills the stream's replacements, the scale down must not shrink the peer set
+	// here, its leader still selects which of those peers remains. The backfill order is random.
+	require_True(t, cca.Group.Desired.ScaleDown)
+	require_Len(t, len(cca.Group.Desired.Peers), 3)
+	require_Equal(t, cca.Group.Desired.Peers[0], a)
+	for _, p := range cca.Group.Desired.Peers {
+		require_True(t, slices.Contains(sa.Group.Desired.Peers, p))
+	}
+	// The removed peers are dropped from the actual peers and recorded as removed.
+	require_True(t, slices.Equal(cca.Group.Peers, []string{a}))
+	require_True(t, slices.Equal(cca.Group.Desired.Removed, []string{b, c}))
+
+	// A consumer that isn't scaling down simply follows a stream move. It keeps A and B,
+	// loses C, and backfills D from the stream's desired peers. It kept some peers and
+	// lost another, but since D is known upfront this is a move, not a scale down.
+	sa, _ = newAssignments()
+	sa.Group.Desired = &desiredRaftGroup{Peers: []string{a, b, d}}
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca = consumers[0]
+	require_False(t, cca.Group.Desired.ScaleDown)
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b, d}))
+	require_True(t, slices.Equal(cca.Group.Peers, []string{a, b, c}))
+	require_Len(t, len(cca.Group.Desired.Removed), 0)
+
+	// The same holds when the consumer was already moving and the stream is retargeted.
+	// Its actual peers share nothing with the stream's new destination, but it's still a move.
+	sa, ca = newAssignments()
+	sa.Group.Desired = &desiredRaftGroup{Peers: []string{d, e, "F"}}
+	ca.Group.Desired = &desiredRaftGroup{Peers: []string{d, e, "G"}}
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca = consumers[0]
+	require_False(t, cca.Group.Desired.ScaleDown)
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{d, e, "F"}))
+
+	// Without stream desired state there is nothing dictating the consumer's peers.
+	// Keeping some peers while dropping others is then a scale down, and the consumer's
+	// leader selects which of the remaining peers it keeps.
+	sa, ca = newAssignments()
+	sa.Config.Replicas = 2
+	sa.Group.Peers = []string{a, b}
+	ca.Config.Replicas = 2
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+	require_Len(t, len(consumers), 1)
+	cca = consumers[0]
+	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
+	require_True(t, cca.Group.Desired.ScaleDown)
+	require_True(t, slices.Equal(cca.Group.Peers, []string{a, b}))
+	require_True(t, slices.Equal(cca.Group.Desired.Removed, []string{c}))
+}
+
 func TestJetStreamClusterStreamCreateRetryPreservesAssignmentCreated(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
