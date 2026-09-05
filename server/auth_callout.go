@@ -317,6 +317,9 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 			c.opts.Token = _EMPTY_
 			c.mu.Unlock()
 		}
+		c.mu.Lock()
+		c.tags = arc.Tags
+		c.mu.Unlock()
 
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.setExpiration(arc.Claims(), expiration)
