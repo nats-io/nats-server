@@ -4584,6 +4584,106 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterAccountUsageAfterServerRemove(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 4)
+	defer c.shutdown()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("A"), 32*1024)
+	for range 128 {
+		_, err = js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	expectedStore := si.State.Bytes * 3
+
+	checkAccountStore := func(expected uint64) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			info, err := js.AccountInfo()
+			if err != nil {
+				return err
+			}
+			if info.Store != expected {
+				return fmt.Errorf("expected account store %d, got %d", expected, info.Store)
+			}
+			return nil
+		})
+	}
+	checkAccountStore(expectedStore)
+
+	// Remove a server that hosts a stream replica, but not the meta leader. The
+	// stream should move to the spare fourth server without changing the account's
+	// replicated storage total.
+	var removed *Server
+	for _, s := range c.servers {
+		if s != ml && s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			removed = s
+			break
+		}
+	}
+	require_NotNil(t, removed)
+	removedPeer := removed.Node()
+	removed.Shutdown()
+	removed.WaitForShutdown()
+
+	snc, _ := jsClientConnect(t, ml, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: removedPeer})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiRemoveServer, b, 10*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Success)
+
+	c.waitOnPeerCount(3)
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil || len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("stream has not returned to R3")
+		}
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				return fmt.Errorf("stream replica %q is not current", peer.Name)
+			}
+		}
+		return nil
+	})
+
+	checkAccountStore(expectedStore)
+
+	// A usage update already in flight when the peer removal commits must not
+	// recreate the departed server's remote usage entry.
+	jsa := ml.getJetStream().lookupAccount(ml.globalAccount())
+	require_NotNil(t, jsa)
+	lateUpdate := make([]byte, minUsageUpdateLen)
+	binary.LittleEndian.PutUint64(lateUpdate[8:], si.State.Bytes)
+	jsa.remoteUpdateUsage(nil, nil, nil, fmt.Sprintf(jsaUpdatesPubT, globalAccountName, removedPeer), _EMPTY_, lateUpdate)
+	jsa.usageMu.RLock()
+	_, stale := jsa.rusage[removedPeer]
+	jsa.usageMu.RUnlock()
+	require_False(t, stale)
+	checkAccountStore(expectedStore)
+}
+
 func TestJetStreamClusterStreamPeerRemoveNoReplacementIsRejected(t *testing.T) {
 	for _, test := range []struct {
 		name     string
