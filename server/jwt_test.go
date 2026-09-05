@@ -7913,3 +7913,62 @@ func TestJWTSystemAccountJetStreamDomainMapping(t *testing.T) {
 	_, err := nc.Request(domainAPI[:len(domainAPI)-1]+"INFO", nil, 2*time.Second)
 	require_NoError(t, err)
 }
+
+func TestJWTAccountMaxConnsStillReportedAsAccountLimit(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+	fooAC.Limits.Conn = 1
+	fooJWT, err := fooAC.Encode(okp)
+	require_NoError(t, err)
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	c1, cr1, cs1 := createClient(t, s, fooKP)
+	defer c1.close()
+	c1.parseAsync(cs1)
+	l, _ := cr1.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected PONG, got %q", l)
+	}
+
+	el := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(el, false, false)
+
+	// This one exceeds the account connection limit.
+	c2, cr2, cs2 := createClient(t, s, fooKP)
+	defer c2.close()
+	c2.parseAsync(cs2)
+	l, _ = cr2.ReadString('\n')
+	if !strings.Contains(l, ErrTooManyAccountConnections.Error()) {
+		t.Fatalf("Expected the account connection limit error, got %q", l)
+	}
+
+	// The server must report the limit, not an authentication violation.
+	var errs []string
+	for done := false; !done; {
+		select {
+		case e := <-el.errCh:
+			errs = append(errs, e)
+		case <-time.After(500 * time.Millisecond):
+			done = true
+		}
+	}
+	var sawLimit bool
+	for _, e := range errs {
+		if strings.Contains(e, ErrAuthentication.Error()) {
+			t.Fatalf("Account connection limit was reported as an authentication error: %q", e)
+		}
+		if strings.Contains(e, ErrTooManyAccountConnections.Error()) {
+			sawLimit = true
+		}
+	}
+	if !sawLimit {
+		t.Fatalf("Expected the account connection limit to be logged, got %q", errs)
+	}
+}
