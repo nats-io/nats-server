@@ -15,11 +15,64 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
-// publishAdvisory sends the given advisory into the account. Returns true if
-// it was sent, false if not (i.e. due to lack of interest or a marshal error).
+// jsAdvisoryForwardSubj is the subject template used when forwarding a copy of a
+// JetStream advisory into the system account for cross-account operational
+// visibility. The originating account name is encoded as a token so advisories
+// from different accounts can be distinguished, e.g.
+// "$SYS.ACCOUNT.<account>.JS.EVENT.ADVISORY.STREAM.CREATED.<stream>".
+const jsAdvisoryForwardSubj = "$SYS.ACCOUNT.%s.%s"
+
+// isJSAdvisoryOrMetricSubject reports whether subject is a JetStream advisory or
+// metric subject (under $JS.EVENT.ADVISORY or $JS.EVENT.METRIC).
+func isJSAdvisoryOrMetricSubject(subject string) bool {
+	return strings.HasPrefix(subject, JSAdvisoryPrefix+".") || strings.HasPrefix(subject, JSMetricPrefix+".")
+}
+
+// jsAdvisoriesForwarded reports whether JetStream advisories for the named
+// account should be mirrored into the system account. Advisories that already
+// originate in the system account are never forwarded to itself.
+func (s *Server) jsAdvisoriesForwarded(accName string) bool {
+	if accName == _EMPTY_ || !s.getOpts().JetStreamForwardAdvisories {
+		return false
+	}
+	sysAcc := s.SystemAccount()
+	return sysAcc != nil && accName != sysAcc.Name
+}
+
+// forwardJSAdvisoryToSysAcct mirrors an already-encoded advisory payload into the
+// system account, namespaced by the originating account name so a system
+// operator can observe advisories across all accounts. Only advisory/metric
+// subjects are forwarded; the subject guard keeps the invariant local so a future
+// caller cannot inadvertently leak non-advisory traffic into the system account.
+// Callers should gate on jsAdvisoriesForwarded first. The payload is copied
+// because the system send queue delivers it asynchronously and the caller's
+// buffer may be reused.
+func (s *Server) forwardJSAdvisoryToSysAcct(accName, subject string, payload []byte) {
+	if !isJSAdvisoryOrMetricSubject(subject) {
+		return
+	}
+	sysAcc := s.SystemAccount()
+	if sysAcc == nil {
+		return
+	}
+	fsubj := fmt.Sprintf(jsAdvisoryForwardSubj, accName, strings.TrimPrefix(subject, "$"))
+	cp := append([]byte(nil), payload...)
+	if err := s.sendInternalAccountMsg(sysAcc, fsubj, cp); err != nil {
+		s.Warnf("Advisory could not be forwarded to system account for account %q: %v", accName, err)
+	}
+}
+
+// publishAdvisory marshals adv and delivers it to the originating account (when
+// it has local interest) and/or mirrors it into the system account (when
+// forwarding is enabled). It returns false on a marshal error, when there is
+// neither local interest nor forwarding, or when the originating-account send
+// fails; the success of a system-account forward is logged but not reflected in
+// the return value.
 func (s *Server) publishAdvisory(acc *Account, subject string, adv any) bool {
 	if acc == nil {
 		acc = s.SystemAccount()
@@ -28,20 +81,34 @@ func (s *Server) publishAdvisory(acc *Account, subject string, adv any) bool {
 		}
 	}
 
-	// If there is no one listening for this advisory then save ourselves the effort
-	// and don't bother encoding the JSON or sending it.
+	// Determine whether to mirror this advisory into the system account. This is
+	// independent of interest in the originating account, since a system operator
+	// typically observes advisories without the originating account subscribing.
+	forward := s.jsAdvisoriesForwarded(acc.Name)
+
+	// If there is no one listening for this advisory and we are not forwarding it,
+	// then save ourselves the effort and don't bother encoding the JSON or sending it.
+	hasInterest := true
 	if sl := acc.sl; (sl != nil && !sl.HasInterest(subject)) && !s.hasGatewayInterest(acc.Name, subject) {
+		hasInterest = false
+	}
+	if !hasInterest && !forward {
 		return false
 	}
 
 	ej, err := json.Marshal(adv)
-	if err == nil {
-		err = s.sendInternalAccountMsg(acc, subject, ej)
-		if err != nil {
+	if err != nil {
+		s.Warnf("Advisory could not be serialized for account %q: %v", acc.Name, err)
+		return false
+	}
+
+	if hasInterest {
+		if err = s.sendInternalAccountMsg(acc, subject, ej); err != nil {
 			s.Warnf("Advisory could not be sent for account %q: %v", acc.Name, err)
 		}
-	} else {
-		s.Warnf("Advisory could not be serialized for account %q: %v", acc.Name, err)
+	}
+	if forward {
+		s.forwardJSAdvisoryToSysAcct(acc.Name, subject, ej)
 	}
 	return err == nil
 }

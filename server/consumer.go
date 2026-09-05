@@ -2006,9 +2006,14 @@ func (o *consumer) sendAdvisory(subject string, e any) {
 	}
 
 	// If there is no one listening for this advisory then save ourselves the effort
-	// and don't bother encoding the JSON or sending it.
+	// and don't bother encoding the JSON or sending it. We still emit it when
+	// advisory forwarding to the system account is enabled so that operators can
+	// observe advisories even when the originating account has no local interest;
+	// the forwarding itself happens lock-safely in the stream's internalLoop.
 	if sl := o.acc.sl; (sl != nil && !sl.HasInterest(subject)) && !o.srv.hasGatewayInterest(o.acc.Name, subject) {
-		return
+		if !o.srv.getOpts().JetStreamForwardAdvisories {
+			return
+		}
 	}
 
 	j, err := json.Marshal(e)

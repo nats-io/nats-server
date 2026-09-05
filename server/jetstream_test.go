@@ -9517,6 +9517,90 @@ func TestJetStreamAccountImportJSAdvisoriesAsService(t *testing.T) {
 	}
 }
 
+// TestJetStreamForwardAdvisoriesToSystemAccount verifies that with the jetstream
+// forward_advisories option enabled, advisories from every account are mirrored
+// into the system account under $SYS.ACCOUNT.<account>.JS.EVENT.ADVISORY.>, so a
+// system operator can observe them and tell accounts apart by the subject token.
+func TestJetStreamForwardAdvisoriesToSystemAccount(t *testing.T) {
+	// %q store_dir, %v forward_advisories.
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q, forward_advisories: %v}
+		system_account: SYS
+		accounts {
+			JS  { jetstream: enabled, users: [ {user: pp, password: foo} ] }
+			SYS { users: [ {user: admin, password: foo} ] }
+		}
+	`
+
+	// setup subscribes a system-account observer to the forwarding subject, then
+	// creates a stream and consumer to trigger advisories on both emission paths
+	// (publishAdvisory for the API audit, the stream outq for the created events).
+	setup := func(t *testing.T, forward bool) (*nats.Subscription, func()) {
+		t.Helper()
+		conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, t.TempDir(), forward)))
+		s, _ := RunServerWithConfig(conf)
+
+		ncSys, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "foo"))
+		require_NoError(t, err)
+		sub, err := ncSys.SubscribeSync("$SYS.ACCOUNT.*.JS.EVENT.ADVISORY.>")
+		require_NoError(t, err)
+		require_NoError(t, ncSys.Flush())
+
+		ncJS, err := nats.Connect(s.ClientURL(), nats.UserInfo("pp", "foo"))
+		require_NoError(t, err)
+		js, err := ncJS.JetStream()
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "ORDERS"})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("ORDERS", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		return sub, func() {
+			ncSys.Close()
+			ncJS.Close()
+			s.Shutdown()
+		}
+	}
+
+	t.Run("enabled", func(t *testing.T) {
+		sub, cleanup := setup(t, true)
+		defer cleanup()
+
+		// All namespaced under the JS account, covering both emission paths.
+		want := map[string]bool{
+			"$SYS.ACCOUNT.JS.JS.EVENT.ADVISORY.STREAM.CREATED.ORDERS":       false,
+			"$SYS.ACCOUNT.JS.JS.EVENT.ADVISORY.API":                         false,
+			"$SYS.ACCOUNT.JS.JS.EVENT.ADVISORY.CONSUMER.CREATED.ORDERS.dur": false,
+		}
+		remaining := len(want)
+		deadline := time.Now().Add(5 * time.Second)
+		for remaining > 0 {
+			msg, err := sub.NextMsg(time.Until(deadline))
+			if err != nil {
+				break
+			}
+			if seen, ok := want[msg.Subject]; ok && !seen {
+				want[msg.Subject], remaining = true, remaining-1
+			}
+		}
+		for subj, seen := range want {
+			if !seen {
+				t.Fatalf("did not receive forwarded advisory on %q", subj)
+			}
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		sub, cleanup := setup(t, false)
+		defer cleanup()
+
+		if msg, err := sub.NextMsg(time.Second); err == nil {
+			t.Fatalf("expected no forwarded advisory, got %q", msg.Subject)
+		}
+	})
+}
+
 // This tests whether we are able to aggregate all JetStream advisory events
 // from all accounts into a single account. Config for this test uses
 // stream imports and exports as that allows for gathering all events

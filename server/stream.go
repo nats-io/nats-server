@@ -8450,6 +8450,7 @@ func (mset *stream) internalLoop() {
 	c := s.createInternalJetStreamClient()
 	c.registerWithAccount(mset.acc)
 	defer c.closeConnection(ClientClosed)
+	accName := mset.acc.Name
 	outq, qch, msgs, gets := mset.outq, mset.qch, mset.msgs, mset.gets
 
 	// For the ack msgs queue for interest retention.
@@ -8526,6 +8527,14 @@ func (mset *stream) internalLoop() {
 				// we failed to deliver the message. If so alert the consumer.
 				if pm.o != nil && pm.seq > 0 && !didDeliver {
 					pm.o.didNotDeliver(pm.seq, pm.dsubj)
+				}
+
+				// Mirror stream/consumer advisories into the system account if
+				// enabled. Consumer deliveries (pm.o != nil) are excluded cheaply;
+				// only advisory/metric subjects are forwarded. This is the lock-safe
+				// convergence point for all advisories emitted via the stream outq.
+				if pm.o == nil && isJSAdvisoryOrMetricSubject(pm.dsubj) && s.jsAdvisoriesForwarded(accName) {
+					s.forwardJSAdvisoryToSysAcct(accName, pm.dsubj, pm.msg)
 				}
 				pm.returnToPool()
 			}
