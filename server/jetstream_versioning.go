@@ -24,6 +24,9 @@ const (
 	JSServerLevelMetadataKey   = "_nats.level"
 )
 
+// Static strings to avoid strconv.Itoa and repetitive string allocations in hot paths.
+var JSApiLevelStr = strconv.Itoa(JSApiLevel)
+
 // getRequiredApiLevel returns the required API level for the JetStream asset.
 func getRequiredApiLevel(metadata map[string]string) string {
 	if l, ok := metadata[JSRequiredLevelMetadataKey]; ok && l != _EMPTY_ {
@@ -95,15 +98,17 @@ func setDynamicStreamMetadata(cfg *StreamConfig) *StreamConfig {
 	var newCfg StreamConfig
 	if cfg != nil {
 		newCfg = *cfg
-	}
-	newCfg.Metadata = make(map[string]string)
-	if cfg != nil {
+		newCfg.Metadata = make(map[string]string, len(cfg.Metadata)+2)
 		for key, value := range cfg.Metadata {
 			newCfg.Metadata[key] = value
 		}
+	} else {
+		newCfg.Metadata = make(map[string]string, 2)
 	}
+
 	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
+	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevelStr
+
 	return &newCfg
 }
 
@@ -176,15 +181,17 @@ func setDynamicConsumerMetadata(cfg *ConsumerConfig) *ConsumerConfig {
 	var newCfg ConsumerConfig
 	if cfg != nil {
 		newCfg = *cfg
-	}
-	newCfg.Metadata = make(map[string]string)
-	if cfg != nil {
+		newCfg.Metadata = make(map[string]string, len(cfg.Metadata)+2)
 		for key, value := range cfg.Metadata {
 			newCfg.Metadata[key] = value
 		}
+	} else {
+		newCfg.Metadata = make(map[string]string, 2)
 	}
+
 	newCfg.Metadata[JSServerVersionMetadataKey] = VERSION
-	newCfg.Metadata[JSServerLevelMetadataKey] = strconv.Itoa(JSApiLevel)
+	newCfg.Metadata[JSServerLevelMetadataKey] = JSApiLevelStr
+
 	return &newCfg
 }
 
