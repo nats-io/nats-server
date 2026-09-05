@@ -5809,3 +5809,95 @@ func TestRouteReconnectAfterDuplicateRouteAdoptsConfiguredURL(t *testing.T) {
 	_, err = nca.Request("pinned.echo", []byte("ping"), time.Second)
 	require_NoError(t, err)
 }
+
+// A configuration reload that introduces an account reaches the servers of a
+// cluster one at a time, so a server can receive interest for an account it
+// does not know yet. That interest has to be held rather than dropped: nothing
+// sends it again once the account appears, and the import is then left without
+// interest for good.
+func TestRouteSubForUnknownAccountHeldUntilConfigured(t *testing.T) {
+	before := `
+		listen: 127.0.0.1:-1
+		cluster { name: C, listen: 127.0.0.1:%d, routes: [%s] }
+		accounts {
+			IMP { users: [{user: imp, password: pwd}] }
+		}
+	`
+	after := `
+		listen: 127.0.0.1:-1
+		cluster { name: C, listen: 127.0.0.1:%d, routes: [%s] }
+		accounts {
+			EXP {
+				users: [{user: exp, password: pwd}]
+				exports: [{stream: "app.>"}]
+			}
+			IMP {
+				users: [{user: imp, password: pwd}]
+				imports: [{stream: {account: EXP, subject: "app.>"}}]
+			}
+		}
+	`
+
+	// subFirst says whether the importing subscription exists before the second
+	// server learns about the exporting account.
+	for _, test := range []struct {
+		name     string
+		subFirst bool
+	}{
+		{"sub before the peer knows the account", true},
+		{"sub after both servers know the account", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			confA := createConfFile(t, []byte(fmt.Sprintf(before, -1, "")))
+			sa, oa := RunServerWithConfig(confA)
+			defer sa.Shutdown()
+
+			routeToA := fmt.Sprintf("nats://127.0.0.1:%d", oa.Cluster.Port)
+			confB := createConfFile(t, []byte(fmt.Sprintf(before, -1, routeToA)))
+			sb, ob := RunServerWithConfig(confB)
+			defer sb.Shutdown()
+
+			checkClusterFormed(t, sa, sb)
+
+			nca := natsConnect(t, fmt.Sprintf("nats://imp:pwd@127.0.0.1:%d", oa.Port))
+			defer nca.Close()
+
+			subscribe := func() *nats.Subscription {
+				t.Helper()
+				sub := natsSubSync(t, nca, "app.foo")
+				natsFlush(t, nca)
+				return sub
+			}
+
+			var sub *nats.Subscription
+			if test.subFirst {
+				sub = subscribe()
+			}
+
+			// Only one server knows the new account to begin with.
+			reloadUpdateConfig(t, sa, confA, fmt.Sprintf(after, oa.Cluster.Port, ""))
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				_, err := sa.LookupAccount("EXP")
+				return err
+			})
+			reloadUpdateConfig(t, sb, confB, fmt.Sprintf(after, ob.Cluster.Port, routeToA))
+			checkClusterFormed(t, sa, sb)
+
+			if !test.subFirst {
+				sub = subscribe()
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			// Publish on the server the subscriber is not connected to, so the
+			// message only arrives if the route carries the interest.
+			ncb := natsConnect(t, fmt.Sprintf("nats://exp:pwd@127.0.0.1:%d", ob.Port))
+			defer ncb.Close()
+			natsPub(t, ncb, "app.foo", []byte("hello"))
+			natsFlush(t, ncb)
+
+			if _, err := sub.NextMsg(2 * time.Second); err != nil {
+				t.Fatalf("Importing subscriber did not get the message: %v", err)
+			}
+		})
+	}
+}

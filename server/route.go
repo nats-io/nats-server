@@ -1656,17 +1656,26 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 		// When a client comes along, expiration will prevent it from being used,
 		// cause a fetch and update the account to what is should be.
 		if staticResolver {
-			c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
-			return
-		}
-		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
+			// The account may simply not be configured here yet: a configuration
+			// reload that introduces an account reaches the servers of a cluster
+			// one at a time. Dropping the subscription would lose that interest
+			// for good, since nothing sends it again once the account appears,
+			// so hold it in a placeholder account instead. A reload updates
+			// accounts in place, so the interest survives into the real one, and
+			// an account that never appears in the configuration is removed by
+			// the next reload.
+			c.Debugf("Unknown account %q for remote subject %q, holding interest", accountName, sub.subject)
+			acc, _ = srv.LookupOrRegisterAccount(accountName)
+		} else {
+			c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
 
-		var isNew bool
-		if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
-			acc.mu.Lock()
-			acc.expired.Store(true)
-			acc.incomplete = true
-			acc.mu.Unlock()
+			var isNew bool
+			if acc, isNew = srv.LookupOrRegisterAccount(accountName); isNew {
+				acc.mu.Lock()
+				acc.expired.Store(true)
+				acc.incomplete = true
+				acc.mu.Unlock()
+			}
 		}
 	}
 
