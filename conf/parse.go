@@ -28,6 +28,7 @@ package conf
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,7 +90,7 @@ func ParseWithChecks(data string) (map[string]any, error) {
 func ParseFile(fp string) (map[string]any, error) {
 	data, err := os.ReadFile(fp)
 	if err != nil {
-		return nil, fmt.Errorf("error opening config file: %v", err)
+		return nil, fmt.Errorf("error opening config file: %w", err)
 	}
 
 	p, err := parse(string(data), fp, false)
@@ -416,6 +417,33 @@ func (p *parser) processItem(it item, fp string) error {
 			m, err = ParseFile(filepath.Join(p.fp, it.val))
 		}
 		if err != nil {
+			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
+		}
+		for k, v := range m {
+			p.pushKey(k)
+
+			if p.pedantic {
+				switch tk := v.(type) {
+				case *token:
+					p.pushItemKey(tk.item)
+				}
+			}
+			p.setValue(v)
+		}
+	case itemIncludeOptional:
+		var (
+			m   map[string]any
+			err error
+		)
+		if p.pedantic {
+			m, err = ParseFileWithChecks(filepath.Join(p.fp, it.val))
+		} else {
+			m, err = ParseFile(filepath.Join(p.fp, it.val))
+		}
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
 			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
 		}
 		for k, v := range m {

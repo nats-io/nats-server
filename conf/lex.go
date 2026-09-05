@@ -54,6 +54,7 @@ const (
 	itemCommentStart
 	itemVariable
 	itemInclude
+	itemIncludeOptional
 )
 
 const (
@@ -486,6 +487,12 @@ func (lx *lexer) keyCheckKeyword(fallThrough, push stateFn) stateFn {
 			lx.push(push)
 		}
 		return lexIncludeStart
+	case "include?":
+		lx.ignore()
+		if push != nil {
+			lx.push(push)
+		}
+		return lexIncludeOptionalStart
 	}
 	lx.emit(itemKey)
 	return fallThrough
@@ -499,6 +506,16 @@ func lexIncludeStart(lx *lexer) stateFn {
 	}
 	lx.backup()
 	return lexInclude
+}
+
+// lexIncludeOptionalStart will consume the whitespace til the start of the value.
+func lexIncludeOptionalStart(lx *lexer) stateFn {
+	r := lx.next()
+	if isWhitespace(r) {
+		return lexSkip(lx, lexIncludeOptionalStart)
+	}
+	lx.backup()
+	return lexIncludeOptional
 }
 
 // lexIncludeQuotedString consumes the inner contents of a string. It assumes that the
@@ -580,6 +597,83 @@ func lexInclude(lx *lexer) stateFn {
 	}
 	lx.backup()
 	return lexIncludeString
+}
+
+// lexIncludeOptional will consume the optional include value.
+func lexIncludeOptional(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeOptionalQuotedString
+	case r == dqStringStart:
+		lx.ignore() // ignore the " or '
+		return lexIncludeOptionalDubQuotedString
+	case r == arrayStart:
+		return lx.errorf("Expected include value but found start of an array")
+	case r == mapStart:
+		return lx.errorf("Expected include value but found start of a map")
+	case r == blockStart:
+		return lx.errorf("Expected include value but found start of a block")
+	case unicode.IsDigit(r), r == '-':
+		return lx.errorf("Expected include value but found start of a number")
+	case r == '\\':
+		return lx.errorf("Expected include value but found escape sequence")
+	case isNL(r):
+		return lx.errorf("Expected include value but found new line")
+	}
+	lx.backup()
+	return lexIncludeOptionalString
+}
+
+// lexIncludeOptionalQuotedString consumes the inner contents of a string.
+func lexIncludeOptionalQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemIncludeOptional)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	case r == eof:
+		return lx.errorf("Unexpected EOF in quoted include")
+	}
+	return lexIncludeOptionalQuotedString
+}
+
+// lexIncludeOptionalDubQuotedString consumes the inner contents of a string.
+func lexIncludeOptionalDubQuotedString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case r == dqStringEnd:
+		lx.backup()
+		lx.emit(itemIncludeOptional)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	case r == eof:
+		return lx.errorf("Unexpected EOF in double quoted include")
+	}
+	return lexIncludeOptionalDubQuotedString
+}
+
+// lexIncludeOptionalString consumes the inner contents of a raw string.
+func lexIncludeOptionalString(lx *lexer) stateFn {
+	r := lx.next()
+	switch {
+	case isNL(r) || r == eof || r == optValTerm || r == mapEnd || isWhitespace(r):
+		lx.backup()
+		lx.emit(itemIncludeOptional)
+		return lx.pop()
+	case r == sqStringEnd:
+		lx.backup()
+		lx.emit(itemIncludeOptional)
+		lx.next()
+		lx.ignore()
+		return lx.pop()
+	}
+	return lexIncludeOptionalString
 }
 
 // lexKey consumes the text of a key. Assumes that the first character (which
@@ -1302,6 +1396,8 @@ func (itype itemType) String() string {
 		return "Variable"
 	case itemInclude:
 		return "Include"
+	case itemIncludeOptional:
+		return "IncludeOptional"
 	}
 	panic(fmt.Sprintf("BUG: Unknown type '%s'.", itype.String()))
 }
