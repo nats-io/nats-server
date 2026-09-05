@@ -3254,11 +3254,67 @@ func TestMQTTSubWithNATSStream(t *testing.T) {
 	checkRecv("qos1", mqttPubQos1)
 }
 
+// Replay ordering must hold even when live packet identifiers span more than
+// half the 16-bit space (MaxAckPending is configurable up to 0xFFFF): the
+// allocation ordinal, not identifier distance, decides what was delivered
+// first.
+func TestMQTTPendingOrderLargeIdentifierSpan(t *testing.T) {
+	sess := mqttSession{}
+	dur := mqttRetainedPendingDur("foo")
+
+	pi1 := sess.trackPublishRetained("foo", "foo", "foo", nil, 1) // PI 1
+	sess.last_pi = 39999
+	pi2 := sess.trackPublishRetained("foo", "foo", "foo", nil, 1) // PI 40000
+	if pi1 != 1 || pi2 != 40000 {
+		t.Fatalf("Expected identifiers 1 and 40000, got %v and %v", pi1, pi2)
+	}
+	if !sess.hasPendingPublishBefore(dur, sess.pendingPublish[pi2].ord) {
+		t.Fatalf("Expected PI %v (allocated first) to gate PI %v despite the >0x8000 identifier span", pi1, pi2)
+	}
+	if sess.hasPendingPublishBefore(dur, sess.pendingPublish[pi1].ord) {
+		t.Fatalf("Expected nothing pending before the first allocation")
+	}
+	// And across identifier wraparound.
+	sess.last_pi = 0xFFFF
+	pi3 := sess.trackPublishRetained("foo", "foo", "foo", nil, 1)
+	if !sess.hasPendingPublishBefore(dur, sess.pendingPublish[pi3].ord) {
+		t.Fatalf("Expected earlier pendings to gate PI %v allocated after wraparound", pi3)
+	}
+}
+
+// The PUBREL store round trip can outlive its handshake: a reconnect can
+// replay the placeholder (sseq still 0) and the client PUBCOMP before the
+// store returns. The late-arriving sequence must then be remembered in
+// pubRelDone so the eventual JS delivery is acked silently — not dropped,
+// which would re-send a PUBREL for a completed exchange.
+func TestMQTTPubRelSequenceAfterCompletion(t *testing.T) {
+	sess := mqttSession{pubRelConsumer: &ConsumerConfig{Durable: "d"}}
+
+	// Placeholder created at PUBREC; the handshake completes (resume replay +
+	// PUBCOMP) while the PUBREL store is still in flight.
+	sess.trackAsPubRel(1, _EMPTY_)
+	sess.untrackPubRel(1)
+	sess.recordPubRelSequence(1, 42)
+	if _, ok := sess.pubRelDone[42]; !ok {
+		t.Fatalf("Expected sequence 42 in pubRelDone after the handshake completed mid-store")
+	}
+
+	// The normal case still records onto the placeholder, not pubRelDone.
+	sess.trackAsPubRel(2, _EMPTY_)
+	sess.recordPubRelSequence(2, 43)
+	if got := sess.pendingPubRel[2].sseq; got != 43 {
+		t.Fatalf("Expected sequence 43 on the placeholder, got %v", got)
+	}
+	if _, ok := sess.pubRelDone[43]; ok {
+		t.Fatalf("Sequence 43 must not be in pubRelDone while the handshake is pending")
+	}
+}
+
 func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sess := mqttSession{}
 
 	sess.last_pi = 0xFFFF
-	pi := sess.trackPublishRetained("foo")
+	pi := sess.trackPublishRetained("foo", "foo", "foo", nil, 1)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -3273,7 +3329,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	}
 
 	delete(sess.pendingPublish, 1234)
-	pi = sess.trackPublishRetained("foo")
+	pi = sess.trackPublishRetained("foo", "foo", "foo", nil, 1)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -6214,6 +6270,803 @@ func TestMQTTQoS0DowngradePurgesPending(t *testing.T) {
 
 	if np, nc := countPending(); np != 0 || nc != 0 {
 		t.Fatalf("Expected pending maps purged after QoS 0 downgrade, got pendingPublish=%v cpending=%v", np, nc)
+	}
+}
+
+// On a same-ClientID takeover, the replaced connection closes asynchronously;
+// its delivery subscriptions must be detached synchronously before the resume
+// path NAKs pending messages, or a stale subscription consumes the
+// redeliveries (dropped since the session's client changed) and the new
+// client waits for AckWait instead of the required prompt re-send.
+func TestMQTTTakeoverRedeliversPendingPublish(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg"))
+
+	// Receive without acking, and do NOT close: connect a second client with
+	// the same ClientID so the server replaces this one (takeover).
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg"))
+
+	c2, r2 := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c2.Close()
+	testMQTTCheckConnAck(t, r2, mqttConnAckRCConnectionAccepted, true)
+
+	// The pending message must be re-delivered promptly to the new client,
+	// with DUP and the original packet identifier.
+	rpi := testMQTTCheckPubMsgNoAck(t, c2, r2, "foo", mqttPubQos1|mqttPubFlagDup, []byte("msg"))
+	if rpi != pi {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", pi, rpi)
+	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c2, rpi)
+}
+
+// [MQTT-4.4.0-1] On reconnect with CleanSession=0, the server must re-send
+// unacknowledged QoS 1/2 PUBLISH messages (with DUP set). AckWait is kept well
+// above the client read deadline (testMQTTTimeout) so a redelivery arriving
+// proves it was triggered by the reconnect, not by the AckWait timer.
+func TestMQTTReconnectForcesRedeliveryWithDUP(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// Publish a QoS 1 message; receive it (DUP=0) but do not ack.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("msg"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("msg"))
+
+	// Drop the subscriber's connection without acking.
+	c.Close()
+
+	// Reconnect the same (persistent) session.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+
+	// The unacknowledged message must be re-delivered promptly with DUP set,
+	// well before the 30s AckWait could fire. Same-server reconnect keeps the
+	// session's pending maps, so the original packet identifier is reused.
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("msg"))
+	if rpi != pi {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", pi, rpi)
+	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpi)
+}
+
+// Messages that accumulated while a persistent session was offline are fresh
+// deliveries on resume: they land in pendingPublish as processSubs re-binds the
+// durable consumer, and must not be NAK'd by the reconnect redelivery path
+// (which snapshots pending state before subscriptions are restored). Each must
+// arrive exactly once, without DUP.
+func TestMQTTReconnectNoRedeliveryOfFreshDeliveries(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Subscribe to "foo" plus filler filters: on resume, each saved filter is a
+	// JS consumer re-creation round trip, giving foo's fresh deliveries time to
+	// land in pendingPublish before the (old, buggy) post-processSubs snapshot.
+	filters := []*mqttFilter{{filter: "foo", qos: 1}}
+	for i := 0; i < 8; i++ {
+		filters = append(filters, &mqttFilter{filter: fmt.Sprintf("filler/%d", i), qos: 1})
+	}
+	expected := make([]byte, len(filters))
+	for i := range expected {
+		expected[i] = 1
+	}
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, filters, expected)
+	testMQTTDisconnect(t, c, nil)
+	c.Close()
+
+	// Publish while the subscriber is offline.
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	const nmsgs = 5
+	for i := 0; i < nmsgs; i++ {
+		testMQTTPublish(t, cp, rp, 1, false, false, "foo", uint16(i+1), []byte(fmt.Sprintf("m%d", i)))
+	}
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Resume the session: the accumulated messages arrive as fresh deliveries
+	// (DUP=0). Hold off acking until all are read — like a slow-acking client —
+	// so any wrongly NAK'd fresh delivery shows up as a DUP duplicate here.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	pis := make([]uint16, 0, nmsgs)
+	for i := 0; i < nmsgs; i++ {
+		pis = append(pis, testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte(fmt.Sprintf("m%d", i))))
+	}
+	// A wrongly NAK'd fresh delivery comes back as a DUP duplicate with a small
+	// lag; wait it out before checking that nothing else arrives.
+	time.Sleep(300 * time.Millisecond)
+	testMQTTExpectNothing(t, r)
+	for _, pi := range pis {
+		testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi)
+	}
+}
+
+// [MQTT-4.6.0-1] On resume, the DUP redelivery of a message left unacked by
+// the previous connection must precede messages that were published while the
+// session was offline: the redelivery NAKs are queued (and confirmed) before
+// the consumer's delivery interest is restored, so JetStream re-offers the
+// older sequence first.
+func TestMQTTReconnectRedeliveryPreservesOrder(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// Receive the first message without acking, then drop the connection.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("m0"))
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m0"))
+	c.Close()
+
+	// Backlog published while the subscriber is offline.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 2, []byte("m1"))
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 3, []byte("m2"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Resume: the unacked message must arrive first (DUP, original packet
+	// identifier), then the offline backlog in order as fresh deliveries.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("m0"))
+	if rpi != pi {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", pi, rpi)
+	}
+	pi1 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m1"))
+	pi2 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m2"))
+	for _, p := range []uint16{rpi, pi1, pi2} {
+		testMQTTSendPIPacket(mqttPacketPubAck, t, c, p)
+	}
+	testMQTTExpectNothing(t, r)
+}
+
+// [MQTT-4.4.0-1] On resume, an in-flight QoS2 handshake (PUBREC received, no
+// PUBCOMP yet) must get its PUBREL re-sent promptly — including when the
+// disconnect happened before the PUBREL delivery recorded a JS ack subject
+// (a PUBREC placeholder), which cannot be NAK'd and would otherwise wait for
+// the AckWait interval.
+func TestMQTTReconnectResendsPendingPubRel(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("msg"))
+
+	// Receive the QoS2 PUBLISH and answer PUBREC, then drop the connection
+	// right away, often before the server's PUBREL delivery records its JS
+	// ack subject.
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("msg"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	c.Close()
+
+	// Resume: the PUBREL must be re-sent promptly, well before AckWait.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+}
+
+// A resume replay lets the client PUBCOMP a QoS2 handshake whose PUBREL
+// delivery never recorded a JS ack subject (a PUBREC placeholder). The
+// completion is remembered by the stored PUBREL's stream sequence, so its
+// eventual JS delivery is acked silently: the client must not receive a
+// spurious PUBREL after AckWait, and nothing may stay tracked.
+func TestMQTTReconnectPubRelPlaceholderCompletion(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 500 * time.Millisecond
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("msg"))
+
+	// Receive the QoS2 PUBLISH, answer PUBREC, and read the PUBREL without
+	// answering PUBCOMP, so the stored PUBREL stays unacked in JS.
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("msg"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+
+	// Simulate the disconnect racing ahead of the PUBREL delivery callback:
+	// blank the recorded ack subject, leaving a PUBREC placeholder (stream
+	// sequence recorded at PUBREC, no ack subject).
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	sess.mu.Lock()
+	ack := sess.pendingPubRel[pi]
+	if ack == nil || ack.sseq == 0 {
+		sess.mu.Unlock()
+		t.Fatalf("Expected pending PUBREL with recorded stream sequence, got %+v", ack)
+	}
+	ack.jsAckSubject = _EMPTY_
+	sess.mu.Unlock()
+	c.Close()
+
+	// Resume: the placeholder PUBREL is replayed promptly; complete it.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+
+	// The stored PUBREL is redelivered by JS after AckWait; it must be acked
+	// silently, not re-sent to the client.
+	time.Sleep(3 * o.MQTT.AckWait)
+	testMQTTExpectNothing(t, r)
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if n := len(sess.pendingPubRel); n != 0 {
+			return fmt.Errorf("expected no pending PUBREL, got %v", n)
+		}
+		if n := len(sess.pubRelDone); n != 0 {
+			return fmt.Errorf("expected pubRelDone drained, got %v", n)
+		}
+		return nil
+	})
+}
+
+// On resume with both an older unacknowledged PUBLISH and a newer QoS2
+// message already advanced to PUBREL, the PUBREL replay must not reach the
+// client before the older PUBLISH is re-delivered — a client that surfaces
+// QoS2 messages on PUBREL would observe the topic out of order. The replay is
+// deferred until the earlier delivery drains.
+func TestMQTTReconnectDefersPubRelBehindPendingPublish(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("m1"))
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 2, []byte("m2"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Receive both; acknowledge only the newer QoS2 message up to PUBREC, so
+	// it advances to a pending PUBREL while the older QoS1 PUBLISH stays
+	// unacknowledged. Read the PUBREL but do not PUBCOMP, then drop the
+	// connection.
+	piA := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m1"))
+	piB := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("m2"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, piB)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, piB)
+	c.Close()
+
+	// Resume: the older PUBLISH must arrive first (DUP, original identifier);
+	// the PUBREL replay must be withheld until that delivery is acknowledged.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpiA := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("m1"))
+	if rpiA != piA {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", piA, rpiA)
+	}
+	testMQTTExpectNothing(t, r)
+
+	// Acknowledging the older delivery releases the deferred PUBREL.
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpiA)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, piB)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, piB)
+	testMQTTFlush(t, c, nil, r)
+	testMQTTExpectNothing(t, r)
+
+	// Everything must be drained.
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if np, nr := len(sess.pendingPublish), len(sess.pendingPubRel); np != 0 || nr != 0 {
+			return fmt.Errorf("expected pending maps drained, got publish=%v pubrel=%v", np, nr)
+		}
+		return nil
+	})
+}
+
+// The deferral of a resumed PUBREL must also hold through the PUBREL
+// consumer's AckWait redeliveries: as long as the earlier PUBLISH stays
+// unacknowledged, JS re-offering the stored PUBREL must not push it to the
+// client; only the redelivered PUBLISH may arrive.
+func TestMQTTReconnectDeferredPubRelSurvivesAckWait(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 500 * time.Millisecond
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("m1"))
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 2, []byte("m2"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	piA := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m1"))
+	piB := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("m2"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, piB)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, piB)
+	c.Close()
+
+	// Resume, receive the older PUBLISH, and withhold its PUBACK across two
+	// AckWait cycles: each cycle re-offers both the PUBLISH and the stored
+	// PUBREL to the server; the client may only see the redelivered PUBLISH.
+	// A PUBREL arriving here is the AckWait bypass of the deferral gate.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	for i := 0; i < 3; i++ {
+		rpi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("m1"))
+		if rpi != piA {
+			t.Fatalf("Expected redeliveries to reuse original packet identifier %v, got %v", piA, rpi)
+		}
+	}
+
+	// Acknowledging the PUBLISH releases the deferred PUBREL.
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, piA)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, piB)
+
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	drained := func() bool {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		return len(sess.pendingPublish) == 0 && len(sess.pendingPubRel) == 0
+	}
+	// Complete the handshake. An AckWait re-offer of the stored PUBREL can
+	// race the PUBCOMP's JS ack and re-track the packet identifier with a
+	// duplicate PUBREL; a real client answers those with PUBCOMP too, so do
+	// the same until the session stays drained.
+	for i := 0; ; i++ {
+		testMQTTSendPIPacket(mqttPacketPubComp, t, c, piB)
+		testMQTTFlush(t, c, nil, r)
+		time.Sleep(300 * time.Millisecond)
+		if drained() {
+			break
+		}
+		if i >= 2 {
+			t.Fatalf("Session not drained after %d PUBCOMPs", i+1)
+		}
+		testMQTTReadPIPacket(mqttPacketPubRel, t, r, piB)
+	}
+}
+
+// An in-flight retained QoS delivery has no JS consumer to NAK and the resume
+// path does not serialize retained messages again, so on reconnect the server
+// must re-send it directly — original packet identifier, DUP and RETAIN set —
+// or the message is never re-sent and its identifier leaks against the
+// in-flight cap for the life of the session.
+func TestMQTTReconnectResendsPendingRetained(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Store a retained QoS 1 message before the subscriber connects.
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("retained"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Subscribing at QoS 1 delivers the retained message; receive it without
+	// acking, then drop the connection.
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("retained"))
+	c.Close()
+
+	// Resume: the retained delivery must be re-sent promptly with DUP and the
+	// original packet identifier, and be ack-able.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain|mqttPubFlagDup, []byte("retained"))
+	if rpi != pi {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", pi, rpi)
+	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpi)
+	testMQTTFlush(t, c, nil, r)
+
+	// The ack must have released the packet identifier.
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	sess.mu.Lock()
+	lpi := len(sess.pendingPublish)
+	sess.mu.Unlock()
+	if lpi != 0 {
+		t.Fatalf("Expected no pending publish after ack, got %v", lpi)
+	}
+	testMQTTExpectNothing(t, r)
+}
+
+// A retained replay on resume must re-check permissions: if the client's
+// subscribe access to the topic was revoked while the persistent session was
+// offline, the pending retained delivery must be dropped (identifier
+// released), not sent to the client.
+func TestMQTTReconnectRetainedPermRevoked(t *testing.T) {
+	template := `
+		port: -1
+		jetstream {
+			store_dir = %q
+		}
+		server_name: mqtt
+		authorization {
+			mqtt_perms = {
+				publish = ["foo"]
+				subscribe = [%q, "$MQTT.>"]
+			}
+			users = [
+				{user: mqtt, password: pass, permissions: $mqtt_perms}
+			]
+		}
+		mqtt {
+			port: -1
+		}
+	`
+	tdir := t.TempDir()
+	conf := createConfFile(t, fmt.Appendf(nil, template, tdir, "foo"))
+	s, o := RunServerWithConfig(conf)
+	defer testMQTTShutdownServer(s)
+
+	// Store a retained QoS 1 message.
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true, user: "mqtt", pass: "pass"}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("retained"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Receive the retained delivery without acking, then drop the connection.
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false, user: "mqtt", pass: "pass"}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("retained"))
+	c.Close()
+	checkClientsCount(t, s, 0)
+
+	// Revoke the subscribe permission on "foo" while the session is offline.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(template, tdir, "bar"))
+
+	// Resume: the pending retained delivery must NOT be replayed, and its
+	// packet identifier must be released.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	testMQTTExpectNothing(t, r)
+
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	sess.mu.Lock()
+	lpi := len(sess.pendingPublish)
+	sess.mu.Unlock()
+	if lpi != 0 {
+		t.Fatalf("Expected pending retained delivery to be dropped, got %v pending", lpi)
+	}
+}
+
+// When a deferred PUBREL and a deferred retained replay unblock together (the
+// gating older PUBLISH is acked), they must be released merged in packet
+// identifier (allocation) order: a client surfacing QoS2 messages on PUBREL
+// would otherwise observe the later-allocated retained PUBLISH first.
+func TestMQTTReconnectReleasesDeferredReplaysInOrder(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// PI1: an older normal QoS1 PUBLISH, received but not acked.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 1, []byte("m1"))
+	pi1 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m1"))
+
+	// PI2: a newer QoS2 PUBLISH advanced to pending PUBREL (PUBREC sent,
+	// PUBREL read, no PUBCOMP).
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 2, []byte("m2"))
+	pi2 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("m2"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi2)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi2)
+
+	// PI4: a retained pending allocated after PI2 (the live delivery of the
+	// retained publish is acked; the re-subscribe serializes it again).
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 3, []byte("r"))
+	pi3 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("r"))
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi3)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}}, []byte{2})
+	pi4 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("r"))
+	c.Close()
+
+	// Resume: only the oldest pending PUBLISH may arrive; the PUBREL and the
+	// retained replay are both deferred behind it.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpi1 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("m1"))
+	if rpi1 != pi1 {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", pi1, rpi1)
+	}
+	testMQTTExpectNothing(t, r)
+
+	// Acking PI1 unblocks both: the PUBREL (PI2) must arrive BEFORE the
+	// later-allocated retained replay (PI4).
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpi1)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi2)
+	rpi4 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain|mqttPubFlagDup, []byte("r"))
+	if rpi4 != pi4 {
+		t.Fatalf("Expected retained replay to reuse original packet identifier %v, got %v", pi4, rpi4)
+	}
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi2)
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpi4)
+	testMQTTFlush(t, c, nil, r)
+
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if np, nr := len(sess.pendingPublish), len(sess.pendingPubRel); np != 0 || nr != 0 {
+			return fmt.Errorf("expected pending maps drained, got publish=%v pubrel=%v", np, nr)
+		}
+		return nil
+	})
+}
+
+// A retained replay allocated AFTER a still-pending normal PUBLISH on the
+// same subscription must not be sent ahead of it on resume: packet
+// identifiers are allocated in delivery order, and the older message is
+// re-offered first [MQTT-4.6.0-1]. The retained replay is deferred until the
+// earlier delivery drains.
+func TestMQTTReconnectDefersRetainedBehindPendingPublish(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+
+	// The retained publish arrives as a live delivery; ack it.
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("r1"))
+	pi1 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("r1"))
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi1)
+
+	// A normal publish, received but NOT acked: pending under the consumer.
+	testMQTTPublish(t, cp, rp, 1, false, false, "foo", 2, []byte("m2"))
+	piPub := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("m2"))
+
+	// Re-subscribing serializes the retained message again: a retained
+	// pending with a LATER packet identifier than the normal pending.
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+	piRet := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("r1"))
+	c.Close()
+
+	// Resume: the older normal PUBLISH must arrive first (DUP, original
+	// identifier); the retained replay must be withheld until it is acked.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagDup, []byte("m2"))
+	if rpi != piPub {
+		t.Fatalf("Expected redelivery to reuse original packet identifier %v, got %v", piPub, rpi)
+	}
+	testMQTTExpectNothing(t, r)
+
+	// Acknowledging the older delivery releases the deferred retained replay.
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpi)
+	rpiRet := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain|mqttPubFlagDup, []byte("r1"))
+	if rpiRet != piRet {
+		t.Fatalf("Expected retained replay to reuse original packet identifier %v, got %v", piRet, rpiRet)
+	}
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, rpiRet)
+	testMQTTFlush(t, c, nil, r)
+
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	sess.mu.Lock()
+	lpi := len(sess.pendingPublish)
+	sess.mu.Unlock()
+	if lpi != 0 {
+		t.Fatalf("Expected pending maps drained after acks, got %v", lpi)
+	}
+}
+
+// Retransmission on resume must re-send the ORIGINAL unacknowledged PUBLISH
+// packet verbatim — even when the retained message was replaced or deleted
+// while the session was offline — not the retained store's current state
+// under the old packet identifier.
+func TestMQTTReconnectRetainedChangedWhileOffline(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MQTT.AckWait = 3 * testMQTTTimeout
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	// Store retained QoS 1 messages on two topics.
+	cipub := &mqttConnInfo{clientID: "pub", cleanSess: true}
+	cp, rp := testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("v1"))
+	testMQTTPublish(t, cp, rp, 1, false, true, "bar", 2, []byte("w1"))
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Receive both retained deliveries without acking, then drop the
+	// connection.
+	cisub := &mqttConnInfo{clientID: "sub", cleanSess: false}
+	c, r := testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 1}, {filter: "bar", qos: 1}}, []byte{1, 1})
+	piFoo := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain, []byte("v1"))
+	piBar := testMQTTCheckPubMsgNoAck(t, c, r, "bar", mqttPubQos1|mqttPubFlagRetain, []byte("w1"))
+	c.Close()
+
+	// While the subscriber is offline: replace foo's retained message and
+	// delete bar's (empty retained payload, QoS 0 so nothing is stored for
+	// the subscriber's consumer).
+	cp, rp = testMQTTConnect(t, cipub, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 1, false, true, "foo", 1, []byte("v2"))
+	testMQTTPublish(t, cp, rp, 0, false, true, "bar", 0, nil)
+	testMQTTDisconnect(t, cp, nil)
+	cp.Close()
+
+	// Resume: both ORIGINAL packets must be retransmitted verbatim (DUP,
+	// RETAIN, original identifiers and payloads), then foo's replacement
+	// arrives as a fresh consumer delivery.
+	c, r = testMQTTConnect(t, cisub, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	rpiFoo := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1|mqttPubFlagRetain|mqttPubFlagDup, []byte("v1"))
+	rpiBar := testMQTTCheckPubMsgNoAck(t, c, r, "bar", mqttPubQos1|mqttPubFlagRetain|mqttPubFlagDup, []byte("w1"))
+	if rpiFoo != piFoo || rpiBar != piBar {
+		t.Fatalf("Expected original packet identifiers %v/%v, got %v/%v", piFoo, piBar, rpiFoo, rpiBar)
+	}
+	piV2 := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQos1, []byte("v2"))
+	for _, pi := range []uint16{rpiFoo, rpiBar, piV2} {
+		testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi)
+	}
+	testMQTTFlush(t, c, nil, r)
+	testMQTTExpectNothing(t, r)
+
+	// All acks must have released their packet identifiers.
+	mc := testMQTTGetClient(t, s, "sub")
+	mc.mu.Lock()
+	sess := mc.mqtt.sess
+	mc.mu.Unlock()
+	sess.mu.Lock()
+	lpi := len(sess.pendingPublish)
+	sess.mu.Unlock()
+	if lpi != 0 {
+		t.Fatalf("Expected no pending publish after acks, got %v", lpi)
 	}
 }
 

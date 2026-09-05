@@ -177,6 +177,7 @@ const (
 	mqttJSASessPersist    = "SP"
 	mqttJSARetainedMsgDel = "RD"
 	mqttJSAStreamNames    = "SN"
+	mqttJSAConsumerNak    = "NK"
 
 	// This is how long to keep a client in the flappers map before closing the
 	// connection. This prevent quick reconnect from those clients that keep
@@ -340,8 +341,19 @@ type mqttSession struct {
 	// existing PIs.
 	cpending map[string]map[uint64]uint16 // composite key: jsDur, sseq
 
+	// pubRelDone holds stream sequences of stored PUBREL messages whose QoS2
+	// handshake completed (PUBCOMP received) before their JS delivery recorded
+	// an ack subject; the eventual delivery is acked silently instead of
+	// re-sent to the client.
+	pubRelDone map[uint64]struct{}
+
 	// "Last used" publish packet identifier (PI). starting point searching for the next available.
 	last_pi uint16
+
+	// Monotonic allocation ordinal, stamped on pending deliveries as their
+	// packet identifier is assigned; orders replays by original delivery
+	// without 16-bit identifier wraparound ambiguity.
+	allocOrd uint64
 
 	// Maximum number of pending acks for this session.
 	maxp     uint16
@@ -427,6 +439,26 @@ type mqttPending struct {
 	sseq         uint64 // stream sequence
 	jsAckSubject string // the ACK subject to send the ack to
 	jsDur        string // JS durable name
+	ord          uint64 // allocation ordinal (see mqttSession.allocOrd)
+
+	// Original packet of an in-flight retained delivery (no JS consumer), kept
+	// for exact retransmission on session resume [MQTT-4.4.0-1]; the NATS
+	// subject is used to re-check permissions before the replay. The replay is
+	// deferred (retDeferred) behind older still-pending PUBLISHes from the
+	// same subscription, preserving identifier-allocation order.
+	retSubject  string
+	retTopic    string
+	retMsg      []byte
+	retQoS      byte
+	retDeferred bool
+
+	// For a pending PUBREL: the consumer and allocation ordinal of the
+	// original PUBLISH delivery, so a resume replay is deferred (relDeferred)
+	// behind any still-pending earlier PUBLISH from the same consumer,
+	// preserving original message order.
+	origDur     string
+	origOrd     uint64
+	relDeferred bool
 }
 
 type mqttConnectProto struct {
@@ -1771,6 +1803,15 @@ func (jsa *mqttJSA) sendMsg(subj string, msg []byte) {
 	jsa.sendq.push(&mqttJSPubMsg{subj: subj, msg: msg, hdr: -1})
 }
 
+// sendNakRequest NAKs a delivered message on its JS ack subject and waits for
+// the consumer's reply, which is sent only after the NAK has been queued for
+// redelivery. Used on session resume to guarantee the redelivery is in place
+// before the consumer's delivery interest is restored.
+func (jsa *mqttJSA) sendNakRequest(ackSubject string) error {
+	_, err := jsa.newRequestEx(mqttJSAConsumerNak, ackSubject, _EMPTY_, -1, AckNak)
+	return err
+}
+
 func (jsa *mqttJSA) createEphemeralConsumer(cfg *CreateConsumerRequest) (*JSApiConsumerCreateResponse, error) {
 	cfgb, err := json.Marshal(cfg)
 	if err != nil {
@@ -2138,6 +2179,10 @@ func (as *mqttAccountSessionManager) processJSAPIReplies(_ *subscription, pc *cl
 			resp.Error = NewJSInvalidJSONError(err)
 		}
 		out(resp)
+	case mqttJSAConsumerNak:
+		// The reply to a NAK carries no payload of interest; the round trip
+		// itself confirms the consumer processed it. See sendNakRequest.
+		out(nil)
 	default:
 		pc.Warnf("Unknown reply code %q", token)
 	}
@@ -2846,7 +2891,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 			return
 		}
 		if qos > 0 {
-			pi = sess.trackPublishRetained(string(sub.sid))
+			pi = sess.trackPublishRetained(string(sub.sid), string(subj), rm.Topic, rm.Msg, qos)
 
 			// If we failed to get a PI for this message, send it as a QoS0, the
 			// best we can do?
@@ -3469,6 +3514,7 @@ func (sess *mqttSession) clear(noWait bool) error {
 	sess.subs = nil
 	sess.pendingPublish = nil
 	sess.pendingPubRel = nil
+	sess.pubRelDone = nil
 	sess.cpending = nil
 	sess.pubRelConsumer = nil
 	sess.seq = 0
@@ -3476,6 +3522,7 @@ func (sess *mqttSession) clear(noWait bool) error {
 	// Discarded session: reset the PI counter too so a reused session object
 	// does not inherit the previous session's identifiers. Spec [MQTT-3.1.2-6].
 	sess.last_pi = 0
+	sess.allocOrd = 0
 	sess.mu.Unlock()
 
 	for _, dur := range durs {
@@ -3573,10 +3620,12 @@ func mqttRetainedPendingDur(sid string) string {
 // It needs a new PI to be allocated, so we add it to the pendingPublish map,
 // and serialize it in cpending under the subscription's pseudo-durable key
 // (with the PI as the sequence) so consumer teardown purges it; an ack removes
-// both entries via untrackPublish.
+// both entries via untrackPublish. The packet's topic, payload and QoS are
+// recorded so an unacked delivery is retransmitted verbatim on session resume,
+// even if the retained message changes or is deleted meanwhile.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
+func (sess *mqttSession) trackPublishRetained(sid, subject, topic string, msg []byte, qos byte) uint16 {
 	// Make sure we initialize the tracking maps.
 	if sess.pendingPublish == nil {
 		sess.pendingPublish = make(map[uint16]*mqttPending)
@@ -3596,7 +3645,9 @@ func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
 		sess.cpending[dur] = sseqToPi
 	}
 	sseqToPi[uint64(pi)] = pi
-	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi)}
+	sess.allocOrd++
+	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi), ord: sess.allocOrd,
+		retSubject: subject, retTopic: topic, retMsg: msg, retQoS: qos}
 
 	return pi
 }
@@ -3668,10 +3719,12 @@ func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool)
 	}
 
 	if ack == nil {
+		sess.allocOrd++
 		sess.pendingPublish[pi] = &mqttPending{
 			jsDur:        jsDur,
 			sseq:         sseq,
 			jsAckSubject: jsAckSubject,
+			ord:          sess.allocOrd,
 		}
 	} else {
 		ack.jsAckSubject = jsAckSubject
@@ -3706,6 +3759,224 @@ func (sess *mqttSession) untrackPublish(pi uint16) (jsAckSubject string) {
 	return ack.jsAckSubject
 }
 
+// resendPendingRedelivery re-sends the session's unacknowledged QoS 1/2
+// PUBLISH and PUBREL packets promptly on session resume, as required by spec
+// [MQTT-4.4.0-1], instead of waiting for the JS consumers' AckWait interval.
+// Pending PUBRELs and in-flight retained deliveries (which have no JS
+// consumer) are re-sent directly; pending PUBLISHes are NAK'd on their JS ack
+// subjects, forcing redelivery with the DUP flag set and the original packet
+// identifiers.
+//
+// It MUST be called BEFORE saved subscriptions are restored: the pending maps
+// then hold only the previous connection's deliveries (fresh ones must not be
+// NAK'd), and queueing the NAKs before the consumers regain delivery interest
+// makes JetStream re-offer those older sequences ahead of messages that
+// arrived while the session was offline, preserving order [MQTT-4.6.0-1].
+// This only takes effect on a same-server reconnect, where the in-memory
+// tracking maps survive; after a restart or failover, redelivery falls back
+// to the AckWait interval.
+//
+// If the disconnect lasted longer than AckWait, the consumer's own pending
+// check may already redeliver a message as interest is re-established; the NAK
+// then produces one extra copy. That is harmless (same packet identifier, DUP
+// set, so the client dedups) and does not happen on a timely reconnect.
+func (sess *mqttSession) resendPendingRedelivery(c *client) {
+	type pendingNak struct {
+		pi         uint16
+		sseq       uint64
+		dur        string
+		ackSubject string
+	}
+	type pendingRetained struct {
+		pi      uint16
+		ord     uint64
+		subject string
+		topic   string
+		msg     []byte
+		qos     byte
+	}
+	sess.mu.Lock()
+	jsa := sess.jsa
+	maxAck := int(sess.maxp)
+	pubNaks := make([]pendingNak, 0, len(sess.pendingPublish))
+	var rets []pendingRetained
+	for pi, ack := range sess.pendingPublish {
+		if ack.jsAckSubject != _EMPTY_ {
+			pubNaks = append(pubNaks, pendingNak{pi, ack.sseq, ack.jsDur, ack.jsAckSubject})
+		} else if ack.retTopic != _EMPTY_ {
+			rets = append(rets, pendingRetained{pi, ack.ord, ack.retSubject, ack.retTopic, ack.retMsg, ack.retQoS})
+		}
+	}
+	rels := make([]uint16, 0, len(sess.pendingPubRel))
+	for pi := range sess.pendingPubRel {
+		rels = append(rels, pi)
+	}
+	sess.mu.Unlock()
+
+	// Reconcile against the messages stream: a QoS1/2 message that was removed
+	// (e.g. by the stream's retention limits) while it was delivered-but-unacked
+	// is gone from the stream, so it can neither be redelivered nor PUBACK'd. Such
+	// an entry would otherwise leak its packet identifier against the in-flight cap
+	// for the life of the session. Drop any entry whose message no longer
+	// exists — below the stream's first sequence, or confirmed absent by an exact
+	// lookup — releasing its packet identifier and skipping its NAK. The lookups
+	// run outside the session lock, and only when something is pending: most
+	// CONNECTs have nothing to reconcile and must not wait on a JS round trip.
+	if len(pubNaks) > 0 {
+		if si, err := jsa.lookupStream(mqttStreamName); err == nil && si != nil {
+			firstSeq := si.State.FirstSeq
+			kept := make([]pendingNak, 0, len(pubNaks))
+			var gone []uint16
+			for _, n := range pubNaks {
+				reaped := n.sseq < firstSeq
+				if !reaped {
+					if _, err := jsa.loadMsg(mqttStreamName, n.sseq); err != nil && !isErrorOtherThan(err, JSNoMessageFoundErr) {
+						reaped = true
+					}
+				}
+				if reaped {
+					gone = append(gone, n.pi)
+				} else {
+					kept = append(kept, n)
+				}
+			}
+			if len(gone) > 0 {
+				sess.mu.Lock()
+				for _, pi := range gone {
+					sess.untrackPublish(pi)
+				}
+				sess.mu.Unlock()
+			}
+			pubNaks = kept
+		}
+	}
+
+	// Replay in-flight retained deliveries and pending PUBRELs directly,
+	// merged in packet-identifier (allocation) order so packets surface to
+	// the client in original message order [MQTT-4.6.0-1]:
+	//
+	// Retained QoS deliveries have no JS consumer to NAK, and the resume path
+	// does not serialize retained messages again (only a client SUBSCRIBE
+	// does), so the exact original packet is re-sent — identifier, topic,
+	// payload and QoS, with DUP and RETAIN set — regardless of how the
+	// retained message changed while offline [MQTT-4.4.0-1]. PUBRELs complete
+	// already-started QoS2 handshakes (the client answers PUBCOMP), and a
+	// placeholder created at PUBREC carries no JS ack subject to NAK at all.
+	//
+	// Either kind is NOT sent now when its original message follows a
+	// still-pending PUBLISH from the same consumer: the client could observe
+	// the newer packet before the older PUBLISH is re-offered. It is deferred
+	// until those earlier deliveries drain (releaseDeferredReplays); for
+	// PUBRELs, AckWait redelivery remains the fallback.
+	if len(rets) > 0 || len(rels) > 0 {
+		type replay struct {
+			pi  uint16
+			ord uint64
+			rel bool
+			ret pendingRetained
+		}
+		replays := make([]replay, 0, len(rets)+len(rels))
+		sess.mu.Lock()
+		for _, ret := range rets {
+			ack := sess.pendingPublish[ret.pi]
+			if ack == nil {
+				continue
+			}
+			if sess.hasPendingPublishBefore(sess.retainedGateDur(ack), ret.ord) {
+				ack.retDeferred = true
+				continue
+			}
+			ack.retDeferred = false
+			replays = append(replays, replay{pi: ret.pi, ord: ret.ord, ret: ret})
+		}
+		for _, pi := range rels {
+			ack := sess.pendingPubRel[pi]
+			if ack == nil {
+				continue
+			}
+			if sess.hasPendingPublishBefore(ack.origDur, ack.origOrd) {
+				ack.relDeferred = true
+				continue
+			}
+			ack.relDeferred = false
+			replays = append(replays, replay{pi: pi, ord: ack.origOrd, rel: true})
+		}
+		sess.mu.Unlock()
+		slices.SortFunc(replays, func(a, b replay) int {
+			if a.ord != b.ord {
+				if a.ord < b.ord {
+					return -1
+				}
+				return 1
+			}
+			return int(a.pi) - int(b.pi)
+		})
+		trace := c.trace
+		var gone []uint16
+		for _, rp := range replays {
+			if rp.rel {
+				c.mqttEnqueuePubResponse(mqttPacketPubRel, rp.pi, trace)
+			} else if !c.mqttReplayRetained(rp.pi, rp.ret.qos, rp.ret.subject, rp.ret.topic, rp.ret.msg) {
+				gone = append(gone, rp.pi)
+			}
+		}
+		if len(gone) > 0 {
+			sess.mu.Lock()
+			for _, pi := range gone {
+				sess.untrackPublish(pi)
+			}
+			sess.mu.Unlock()
+		}
+		// Re-establish the PUBREL delivery subscription only AFTER the
+		// deferrals are marked: restored interest can deliver a stored PUBREL
+		// to mqttDeliverPubRelCb right away, and the callback withholds it
+		// only if relDeferred is already set.
+		if len(rels) > 0 {
+			if err := sess.ensurePubRelConsumerSubscription(c); err != nil {
+				c.Errorf("Unable to re-establish PUBREL delivery on resume: %v", err)
+			}
+		}
+	}
+
+	// PUBLISH redeliveries reuse their packet identifiers and bypass the in-flight
+	// gate, so cap them at the JS MaxAckPending: NAK at most that many, in stream
+	// order; the JS consumer re-offers the rest via AckWait.
+	slices.SortFunc(pubNaks, func(a, b pendingNak) int {
+		switch {
+		case a.sseq < b.sseq:
+			return -1
+		case a.sseq > b.sseq:
+			return 1
+		default:
+			return 0
+		}
+	})
+	if len(pubNaks) > maxAck {
+		pubNaks = pubNaks[:maxAck]
+	}
+	// Each consumer's last NAK is sent as a request and its reply awaited: the
+	// consumer replies only after queueing the redelivery, and acks are handled
+	// in send order, so once the replies are in, every redelivery is in place
+	// before the subscriptions restored after this call give JetStream a way
+	// to deliver anything newer.
+	lastIdx := make(map[string]int, len(pubNaks))
+	for i, n := range pubNaks {
+		lastIdx[n.dur] = i
+	}
+	for i, n := range pubNaks {
+		if lastIdx[n.dur] != i {
+			jsa.sendMsg(n.ackSubject, AckNak)
+		}
+	}
+	for i, n := range pubNaks {
+		if lastIdx[n.dur] == i {
+			if err := jsa.sendNakRequest(n.ackSubject); err != nil {
+				c.Warnf("Resume redelivery NAK not confirmed for %q: %v", n.dur, err)
+			}
+		}
+	}
+}
+
 // trackAsPubRel is invoked in 2 cases: (a) when we receive a PUBREC and we need
 // to change from tracking the PI as a PUBLISH to a PUBREL; and (b) when we
 // attempt to deliver the PUBREL to record the JS ack subject for it.
@@ -3722,9 +3993,19 @@ func (sess *mqttSession) trackAsPubRel(pi uint16, jsAckSubject string) {
 		sess.pendingPubRel = make(map[uint16]*mqttPending)
 	}
 
+	// Preserve the original delivery's ordering info across updates; a
+	// recorded delivery clears any resume deferral (the PUBREL was just sent).
+	var origDur string
+	var origOrd uint64
+	if prev := sess.pendingPubRel[pi]; prev != nil {
+		origDur, origOrd = prev.origDur, prev.origOrd
+	}
+
 	if jsAckSubject == _EMPTY_ {
 		sess.pendingPubRel[pi] = &mqttPending{
-			jsDur: jsDur,
+			jsDur:    jsDur,
+			origDur: origDur,
+			origOrd: origOrd,
 		}
 		return
 	}
@@ -3744,7 +4025,33 @@ func (sess *mqttSession) trackAsPubRel(pi uint16, jsAckSubject string) {
 		jsDur:        sess.pubRelConsumer.Durable,
 		sseq:         sseq,
 		jsAckSubject: jsAckSubject,
+		origDur:      origDur,
+		origOrd:      origOrd,
 	}
+}
+
+// recordPubRelSequence attributes a stored PUBREL's stream sequence to its
+// pending handshake: normally onto the PUBREC placeholder, so a resume replay
+// answered before the JS delivery records an ack subject can be reconciled;
+// or — when the handshake already completed while the store was in flight (a
+// resume replayed the placeholder and the client answered PUBCOMP) — into
+// pubRelDone, so the eventual JS delivery is acked silently instead of being
+// re-sent to the client and re-tracked.
+//
+// Lock NOT held on entry.
+func (sess *mqttSession) recordPubRelSequence(pi uint16, sseq uint64) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if ack, ok := sess.pendingPubRel[pi]; ok {
+		if ack.jsAckSubject == _EMPTY_ && ack.sseq == 0 {
+			ack.sseq = sseq
+		}
+		return
+	}
+	if sess.pubRelDone == nil {
+		sess.pubRelDone = make(map[uint64]struct{})
+	}
+	sess.pubRelDone[sseq] = struct{}{}
 }
 
 // Stops a PI from being tracked as a PUBREL.
@@ -3765,6 +4072,161 @@ func (sess *mqttSession) untrackPubRel(pi uint16) (jsAckSubject string) {
 	}
 
 	return ack.jsAckSubject
+}
+
+// hasPendingPublishBefore returns whether a PUBLISH delivery from the given
+// consumer allocated before ord is still pending (unacknowledged). The
+// allocation ordinal is a 64-bit clock, immune to packet-identifier
+// wraparound even at the maximum in-flight cap.
+//
+// Lock held on entry
+func (sess *mqttSession) hasPendingPublishBefore(dur string, ord uint64) bool {
+	if dur == _EMPTY_ || ord == 0 {
+		return false
+	}
+	for _, ack := range sess.pendingPublish {
+		if ack.jsDur == dur && ack.ord < ord {
+			return true
+		}
+	}
+	return false
+}
+
+// retainedGateDur returns the JS consumer durable whose pending deliveries
+// share a subscription with (and so gate) the given retained delivery, or
+// empty if the subscription has no consumer.
+//
+// Lock held on entry
+func (sess *mqttSession) retainedGateDur(ack *mqttPending) string {
+	sid := strings.TrimPrefix(ack.jsDur, mqttRetainedMsgsStreamName+"/")
+	if cc, ok := sess.cons[sid]; ok {
+		return cc.Durable
+	}
+	return _EMPTY_
+}
+
+// mqttReplayRetained retransmits a pending retained delivery verbatim (DUP and
+// RETAIN set) [MQTT-4.4.0-1], re-checking permissions first — like the
+// original serialization and SUBSCRIBE processing would — since they may have
+// changed while the session was offline. Returns false when the delivery is
+// no longer allowed, so the caller can release its packet identifier.
+func (c *client) mqttReplayRetained(pi uint16, qos byte, subject, topic string, msg []byte) bool {
+	c.mu.Lock()
+	allowed := c.canSubscribeInternal(subject) && !(c.mperms != nil && c.checkDenySub(subject))
+	c.mu.Unlock()
+	if !allowed {
+		return false
+	}
+	flags, headerBytes := mqttMakePublishHeader(pi, qos, true, true, []byte(topic), len(msg))
+	c.mu.Lock()
+	c.enqueueProto(append(headerBytes, msg...))
+	trace := c.trace
+	c.mu.Unlock()
+	if trace {
+		c.traceOutOp("PUBLISH", []byte(mqttPubTrace(&mqttPublish{
+			topic: []byte(topic),
+			flags: flags,
+			pi:    pi,
+			sz:    len(msg),
+		})))
+	}
+	return true
+}
+
+// releaseDeferredReplays sends the retained-PUBLISH and PUBREL replays deferred on
+// session resume behind same-consumer pending PUBLISH redeliveries, once no
+// earlier PUBLISH remains pending. Called when pending PUBLISHes drain (ack,
+// reconcile, or subscription teardown), and bound to the connection that
+// drained the gate: if the session was taken over by another connection
+// meanwhile, the replay is skipped — the new connection must not receive
+// packets before its CONNACK, its own resume path re-evaluates the deferrals,
+// and the PUBREL consumer's AckWait re-offer remains the fallback.
+//
+// Lock NOT held on entry.
+func (sess *mqttSession) releaseDeferredReplays(c *client) {
+	type replay struct {
+		pi             uint16
+		ord            uint64
+		rel            bool
+		qos            byte
+		subject, topic string
+		msg            []byte
+	}
+	sess.mu.Lock()
+	if c == nil || sess.c != c {
+		sess.mu.Unlock()
+		return
+	}
+	var release []replay
+	for pi, ack := range sess.pendingPubRel {
+		if ack.relDeferred && !sess.hasPendingPublishBefore(ack.origDur, ack.origOrd) {
+			ack.relDeferred = false
+			release = append(release, replay{pi: pi, ord: ack.origOrd, rel: true})
+		}
+	}
+	for pi, ack := range sess.pendingPublish {
+		if ack.retDeferred && !sess.hasPendingPublishBefore(sess.retainedGateDur(ack), ack.ord) {
+			ack.retDeferred = false
+			release = append(release, replay{pi: pi, ord: ack.ord, qos: ack.retQoS,
+				subject: ack.retSubject, topic: ack.retTopic, msg: ack.retMsg})
+		}
+	}
+	sess.mu.Unlock()
+	if len(release) == 0 {
+		return
+	}
+	// Merged in identifier (allocation) order, so packets surface to the
+	// client in original message order across kinds [MQTT-4.6.0-1].
+	slices.SortFunc(release, func(a, b replay) int {
+		if a.ord != b.ord {
+			if a.ord < b.ord {
+				return -1
+			}
+			return 1
+		}
+		return int(a.pi) - int(b.pi)
+	})
+	var gone []uint16
+	for _, r := range release {
+		if r.rel {
+			c.mqttEnqueuePubResponse(mqttPacketPubRel, r.pi, c.trace)
+		} else if !c.mqttReplayRetained(r.pi, r.qos, r.subject, r.topic, r.msg) {
+			gone = append(gone, r.pi)
+		}
+	}
+	if len(gone) > 0 {
+		sess.mu.Lock()
+		for _, pi := range gone {
+			sess.untrackPublish(pi)
+		}
+		sess.mu.Unlock()
+	}
+}
+
+// detachDeliverySubs synchronously removes a replaced client's QoS 1/2 and
+// PUBREL delivery subscriptions on session takeover, so redeliveries go to
+// the redelivery queue (and later the new client's subscriptions) instead of
+// being routed to the dying connection and dropped.
+//
+// Lock not held on entry.
+func (sess *mqttSession) detachDeliverySubs(ec *client) {
+	sess.mu.Lock()
+	subjects := make([]string, 0, len(sess.cons)+1)
+	for _, cc := range sess.cons {
+		subjects = append(subjects, cc.DeliverSubject)
+	}
+	if sess.pubRelDeliverySubject != _EMPTY_ {
+		subjects = append(subjects, sess.pubRelDeliverySubject)
+	}
+	sess.mu.Unlock()
+	for _, subj := range subjects {
+		ec.mu.Lock()
+		sub := ec.subs[subj]
+		ec.mu.Unlock()
+		if sub != nil {
+			ec.processUnsub(sub.sid)
+		}
+	}
 }
 
 // Sends a consumer delete request, but does not wait for response.
@@ -4151,6 +4613,12 @@ CHECK:
 			asm.addSessToFlappers(cid)
 			asm.mu.Unlock()
 			c.Warnf("Replacing old client %q since both have the same client ID %q", ec, cid)
+			// Detach the old client's delivery subscriptions BEFORE the resume
+			// path below NAKs pending messages: closeConnection is
+			// asynchronous, and a stale subscription would consume the
+			// redeliveries only to drop them (sess.c has changed), downgrading
+			// the prompt re-send to an AckWait retry.
+			es.detachDeliverySubs(ec)
 			// Close old client in separate go routine
 			go ec.closeConnection(DuplicateClientID)
 		}
@@ -4179,6 +4647,14 @@ CHECK:
 
 	// Spec [MQTT-3.2.0-1]: CONNACK must be the first protocol sent to the session.
 	sendConnAck(mqttConnAckRCConnectionAccepted, sessp)
+
+	// Re-send unacked QoS 1/2 messages (and reconcile any that were removed
+	// while offline) BEFORE restoring subscriptions: the pending maps then hold
+	// only the previous connection's deliveries, and the queued NAKs make
+	// JetStream re-offer them ahead of messages that arrived while the session
+	// was offline. Runs whether or not saved subscriptions exist: a session can
+	// carry unacknowledged PUBRELs with no active subscription.
+	es.resendPendingRedelivery(c)
 
 	// Process possible saved subscriptions.
 	if l := len(es.subs); l > 0 {
@@ -5194,23 +5670,34 @@ func (c *client) mqttProcessPublishReceived(pi uint16, isPubRec bool) (err error
 	}
 	if isPubRec {
 		// The JS ACK subject for the PUBREL will be filled in at the delivery
-		// attempt.
+		// attempt. Carry the original delivery's consumer and sequence onto
+		// the PUBREL so a resume replay preserves original message order.
 		sess.trackAsPubRel(pi, _EMPTY_)
+		if pub, rel := sess.pendingPublish[pi], sess.pendingPubRel[pi]; pub != nil && rel != nil {
+			rel.origDur, rel.origOrd = pub.jsDur, pub.ord
+		}
 	}
 	jsAckSubject = sess.untrackPublish(pi)
 	sess.mu.Unlock()
 
 	if isPubRec {
 		natsMsg, headerLen := mqttNewDeliverablePubRel(pi)
-		_, err = sess.jsa.storeMsg(sess.pubRelSubject, headerLen, natsMsg)
+		resp, err := sess.jsa.storeMsg(sess.pubRelSubject, headerLen, natsMsg)
 		if err != nil {
 			// Failure to send out PUBREL will terminate the connection.
 			return err
+		}
+		if resp != nil && resp.PubAck != nil {
+			sess.recordPubRelSequence(pi, resp.Sequence)
 		}
 	}
 
 	// Send the ack to JS to remove the pending message from the consumer.
 	sess.jsa.sendAck(jsAckSubject)
+
+	// The ack drained a pending PUBLISH: deferred PUBREL replays whose
+	// original message no longer has an earlier one pending may go out now.
+	sess.releaseDeferredReplays(c)
 	return nil
 }
 
@@ -5235,7 +5722,17 @@ func (c *client) mqttProcessPubComp(pi uint16) {
 		sess.mu.Unlock()
 		return
 	}
+	ack := sess.pendingPubRel[pi]
 	jsAckSubject = sess.untrackPubRel(pi)
+	// A placeholder (no ack subject recorded yet) completed via a resume
+	// replay: remember the stored PUBREL's sequence so its eventual JS
+	// delivery is acked silently instead of re-sent to the client.
+	if ack != nil && ack.jsAckSubject == _EMPTY_ && ack.sseq != 0 {
+		if sess.pubRelDone == nil {
+			sess.pubRelDone = make(map[uint64]struct{})
+		}
+		sess.pubRelDone[ack.sseq] = struct{}{}
+	}
 	sess.mu.Unlock()
 
 	// Send the ack to JS to remove the pending message from the consumer.
@@ -5556,6 +6053,34 @@ func mqttDeliverPubRelCb(sub *subscription, pc *client, _ *Account, subject, rep
 
 	sess.mu.Lock()
 	if sess.c != cc || sess.pubRelConsumer == nil {
+		sess.mu.Unlock()
+		return
+	}
+	// This PUBREL's handshake may have completed already, via a resume replay
+	// answered before this delivery recorded an ack subject: ack it silently
+	// and do not re-send it to the client.
+	if len(sess.pubRelDone) > 0 {
+		if sseq, _, _, _, _ := ackReplyInfo(reply); sseq > 0 {
+			if _, ok := sess.pubRelDone[sseq]; ok {
+				delete(sess.pubRelDone, sseq)
+				sess.mu.Unlock()
+				sess.jsa.sendAck(reply)
+				return
+			}
+		}
+	}
+	// A resume-deferred PUBREL stays withheld until earlier same-consumer
+	// PUBLISH deliveries drain (releaseDeferredReplays sends it then): record
+	// this delivery's ack subject but do not send. The message stays unacked
+	// in JS, so AckWait re-offers it here again — and if the gate has drained
+	// without a release (e.g. skipped during a session takeover), this
+	// re-offer falls through and delivers it normally below.
+	if ack := sess.pendingPubRel[pi]; ack != nil && ack.relDeferred &&
+		sess.hasPendingPublishBefore(ack.origDur, ack.origOrd) {
+		sess.trackAsPubRel(pi, reply)
+		if cur := sess.pendingPubRel[pi]; cur != nil {
+			cur.relDeferred = true
+		}
 		sess.mu.Unlock()
 		return
 	}
@@ -5909,6 +6434,9 @@ func (sess *mqttSession) processJSConsumer(c *client, subject, sid string,
 			}
 			sess.mu.Unlock()
 
+			// The purge may have drained the gate of a deferred PUBREL replay.
+			sess.releaseDeferredReplays(c)
+
 			sess.deleteConsumer(cc)
 			if sub != nil {
 				c.processUnsub(sub.sid)
@@ -6082,6 +6610,9 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 				}
 			}
 			sess.mu.Unlock()
+
+			// The purge may have drained the gate of a deferred PUBREL replay.
+			sess.releaseDeferredReplays(c)
 		}
 	}
 	for _, f := range filters {
