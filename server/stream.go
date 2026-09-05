@@ -575,6 +575,7 @@ type stream struct {
 	consumers map[string]*consumer    // The consumers for this stream.
 	cfg       StreamConfig            // The stream's config.
 	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
+	updateMu  sync.Mutex              // Serializes configuration updates that depend on the current config.
 	created   time.Time               // Time the stream was created.
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
@@ -2672,6 +2673,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	if err != nil {
 		return err
 	}
+
+	// The update is calculated from the current configuration before the stream
+	// lock is acquired below. Serialize updates for this stream so a concurrent
+	// caller cannot calculate and apply a second delta from the same stale
+	// configuration (for example, installing the same subject subscriptions
+	// more than once).
+	mset.updateMu.Lock()
+	defer mset.updateMu.Unlock()
 
 	mset.mu.RLock()
 	ocfg := mset.cfg
