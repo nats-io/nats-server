@@ -2155,7 +2155,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		// the membership check for new entries; steady-state updates avoid it.
 		if meta != nil {
 			var current bool
-			for _, peer := range meta.PeerNames() {
+			for _, peer := range meta.VotingPeerNames() {
 				if peer == rnode {
 					current = true
 					break
