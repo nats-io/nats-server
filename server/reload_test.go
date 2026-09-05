@@ -2026,18 +2026,69 @@ func TestConfigReloadClusterName(t *testing.T) {
 	}
 }
 
-func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
-	s, _, conf := runReloadServerWithContent(t, []byte(`
-		port: -1
-		max_subs: 1
-		`))
+func TestConfigReloadAccountMaxSubs(t *testing.T) {
+	config := func(maxSubs int) string {
+		return fmt.Sprintf(`
+			listen: "127.0.0.1:-1"
+			accounts {
+				TEST {
+					users = [{user: "user", password: "pwd"}]
+					limits { max_subs: %d }
+				}
+			}
+		`, maxSubs)
+	}
+
+	s, _, conf := runReloadServerWithContent(t, []byte(config(1)))
 	defer s.Shutdown()
 
-	if err := os.WriteFile(conf, []byte(`max_subs: 10`), 0666); err != nil {
-		t.Fatalf("Error writing config file: %v", err)
+	errCh := make(chan error, 1)
+	closed := make(chan struct{}, 1)
+	nc := natsConnect(t, s.ClientURL(),
+		nats.UserInfo("user", "pwd"),
+		nats.NoReconnect(),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			errCh <- err
+		}),
+		nats.ClosedHandler(func(*nats.Conn) {
+			closed <- struct{}{}
+		}))
+	defer nc.Close()
+
+	initialSubs := s.NumSubscriptions()
+	if _, err := nc.SubscribeSync("foo.1"); err != nil {
+		t.Fatalf("Error subscribing: %v", err)
 	}
-	if err := s.Reload(); err == nil {
-		t.Fatal("Expected Reload to return an error")
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Error flushing subscription: %v", err)
+	}
+
+	reloadUpdateConfig(t, s, conf, config(3))
+	for _, subject := range []string{"foo.2", "foo.3"} {
+		if _, err := nc.SubscribeSync(subject); err != nil {
+			t.Fatalf("Error subscribing to %q: %v", subject, err)
+		}
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Error flushing subscriptions: %v", err)
+	}
+	if got, want := s.NumSubscriptions(), initialSubs+3; got != want {
+		t.Fatalf("Expected %d subscriptions after increasing max_subs, got %d", want, got)
+	}
+
+	reloadUpdateConfig(t, s, conf, config(2))
+	select {
+	case err := <-errCh:
+		if !strings.Contains(err.Error(), "maximum subscriptions exceeded") {
+			t.Fatalf("Unexpected error after decreasing max_subs: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected a maximum subscriptions error")
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected connection to close after decreasing max_subs")
 	}
 }
 
