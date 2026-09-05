@@ -2352,6 +2352,10 @@ func (s *Server) reloadAuthorization() {
 		c.processSubsOnConfigReload(awcsti)
 	}
 
+	// Routes may have advertised interest for accounts that were not configured
+	// at the time. Have them resend it if this reload introduced the account.
+	s.resyncRoutesForNewAccounts()
+
 	for _, route := range routes {
 		// Disconnect any unauthorized routes.
 		// Do this only for routes that were accepted, not initiated

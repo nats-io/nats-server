@@ -94,6 +94,105 @@ type route struct {
 	// the creation of the next after receiving a PONG, ensuring
 	// that authentication did not fail.
 	startNewRoute *routeInfo
+	// Names of accounts this route advertised interest for that were not
+	// configured here at the time. A reload that introduces an account reaches
+	// the servers of a cluster one at a time, so this records that the route
+	// has to resend its subscriptions once the account arrives.
+	unknownAccounts map[string]struct{}
+	// Set when names had to be discarded because the map was full, so that a
+	// reload reconnects the route rather than deciding from an incomplete set.
+	unknownAccountsOverflow bool
+}
+
+// Maximum number of unknown account names recorded per route, so that a remote
+// naming accounts that never appear cannot grow this without bound.
+const maxUnknownRouteAccounts = 256
+
+// Records that interest from this route could not be applied because the
+// account is not configured here. Lock should not be held.
+func (c *client) noteUnknownAccount(accName string) {
+	c.mu.Lock()
+	if c.route == nil {
+		c.mu.Unlock()
+		return
+	}
+	if c.route.unknownAccounts == nil {
+		c.route.unknownAccounts = make(map[string]struct{})
+	}
+	if _, ok := c.route.unknownAccounts[accName]; !ok {
+		if len(c.route.unknownAccounts) < maxUnknownRouteAccounts {
+			c.route.unknownAccounts[accName] = struct{}{}
+		} else {
+			// Decide from a reconnect rather than from an incomplete set.
+			c.route.unknownAccountsOverflow = true
+		}
+	}
+	c.mu.Unlock()
+
+	// The account can be configured between the lookup that failed above and
+	// this being recorded, in which case a reload running concurrently has
+	// already looked at this route and will not look again. Check once more so
+	// the subscription is not left dropped until some later reload.
+	if _, err := c.srv.LookupAccount(accName); err == nil {
+		c.srv.resyncRoutesForNewAccounts()
+	}
+}
+
+// Closes the routes that dropped interest for an account that has since been
+// configured, so that they resend their subscriptions when they reconnect.
+// Called after a configuration reload, and when a route records an account
+// that turns out to be configured after all.
+func (s *Server) resyncRoutesForNewAccounts() {
+	type candidate struct {
+		route    *client
+		names    []string
+		overflow bool
+	}
+	var candidates []candidate
+
+	s.mu.Lock()
+	s.forEachRoute(func(r *client) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.route == nil {
+			return
+		}
+		if len(r.route.unknownAccounts) == 0 && !r.route.unknownAccountsOverflow {
+			return
+		}
+		names := make([]string, 0, len(r.route.unknownAccounts))
+		for accName := range r.route.unknownAccounts {
+			names = append(names, accName)
+		}
+		candidates = append(candidates, candidate{r, names, r.route.unknownAccountsOverflow})
+	})
+	s.mu.Unlock()
+
+	// Resolved outside of the lock above, since a lookup can take it and can
+	// also materialize an account that a reloaded resolver has made available
+	// but that is not in the account map yet.
+	for _, c := range candidates {
+		resync := c.overflow
+		for _, accName := range c.names {
+			if resync {
+				break
+			}
+			if _, err := s.LookupAccount(accName); err == nil {
+				resync = true
+			}
+		}
+		if !resync {
+			continue
+		}
+		c.route.mu.Lock()
+		if c.route.route != nil {
+			c.route.route.unknownAccounts = nil
+			c.route.route.unknownAccountsOverflow = false
+		}
+		c.route.mu.Unlock()
+		c.route.Debugf("Closing route to resend subscriptions for a newly configured account")
+		c.route.closeConnection(RouteRemoved)
+	}
 }
 
 // This contains the information required to create a new route.
@@ -1656,7 +1755,14 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 		// When a client comes along, expiration will prevent it from being used,
 		// cause a fetch and update the account to what is should be.
 		if staticResolver {
+			// The account may simply not be configured here yet: a reload that
+			// introduces one reaches the servers of a cluster one at a time.
+			// Nothing sends this subscription again once the account appears,
+			// so remember the account and have the route resend everything
+			// after the reload that introduces it, otherwise the interest is
+			// lost for good and messages are discarded at the account boundary.
 			c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
+			c.noteUnknownAccount(accountName)
 			return
 		}
 		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
