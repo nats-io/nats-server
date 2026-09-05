@@ -65,6 +65,7 @@ type RaftNode interface {
 	ID() string
 	Group() string
 	Peers() []*Peer
+	PeerNames() []string
 	ProposeKnownPeers(knownPeers []string)
 	UpdateKnownPeers(knownPeers []string)
 	ProposeAddPeer(peer string) error
@@ -4980,6 +4981,12 @@ func decodePeerState(buf []byte) (*peerState, error) {
 		ps.domainExt = extensionState(le.Uint16(buf[ri:]))
 	}
 	return ps, nil
+}
+
+func (n *raft) PeerNames() []string {
+	n.RLock()
+	defer n.RUnlock()
+	return n.peerNames()
 }
 
 // Lock should be held.
