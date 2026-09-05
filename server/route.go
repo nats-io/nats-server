@@ -99,6 +99,9 @@ type route struct {
 	// the servers of a cluster one at a time, so this records that the route
 	// has to resend its subscriptions once the account arrives.
 	unknownAccounts map[string]struct{}
+	// Set when names had to be discarded because the map was full, so that a
+	// reload reconnects the route rather than deciding from an incomplete set.
+	unknownAccountsOverflow bool
 }
 
 // Maximum number of unknown account names recorded per route, so that a remote
@@ -109,27 +112,43 @@ const maxUnknownRouteAccounts = 256
 // account is not configured here. Lock should not be held.
 func (c *client) noteUnknownAccount(accName string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.route == nil {
+		c.mu.Unlock()
 		return
 	}
 	if c.route.unknownAccounts == nil {
 		c.route.unknownAccounts = make(map[string]struct{})
 	}
-	if _, ok := c.route.unknownAccounts[accName]; ok {
-		return
+	if _, ok := c.route.unknownAccounts[accName]; !ok {
+		if len(c.route.unknownAccounts) < maxUnknownRouteAccounts {
+			c.route.unknownAccounts[accName] = struct{}{}
+		} else {
+			// Decide from a reconnect rather than from an incomplete set.
+			c.route.unknownAccountsOverflow = true
+		}
 	}
-	if len(c.route.unknownAccounts) >= maxUnknownRouteAccounts {
-		return
+	c.mu.Unlock()
+
+	// The account can be configured between the lookup that failed above and
+	// this being recorded, in which case a reload running concurrently has
+	// already looked at this route and will not look again. Check once more so
+	// the subscription is not left dropped until some later reload.
+	if _, err := c.srv.LookupAccount(accName); err == nil {
+		c.srv.resyncRoutesForNewAccounts()
 	}
-	c.route.unknownAccounts[accName] = struct{}{}
 }
 
 // Closes the routes that dropped interest for an account that has since been
 // configured, so that they resend their subscriptions when they reconnect.
-// Called after a configuration reload.
+// Called after a configuration reload, and when a route records an account
+// that turns out to be configured after all.
 func (s *Server) resyncRoutesForNewAccounts() {
-	var resync []*client
+	type candidate struct {
+		route    *client
+		names    []string
+		overflow bool
+	}
+	var candidates []candidate
 
 	s.mu.Lock()
 	s.forEachRoute(func(r *client) {
@@ -138,22 +157,41 @@ func (s *Server) resyncRoutesForNewAccounts() {
 		if r.route == nil {
 			return
 		}
-		for accName := range r.route.unknownAccounts {
-			// Not LookupAccount, which would take the server lock held here.
-			if _, ok := s.accounts.Load(accName); !ok {
-				continue
-			}
-			r.route.unknownAccounts = nil
-			resync = append(resync, r)
+		if len(r.route.unknownAccounts) == 0 && !r.route.unknownAccountsOverflow {
 			return
 		}
+		names := make([]string, 0, len(r.route.unknownAccounts))
+		for accName := range r.route.unknownAccounts {
+			names = append(names, accName)
+		}
+		candidates = append(candidates, candidate{r, names, r.route.unknownAccountsOverflow})
 	})
 	s.mu.Unlock()
 
-	// Outside of the lock above, closing takes it.
-	for _, r := range resync {
-		r.Debugf("Closing route to resend subscriptions for a newly configured account")
-		r.closeConnection(RouteRemoved)
+	// Resolved outside of the lock above, since a lookup can take it and can
+	// also materialize an account that a reloaded resolver has made available
+	// but that is not in the account map yet.
+	for _, c := range candidates {
+		resync := c.overflow
+		for _, accName := range c.names {
+			if resync {
+				break
+			}
+			if _, err := s.LookupAccount(accName); err == nil {
+				resync = true
+			}
+		}
+		if !resync {
+			continue
+		}
+		c.route.mu.Lock()
+		if c.route.route != nil {
+			c.route.route.unknownAccounts = nil
+			c.route.route.unknownAccountsOverflow = false
+		}
+		c.route.mu.Unlock()
+		c.route.Debugf("Closing route to resend subscriptions for a newly configured account")
+		c.route.closeConnection(RouteRemoved)
 	}
 }
 
