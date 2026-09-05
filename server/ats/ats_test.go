@@ -15,6 +15,7 @@ package ats
 
 import (
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -85,6 +86,28 @@ func TestRegisterAndUnregister(t *testing.T) {
 	ngra = runtime.NumGoroutine()
 	if ngra != ngrp+1 {
 		t.Fatalf("Expected to see additional go routine: %d vs %d", ngrp, ngra)
+	}
+}
+
+func TestConcurrentRegisterUnregister(t *testing.T) {
+	// Stores can be created and stopped from different goroutines, driving the
+	// refs counter across the 0<->1 boundary concurrently. Register/Unregister
+	// must stay safe (no data race, no goroutine leak) under that load.
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				Register()
+				Unregister()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if r := refs.Load(); r != 0 {
+		t.Fatalf("Expected refs to be balanced at 0, got %d", r)
 	}
 }
 
