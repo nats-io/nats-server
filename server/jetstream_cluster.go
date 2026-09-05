@@ -3055,6 +3055,19 @@ func (js *jetStream) processRemovePeer(peer string) {
 	delete(js.prNewPeers, peer)
 	js.prMu.Unlock()
 
+	// Account usage from remote servers is tracked by node ID. Once a server is
+	// removed from the meta group it will never update that entry again, so drop
+	// its last reported contribution from every account total.
+	js.mu.RLock()
+	accounts := make([]*jsAccount, 0, len(js.accounts))
+	for _, jsa := range js.accounts {
+		accounts = append(accounts, jsa)
+	}
+	js.mu.RUnlock()
+	for _, jsa := range accounts {
+		jsa.removeRemoteUsage(peer)
+	}
+
 	js.mu.Lock()
 	s, cc := js.srv, js.cluster
 	if cc == nil || cc.meta == nil {
