@@ -584,8 +584,8 @@ func (ci *ConnInfo) fill(client *client, nc net.Conn, now time.Time, auth bool) 
 	ci.MQTTClient = client.getMQTTClientID()
 	ci.Kind = client.kindString()
 	ci.Type = client.clientTypeString()
-	ci.Start = client.start
-	ci.LastActivity = client.last
+	ci.Start = client.start.UTC()
+	ci.LastActivity = client.last.UTC()
 	ci.Uptime = myUptime(now.Sub(client.start))
 	ci.Idle = myUptime(now.Sub(client.last))
 	ci.RTT = rtt.String()
