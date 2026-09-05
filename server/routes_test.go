@@ -5840,12 +5840,25 @@ func TestRouteSubForUnknownAccountHeldUntilConfigured(t *testing.T) {
 
 	// subFirst says whether the importing subscription exists before the second
 	// server learns about the exporting account.
+	// An unrelated reload can land on the peer while the account is still
+	// missing, which must not discard the interest held for it.
+	unrelated := `
+		listen: 127.0.0.1:-1
+		cluster { name: C, listen: 127.0.0.1:%d, routes: [%s] }
+		accounts {
+			IMP { users: [{user: imp, password: pwd}] }
+			OTHER { users: [{user: other, password: pwd}] }
+		}
+	`
+
 	for _, test := range []struct {
-		name     string
-		subFirst bool
+		name       string
+		subFirst   bool
+		interleave bool
 	}{
-		{"sub before the peer knows the account", true},
-		{"sub after both servers know the account", false},
+		{"sub before the peer knows the account", true, false},
+		{"sub after both servers know the account", false, false},
+		{"unrelated reload on the peer first", true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			confA := createConfFile(t, []byte(fmt.Sprintf(before, -1, "")))
@@ -5880,6 +5893,10 @@ func TestRouteSubForUnknownAccountHeldUntilConfigured(t *testing.T) {
 				_, err := sa.LookupAccount("EXP")
 				return err
 			})
+			if test.interleave {
+				reloadUpdateConfig(t, sb, confB, fmt.Sprintf(unrelated, ob.Cluster.Port, routeToA))
+				checkClusterFormed(t, sa, sb)
+			}
 			reloadUpdateConfig(t, sb, confB, fmt.Sprintf(after, ob.Cluster.Port, routeToA))
 			checkClusterFormed(t, sa, sb)
 
