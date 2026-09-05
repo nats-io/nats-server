@@ -5812,10 +5812,10 @@ func TestRouteReconnectAfterDuplicateRouteAdoptsConfiguredURL(t *testing.T) {
 
 // A configuration reload that introduces an account reaches the servers of a
 // cluster one at a time, so a server can receive interest for an account it
-// does not know yet. That interest has to be held rather than dropped: nothing
-// sends it again once the account appears, and the import is then left without
-// interest for good.
-func TestRouteSubForUnknownAccountHeldUntilConfigured(t *testing.T) {
+// does not know yet and has to drop it. Nothing sends that subscription again
+// once the account appears, so the route has to resend it, otherwise the
+// import is left without interest for good.
+func TestRouteSubForUnknownAccountResentOnceConfigured(t *testing.T) {
 	before := `
 		listen: 127.0.0.1:-1
 		cluster { name: C, listen: 127.0.0.1:%d, routes: [%s] }

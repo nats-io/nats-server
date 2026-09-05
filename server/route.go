@@ -94,116 +94,66 @@ type route struct {
 	// the creation of the next after receiving a PONG, ensuring
 	// that authentication did not fail.
 	startNewRoute *routeInfo
-	// Subscriptions received for accounts that are not configured here yet,
-	// keyed by account name and then by subject and queue name. A reload that
-	// introduces an account reaches the servers of a cluster one at a time, so
-	// these are held until it appears rather than dropped, which would lose
-	// the interest for good.
-	pendingSubs map[string]map[string]*pendingRouteSub
+	// Names of accounts this route advertised interest for that were not
+	// configured here at the time. A reload that introduces an account reaches
+	// the servers of a cluster one at a time, so this records that the route
+	// has to resend its subscriptions once the account arrives.
+	unknownAccounts map[string]struct{}
 }
 
-// A subscription received for an account this server does not know about yet.
-type pendingRouteSub struct {
-	arg       []byte
-	leafSub   bool
-	hasOrigin bool
-}
+// Maximum number of unknown account names recorded per route, so that a remote
+// naming accounts that never appear cannot grow this without bound.
+const maxUnknownRouteAccounts = 256
 
-// Maximum number of subscriptions held per route for accounts that are not
-// configured, so that a remote naming accounts that never appear cannot grow
-// this without bound.
-const maxPendingRouteSubs = 1024
-
-func pendingRouteSubKey(subject, queue []byte) string {
-	return bytesToString(subject) + "\x00" + bytesToString(queue)
-}
-
-// Records a subscription for an account that is not configured here yet so it
-// can be applied once the account appears. Lock should not be held.
-func (c *client) holdSubForUnknownAccount(accName string, sub *subscription, arg []byte, leafSub, hasOrigin bool) {
-	key := pendingRouteSubKey(sub.subject, sub.queue)
-
+// Records that interest from this route could not be applied because the
+// account is not configured here. Lock should not be held.
+func (c *client) noteUnknownAccount(accName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.route == nil {
 		return
 	}
-	if c.route.pendingSubs == nil {
-		c.route.pendingSubs = make(map[string]map[string]*pendingRouteSub)
+	if c.route.unknownAccounts == nil {
+		c.route.unknownAccounts = make(map[string]struct{})
 	}
-	subs, ok := c.route.pendingSubs[accName]
-	if _, held := subs[key]; !held {
-		var total int
-		for _, subs := range c.route.pendingSubs {
-			total += len(subs)
-		}
-		if total >= maxPendingRouteSubs {
-			c.Warnf("Dropping subscription on %q for unknown account %q, %d subscriptions already held",
-				sub.subject, accName, total)
-			return
-		}
-	}
-	if !ok {
-		subs = make(map[string]*pendingRouteSub)
-		c.route.pendingSubs[accName] = subs
-	}
-	// Copy, the argument references the read buffer.
-	subs[key] = &pendingRouteSub{arg: append([]byte(nil), arg...), leafSub: leafSub, hasOrigin: hasOrigin}
-}
-
-// Drops a held subscription when the remote unsubscribes before the account
-// has appeared. Lock should not be held.
-func (c *client) removePendingSubForUnknownAccount(accName string, subject, queue []byte) {
-	key := pendingRouteSubKey(subject, queue)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.route == nil {
+	if _, ok := c.route.unknownAccounts[accName]; ok {
 		return
 	}
-	if subs, ok := c.route.pendingSubs[accName]; ok {
-		delete(subs, key)
-		if len(subs) == 0 {
-			delete(c.route.pendingSubs, accName)
-		}
+	if len(c.route.unknownAccounts) >= maxUnknownRouteAccounts {
+		return
 	}
+	c.route.unknownAccounts[accName] = struct{}{}
 }
 
-// Applies the subscriptions held for accounts that have since been configured.
+// Closes the routes that dropped interest for an account that has since been
+// configured, so that they resend their subscriptions when they reconnect.
 // Called after a configuration reload.
-func (s *Server) applyPendingRouteSubs() {
-	type heldSubs struct {
-		route *client
-		subs  []*pendingRouteSub
-	}
-	var held []heldSubs
+func (s *Server) resyncRoutesForNewAccounts() {
+	var resync []*client
 
+	s.mu.Lock()
 	s.forEachRoute(func(r *client) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if r.route == nil || len(r.route.pendingSubs) == 0 {
+		if r.route == nil {
 			return
 		}
-		var subs []*pendingRouteSub
-		for accName, accSubs := range r.route.pendingSubs {
-			if _, err := s.LookupAccount(accName); err != nil {
+		for accName := range r.route.unknownAccounts {
+			// Not LookupAccount, which would take the server lock held here.
+			if _, ok := s.accounts.Load(accName); !ok {
 				continue
 			}
-			for _, sub := range accSubs {
-				subs = append(subs, sub)
-			}
-			delete(r.route.pendingSubs, accName)
-		}
-		if len(subs) > 0 {
-			held = append(held, heldSubs{r, subs})
+			r.route.unknownAccounts = nil
+			resync = append(resync, r)
+			return
 		}
 	})
+	s.mu.Unlock()
 
-	// Applied outside of the lock above, since this takes it again.
-	for _, h := range held {
-		for _, sub := range h.subs {
-			h.route.processRemoteSub(sub.arg, sub.leafSub, sub.hasOrigin)
-		}
+	// Outside of the lock above, closing takes it.
+	for _, r := range resync {
+		r.Debugf("Closing route to resend subscriptions for a newly configured account")
+		r.closeConnection(RouteRemoved)
 	}
 }
 
@@ -1541,7 +1491,7 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 	c.mu.Unlock()
 
 	hasOrigin := leafUnsub && originSupport
-	origin, accNameFromProto, subject, queue, err := c.parseUnsubProto(arg, accInProto, hasOrigin)
+	origin, accNameFromProto, subject, _, err := c.parseUnsubProto(arg, accInProto, hasOrigin)
 	if err != nil {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
@@ -1555,7 +1505,6 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 		acc = v.(*Account)
 	} else {
 		c.Debugf("Unknown account %q for subject %q", accountName, subject)
-		c.removePendingSubForUnknownAccount(accountName, subject, queue)
 		return nil
 	}
 
@@ -1771,10 +1720,11 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 			// The account may simply not be configured here yet: a reload that
 			// introduces one reaches the servers of a cluster one at a time.
 			// Nothing sends this subscription again once the account appears,
-			// so hold it rather than drop it, otherwise the interest is lost
-			// for good and messages are discarded at the account boundary.
-			c.Debugf("Holding subscription on %q for unknown account %q", sub.subject, accountName)
-			c.holdSubForUnknownAccount(accountName, sub, argo, leafSub, hasOrigin)
+			// so remember the account and have the route resend everything
+			// after the reload that introduces it, otherwise the interest is
+			// lost for good and messages are discarded at the account boundary.
+			c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
+			c.noteUnknownAccount(accountName)
 			return
 		}
 		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
