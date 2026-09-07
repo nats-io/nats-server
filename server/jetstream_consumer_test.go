@@ -949,6 +949,36 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerIsFilterSubsetOf(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		filterSubjects []string
+		subject        string
+		result         bool
+	}{
+		{"no filter", nil, ">", false},
+		{"single literal equal", []string{"foo.a"}, "foo.a", true},
+		{"single literal mismatch", []string{"foo.a"}, "foo.b", false},
+		{"all literals contained", []string{"foo.a", "foo.b"}, "foo.>", true},
+		{"one literal outside", []string{"foo.a", "bar.a"}, "foo.>", false},
+		{"wildcards contained", []string{"foo.*", "foo.bar.>"}, "foo.>", true},
+		{"filter wider than subject", []string{"foo.>"}, "foo.bar", false},
+		{"rollup matches only one filter", []string{"events.host", "events.periodic"}, "events.periodic", false},
+		{"partial wildcard intersection", []string{"foo.*.bar"}, "foo.baz.>", false},
+		{"partial wildcard intersection short", []string{"*.bar"}, "foo.*", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := consumerWithFilterSubjects(test.filterSubjects)
+			if res := c.isFilterSubsetOf(test.subject); res != test.result {
+				t.Fatalf("Filters %v subset of subject %q should be %v, got %v",
+					test.filterSubjects, test.subject, test.result, res)
+			}
+		})
+	}
+}
+
 func TestJetStreamConsumerBackOff(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -7755,6 +7785,116 @@ func TestJetStreamConsumerPurge(t *testing.T) {
 	_, err = sub.Fetch(1)
 	require_Error(t, err)
 
+}
+
+func TestJetStreamConsumerRollupMultiFilterDoesNotSkip(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"events.>"},
+		AllowRollup: true,
+	})
+	require_NoError(t, err)
+
+	deliver := nats.NewInbox()
+	sub, err := nc.SubscribeSync(deliver)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: deliver,
+		AckPolicy:      nats.AckExplicitPolicy,
+		MaxAckPending:  1,
+		FilterSubjects: []string{"events.host", "events.periodic"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("A"))
+	require_NoError(t, err)
+	msgA, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("B"))
+	require_NoError(t, err)
+	rollup := nats.NewMsg("events.periodic")
+	rollup.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+	rollup.Data = []byte("periodic")
+	_, err = js.PublishMsg(rollup)
+	require_NoError(t, err)
+	require_NoError(t, msgA.AckSync())
+
+	msgB, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err := msgB.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(2))
+	require_Equal(t, string(msgB.Data), "B")
+	require_NoError(t, msgB.AckSync())
+
+	rollupMsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err = rollupMsg.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(3))
+	require_Equal(t, string(rollupMsg.Data), "periodic")
+}
+
+func TestJetStreamConsumerFilteredPurgeMultiFilterDoesNotSkip(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	deliver := nats.NewInbox()
+	sub, err := nc.SubscribeSync(deliver)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: deliver,
+		AckPolicy:      nats.AckExplicitPolicy,
+		MaxAckPending:  1,
+		FilterSubjects: []string{"events.host", "events.periodic"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("A"))
+	require_NoError(t, err)
+	msgA, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("B"))
+	require_NoError(t, err)
+	_, err = js.Publish("events.periodic", []byte("P"))
+	require_NoError(t, err)
+
+	// Purge removes every message on one of the two filter subjects.
+	require_NoError(t, js.PurgeStream("TEST",
+		&nats.StreamPurgeRequest{Subject: "events.periodic"}))
+	require_NoError(t, msgA.AckSync())
+
+	msgB, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err := msgB.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(2))
+	require_Equal(t, string(msgB.Data), "B")
 }
 
 func TestJetStreamConsumerFilterUpdate(t *testing.T) {
