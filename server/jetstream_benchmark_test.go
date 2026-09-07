@@ -1014,7 +1014,7 @@ func BenchmarkJetStreamMetaSnapshot(b *testing.B) {
 				Storage:  MemoryStorage,
 				Metadata: metadata,
 			}
-			cfg, _ := ml.checkStreamCfg(scfg, acc, false)
+			cfg, _ := ml.checkStreamCfgLocked(scfg, acc, false)
 			rg, _ := js.createGroupForStream(ci, &cfg)
 			sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Client: ci, Created: time.Now().UTC()}
 			n.Propose(n.Term(), encodeAddStreamAssignment(sa))
