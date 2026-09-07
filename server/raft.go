@@ -45,6 +45,7 @@ type RaftNode interface {
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
+	SendHeartbeat()
 	Applied(index uint64) (entries uint64, bytes uint64)
 	Processed(index uint64, applied uint64) (entries uint64, bytes uint64)
 	State() RaftState
@@ -1529,6 +1530,13 @@ func (n *raft) Processed(index uint64, applied uint64) (entries uint64, bytes ui
 			}
 			n.updateLeadChange(true)
 		}
+	}
+
+	// If we're a R1 node, and we've processed all that we needed to commit, make sure we can become
+	// leader as quickly as possible, so we don't wait out the election timeout.
+	if n.processed == n.commit && n.leader == _EMPTY_ && len(n.peers) == 1 && !n.pleader.Load() {
+		// Need to lower the election timeout, since only the run loop can transition.
+		n.resetElect(0)
 	}
 
 	// Calculate the number of entries and estimate the byte size that
@@ -3356,6 +3364,13 @@ func (n *raft) removePeer(peer string) {
 	n.removed[peer] = time.Now()
 
 	delete(n.peers, peer)
+	// Clear observed state if it was still lingering.
+	if n.observed != nil {
+		delete(n.observed, peer)
+		if len(n.observed) == 0 {
+			n.observed = nil
+		}
+	}
 	n.adjustClusterSizeAndQuorum()
 	n.writePeerState(&peerState{n.peerNames(), n.csz, n.extSt})
 }
@@ -4113,6 +4128,13 @@ func (n *raft) trackPeer(peer string) error {
 		// can prefer adding peers that are demonstrably up.
 		if n.observed == nil {
 			n.observed = make(map[string]time.Time, 1)
+		}
+		// On first contact, nudge the upper layer so it can check if this unblocks adding the peer.
+		if _, seen := n.observed[peer]; !seen && n.leaderState.Load() {
+			select {
+			case n.leadc <- leadChange{isLeader: true, term: n.term, nudge: true}:
+			default:
+			}
 		}
 		n.observed[peer] = time.Now()
 	}
@@ -5335,6 +5357,13 @@ func (n *raft) sendPeerState() {
 }
 
 // Send a heartbeat.
+func (n *raft) SendHeartbeat() {
+	if n.State() == Leader {
+		n.sendHeartbeat()
+	}
+}
+
+// Send a heartbeat.
 func (n *raft) sendHeartbeat() {
 	n.sendAppendEntry(nil)
 }
@@ -5739,6 +5768,7 @@ func (n *raft) InRescue() bool {
 type leadChange struct {
 	isLeader bool
 	term     uint64
+	nudge    bool // Signal that a new peer was observed, only if the group is managed.
 }
 
 // Lock should be held.
