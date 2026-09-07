@@ -2246,6 +2246,17 @@ func (o *consumer) deleteNotActive() {
 		}
 	} else {
 		// Pull mode.
+		// Check if we still have valid requests waiting. This also expires
+		// requests, which updates the last activity, so must be checked first.
+		if o.checkWaitingForInterest() {
+			if o.dtmr != nil {
+				o.dtmr.Reset(o.dthresh)
+			} else {
+				o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
+			}
+			o.mu.Unlock()
+			return
+		}
 		elapsed := time.Since(o.waiting.last)
 		if elapsed < o.dthresh {
 			// These need to keep firing so reset but use delta.
@@ -2253,16 +2264,6 @@ func (o *consumer) deleteNotActive() {
 				o.dtmr.Reset(o.dthresh - elapsed)
 			} else {
 				o.dtmr = time.AfterFunc(o.dthresh-elapsed, o.deleteNotActive)
-			}
-			o.mu.Unlock()
-			return
-		}
-		// Check if we still have valid requests waiting.
-		if o.checkWaitingForInterest() {
-			if o.dtmr != nil {
-				o.dtmr.Reset(o.dthresh)
-			} else {
-				o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
 			}
 			o.mu.Unlock()
 			return
@@ -4534,6 +4535,10 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			}
+			// Expiring a request counts as activity for the inactive threshold.
+			if wr.expires.After(o.waiting.last) {
+				o.waiting.last = wr.expires
+			}
 			o.waiting.removeCurrent()
 			if o.node != nil {
 				o.removeClusterPendingRequest(wr.reply)
@@ -5095,6 +5100,9 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 			if expires {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				if wr.expires.After(wq.last) {
+					wq.last = wr.expires
+				}
 				wr = remove(pre, wr)
 				continue
 			} else if wr.expires.IsZero() || wr.d > 0 {
@@ -5102,6 +5110,9 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 				// Return no messages instead, which is the same as if we'd rejected the pull request initially.
 				hdr := fmt.Appendf(nil, "NATS/1.0 404 No Messages\r\n\r\n")
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				if now.After(wq.last) {
+					wq.last = now
+				}
 				wr = remove(pre, wr)
 				continue
 			}
