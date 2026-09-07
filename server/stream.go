@@ -6397,11 +6397,11 @@ var (
 // needIsolation should be false only if the caller already holds isolateMu
 // across a whole atomic batch; mset.mu must NOT be held by the caller.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool) error {
-	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation, nil)
+	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation, nil, false)
 }
 
-func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool, fastBatch *FastBatch) (retErr error) {
-	if mt != nil {
+func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool, fastBatch *FastBatch, deferResponse bool) (retErr error) {
+	if mt != nil && !deferResponse {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
 		defer func() {
@@ -7444,13 +7444,13 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	isLeader, isClustered, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, allowAtomicPublish := mset.isLeader(), mset.isClustered(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules, mset.cfg.AllowAtomicPublish
 	mset.mu.RUnlock()
 
-	// If message tracing (with message delivery), we will need to send the
-	// event on exit in case there was an error (if message was not proposed).
-	// Otherwise, the event will be sent from processJetStreamMsg when
-	// invoked by the leader (from applyStreamEntries).
+	// Errors before message processing are reported here. A coalesced R1
+	// durability boundary also defers the successful trace until its final
+	// sync; other successful traces are sent from processJetStreamMsg.
+	deferResponse := false
 	if mt != nil {
 		defer func() {
-			if retErr != nil {
+			if retErr != nil || deferResponse {
 				mt.sendEventFromJetStream(retErr)
 			}
 		}()
@@ -7829,6 +7829,27 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		// via the defer above, but release mset.mu and batches.mu.
 		mset.mu.Unlock()
 		batches.mu.Unlock()
+
+		fs, hasFileStore := mset.store.(*fileStore)
+		coalesceSync := false
+		if hasFileStore {
+			fs.mu.Lock()
+			coalesceSync = fs.syncAlways.Load()
+			if coalesceSync {
+				fs.updateDurabilitySettingsLocked(true)
+			}
+			fs.mu.Unlock()
+		}
+		deferResponse = coalesceSync
+		durabilityReset := !coalesceSync
+		defer func() {
+			if !durabilityReset {
+				fs.mu.Lock()
+				fs.resetDurabilitySettingsLocked()
+				fs.mu.Unlock()
+			}
+		}()
+
 		for seq := uint64(1); seq <= batchSeq; seq++ {
 			// Use the checked (and possibly rewritten) message from above, not the raw staged
 			// message, so transformations like counter increments and scheduled message
@@ -7837,7 +7858,9 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			bsubj, bhdr, bmsg = cm.subj, cm.hdr, cm.msg
 			var _reply string
 			if seq == batchSeq {
-				_reply = reply
+				if !coalesceSync {
+					_reply = reply
+				}
 				// If committed by EOB, the last message must get the normal commit header.
 				if commitEob {
 					bhdr = genHeader(bhdr, JSBatchCommit, "1")
@@ -7845,8 +7868,28 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			}
 			// If errored, assume all subsequent calls will fail too (for example, store is closed).
 			// Don't clean up the batch so that a restart can try to recover it.
-			if err = mset.processJetStreamMsg(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false); err != nil {
+			if err = mset.processJetStreamMsgWithBatch(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false, nil, deferResponse); err != nil {
 				return err
+			}
+		}
+		if coalesceSync {
+			if err = fs.FlushAllPending(); err != nil {
+				mset.setWriteErr(err)
+				return err
+			}
+			fs.mu.Lock()
+			fs.resetDurabilitySettingsLocked()
+			fs.mu.Unlock()
+			durabilityReset = true
+			mset.mu.RLock()
+			lseq, pubAck, outq := mset.lseq, mset.pubAck, mset.outq
+			mset.mu.RUnlock()
+			if canRespond && !mt.traceOnly() {
+				var buf [256]byte
+				response := append(buf[:0], pubAck...)
+				response = append(response, strconv.FormatUint(lseq, 10)...)
+				response = append(response, fmt.Sprintf(",\"batch\":%q,\"count\":%d}", batchId, batchSeq)...)
+				outq.sendMsg(reply, response)
 			}
 		}
 		// Re-acquire for the cleanup below. If a concurrent staging error
@@ -8209,7 +8252,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	batches.mu.Unlock()
 	if !isClustered {
 		mset.clMu.Unlock()
-		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, true, batch)
+		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, true, batch, false)
 	}
 	err = commitSingleMsg(diff, mset, subject, reply, hdr, msg, name, jsa, mt, node, term, r, lseq)
 	mset.clMu.Unlock()
