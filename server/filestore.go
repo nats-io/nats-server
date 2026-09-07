@@ -4325,12 +4325,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return isSubsetMatchTokenized(tsa, fsa)
 	}
 
-	// Handle last by subject a bit differently.
+	// Use the per-subject index when at most one message per subject should be counted.
+	// This applies to last-per-subject consumers and streams limited to one message per subject.
 	// We will scan PSIM since we accurately track the last block we have seen the subject in. This
 	// allows us to only need to load at most one block now.
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
-	if lastPerSubject {
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
 			return uint64(fs.psim.Size()), validThrough, nil
@@ -4665,12 +4666,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		return sl.HasInterest(subj)
 	}
 
-	// Handle last by subject a bit differently.
+	// Use the per-subject index when at most one message per subject should be counted.
+	// This applies to last-per-subject consumers and streams limited to one message per subject.
 	// We will scan PSIM since we accurately track the last block we have seen the subject in. This
 	// allows us to only need to load at most one block now.
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
-	if lastPerSubject {
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
 			return uint64(fs.psim.Size()), validThrough, nil

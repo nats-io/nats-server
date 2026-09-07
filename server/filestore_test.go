@@ -7529,7 +7529,7 @@ func TestFileStoreFSSExpire(t *testing.T) {
 func TestFileStoreFSSExpireNumPending(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 8192, CacheExpire: 1 * time.Second, SubjectStateExpire: 2 * time.Second},
-		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, MaxMsgsPer: 1, Storage: FileStorage})
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*.*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
 
@@ -9046,6 +9046,30 @@ func Benchmark_FileStoreSubjectStateConsistencyOptimizationPerf(b *testing.B) {
 			_, _, err = fs.StoreMsg(subject, nil, nil, 0)
 			require_NoError(b, err)
 		}
+	}
+}
+
+func Benchmark_FileStoreNumPendingMaxMsgsPerSubjectOneByStartSequence(b *testing.B) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, MaxMsgsPer: 1},
+	)
+	require_NoError(b, err)
+	defer fs.Stop()
+
+	const numSubjects = 10_000
+	for i := 0; i < numSubjects*2; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i%numSubjects), nil, nil, 0)
+		require_NoError(b, err)
+	}
+
+	const startSeq = numSubjects + numSubjects/2
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		total, _, err := fs.NumPending(startSeq, "foo.*", false)
+		require_NoError(b, err)
+		require_Equal(b, total, uint64(numSubjects/2+1))
 	}
 }
 
