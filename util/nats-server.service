@@ -4,7 +4,7 @@ After=network-online.target ntp.service
 
 [Service]
 PrivateTmp=true
-Type=simple
+Type=notify
 ExecStart=/usr/sbin/nats-server -c /etc/nats-server.conf
 ExecReload=/bin/kill -s HUP $MAINPID
 
