@@ -332,7 +332,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							if bc.replicas > 1 {
 								connectURL := cl.streamLeader("$G", streamName).ClientURL()
 								nc.Close()
-								nc, js = jsClientConnectURL(b, connectURL)
+								nc, _ = jsClientConnectURL(b, connectURL)
 							}
 
 							js, err := nc.JetStream(nats.PublishAsyncMaxPending(PublishBatchSize))
