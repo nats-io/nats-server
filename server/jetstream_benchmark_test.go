@@ -314,7 +314,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 							cl, _, shutdown, nc, js := startJSClusterAndConnect(b, bc.clusterSize)
 							defer shutdown()
-							defer nc.Close()
+							defer func() { nc.Close() }()
 
 							if verbose {
 								b.Logf("Creating stream with R=%d", bc.replicas)
@@ -332,7 +332,12 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 							if bc.replicas > 1 {
 								connectURL := cl.streamLeader("$G", streamName).ClientURL()
 								nc.Close()
-								_, js = jsClientConnectURL(b, connectURL)
+								nc, js = jsClientConnectURL(b, connectURL)
+							}
+
+							js, err := nc.JetStream(nats.PublishAsyncMaxPending(PublishBatchSize))
+							if err != nil {
+								b.Fatalf("Failed to create JetStream context: %v", err)
 							}
 
 							message := make([]byte, bc.messageSize)
