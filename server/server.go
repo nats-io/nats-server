@@ -962,6 +962,16 @@ func NewServer(opts *Options) (*Server, error) {
 	// Used to setup Authorization.
 	s.configureAuthorization()
 
+	// Initialize websocket origin / headers options before returning, so the
+	// returned *Server is safe to use from an application-owned HTTP server
+	// via HandleWsUpgrade even when no websocket listener is bound
+	// (Websocket.Port == 0). This is the only call site for this init;
+	// startWebsocketServer does not re-run it, since re-running after
+	// Start() has set running=true would race with concurrent embedded
+	// upgrades that read s.websocket.rawHeaders without holding
+	// s.websocket.mu.
+	s.initWebsocketOptions()
+
 	// Start signal handler
 	s.handleSignals()
 
