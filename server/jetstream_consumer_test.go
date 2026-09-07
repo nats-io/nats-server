@@ -10487,6 +10487,153 @@ func TestJetStreamConsumerNotInactiveDuringAckWaitBackoff(t *testing.T) {
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
+func TestJetStreamConsumerNotInactiveAfterPullRequestExpires(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		inactiveThreshold := time.Second
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:           "CONSUMER",
+			AckPolicy:         nats.AckExplicitPolicy,
+			Replicas:          replicas,
+			InactiveThreshold: inactiveThreshold, // Pull mode adds up to 1 second randomly.
+		})
+		require_NoError(t, err)
+
+		// Send a pull request that expires right around the inactive threshold.
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(inbox)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		req := fmt.Sprintf(`{"batch":1,"expires":%d}`, inactiveThreshold.Nanoseconds())
+		require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), inbox, []byte(req)))
+
+		// Wait for the request to time out.
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Status"), "408")
+		expired := time.Now()
+
+		// The expired pull request should count as activity, so the consumer
+		// should only be deleted after (at least) the inactive threshold has
+		// passed since the request expired.
+		deleted := false
+		for time.Since(expired) < 4*time.Second {
+			if _, err = js.ConsumerInfo("TEST", "CONSUMER"); err != nil {
+				require_Error(t, err, nats.ErrConsumerNotFound)
+				deleted = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		require_True(t, deleted)
+		if since := time.Since(expired); since < inactiveThreshold {
+			t.Fatalf("consumer was deleted %v after the pull request expired, expected at least %v", since, inactiveThreshold)
+		}
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamConsumerNotInactiveAfterPullRequestExpiresInNextWaiting(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	inactiveThreshold := time.Second
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "CONSUMER",
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: inactiveThreshold, // Pull mode adds up to 1 second randomly.
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Send a pull request with a long expiry, so the expiry timer doesn't race with us.
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	req := fmt.Sprintf(`{"batch":1,"expires":%d}`, (10 * time.Second).Nanoseconds())
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), inbox, []byte(req)))
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.waiting.len() != 1 {
+			return fmt.Errorf("expected 1 waiting request, got %d", o.waiting.len())
+		}
+		return nil
+	})
+
+	// Let some time pass since the request was received, so that we can distinguish
+	// between the request time and the expiry time being used as last activity.
+	time.Sleep(500 * time.Millisecond)
+
+	// A message wake-up that finds the request expired times it out in nextWaiting,
+	// rather than in processWaiting. Simulate that by backdating the expiry.
+	o.mu.Lock()
+	wr := o.waiting.peek()
+	require_NotNil(t, wr)
+	received := wr.received
+	expires := time.Now()
+	wr.expires = expires
+	require_True(t, o.nextWaiting(0) == nil)
+	require_True(t, o.waiting.isEmpty())
+	last, dthresh := o.waiting.last, o.dthresh
+	o.mu.Unlock()
+
+	// The client should have received the timeout.
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+
+	// The expiry should have been registered as last activity, not the received time.
+	require_True(t, last.After(received))
+	require_Equal(t, last, expires)
+
+	// The consumer should only be deleted after (at least) the inactive threshold
+	// has passed since the request expired.
+	deleted := false
+	for time.Since(expires) < dthresh+2*time.Second {
+		if _, err = js.ConsumerInfo("TEST", "CONSUMER"); err != nil {
+			require_Error(t, err, nats.ErrConsumerNotFound)
+			deleted = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require_True(t, deleted)
+	if since := time.Since(expires); since < dthresh {
+		t.Fatalf("consumer was deleted %v after the pull request expired, expected at least %v", since, dthresh)
+	}
+}
+
 func TestSortingConsumerPullRequests(t *testing.T) {
 
 	for _, test := range []struct {
