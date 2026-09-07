@@ -276,6 +276,10 @@ func benchDefaultOptionsForAccounts() *server.Options {
 	barAcc := server.NewAccount("$bar")
 	barAcc.AddStreamImport(fooAcc, "foo", "")
 	o.Accounts = []*server.Account{fooAcc, barAcc}
+	o.Users = []*server.User{
+		{Username: "$foo", Password: DefaultPass, Account: fooAcc},
+		{Username: "$bar", Password: DefaultPass, Account: barAcc},
+	}
 
 	return &o
 }
@@ -283,8 +287,9 @@ func benchDefaultOptionsForAccounts() *server.Options {
 func createClientWithAccount(b *testing.B, account, host string, port int) net.Conn {
 	c := createClientConn(b, host, port)
 	checkInfoMsg(b, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"user\":%q,\"pass\":%q}\r\n", false, false, false, account, DefaultPass)
 	sendProto(b, c, cs)
+	flushConnection(b, c)
 	return c
 }
 
@@ -296,6 +301,10 @@ func benchOptionsForServiceImports() *server.Options {
 	foo := server.NewAccount("$foo")
 	bar := server.NewAccount("$bar")
 	o.Accounts = []*server.Account{foo, bar}
+	o.Users = []*server.User{
+		{Username: "$foo", Password: DefaultPass, Account: foo},
+		{Username: "$bar", Password: DefaultPass, Account: bar},
+	}
 
 	return &o
 }
