@@ -6343,6 +6343,10 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 		if !alreadyRunning && (numReplicas > 1 || desired != nil) {
 			if needsNode {
+				// Finish standalone writes before installing the Raft node. Atomic
+				// commits waiting for isolation must then recheck the node before
+				// deciding whether to write locally or propose through Raft.
+				mset.isolateMu.Lock()
 				// Must run before startClusterSubs reads mset.sa.Sync.
 				mset.setStreamAssignment(sa)
 
@@ -6361,6 +6365,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				// Re-link the assignment so mset.node picks up the newly created
 				// node before the monitor starts.
 				mset.setStreamAssignment(sa)
+				mset.isolateMu.Unlock()
 			}
 			mset.startMonitorWg()
 			// Only snapshot for a legacy scale up.
