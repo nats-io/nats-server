@@ -1858,7 +1858,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 
 	// We should not have a cluster formed here.
 	numRoutes := 0
-	deadline := time.Now().Add(2 * DEFAULT_ROUTE_RECONNECT)
+	deadline := time.Now().Add(routeReconnectDelay + 500*time.Millisecond)
 	for time.Now().Before(deadline) {
 		if numRoutes = srva.NumRoutes(); numRoutes != 0 {
 			break

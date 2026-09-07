@@ -1160,11 +1160,14 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 		// than stream config we prefer the account limits to handle cases where account limits are
 		// updated during the lifecycle of the stream
 		maxc := cfg.MaxConsumers
-		if maxConsumers := srvLim.DefaultMaxConsumers; maxConsumers > 0 && maxc <= 0 {
-			maxc = maxConsumers
-		}
 		if maxc <= 0 || (selectedLimits.MaxConsumers > 0 && selectedLimits.MaxConsumers < maxc) {
 			maxc = selectedLimits.MaxConsumers
+		}
+		// Only apply default limits if the user specified neither stream nor account limit.
+		// An unlimited (-1) stream or account limit counts as not set, since that is also
+		// the default for accounts, so the default can't be opted out of per stream or account.
+		if maxConsumers := srvLim.DefaultMaxConsumers; maxConsumers > 0 && maxc <= 0 {
+			maxc = maxConsumers
 		}
 		if maxc > 0 && mset.numLimitableConsumers() >= maxc {
 			mset.mu.Unlock()

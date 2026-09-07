@@ -11611,7 +11611,10 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		// counts.
 		streamMaxc := sa.Config.MaxConsumers
 		tierMaxc := selectedLimits.MaxConsumers
-		if maxConsumers := s.getOpts().JetStreamLimits.DefaultMaxConsumers; maxConsumers > 0 && streamMaxc <= 0 {
+		// Only apply default limits if the user specified neither stream nor account limit.
+		// An unlimited (-1) stream or account limit counts as not set, since that is also
+		// the default for accounts, so the default can't be opted out of per stream or account.
+		if maxConsumers := s.getOpts().JetStreamLimits.DefaultMaxConsumers; maxConsumers > 0 && streamMaxc <= 0 && tierMaxc <= 0 {
 			streamMaxc = maxConsumers
 		}
 		if streamMaxc > 0 || tierMaxc > 0 {

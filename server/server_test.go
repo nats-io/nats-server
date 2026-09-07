@@ -2039,7 +2039,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	cs.Shutdown()
 
 	// Specifically for route test, wait at least reconnect interval before checking logs
-	time.Sleep(DEFAULT_ROUTE_RECONNECT)
+	time.Sleep(routeReconnectDelay)
 
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()

@@ -8418,7 +8418,7 @@ func TestNoRaceRoutePoolAndPerAccountConfigReload(t *testing.T) {
 						if strings.Contains(e, "No route for account") {
 							numErrs++
 						}
-					case <-time.After(DEFAULT_ROUTE_RECONNECT + 250*time.Millisecond):
+					case <-time.After(routeReconnectDelay + 500*time.Millisecond):
 						ok = true
 					}
 				}
