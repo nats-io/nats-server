@@ -131,5 +131,7 @@ func main() {
 		server.PrintAndDie(err.Error())
 	}
 
+	server.SdNotifyReady()
+
 	s.WaitForShutdown()
 }
