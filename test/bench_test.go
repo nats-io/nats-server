@@ -148,8 +148,12 @@ func Benchmark_____Pub32K_Payload(b *testing.B) {
 }
 
 func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
+	drainConnectionWithFlowControl(b, c, ch, expected, nil, 0)
+}
+
+func drainConnectionWithFlowControl(b *testing.B, c net.Conn, ch chan bool, expected int, credits chan struct{}, creditBytes int) {
 	buf := make([]byte, defaultRecBufSize)
-	bytes := 0
+	bytes, pendingCreditBytes := 0, 0
 
 	for {
 		c.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -159,6 +163,13 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 			break
 		}
 		bytes += n
+		if credits != nil {
+			pendingCreditBytes += n
+			for pendingCreditBytes >= creditBytes {
+				credits <- struct{}{}
+				pendingCreditBytes -= creditBytes
+			}
+		}
 		if bytes >= expected {
 			break
 		}
@@ -276,6 +287,10 @@ func benchDefaultOptionsForAccounts() *server.Options {
 	barAcc := server.NewAccount("$bar")
 	barAcc.AddStreamImport(fooAcc, "foo", "")
 	o.Accounts = []*server.Account{fooAcc, barAcc}
+	o.Users = []*server.User{
+		{Username: "$foo", Password: DefaultPass, Account: fooAcc},
+		{Username: "$bar", Password: DefaultPass, Account: barAcc},
+	}
 
 	return &o
 }
@@ -283,8 +298,9 @@ func benchDefaultOptionsForAccounts() *server.Options {
 func createClientWithAccount(b *testing.B, account, host string, port int) net.Conn {
 	c := createClientConn(b, host, port)
 	checkInfoMsg(b, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"account\":%q}\r\n", false, false, false, account)
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"user\":%q,\"pass\":%q}\r\n", false, false, false, account, DefaultPass)
 	sendProto(b, c, cs)
+	flushConnection(b, c)
 	return c
 }
 
@@ -296,6 +312,10 @@ func benchOptionsForServiceImports() *server.Options {
 	foo := server.NewAccount("$foo")
 	bar := server.NewAccount("$bar")
 	o.Accounts = []*server.Account{foo, bar}
+	o.Users = []*server.User{
+		{Username: "$foo", Password: DefaultPass, Account: foo},
+		{Username: "$bar", Password: DefaultPass, Account: bar},
+	}
 
 	return &o
 }
@@ -1059,8 +1079,27 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 	}
 
 	msgOp := fmt.Sprintf("MSG %s %d %d\r\n%s\r\n", subject, 9, len(payload), payload)
+	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
 	l := b.N / numPublishers
 	expected := len(msgOp) * l * numPublishers
+
+	// Keep the amount of data in flight bounded below the server's default
+	// max_pending limit. Without this, a large payload sent concurrently by
+	// all publishers can cause the benchmark subscriber to be closed as a
+	// slow consumer before its drain goroutine gets enough CPU time.
+	const (
+		creditTargetBytes = 256 * 1024
+		numCredits        = 128
+	)
+	batchMsgs := creditTargetBytes / len(sendOp)
+	if batchMsgs == 0 {
+		batchMsgs = 1
+	}
+	credits := make(chan struct{}, numCredits)
+	for i := 0; i < numCredits; i++ {
+		credits <- struct{}{}
+	}
+	creditBytes := batchMsgs * len(msgOp)
 
 	// Client connections and subscriptions. For fan in these are smaller then numPublishers.
 	clients := make([]chan bool, 0, numSubscribers)
@@ -1075,10 +1114,13 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 		subOp := fmt.Sprintf("SUB %s %d\r\n", subject, i)
 		sendProto(b, c, subOp)
 		flushConnection(b, c)
-		go drainConnection(b, c, ch, expected)
+		if i == 0 {
+			go drainConnectionWithFlowControl(b, c, ch, expected, credits, creditBytes)
+		} else {
+			go drainConnection(b, c, ch, expected)
+		}
 	}
 
-	sendOp := []byte(fmt.Sprintf("PUB %s %d\r\n%s\r\n", subject, len(payload), payload))
 	startCh := make(chan bool)
 
 	pubLoop := func(c net.Conn, ch chan bool) {
@@ -1090,12 +1132,16 @@ func doFanIn(b *testing.B, numServers, numPublishers, numSubscribers int, subjec
 		// Wait to start up actual sends.
 		<-startCh
 
-		for i := 0; i < l; i++ {
-			_, err := bw.Write(sendOp)
-			if err != nil {
-				b.Errorf("Received error on PUB write: %v\n", err)
-				return
+		for sent := 0; sent < l; {
+			<-credits
+			batch := min(batchMsgs, l-sent)
+			for i := 0; i < batch; i++ {
+				if _, err := bw.Write(sendOp); err != nil {
+					b.Errorf("Received error on PUB write: %v\n", err)
+					return
+				}
 			}
+			sent += batch
 		}
 		err := bw.Flush()
 		if err != nil {
