@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -1013,7 +1014,7 @@ func TestMaxControlLine(t *testing.T) {
 			err := c.parse(pub[:14])
 			switch test.shouldFail {
 			case true:
-				if !ErrorIs(err, ErrMaxControlLine) {
+				if !errors.Is(err, ErrMaxControlLine) {
 					t.Fatalf("Expected an error parsing longer than expected control line")
 				}
 			case false:
@@ -1027,7 +1028,7 @@ func TestMaxControlLine(t *testing.T) {
 			err = c.parse(pub)
 			switch test.shouldFail {
 			case true:
-				if !ErrorIs(err, ErrMaxControlLine) {
+				if !errors.Is(err, ErrMaxControlLine) {
 					t.Fatalf("Expected an error parsing longer than expected control line")
 				}
 			case false:
@@ -1084,7 +1085,7 @@ func TestMaxControlLineNonClientUpperBound(t *testing.T) {
 					err := c.parse(chunk2)
 					if off <= 0 && err != nil {
 						t.Fatalf("unexpected error on second chunk: %v", err)
-					} else if off > 0 && !ErrorIs(err, ErrMaxControlLine) {
+					} else if off > 0 && !errors.Is(err, ErrMaxControlLine) {
 						t.Fatalf("expected ErrMaxControlLine after oversized accumulation, got: %v", err)
 					}
 				})
