@@ -3005,6 +3005,9 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 		if !doPurge && preq != nil && o.isFilteredMatch(preq.Subject) {
 			doPurge, isWider = true, true
 			start = state.FirstSeq
+		} else if doPurge && preq != nil && preq.Subject != _EMPTY_ && !o.isFilterSubsetOf(preq.Subject) {
+			isWider = true
+			start = state.FirstSeq
 		}
 		o.mu.RUnlock()
 		if doPurge {
