@@ -10776,6 +10776,74 @@ func TestFileStoreAsyncFlushOnSkipMsgs(t *testing.T) {
 	}
 }
 
+func TestFileStoreCompressionHeaderCollision(t *testing.T) {
+	for _, size := range []int{7368035, 24145251} {
+		for _, hdr := range [][]byte{nil, []byte("NATS/1.0\r\nTest: value\r\n\r\n")} {
+			t.Run(fmt.Sprintf("Size=%d/Headers=%v", size, len(hdr) > 0), func(t *testing.T) {
+				testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+					cfg := StreamConfig{Name: "TEST", Storage: FileStorage}
+					fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+					require_NoError(t, err)
+					defer fs.Stop()
+
+					subj := "test"
+					msg := bytes.Repeat([]byte("a"), size-int(fileStoreMsgSize(subj, hdr, nil)))
+					_, _, err = fs.StoreMsg(subj, hdr, msg, 0)
+					require_NoError(t, err)
+					// Keep a following message to check after deletion.
+					_, _, err = fs.StoreMsg(subj, nil, []byte("next"), 0)
+					require_NoError(t, err)
+					require_NoError(t, fs.Stop())
+
+					// Reopen to force decoding from disk instead of reading cached messages.
+					fs, err = newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+					require_NoError(t, err)
+					defer fs.Stop()
+					sm, err := fs.LoadMsg(1, nil)
+					require_NoError(t, err)
+					require_Equal(t, sm.subj, subj)
+					require_True(t, bytes.Equal(sm.hdr, hdr))
+					require_True(t, bytes.Equal(sm.msg, msg))
+					removed, err := fs.RemoveMsg(1)
+					require_NoError(t, err)
+					require_True(t, removed)
+					sm, err = fs.LoadMsg(2, nil)
+					require_NoError(t, err)
+					require_Equal(t, string(sm.msg), "next")
+				})
+			})
+		}
+	}
+}
+
+func TestFileStoreDecodeCorruptBlock(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir(), Compression: S2Compression}, StreamConfig{Name: "TEST", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Create a large valid S2 compressed block
+	msg := make([]byte, 25*1024*1024)
+	_, err = crand.Read(msg)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("test", nil, msg, 0)
+	require_NoError(t, err)
+	mb := fs.getFirstBlock()
+	require_NoError(t, mb.flushPendingMsgs())
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	require_NoError(t, mb.recompressOnDiskIfNeeded())
+	compressed, err := mb.loadBlock(nil)
+	require_NoError(t, err)
+
+	// Corrupt a byte in the S2 data so decompression fails.
+	// mb.decode will try to interpret this block as uncompressed,
+	// but that will fail as well because of checksum mismatch.
+	compressed[len(compressed)/2] ^= 0xff
+	_, _, err = mb.decode(compressed)
+	require_Error(t, err)
+	require_True(t, errors.Is(err, s2.ErrCRC))
+}
+
 func TestFileStoreCompressionAfterTruncate(t *testing.T) {
 	tests := []struct {
 		title  string
