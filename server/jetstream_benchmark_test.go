@@ -36,12 +36,14 @@ import (
 
 func BenchmarkJetStreamConsume(b *testing.B) {
 	const (
-		verbose          = false
-		streamName       = "S"
-		subject          = "s"
-		seed             = 42
-		publishTimeout   = 30 * time.Second
-		PublishBatchSize = 10000
+		verbose        = false
+		streamName     = "S"
+		subject        = "s"
+		seed           = 42
+		publishTimeout = 30 * time.Second
+		// Publishing is setup for this benchmark. Keep batches small enough to
+		// avoid overwhelming replicated streams on slower machines.
+		publishBatchSize = 1000
 	)
 
 	runSyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string) (int, int, int) {
@@ -335,7 +337,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 								nc, _ = jsClientConnectURL(b, connectURL)
 							}
 
-							js, err := nc.JetStream(nats.PublishAsyncMaxPending(PublishBatchSize))
+							js, err := nc.JetStream(nats.PublishAsyncMaxPending(publishBatchSize))
 							if err != nil {
 								b.Fatalf("Failed to create JetStream context: %v", err)
 							}
@@ -350,15 +352,15 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 								if err != nil {
 									b.Fatalf("Failed to publish: %s", err)
 								}
-								// Limit outstanding published messages to PublishBatchSize
-								if i%PublishBatchSize == 0 || i == b.N {
+								// Drain each batch before publishing more messages.
+								if i%publishBatchSize == 0 || i == b.N {
 									select {
 									case <-js.PublishAsyncComplete():
 										if verbose {
 											b.Logf("Published %d/%d messages", i, b.N)
 										}
 									case <-time.After(publishTimeout):
-										b.Fatalf("Publish timed out")
+										b.Fatalf("Publish timed out with %d acknowledgements pending after publishing %d/%d messages", js.PublishAsyncPending(), i, b.N)
 									}
 								}
 							}
