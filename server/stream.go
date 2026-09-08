@@ -5588,26 +5588,33 @@ func (mset *stream) purgeMsgIds() {
 
 // storeMsgId will store the message id for duplicate detection.
 func (mset *stream) storeMsgId(dde *ddentry) {
+	mset.cfgMu.RLock()
+	duplicates := mset.cfg.Duplicates
+	mset.cfgMu.RUnlock()
+	// Zero means disabled.
+	if duplicates <= 0 {
+		return
+	}
 	mset.ddMu.Lock()
 	defer mset.ddMu.Unlock()
 	mset.storeMsgIdLocked(dde)
 }
 
 // storeMsgIdLocked will store the message id for duplicate detection.
+// The caller must have checked that the stream is tracking duplicates
+// (mset.cfg.Duplicates > 0) under either mset.mu or mset.cfgMu.
 // mset.ddMu lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
-	// Zero means disabled.
-	if mset.cfg.Duplicates <= 0 {
-		return
-	}
-
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
 	mset.ddmap[dde.id] = dde
 	mset.ddarr = append(mset.ddarr, dde)
 	if mset.ddtmr == nil {
-		mset.ddtmr = time.AfterFunc(mset.cfg.Duplicates, mset.purgeMsgIds)
+		mset.cfgMu.RLock()
+		window := mset.cfg.Duplicates
+		mset.cfgMu.RUnlock()
+		mset.ddtmr = time.AfterFunc(window, mset.purgeMsgIds)
 	}
 }
 
@@ -7354,7 +7361,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// If we have a msgId make sure to save.
 	// This will replace our estimate from the cluster layer if we are clustered.
-	if msgId != _EMPTY_ {
+	if msgId != _EMPTY_ && mset.cfg.Duplicates > 0 {
 		mset.ddMu.Lock()
 		if isClustered && isLeader && mset.ddmap != nil {
 			if dde := mset.ddmap[msgId]; dde != nil {
