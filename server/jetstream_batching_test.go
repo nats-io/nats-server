@@ -2126,6 +2126,269 @@ func TestJetStreamAtomicBatchPublishSingleServerRecovery(t *testing.T) {
 	}
 }
 
+func TestJetStreamAtomicBatchStoreReadyForCommitSyncs(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            FileStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.jsa.mu.RLock()
+	storeDir := mset.jsa.storeDir
+	mset.jsa.mu.RUnlock()
+
+	store, err := newBatchStore(mset, "durable-staging", 1, FileStorage, storeDir, "TEST")
+	require_NoError(t, err)
+	defer store.Delete(true)
+
+	fs := store.(*fileStore)
+	require_True(t, fs.fcfg.AsyncFlush)
+	require_True(t, fs.syncOnFlush.Load())
+
+	_, _, err = store.StoreMsg("foo", nil, []byte("payload"), 0)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	blks := append([]*msgBlock(nil), fs.blks...)
+	fs.mu.RUnlock()
+	require_NotEqual(t, len(blks), 0)
+
+	var pendingOrDirty bool
+	for _, mb := range blks {
+		mb.mu.RLock()
+		pendingOrDirty = pendingOrDirty || mb.pendingWriteSizeLocked() > 0 || mb.needSync
+		mb.mu.RUnlock()
+	}
+	require_True(t, pendingOrDirty)
+
+	b := &atomicBatch{timer: time.NewTimer(time.Minute), store: store}
+	require_True(t, b.readyForCommit() == nil)
+
+	for _, mb := range blks {
+		mb.mu.RLock()
+		pending, needsSync := mb.pendingWriteSizeLocked(), mb.needSync
+		mb.mu.RUnlock()
+		require_Equal(t, pending, 0)
+		require_False(t, needsSync)
+	}
+}
+
+func TestJetStreamAtomicBatchPublishFinalSyncState(t *testing.T) {
+	type result struct {
+		responseErr     error
+		trace           MsgTraceJetStream
+		traceBeforeSync bool
+	}
+	test := func(t *testing.T, mutate func(*stream, *fileStore) func()) result {
+		storeDir := t.TempDir()
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			jetstream: {
+				store_dir: %q
+				sync_interval: always
+			}
+		`, storeDir)))
+		s, _ := RunServerWithConfig(conf)
+		defer s.Shutdown()
+
+		nc, _ := jsClientConnect(t, s)
+		defer nc.Close()
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"state.*"},
+			Storage:            FileStorage,
+			Replicas:           1,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		fs := mset.store.(*fileStore)
+
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		traceSub := natsSubSync(t, nc, nats.NewInbox())
+		require_NoError(t, nc.Flush())
+
+		first := nats.NewMsg("state.a")
+		first.Header.Set(JSBatchId, "sync-state")
+		first.Header.Set(JSBatchSeq, "1")
+		require_NoError(t, nc.PublishMsg(first))
+		require_NoError(t, nc.Flush())
+
+		fs.syncMu.Lock()
+		locked := true
+		defer func() {
+			if locked {
+				fs.syncMu.Unlock()
+			}
+		}()
+		commit := nats.NewMsg("state.b")
+		commit.Reply = reply
+		commit.Header.Set(JSBatchId, "sync-state")
+		commit.Header.Set(JSBatchSeq, "2")
+		commit.Header.Set(JSBatchCommit, "1")
+		commit.Header.Set(MsgTraceDest, traceSub.Subject)
+		require_NoError(t, nc.PublishMsg(commit))
+
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			mset.mu.RLock()
+			lseq := mset.lseq
+			mset.mu.RUnlock()
+			if lseq != 2 || !fs.syncOnFlush.Load() {
+				return fmt.Errorf("atomic batch has not reached final sync")
+			}
+			return nil
+		})
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		batches.mu.Lock()
+		batch := batches.atomic["sync-state"]
+		batches.mu.Unlock()
+		require_NotNil(t, batch)
+		staging := batch.store.(*fileStore)
+		staging.mu.RLock()
+		stagingBlocks := append([]*msgBlock(nil), staging.blks...)
+		staging.mu.RUnlock()
+		require_NotEqual(t, len(stagingBlocks), 0)
+		for _, mb := range stagingBlocks {
+			mb.mu.RLock()
+			pending, needsSync := mb.pendingWriteSizeLocked(), mb.needSync
+			mb.mu.RUnlock()
+			require_Equal(t, pending, 0)
+			require_False(t, needsSync)
+		}
+		_, ackErr := sub.NextMsg(50 * time.Millisecond)
+		require_Error(t, ackErr, nats.ErrTimeout)
+		traceMsg, traceErr := traceSub.NextMsg(50 * time.Millisecond)
+		traceBeforeSync := traceErr == nil
+		if traceErr != nil {
+			require_Error(t, traceErr, nats.ErrTimeout)
+		}
+		cleanup := mutate(mset, fs)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		fs.syncMu.Unlock()
+		locked = false
+		if traceMsg == nil {
+			traceMsg = natsNexMsg(t, traceSub, time.Second)
+		}
+		var traceEvent MsgTraceEvent
+		require_NoError(t, json.Unmarshal(traceMsg.Data, &traceEvent))
+		jsTrace := traceEvent.JetStream()
+		require_NotNil(t, jsTrace)
+		response, err := sub.NextMsg(250 * time.Millisecond)
+		if err == nil {
+			var ack JSPubAckResponse
+			require_NoError(t, json.Unmarshal(response.Data, &ack))
+			require_True(t, ack.Error == nil)
+			require_Equal(t, ack.Sequence, 2)
+			require_Equal(t, ack.BatchId, "sync-state")
+			require_Equal(t, ack.BatchSize, 2)
+		}
+		require_True(t, fs.syncAlways.Load())
+		require_False(t, fs.syncOnFlush.Load())
+		return result{err, *jsTrace, traceBeforeSync}
+	}
+
+	t.Run("RespondsAfterSync", func(t *testing.T) {
+		result := test(t, func(_ *stream, _ *fileStore) func() {
+			return nil
+		})
+		require_NoError(t, result.responseErr)
+		require_False(t, result.traceBeforeSync)
+		require_Equal(t, result.trace.Error, _EMPTY_)
+	})
+
+	t.Run("RecordsSyncFailure", func(t *testing.T) {
+		writeErr := errors.New("atomic batch final sync failed")
+		var mset *stream
+		result := test(t, func(s *stream, fs *fileStore) func() {
+			mset = s
+			fs.mu.RLock()
+			lmb := fs.lmb
+			fs.mu.RUnlock()
+			lmb.mu.Lock()
+			lmb.werr = writeErr
+			lmb.mu.Unlock()
+			return nil
+		})
+		require_Error(t, result.responseErr, nats.ErrTimeout)
+		require_False(t, result.traceBeforeSync)
+		require_Equal(t, result.trace.Error, writeErr.Error())
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if !errors.Is(mset.getWriteErr(), writeErr) {
+				return errors.New("stream did not record final sync failure")
+			}
+			return nil
+		})
+	})
+}
+
+func TestJetStreamAtomicBatchPublishTraceOnlyNoAck(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			sync_interval: always
+		}
+	`, storeDir)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"state.*"},
+		Storage:            FileStorage,
+		Replicas:           1,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	replySub := natsSubSync(t, nc, nats.NewInbox())
+	traceSub := natsSubSync(t, nc, nats.NewInbox())
+	require_NoError(t, nc.Flush())
+
+	commit := nats.NewMsg("state.a")
+	commit.Reply = replySub.Subject
+	commit.Header.Set(JSBatchId, "trace-only")
+	commit.Header.Set(JSBatchSeq, "1")
+	commit.Header.Set(JSBatchCommit, "1")
+	commit.Header.Set(MsgTraceDest, traceSub.Subject)
+	commit.Header.Set(MsgTraceOnly, "true")
+	require_NoError(t, nc.PublishMsg(commit))
+
+	traceMsg := natsNexMsg(t, traceSub, time.Second)
+	var traceEvent MsgTraceEvent
+	require_NoError(t, json.Unmarshal(traceMsg.Data, &traceEvent))
+	jsTrace := traceEvent.JetStream()
+	require_NotNil(t, jsTrace)
+	require_Equal(t, jsTrace.Error, _EMPTY_)
+
+	_, err = replySub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	streamInfo, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, streamInfo.State.Msgs, 0)
+}
+
 func TestJetStreamAtomicBatchPublishSingleServerRecoveryCommitEob(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
