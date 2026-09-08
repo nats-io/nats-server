@@ -474,7 +474,7 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 		seq := hdr.Sequence
 		if seq == 0 {
 			// Sentinel "end of backup" if all fields are zero.
-			if hdr.Timestamp == 0 && hdr.HeaderSize == 0 && hdr.PayloadSize == 0 {
+			if hdr.Name == _EMPTY_ && hdr.Timestamp == 0 && hdr.HeaderSize == 0 && hdr.PayloadSize == 0 {
 				eob = true
 				break
 			}
