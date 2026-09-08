@@ -25930,6 +25930,67 @@ func TestJetStreamSourceConsumerRetryUsesFreshReplySubject(t *testing.T) {
 	})
 }
 
+// https://github.com/nats-io/nats-server/issues/8558
+func TestJetStreamSourceConsumerUsesScopedAPIReplySubject(t *testing.T) {
+	for _, test := range []struct {
+		kind     string
+		name     string
+		durable  bool
+		consumer string
+	}{
+		{"source", "consumer create", false, ""},
+		{"source", "consumer reset", true, "SOURCE_CONSUMER"},
+		{"mirror", "consumer create", false, ""},
+		{"mirror", "consumer reset", true, "MIRROR_CONSUMER"},
+	} {
+		t.Run(test.kind+"/"+test.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			o := *s.getOpts()
+			o.FeatureFlags = map[string]bool{FeatureFlagJsAPIReplyFormatV2: true}
+			s.setOpts(&o)
+
+			nc, _ := jsClientConnect(t, s)
+			defer nc.Close()
+
+			const apiPrefix = "$JS.CLOUD.API"
+			reqCh := make(chan *nats.Msg, 1)
+			_, err := nc.Subscribe(apiPrefix+".CONSUMER.>", func(m *nats.Msg) { reqCh <- m })
+			require_NoError(t, err)
+			require_NoError(t, nc.Flush())
+
+			source := &StreamSource{
+				Name:     "ORIGIN",
+				External: &ExternalStream{ApiPrefix: apiPrefix},
+			}
+			if test.durable {
+				source.Consumer = &StreamConsumerSource{Name: test.consumer, DeliverSubject: "sync"}
+			}
+			cfg := &StreamConfig{Name: "SOURCE", Storage: MemoryStorage}
+			if test.kind == "mirror" {
+				cfg.Mirror = source
+			} else {
+				cfg.Sources = []*StreamSource{source}
+			}
+			addStream(t, nc, cfg)
+
+			req := require_ChanRead(t, reqCh, time.Second)
+			consumer := test.consumer
+			if !test.durable {
+				var ccr CreateConsumerRequest
+				require_NoError(t, json.Unmarshal(req.Data, &ccr))
+				consumer = ccr.Config.Name
+			}
+			prefix := fmt.Sprintf("$JSC.R.CLOUD.%s.ORIGIN.%s.", getHash(globalAccountName), consumer)
+			if !strings.HasPrefix(req.Reply, prefix) {
+				t.Fatalf("expected scoped reply prefix %q, got %q", prefix, req.Reply)
+			}
+			require_Equal(t, len(strings.Split(req.Reply, ".")), 7)
+		})
+	}
+}
+
 func TestJetStreamMirrorRetriesOnSeqAlreadySeenMismatch(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

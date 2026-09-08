@@ -13692,8 +13692,18 @@ func syncReplySubject() string {
 	return syncSubject("$JSC.R")
 }
 
-func infoReplySubject() string {
-	return syncSubject("$JSC.R")
+// infoReplySubject returns a reply subject for an internally-issued JetStream
+// API request. With js_api_reply_v2 enabled, it scopes the subject to the
+// requested API resource so leafnode permissions do not need to grant access
+// to every opaque $JSC.R reply.
+func (s *Server) infoReplySubject(domain, account, stream, consumer string) string {
+	if !s.getOpts().getFeatureFlag(FeatureFlagJsAPIReplyFormatV2) {
+		return syncSubject("$JSC.R")
+	}
+	if domain == _EMPTY_ {
+		domain = "_"
+	}
+	return syncSubject(fmt.Sprintf("$JSC.R.%s.%s.%s.%s", domain, getHash(account), stream, consumer))
 }
 
 func syncAckSubject() string {
