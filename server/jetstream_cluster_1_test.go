@@ -4585,7 +4585,7 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 }
 
 func TestJetStreamClusterAccountUsageAfterServerRemove(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 4)
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
 	defer c.shutdown()
 
 	ml := c.leader()
