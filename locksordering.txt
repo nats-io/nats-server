@@ -31,6 +31,13 @@ inconsistent observer states.
     jscmMu -> stream.clsMu
     jscmMu -> RaftNode
 
+The "consumersMu" lock protects the consumer name registry on a stream. Name-only lookups
+take this lock without the stream lock. Registry mutations hold the stream lock first and,
+when updating the consumer list and subscription index, acquire clsMu next. Reading a
+consumer's signal subscriptions may then acquire the consumer lock.
+
+    stream -> consumersMu -> clsMu -> consumer
+
 The "clsMu" lock protects the consumer list on a stream, used for signalling consumer activity.
 
     stream -> clsMu

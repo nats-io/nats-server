@@ -25226,6 +25226,59 @@ func TestJetStreamRemoveConsumerOnlyRemovesMatchingInstance(t *testing.T) {
 	require_Len(t, len(mset.cList), 0)
 }
 
+func TestJetStreamConsumerLookupIndependentOfStreamLock(t *testing.T) {
+	o := &consumer{name: "dur"}
+	mset := &stream{consumers: map[string]*consumer{o.name: o}}
+
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+
+	result := make(chan *consumer, 1)
+	go func() {
+		result <- mset.lookupConsumer(o.name)
+	}()
+
+	select {
+	case got := <-result:
+		require_Equal(t, got, o)
+	case <-time.After(time.Second):
+		t.Fatal("consumer lookup blocked on stream lock")
+	}
+}
+
+func TestJetStreamConsumerLookupConcurrentMutation(t *testing.T) {
+	mset := &stream{consumers: make(map[string]*consumer)}
+
+	ready, done := make(chan struct{}), make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(ready)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				mset.lookupConsumer("dur")
+			}
+		}
+	}()
+	<-ready
+
+	for range 10_000 {
+		o := &consumer{name: "dur"}
+		mset.mu.Lock()
+		mset.setConsumer(o)
+		mset.mu.Unlock()
+		mset.mu.Lock()
+		mset.removeConsumer(o)
+		mset.mu.Unlock()
+	}
+	close(done)
+	wg.Wait()
+}
+
 // https://github.com/nats-io/nats-server/issues/8322
 func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
 	sd := t.TempDir()

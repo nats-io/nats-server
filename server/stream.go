@@ -537,6 +537,9 @@ type stream struct {
 	// For republishing.
 	tr *subjectTransform
 
+	// Protects the consumer name registry; mutations hold this and the stream lock.
+	consumersMu sync.RWMutex
+
 	// For processing consumers without main stream lock.
 	clsMu sync.RWMutex
 	cList []*consumer                    // Consumer list.
@@ -8423,9 +8426,11 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 	}
 	// Preserve the consumers if it's marked offline, to have them remain queryable.
 	if deleteFlag || offlineReason == _EMPTY_ {
+		mset.consumersMu.Lock()
 		mset.clsMu.Lock()
 		mset.consumers, mset.cList, mset.csl = nil, nil, nil
 		mset.clsMu.Unlock()
+		mset.consumersMu.Unlock()
 	}
 
 	// Check if we are a mirror.
@@ -8678,6 +8683,9 @@ func (mset *stream) numConsumers() int {
 
 // Lock should be held.
 func (mset *stream) setConsumer(o *consumer) {
+	mset.consumersMu.Lock()
+	defer mset.consumersMu.Unlock()
+
 	if _, ok := mset.consumers[o.name]; ok {
 		return
 	}
@@ -8699,6 +8707,9 @@ func (mset *stream) setConsumer(o *consumer) {
 
 // Lock should be held.
 func (mset *stream) removeConsumer(o *consumer) {
+	mset.consumersMu.Lock()
+	defer mset.consumersMu.Unlock()
+
 	if c, ok := mset.consumers[o.name]; !ok || c != o {
 		return
 	}
@@ -8766,8 +8777,8 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 
 // lookupConsumer will retrieve a consumer by name.
 func (mset *stream) lookupConsumer(name string) *consumer {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	mset.consumersMu.RLock()
+	defer mset.consumersMu.RUnlock()
 	return mset.consumers[name]
 }
 
