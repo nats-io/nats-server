@@ -13078,7 +13078,7 @@ func (mset *stream) processCatchupMsg(msg []byte) (uint64, error) {
 	mset.lseq = seq
 
 	// Check for MsgId and if we have one here make sure to update our internal map.
-	if len(hdr) > 0 {
+	if len(hdr) > 0 && mset.cfg.Duplicates > 0 {
 		if msgId := getMsgId(hdr); msgId != _EMPTY_ {
 			mset.ddMu.Lock()
 			mset.storeMsgIdLocked(&ddentry{msgId, seq, ts})

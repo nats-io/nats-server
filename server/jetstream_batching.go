@@ -442,13 +442,19 @@ func copyCounterSources(src CounterSources) CounterSources {
 
 func (diff *batchStagedDiff) commit(mset *stream) {
 	if len(diff.msgIds) > 0 {
-		ts := time.Now().UnixNano()
-		mset.ddMu.Lock()
-		for msgId := range diff.msgIds {
-			// We stage with zero, and will update in processJetStreamMsg once we know the sequence.
-			mset.storeMsgIdLocked(&ddentry{msgId, 0, ts})
+		// We don't hold mset.mu here, so read the config under cfgMu.
+		mset.cfgMu.RLock()
+		duplicates := mset.cfg.Duplicates
+		mset.cfgMu.RUnlock()
+		if duplicates > 0 {
+			ts := time.Now().UnixNano()
+			mset.ddMu.Lock()
+			for msgId := range diff.msgIds {
+				// We stage with zero, and will update in processJetStreamMsg once we know the sequence.
+				mset.storeMsgIdLocked(&ddentry{msgId, 0, ts})
+			}
+			mset.ddMu.Unlock()
 		}
-		mset.ddMu.Unlock()
 	}
 
 	// Store running totals for counters, we could have multiple counter increments proposed, but not applied yet.
