@@ -25,6 +25,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -151,12 +152,36 @@ func drainConnection(b *testing.B, c net.Conn, ch chan bool, expected int) {
 	drainConnectionWithFlowControl(b, c, ch, expected, nil, 0)
 }
 
+func drainConnectionAfter(b *testing.B, c net.Conn, ch chan bool, expected int, deadlineAfter <-chan struct{}) {
+	drainConnectionWithFlowControlAfter(b, c, ch, expected, nil, 0, deadlineAfter)
+}
+
 func drainConnectionWithFlowControl(b *testing.B, c net.Conn, ch chan bool, expected int, credits chan struct{}, creditBytes int) {
+	drainConnectionWithFlowControlAfter(b, c, ch, expected, credits, creditBytes, nil)
+}
+
+func drainConnectionWithFlowControlAfter(b *testing.B, c net.Conn, ch chan bool, expected int, credits chan struct{}, creditBytes int, deadlineAfter <-chan struct{}) {
 	buf := make([]byte, defaultRecBufSize)
 	bytes, pendingCreditBytes := 0, 0
+	deadlineActive := deadlineAfter == nil
+	if !deadlineActive {
+		go func() {
+			<-deadlineAfter
+			c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		}()
+	}
 
 	for {
-		c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if !deadlineActive {
+			select {
+			case <-deadlineAfter:
+				deadlineActive = true
+			default:
+			}
+		}
+		if deadlineActive {
+			c.SetReadDeadline(time.Now().Add(30 * time.Second))
+		}
 		n, err := c.Read(buf)
 		if err != nil {
 			b.Errorf("Error on read: %v\n", err)
@@ -1270,6 +1295,8 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	}
 
 	ch := make(chan bool)
+	publishersDone := make(chan struct{})
+	var publishers sync.WaitGroup
 	var msgOp string
 	var expected int
 	l := b.N / numPublishers
@@ -1280,7 +1307,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	// Last message sent to end.test
 	lastMsg := "MSG end.test 1 2\r\nok\r\n"
 	expected += len(lastMsg) * numPublishers
-	go drainConnection(b, sub, ch, expected)
+	go drainConnectionAfter(b, sub, ch, expected, publishersDone)
 
 	sendOp := []byte(fmt.Sprintf("PUB foo %d\r\n%s\r\n", len(payload), payload))
 	startCh := make(chan bool)
@@ -1288,6 +1315,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 	lastMsgSendOp := []byte("PUB end.test 2\r\nok\r\n")
 
 	pubLoop := func(c net.Conn, ch chan bool) {
+		defer publishers.Done()
 		bw := bufio.NewWriterSize(c, defaultSendBufSize)
 
 		// Signal we are ready
@@ -1321,9 +1349,14 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 		flushConnection(b, c)
 		ch := make(chan bool)
 
+		publishers.Add(1)
 		go pubLoop(c, ch)
 		<-ch
 	}
+	go func() {
+		publishers.Wait()
+		close(publishersDone)
+	}()
 
 	// To report the number of bytes:
 	// from publisher to server on cluster A:
@@ -1344,6 +1377,7 @@ func gatewaysBench(b *testing.B, optimisticMode bool, payload string, numPublish
 
 	// Wait for end of test
 	<-ch
+	<-publishersDone
 
 	b.StopTimer()
 }
