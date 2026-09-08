@@ -16433,3 +16433,33 @@ func TestFileStoreEraseMsgCacheExpiredDuringTombstoneWrite(t *testing.T) {
 	}
 	fs.Stop()
 }
+
+// Delete renames the store directory, but syncBlocks fsyncs outside fs.mu, so
+// stopping the store must wait for an in-flight sync before the directory can
+// be moved away underneath it.
+func TestFileStoreStopWaitsForInflightSync(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), SyncInterval: time.Hour},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Delete(true)
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+	require_NoError(t, err)
+
+	// Stand in for a running syncBlocks.
+	fs.syncMu.Lock()
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- fs.Delete(true) }()
+
+	select {
+	case <-deleteDone:
+		t.Fatal("Delete did not wait for the in-flight sync")
+	case <-time.After(100 * time.Millisecond):
+	}
+	_, err = os.Stat(fs.fcfg.StoreDir)
+	require_NoError(t, err)
+
+	fs.syncMu.Unlock()
+	require_NoError(t, <-deleteDone)
+}

@@ -5583,6 +5583,9 @@ func (fs *fileStore) skipMsg(seq uint64, noInterest bool) (uint64, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	if fs.closed.Load() {
+		return 0, ErrStoreClosed
+	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		return 0, err
@@ -5639,6 +5642,9 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	if fs.closed.Load() {
+		return ErrStoreClosed
+	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		return err
@@ -8201,6 +8207,12 @@ func (fs *fileStore) syncBlocks() {
 	fs.mu.Unlock()
 
 	storeFsWerr := func(err error) {
+		// A file or directory that no longer exists was removed by a
+		// concurrent purge, compact or delete. Syncing it is moot, not a
+		// write failure.
+		if os.IsNotExist(err) {
+			return
+		}
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		fs.setWriteErr(err)
@@ -10289,6 +10301,9 @@ func compareFn(subject string) func(string, string) bool {
 // PurgeEx will remove messages based on subject filters, sequence and number of messages to keep.
 // Will return the number of purged messages.
 func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint64, err error) {
+	if fs.isClosed() {
+		return 0, ErrStoreClosed
+	}
 	// sequence == 1 means "purge up to but not including 1", a no-op.
 	if sequence == 1 {
 		return 0, nil
@@ -12689,6 +12704,14 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	// We should update the upper usage layer on a stop.
 	cb, bytes := fs.scb, int64(fs.state.Bytes)
 	fs.mu.Unlock()
+
+	// Wait for any in-flight syncBlocks to finish now that we are marked
+	// closed. This ensures a Delete can't remove or rename directories from
+	// underneath a running sync. Any sync starting after this sees closed and
+	// returns immediately. Must not hold fs.mu here, syncBlocks acquires
+	// syncMu before fs.mu.
+	fs.syncMu.Lock()
+	fs.syncMu.Unlock() //nolint:staticcheck // Only waiting for in-flight syncBlocks.
 
 	fs.cmu.Lock()
 	var _cfs [256]ConsumerStore
