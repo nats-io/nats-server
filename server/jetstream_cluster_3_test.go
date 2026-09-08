@@ -5000,28 +5000,6 @@ func TestJetStreamClusterSnapshotAndRestoreWithHealthz(t *testing.T) {
 	require_Equal(t, status.StatusCode, 200)
 }
 
-func TestJetStreamClusterBinaryStreamSnapshotCapability(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "NATS", 3)
-	defer c.shutdown()
-
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
-
-	mset, err := c.streamLeader(globalAccountName, "TEST").GlobalAccount().lookupStream("TEST")
-	require_NoError(t, err)
-
-	if !mset.supportsBinarySnapshot() {
-		t.Fatalf("Expected to signal that we could support binary stream snapshots")
-	}
-}
-
 func TestJetStreamClusterBadEncryptKey(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterEncryptedTempl, "JSC", 3)
 	defer c.shutdown()

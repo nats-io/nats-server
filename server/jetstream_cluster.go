@@ -12240,37 +12240,8 @@ func encodeStreamMsgAllowCompressAndBatch(subject, reply string, hdr, msg []byte
 	return buf
 }
 
-// Determine if all peers in our set support the binary snapshot.
-func (mset *stream) supportsBinarySnapshot() bool {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
-	return mset.supportsBinarySnapshotLocked()
-}
-
-// Determine if all peers in our set support the binary snapshot.
-// Lock should be held.
-func (mset *stream) supportsBinarySnapshotLocked() bool {
-	s, n := mset.srv, mset.node
-	if s == nil || n == nil {
-		return false
-	}
-	// Grab our peers and walk them to make sure we can all support binary stream snapshots.
-	id, peers := n.ID(), n.Peers()
-	for _, p := range peers {
-		if p.ID == id {
-			// We know we support ourselves.
-			continue
-		}
-		// Since release 2.10.16 only deny if we know the other node does not support.
-		if sir, ok := s.nodeToInfo.Load(p.ID); ok && sir != nil && !sir.(nodeInfo).binarySnapshots {
-			return false
-		}
-	}
-	return true
-}
-
 // StreamSnapshot is used for snapshotting and out of band catch up in clustered mode.
-// Legacy, replace with binary stream snapshots.
+// Legacy, only used for decoding old snapshots, see decodeStreamSnapshot.
 type streamSnapshot struct {
 	Msgs     uint64   `json:"messages"`
 	Bytes    uint64   `json:"bytes"`
@@ -12310,39 +12281,19 @@ func (mset *stream) stateSnapshot() []byte {
 }
 
 // Grab a snapshot of a stream for clustered mode.
+// Snapshots always use the binary encoding, which all supported server
+// versions (2.10.0+) can decode. The legacy JSON encoding remains supported
+// on the decode side only, see decodeStreamSnapshot.
 // Lock should be held.
 func (mset *stream) stateSnapshotLocked() []byte {
-	// Decide if we can support the new style of stream snapshots.
-	if mset.supportsBinarySnapshotLocked() {
-		// Only include the sourcing state once enabled, a peer that doesn't accept
-		// the encoding rejects the whole snapshot.
-		withSources := mset.srv.getOpts().getFeatureFlag(FeatureFlagJsSnapshotSources)
-		snap, err := mset.store.EncodedStreamState(mset.getCLFS(), withSources)
-		if err != nil {
-			return nil
-		}
-		return snap
+	// Only include the sourcing state once enabled, a peer that doesn't accept
+	// the encoding rejects the whole snapshot.
+	withSources := mset.srv.getOpts().getFeatureFlag(FeatureFlagJsSnapshotSources)
+	snap, err := mset.store.EncodedStreamState(mset.getCLFS(), withSources)
+	if err != nil {
+		return nil
 	}
-
-	// Older v1 version with deleted as a sorted []uint64.
-	// For a stream with millions or billions of interior deletes, this will be huge.
-	// Now that all server versions 2.10.+ support binary snapshots, we should never fall back.
-	assert.Unreachable("Legacy JSON stream snapshot used", map[string]any{
-		"stream":  mset.cfg.Name,
-		"account": mset.acc.Name,
-	})
-
-	state := mset.store.State()
-	snap := &streamSnapshot{
-		Msgs:     state.Msgs,
-		Bytes:    state.Bytes,
-		FirstSeq: state.FirstSeq,
-		LastSeq:  state.LastSeq,
-		Failed:   mset.getCLFS(),
-		Deleted:  state.Deleted,
-	}
-	b, _ := json.Marshal(snap)
-	return b
+	return snap
 }
 
 // To warn when we are getting too far behind from what has been proposed vs what has been committed.
