@@ -4937,6 +4937,22 @@ func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
 	return false
 }
 
+// Check if all consumer filter subjects are subsets of the candidate subject.
+// Lock should be held.
+func (o *consumer) isFilterSubsetOf(subj string) bool {
+	if len(o.subjf) == 0 {
+		return false
+	}
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+	for _, filter := range o.subjf {
+		if !isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
+			return false
+		}
+	}
+	return true
+}
+
 var (
 	errMaxAckPending = errors.New("max ack pending reached")
 	errBadConsumer   = errors.New("consumer not valid")
