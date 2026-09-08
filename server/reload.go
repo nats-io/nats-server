@@ -899,6 +899,16 @@ func (o *profBlockRateReload) Apply(s *Server) {
 	s.Noticef("Reloaded: prof_block_rate = %v", o.newValue)
 }
 
+type profMutexRateReload struct {
+	noopOption
+	newValue int
+}
+
+func (o *profMutexRateReload) Apply(s *Server) {
+	s.setMutexProfileRate(o.newValue)
+	s.Noticef("Reloaded: prof_mutex_rate = %v", o.newValue)
+}
+
 type leafNodeOption struct {
 	noopOption
 	tlsFirstChanged    bool
@@ -1961,6 +1971,12 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 			old := oldValue.(int)
 			if new != old {
 				diffOpts = append(diffOpts, &profBlockRateReload{newValue: new})
+			}
+		case "profmutexrate":
+			new := newValue.(int)
+			old := oldValue.(int)
+			if new != old {
+				diffOpts = append(diffOpts, &profMutexRateReload{newValue: new})
 			}
 		case "configdigest":
 			// skip changes in config digest, this is handled already while

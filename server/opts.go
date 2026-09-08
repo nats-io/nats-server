@@ -488,6 +488,7 @@ type Options struct {
 	MQTT                       MQTTOpts          `json:"-"`
 	ProfPort                   int               `json:"-"`
 	ProfBlockRate              int               `json:"-"`
+	ProfMutexRate              int               `json:"-"`
 	PidFile                    string            `json:"-"`
 	PortsFileDir               string            `json:"-"`
 	LogFile                    string            `json:"-"`
@@ -1341,6 +1342,8 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		o.ProfPort = int(v.(int64))
 	case "prof_block_rate":
 		o.ProfBlockRate = int(v.(int64))
+	case "prof_mutex_rate":
+		o.ProfMutexRate = int(v.(int64))
 	case "max_control_line":
 		if v.(int64) > 1<<31-1 {
 			err := &configErr{tk, fmt.Sprintf("%s value is too big", k)}

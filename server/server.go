@@ -2308,9 +2308,10 @@ func (s *Server) Start() {
 	if opts.ProfPort != 0 {
 		s.StartProfiler()
 	} else {
-		// It's still possible to access this profile via a SYS endpoint, so set
-		// this anyway. (Otherwise StartProfiler would have called it.)
+		// It's still possible to access these profiles via a SYS endpoint, so
+		// set these anyway. (Otherwise StartProfiler would have called them.)
 		s.setBlockProfileRate(opts.ProfBlockRate)
+		s.setMutexProfileRate(opts.ProfMutexRate)
 	}
 
 	if opts.ConfigFile != _EMPTY_ {
@@ -2968,6 +2969,7 @@ func (s *Server) StartProfiler() {
 	s.profilingServer = srv
 
 	s.setBlockProfileRate(opts.ProfBlockRate)
+	s.setMutexProfileRate(opts.ProfMutexRate)
 
 	go func() {
 		// if this errors out, it's probably because the server is being shutdown
@@ -2989,6 +2991,20 @@ func (s *Server) setBlockProfileRate(rate int) {
 
 	if rate > 0 {
 		s.Warnf("Block profiling is enabled (rate %d), this may have a performance impact", rate)
+	}
+}
+
+func (s *Server) setMutexProfileRate(rate int) {
+	// Unlike the block profile, a negative rate does not disable the mutex
+	// profile, it leaves the current rate untouched, so normalize it here so
+	// that ProfMutexRate <= 0 will disable and > 0 will enable.
+	if rate < 0 {
+		rate = 0
+	}
+	runtime.SetMutexProfileFraction(rate)
+
+	if rate > 0 {
+		s.Warnf("Mutex profiling is enabled (rate %d), this may have a performance impact", rate)
 	}
 }
 

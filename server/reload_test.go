@@ -2026,6 +2026,33 @@ func TestConfigReloadClusterName(t *testing.T) {
 	}
 }
 
+func TestConfigReloadProfMutexRate(t *testing.T) {
+	// The mutex profile rate is process wide, so make sure we don't leave it
+	// enabled for the other tests.
+	defer runtime.SetMutexProfileFraction(0)
+
+	s, _, conf := runReloadServerWithContent(t, []byte(`
+		listen: "0.0.0.0:-1"
+		prof_mutex_rate: 100
+	`))
+	defer s.Shutdown()
+
+	// Passing a negative value returns the current rate without changing it.
+	if rate := runtime.SetMutexProfileFraction(-1); rate != 100 {
+		t.Fatalf("Expected mutex profile rate to be 100, got %v", rate)
+	}
+
+	// Update the config to disable the mutex profile.
+	reloadUpdateConfig(t, s, conf, `
+		listen: "0.0.0.0:-1"
+		prof_mutex_rate: 0
+	`)
+
+	if rate := runtime.SetMutexProfileFraction(-1); rate != 0 {
+		t.Fatalf("Expected mutex profile rate to be 0, got %v", rate)
+	}
+}
+
 func TestConfigReloadMaxSubsUnsupported(t *testing.T) {
 	s, _, conf := runReloadServerWithContent(t, []byte(`
 		port: -1
