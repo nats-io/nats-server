@@ -262,6 +262,23 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 	if err := json.NewDecoder(tr).Decode(&nstate); err != nil {
 		return nil, fmt.Errorf("error in state.json: %w", err)
 	}
+	if nstate.Consumers < 0 {
+		return nil, fmt.Errorf("invalid stream state: negative consumer count")
+	}
+	if nstate.FirstSeq == 0 {
+		if nstate.LastSeq != 0 || nstate.Msgs != 0 {
+			return nil, fmt.Errorf("invalid stream state: inconsistent message count or sequence range")
+		}
+	} else if nstate.FirstSeq > nstate.LastSeq {
+		// An empty, advanced stream has FirstSeq exactly one past LastSeq.
+		// Express this by subtracting from FirstSeq so a corrupt LastSeq of
+		// MaxUint64 can not overflow here.
+		if nstate.FirstSeq-1 != nstate.LastSeq || nstate.Msgs != 0 {
+			return nil, fmt.Errorf("invalid stream state: inconsistent message count or sequence range")
+		}
+	} else if nstate.Msgs > nstate.LastSeq-nstate.FirstSeq+1 {
+		return nil, fmt.Errorf("invalid stream state: message count exceeds sequence range")
+	}
 
 	s, jsa, err := a.checkForJetStream()
 	if err != nil {
