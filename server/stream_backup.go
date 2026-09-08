@@ -259,11 +259,7 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 	if hdr.Name != "state.json" {
 		return nil, fmt.Errorf("expected state.json first")
 	}
-	state, err := io.ReadAll(tr)
-	if err != nil {
-		return nil, fmt.Errorf("expected state.json contents")
-	}
-	if err := json.Unmarshal(state, &nstate); err != nil {
+	if err := json.NewDecoder(tr).Decode(&nstate); err != nil {
 		return nil, fmt.Errorf("error in state.json: %w", err)
 	}
 
@@ -417,12 +413,8 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 		if !found {
 			return nil, fmt.Errorf("expected consumer, found %q", hdr.Name)
 		}
-		buf, err := io.ReadAll(tr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read consumer %q state: %w", name, err)
-		}
 		var consumer SnapshotConsumerState
-		if err := json.Unmarshal(buf, &consumer); err != nil {
+		if err := json.NewDecoder(tr).Decode(&consumer); err != nil {
 			return nil, fmt.Errorf("failed to decode consumer %q state: %w", name, err)
 		}
 		if consumer.ConsumerConfig == nil {
@@ -484,12 +476,13 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 		var storedSizeRaw uint64
 		switch cfg.Storage {
 		case MemoryStorage:
-			storedSizeRaw = memStoreMsgSizeRaw(len(hdr.Name), int(hdr.HeaderSize), int(hdr.PayloadSize))
+			if storedSizeRaw = memStoreMsgSizeRaw(len(hdr.Name), int(hdr.HeaderSize), int(hdr.PayloadSize)); storedSizeRaw > math.MaxInt64 {
+				return nil, fmt.Errorf("snapshot message bytes exceed maximum store message size")
+			}
 		default:
-			storedSizeRaw = fileStoreMsgSizeRaw(len(hdr.Name), int(hdr.HeaderSize), int(hdr.PayloadSize))
-		}
-		if storedSizeRaw > math.MaxInt64 {
-			return nil, fmt.Errorf("snapshot message bytes exceed reserved restore size")
+			if storedSizeRaw = fileStoreMsgSizeRaw(len(hdr.Name), int(hdr.HeaderSize), int(hdr.PayloadSize)); storedSizeRaw > rlBadThresh {
+				return nil, fmt.Errorf("snapshot message bytes exceed maximum store message size")
+			}
 		}
 		storedSize := int64(storedSizeRaw)
 		if additional := storedSize - restoreRemaining; additional > 0 {
@@ -499,7 +492,7 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 				return nil, err
 			}
 		}
-		buf, err := io.ReadAll(tr)
+		buf, err := io.ReadAll(io.LimitReader(tr, declaredSize))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read message sequence %d: %w", seq, err)
 		}
