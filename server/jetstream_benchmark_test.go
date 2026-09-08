@@ -36,14 +36,12 @@ import (
 
 func BenchmarkJetStreamConsume(b *testing.B) {
 	const (
-		verbose        = false
-		streamName     = "S"
-		subject        = "s"
-		seed           = 42
-		publishTimeout = 30 * time.Second
-		// Publishing is setup for this benchmark. Keep batches small enough to
-		// avoid overwhelming replicated streams on slower machines.
-		publishBatchSize = 1000
+		verbose          = false
+		streamName       = "S"
+		subject          = "s"
+		seed             = 42
+		publishTimeout   = 2 * time.Minute
+		publishBatchSize = 10000
 	)
 
 	runSyncPushConsumer := func(b *testing.B, js nats.JetStreamContext, streamName string) (int, int, int) {
@@ -314,7 +312,10 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 								b.Logf("Setting up %d nodes", bc.clusterSize)
 							}
 
-							cl, _, shutdown, nc, js := startJSClusterAndConnect(b, bc.clusterSize)
+							// The shared cluster template limits file storage to 2 GiB. Size
+							// this benchmark's store for the calibrated message count instead.
+							maxStore := int64(b.N) * int64(bc.messageSize+1024)
+							cl, _, shutdown, nc, js := startJSClusterAndConnectWithStoreLimit(b, bc.clusterSize, maxStore)
 							defer shutdown()
 							defer func() { nc.Close() }()
 
@@ -344,6 +345,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 
 							message := make([]byte, bc.messageSize)
 							rand.NewChaCha8([32]byte{seed}).Read(message)
+							publishStart := time.Now()
 
 							// Publish b.N messages to the stream (in batches)
 							for i := 1; i <= b.N; i++ {
@@ -360,7 +362,7 @@ func BenchmarkJetStreamConsume(b *testing.B) {
 											b.Logf("Published %d/%d messages", i, b.N)
 										}
 									case <-time.After(publishTimeout):
-										b.Fatalf("Publish timed out with %d acknowledgements pending after publishing %d/%d messages", js.PublishAsyncPending(), i, b.N)
+										b.Fatalf("Publish timed out with %d acknowledgements pending after publishing %d/%d messages in %v", js.PublishAsyncPending(), i, b.N, time.Since(publishStart).Round(time.Second))
 									}
 								}
 							}
@@ -2293,6 +2295,10 @@ func BenchmarkJetStreamScanForSources(b *testing.B) {
 
 // Helper function to stand up a JS-enabled single server or cluster
 func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js nats.JetStreamContext) {
+	return startJSClusterAndConnectWithStoreLimit(b, clusterSize, 0)
+}
+
+func startJSClusterAndConnectWithStoreLimit(b *testing.B, clusterSize int, maxStore int64) (c *cluster, s *Server, shutdown func(), nc *nats.Conn, js nats.JetStreamContext) {
 	b.Helper()
 	var err error
 
@@ -2302,10 +2308,14 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 			s.Shutdown()
 		}
 		s.optsMu.Lock()
-		s.opts.SyncInterval = 5 * time.Minute
+		s.opts.SyncInterval = time.Hour
 		s.optsMu.Unlock()
 	} else {
-		c = createJetStreamClusterExplicit(b, "BENCH_PUB", clusterSize)
+		template := jsClusterTempl
+		if maxStore > 0 {
+			template = strings.Replace(template, "max_file_store: 2GB", fmt.Sprintf("max_file_store: %d", maxStore), 1)
+		}
+		c = createJetStreamClusterWithTemplate(b, template, "BENCH_PUB", clusterSize)
 		c.waitOnClusterReadyWithNumPeers(clusterSize)
 		c.waitOnLeader()
 		s = c.leader()
@@ -2314,7 +2324,7 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 		}
 		for _, s := range c.servers {
 			s.optsMu.Lock()
-			s.opts.SyncInterval = 5 * time.Minute
+			s.opts.SyncInterval = time.Hour
 			s.optsMu.Unlock()
 		}
 	}
