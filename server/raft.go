@@ -642,9 +642,11 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
-	// If our log is empty, and we're initializing, relax the "empty log" checks temporarily.
-	if !cfg.Recovering && n.pindex == 0 {
-		n.initializing = true
+	if n.pindex == 0 {
+		// If our log is empty, and we're initializing, relax the "empty log" checks temporarily.
+		if !cfg.Recovering {
+			n.initializing = true
+		}
 		// If we're scaling up and our log is empty, must put ourselves into observer
 		// and wait for data from the leader.
 		if !cfg.Observer && cfg.ScaleUp {

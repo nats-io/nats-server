@@ -9043,3 +9043,24 @@ func TestNRGCachePendingEntryBytesAccounting(t *testing.T) {
 	require_Len(t, len(n.pae), 0)
 	require_Equal(t, n.paeBytes, 0)
 }
+
+func TestNRGScaleUpEmptyLogObserverWhileRecovering(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.servers[0]
+
+	for _, recovering := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovering=%v", recovering), func(t *testing.T) {
+			ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+			require_NoError(t, err)
+			cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms, ScaleUp: true, Recovering: recovering}
+			require_NoError(t, s.bootstrapRaftNode(cfg, serverPeerNames(c.servers), true))
+			n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+			require_NoError(t, err)
+			defer n.shutdown()
+
+			require_True(t, n.IsObserver())
+			require_True(t, n.scaleUp)
+		})
+	}
+}
