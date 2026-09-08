@@ -959,6 +959,8 @@ func TestJetStreamConsumerIsFilterSubsetOf(t *testing.T) {
 		{"no filter", nil, ">", false},
 		{"single literal equal", []string{"foo.a"}, "foo.a", true},
 		{"single literal mismatch", []string{"foo.a"}, "foo.b", false},
+		{"single literal contained", []string{"foo.a"}, "foo.*", true},
+		{"one literal equal one outside", []string{"foo.a", "bar.a"}, "foo.a", false},
 		{"all literals contained", []string{"foo.a", "foo.b"}, "foo.>", true},
 		{"one literal outside", []string{"foo.a", "bar.a"}, "foo.>", false},
 		{"wildcards contained", []string{"foo.*", "foo.bar.>"}, "foo.>", true},
@@ -2924,6 +2926,28 @@ func Benchmark____JetStreamConsumerIsFilteredMatch(b *testing.B) {
 		c := consumerWithFilterSubjects(filterSubjects(int(n)))
 		b.Run(name, func(b *testing.B) {
 			c.isFilteredMatch(subject)
+		})
+	}
+}
+
+func Benchmark____JetStreamConsumerIsFilterSubsetOf(b *testing.B) {
+	for _, bm := range []struct {
+		name    string
+		filters []string
+		subject string
+	}{
+		// Takes the literal fast-path.
+		{"single literal filter", []string{"foo.bar.baz.qux"}, "foo.bar.baz.qux"},
+		// Skips it, the only filter has a wildcard.
+		{"single wildcard filter", []string{"foo.*.baz.qux"}, "foo.bar.baz.qux"},
+		// Skips it, more than one filter to cover.
+		{"multiple filters", []string{"foo.bar.baz.qux", "foo.bar.baz.quux"}, "foo.bar.baz.>"},
+	} {
+		c := consumerWithFilterSubjects(bm.filters)
+		b.Run(bm.name, func(b *testing.B) {
+			for b.Loop() {
+				c.isFilterSubsetOf(bm.subject)
+			}
 		})
 	}
 }

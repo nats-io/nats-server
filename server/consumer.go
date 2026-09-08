@@ -4943,6 +4943,11 @@ func (o *consumer) isFilterSubsetOf(subj string) bool {
 	if len(o.subjf) == 0 {
 		return false
 	}
+	// Fast-path a single literal filter, as isEqualOrSubsetMatch does. Only valid for
+	// one filter: all filters must be covered, so one match can not short-circuit.
+	if len(o.subjf) == 1 && !o.subjf[0].hasWildcard && subj == o.subjf[0].subject {
+		return true
+	}
 	tsa := [32]string{}
 	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
 	for _, filter := range o.subjf {
