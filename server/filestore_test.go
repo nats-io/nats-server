@@ -1955,10 +1955,9 @@ func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
 		require_NoStrongCache(t, mb, c)
 	})
 
-	t.Run("recalculateForSubj", func(t *testing.T) {
+	t.Run("removeSubjectEndpoint", func(t *testing.T) {
 		fs, mb, c := newTestStore(t)
-		// Removing the first msg for "foo" marks its SimpleState as needing
-		// a lazy first sequence recalculation.
+		// Removing the first msg for "foo" must update the endpoint eagerly.
 		removed, err := fs.removeMsg(1, false, true, true)
 		require_NoError(t, err)
 		require_True(t, removed)
@@ -1966,12 +1965,9 @@ func TestFileStoreWeakCachePromotionCleanup(t *testing.T) {
 		defer mb.mu.Unlock()
 		ss, ok := mb.fss.Find(stringToBytes("foo"))
 		require_True(t, ok)
-		require_True(t, ss.firstNeedsUpdate)
-		// The cache is only weakly referenced, so recalculateForSubj will
-		// promote it and must release the strong reference again.
-		require_True(t, mb.cache == nil)
-		require_NoError(t, mb.recalculateForSubj("foo", ss))
 		require_Equal(t, ss.First, uint64(2))
+		// Endpoint maintenance may promote the weak cache, but must release
+		// the strong reference again before returning.
 		require_NoStrongCache(t, mb, c)
 	})
 
@@ -5585,7 +5581,7 @@ func TestFileStoreInitialFirstSeq(t *testing.T) {
 	})
 }
 
-func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
+func TestFileStoreEagerFirstForSubjAfterCacheReload(t *testing.T) {
 	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -5594,28 +5590,25 @@ func TestFileStoreRecaluclateFirstForSubjBug(t *testing.T) {
 	fs.StoreMsg("bar", nil, nil, 0) // 2
 	fs.StoreMsg("foo", nil, nil, 0) // 3
 
-	// Now remove first 2..
-	fs.RemoveMsg(1)
-	fs.RemoveMsg(2)
-
 	// Now grab first (and only) block.
 	fs.mu.RLock()
 	mb := fs.blks[0]
 	fs.mu.RUnlock()
 
-	// Since we lazy update the first, simulate that we have not updated it as of yet.
-	ss := &SimpleState{Msgs: 1, First: 1, Last: 3, firstNeedsUpdate: true}
+	mb.mu.Lock()
+	// Flush the cache.
+	mb.clearCacheAndOffset()
+	mb.mu.Unlock()
+
+	removed, err := fs.RemoveMsg(1)
+	require_NoError(t, err)
+	require_True(t, removed)
 
 	mb.mu.Lock()
 	defer mb.mu.Unlock()
-
-	// Flush the cache.
-	mb.clearCacheAndOffset()
-	// Now call with start sequence of 1, the old one
-	// This will panic without the fix.
-	mb.recalculateForSubj("foo", ss)
-	// Make sure it was update properly.
-	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3, firstNeedsUpdate: false})
+	ss, ok := mb.fss.Find(stringToBytes("foo"))
+	require_True(t, ok)
+	require_True(t, *ss == SimpleState{Msgs: 1, First: 3, Last: 3})
 }
 
 func TestFileStoreKeepWithDeletedMsgsBug(t *testing.T) {

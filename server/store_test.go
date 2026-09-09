@@ -216,12 +216,12 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_Equal(t, ss.Last, 4)
 			expectLastSeq(4)
 
-			// Remove first message, ss.First is lazy so will only mark ss.firstNeedsUpdate.
+			// Remove first message and update the per-subject endpoint eagerly.
 			removed, err := fs.RemoveMsg(1)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Will update first, so corrects to seq 2.
+			// First is already exact at seq 2.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 3)
 			require_Equal(t, ss.First, 2)
@@ -229,12 +229,12 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_Equal(t, ss.Last, 4)
 			expectLastSeq(4)
 
-			// Remove last message, ss.Last is lazy so will only mark ss.lastNeedsUpdate.
+			// Remove last message and update the per-subject endpoint eagerly.
 			removed, err = fs.RemoveMsg(4)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Will update last, so corrects to 3.
+			// Last is already exact at seq 3.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 2)
 			require_Equal(t, ss.First, 2)
@@ -269,22 +269,22 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_Equal(t, ss.Last, 7)
 			expectLastSeq(7)
 
-			// Remove last sequence, ss.Last is lazy so doesn't get updated.
+			// Remove the last sequence.
 			removed, err = fs.RemoveMsg(7)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Remove first sequence, ss.First is lazy so doesn't get updated.
+			// Remove the first sequence.
 			removed, err = fs.RemoveMsg(3)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// Remove (now) first sequence. Both ss.First and ss.Last are lazy and both need to be recalculated later.
+			// Remove the new first sequence, leaving one exact endpoint pair.
 			removed, err = fs.RemoveMsg(5)
 			require_NoError(t, err)
 			require_True(t, removed)
 
-			// ss.First and ss.Last should both be recalculated and equal each other.
+			// ss.First and ss.Last must already equal the remaining sequence.
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 6)
@@ -292,13 +292,13 @@ func TestStoreSubjectStateConsistency(t *testing.T) {
 			require_Equal(t, ss.Last, 6)
 			expectLastSeq(6)
 
-			// We store a new message for ss.Last and remove it after, which marks it to be recalculated.
+			// Store a new last message and remove it again.
 			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
 			require_NoError(t, err)
 			removed, err = fs.RemoveMsg(8)
 			require_NoError(t, err)
 			require_True(t, removed)
-			// This will be the new ss.Last message, so reset ss.lastNeedsUpdate
+			// This becomes the new exact ss.Last endpoint.
 			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
 			require_NoError(t, err)
 
@@ -357,48 +357,40 @@ func TestStoreSubjectStateConsistencyOptimization(t *testing.T) {
 				require_Equal(t, sm.seq, seq)
 			}
 
-			// results in ss.Last, ss.First is marked lazy (when we hit ss.Msgs-1==1).
+			// Removing an interior message and then the first leaves the last endpoint.
 			fillMsgs(3)
 			removeMsgs(2, 1)
 			ss := getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 3)
 			require_Equal(t, ss.Last, 3)
-			require_False(t, ss.firstNeedsUpdate)
-			require_False(t, ss.lastNeedsUpdate)
 			expectSeq(3)
 
-			// ss.First is marked lazy first, then ss.Last is marked lazy (when we hit ss.Msgs-1==1).
+			// Removing first and last leaves the middle message as both endpoints.
 			fillMsgs(2)
 			removeMsgs(3, 5)
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
-			require_Equal(t, ss.First, 3)
-			require_Equal(t, ss.Last, 5)
-			require_True(t, ss.firstNeedsUpdate)
-			require_True(t, ss.lastNeedsUpdate)
+			require_Equal(t, ss.First, 4)
+			require_Equal(t, ss.Last, 4)
 			expectSeq(4)
 
-			// ss.Last is marked lazy first, then ss.First is marked lazy (when we hit ss.Msgs-1==1).
+			// Removing last and first leaves the middle message as both endpoints.
 			fillMsgs(2)
 			removeMsgs(7, 4)
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
-			require_Equal(t, ss.First, 4)
-			require_Equal(t, ss.Last, 7)
-			require_True(t, ss.firstNeedsUpdate)
-			require_True(t, ss.lastNeedsUpdate)
+			require_Equal(t, ss.First, 6)
+			require_Equal(t, ss.Last, 6)
 			expectSeq(6)
 
-			// ss.Msgs=1, results in ss.First, ss.Last is marked lazy (when we hit ss.Msgs-1==1).
+			// Removing last twice preserves the existing first as both endpoints.
 			fillMsgs(2)
 			removeMsgs(9, 8)
 			ss = getSubjectState()
 			require_Equal(t, ss.Msgs, 1)
 			require_Equal(t, ss.First, 6)
 			require_Equal(t, ss.Last, 6)
-			require_False(t, ss.firstNeedsUpdate)
-			require_False(t, ss.lastNeedsUpdate)
 			expectSeq(6)
 		},
 	)

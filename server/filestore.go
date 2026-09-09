@@ -3053,12 +3053,6 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 		hseq := uint64(math.MaxUint64)
 		var ierr error
 		stree.IntersectGSL(mb.fss, sl, func(subj []byte, ss *SimpleState) bool {
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				// mb is already loaded into the cache so should be fast-ish.
-				if ierr = mb.recalculateForSubj(bytesToString(subj), ss); ierr != nil {
-					return false
-				}
-			}
 			first := max(start, ss.First)
 			if first > ss.Last || first >= hseq {
 				// The start cutoff is after the last sequence for this subject,
@@ -3231,29 +3225,12 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		// If we have a wildcard match against all tracked subjects we know about.
 		fseq = lseq + 1
 		if bfilter := stringToBytes(filter); wc {
-			var ierr error
 			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
-				if ierr != nil {
-					return
-				}
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
-						return
-					}
-				}
 				if start <= ss.Last {
 					fseq = min(fseq, max(start, ss.First))
 				}
 			})
-			if ierr != nil {
-				return nil, false, ierr
-			}
 		} else if ss, _ := mb.fss.Find(bfilter); ss != nil {
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				if err := mb.recalculateForSubj(filter, ss); err != nil {
-					return nil, false, err
-				}
-			}
 			if start <= ss.Last {
 				fseq = min(fseq, max(start, ss.First))
 			}
@@ -3346,14 +3323,7 @@ func (mb *msgBlock) prevMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *S
 	if uint64(mb.fss.Size()) < start-lseq {
 		// If there are no subject matches then this is effectively no-op.
 		hseq := uint64(0)
-		var ierr error
 		stree.IntersectGSL(mb.fss, sl, func(subj []byte, ss *SimpleState) bool {
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				// mb is already loaded into the cache so should be fast-ish.
-				if ierr = mb.recalculateForSubj(bytesToString(subj), ss); ierr != nil {
-					return false
-				}
-			}
 			first := min(start, ss.Last)
 			// Skip if cutoff is before this subject's first, or if we already
 			// have a higher-or-equal candidate (hseq holds the highest found).
@@ -3397,9 +3367,6 @@ func (mb *msgBlock) prevMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *S
 			}
 			return true
 		})
-		if ierr != nil {
-			return nil, false, ierr
-		}
 		if hseq > 0 && sm != nil {
 			return sm, didLoad && start == lseq, nil
 		}
@@ -3480,11 +3447,6 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	// If we are not a wildcard just use Find() here. Avoids allocations.
 	if !wc {
 		if ss, ok := mb.fss.Find(stringToBytes(filter)); ok && ss != nil {
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				if err = mb.recalculateForSubj(filter, ss); err != nil {
-					return 0, 0, 0, err
-				}
-			}
 			if sseq <= ss.First {
 				update(ss)
 			} else if sseq <= ss.Last {
@@ -3500,11 +3462,6 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 			if havePartial {
 				// If we already found a partial then don't do anything else.
 				return
-			}
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				if err = mb.recalculateForSubj(bytesToString(bsubj), ss); err != nil {
-					return
-				}
 			}
 			if sseq <= ss.First {
 				update(ss)
@@ -3888,11 +3845,6 @@ func (fs *fileStore) SubjectsState(subject string) map[string]SimpleState {
 				return
 			}
 			subj := string(bsubj)
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-					return
-				}
-			}
 			oss := fss[subj]
 			if oss.First == 0 { // New
 				fss[subj] = *ss
@@ -3960,13 +3912,6 @@ func (fs *fileStore) allLastSeqsLocked() ([]uint64, error) {
 		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
 			// Check if already been processed and accounted.
 			if _, ok := subs[string(bsubj)]; !ok {
-				// Check if we need to recalculate. We only care about the last sequence.
-				if ss.lastNeedsUpdate {
-					// mb is already loaded into the cache so should be fast-ish.
-					if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
-						return false
-					}
-				}
 				seqs = append(seqs, ss.Last)
 				subs[string(bsubj)] = struct{}{}
 			}
@@ -4108,13 +4053,6 @@ func (fs *fileStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAll
 			if subs[string(bsubj)] == nil {
 				return true
 			}
-			// Check if we need to recalculate. We only care about the last sequence.
-			if ss.lastNeedsUpdate {
-				// mb is already loaded into the cache so should be fast-ish.
-				if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
-					return false
-				}
-			}
 			// If we are equal or below just add to seqs slice.
 			if ss.Last <= maxSeq {
 				seqs = append(seqs, ss.Last)
@@ -4243,13 +4181,6 @@ func (fs *fileStore) multiLastSeqsByLastBlockLocked(subs map[string]*psi, seqs *
 			if !ok || ss == nil {
 				unresolved = append(unresolved, pairs[i])
 				continue
-			}
-			// Check if we need to recalculate. We only care about the last sequence.
-			if ss.lastNeedsUpdate {
-				if err := mb.recalculateForSubj(subj, ss); err != nil {
-					mb.mu.Unlock()
-					return err
-				}
 			}
 			*seqs = append(*seqs, ss.Last)
 		}
@@ -4444,21 +4375,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			mb.lsts = ats.AccessTime()
 
 			var t uint64
-			var ierr error
 			var havePartial bool
-			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
-				if ierr != nil {
-					return
-				}
+			mb.fss.Match(stringToBytes(filter), func(_ []byte, ss *SimpleState) {
 				if havePartial {
 					// If we already found a partial then don't do anything else.
 					return
-				}
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-						return
-					}
 				}
 				if sseq <= ss.First {
 					t += ss.Msgs
@@ -4467,11 +4388,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					havePartial = true
 				}
 			})
-			if ierr != nil {
-				mb.mu.Unlock()
-				return 0, 0, ierr
-			}
-
 			// See if we need to scan msgs here.
 			if havePartial {
 				// Make sure we have the cache loaded.
@@ -4785,16 +4701,9 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			mb.lsts = ats.AccessTime()
 
 			var t uint64
-			var ierr error
 			var havePartial bool
 			var updateLLTS bool
-			stree.IntersectGSL[SimpleState](mb.fss, sl, func(bsubj []byte, ss *SimpleState) bool {
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-						return false
-					}
-				}
+			stree.IntersectGSL[SimpleState](mb.fss, sl, func(_ []byte, ss *SimpleState) bool {
 				if sseq <= ss.First {
 					t += ss.Msgs
 				} else if sseq <= ss.Last {
@@ -4804,11 +4713,6 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 				}
 				return true
 			})
-			if ierr != nil {
-				mb.mu.Unlock()
-				return 0, 0, ierr
-			}
-
 			// See if we need to scan msgs here.
 			if havePartial {
 				// Make sure we have the cache loaded.
@@ -5825,10 +5729,6 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 
 		bsubj := stringToBytes(subj)
 		if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
-			var err error
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				err = mb.recalculateForSubj(subj, ss)
-			}
 			if needsCleanup {
 				mb.finishedWithCache()
 			}
@@ -5840,9 +5740,6 @@ func (fs *fileStore) firstSeqForSubj(subj string) (uint64, error) {
 				if info, ok := fs.psim.Find(bsubj); ok {
 					info.fblk = i
 				}
-			}
-			if err != nil {
-				return 0, err
 			}
 			return ss.First, nil
 		}
@@ -6037,14 +5934,6 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) error {
 				return
 			}
 			ss := *ssptr
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				mb.mu.Lock()
-				ierr = mb.recalculateForSubj(bytesToString(subj), ss)
-				mb.mu.Unlock()
-				if ierr != nil {
-					return
-				}
-			}
 			for first := ss.First; *total > maxMsgsPer && first <= ss.Last; {
 				m, _, err := mb.firstMatching(bytesToString(subj), false, first, &sm)
 				if err != nil {
@@ -7671,7 +7560,6 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
 			ss.Msgs++
 			ss.Last = seq
-			ss.lastNeedsUpdate = false
 		} else {
 			mb.fss.Insert(stringToBytes(subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 		}
@@ -8611,7 +8499,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 				if ss, ok := mb.fss.Find(bsubj); ok && ss != nil {
 					ss.Msgs++
 					ss.Last = seq
-					ss.lastNeedsUpdate = false
 				} else {
 					mb.fss.Insert(bsubj, SimpleState{
 						Msgs:  1,
@@ -9497,14 +9384,6 @@ func (fs *fileStore) loadLastLocked(subj string, sm *StoreMsg) (lsm *StoreMsg, e
 		// Optimize if subject is not a wildcard.
 		if !wc {
 			if ss, ok := mb.fss.Find(stringToBytes(subj)); ok && ss != nil {
-				// Check if we need to recalculate. We only care about the last sequence.
-				if ss.lastNeedsUpdate {
-					// mb is already loaded into the cache so should be fast-ish.
-					if err = mb.recalculateForSubj(subj, ss); err != nil {
-						mb.mu.Unlock()
-						return nil, err
-					}
-				}
 				l = ss.Last
 			}
 		}
@@ -9778,16 +9657,7 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 		var found bool
 		var first, last uint64
 		if bfilter := stringToBytes(filter); wc {
-			var ierr error
-			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
-				if ierr != nil {
-					return
-				}
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
-						return
-					}
-				}
+			mb.fss.Match(bfilter, func(_ []byte, ss *SimpleState) {
 				if end < ss.First {
 					return
 				}
@@ -9799,15 +9669,7 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 				first = min(first, ss.First)
 				last = max(last, min(end, ss.Last))
 			})
-			if ierr != nil {
-				return nil, false, ierr
-			}
 		} else if ss, _ := mb.fss.Find(bfilter); ss != nil {
-			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-				if err := mb.recalculateForSubj(filter, ss); err != nil {
-					return nil, false, err
-				}
-			}
 			if end >= ss.First {
 				found = true
 				first, last = ss.First, min(end, ss.Last)
@@ -11697,145 +11559,85 @@ func (mb *msgBlock) removeSeqPerSubject(subj string, seq uint64) (uint64, error)
 		return 0, nil
 	}
 
-	ss.Msgs--
+	wasFirst, wasLast := seq == ss.First, seq == ss.Last
+	remaining := ss.Msgs - 1
 
-	// Only one left.
-	if ss.Msgs == 1 {
-		if !ss.lastNeedsUpdate && seq != ss.Last {
+	// With exact endpoints, the remaining message is the opposite endpoint.
+	if remaining == 1 {
+		if wasFirst {
 			ss.First = ss.Last
-			ss.firstNeedsUpdate = false
-			return 1, nil
-		}
-		if !ss.firstNeedsUpdate && seq != ss.First {
+		} else if wasLast {
 			ss.Last = ss.First
-			ss.lastNeedsUpdate = false
-			return 1, nil
 		}
+		ss.Msgs = remaining
+		return remaining, nil
 	}
 
-	// We can lazily calculate the first/last sequence when needed.
-	ss.firstNeedsUpdate = seq == ss.First || ss.firstNeedsUpdate
-	ss.lastNeedsUpdate = seq == ss.Last || ss.lastNeedsUpdate
-
-	return ss.Msgs, nil
+	var first, last uint64
+	var err error
+	if wasFirst {
+		first, err = mb.nextSeqForSubj(subj, ss.First+1, ss.Last, true)
+	} else if wasLast {
+		last, err = mb.nextSeqForSubj(subj, ss.First, ss.Last-1, false)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if wasFirst {
+		ss.First = first
+	} else if wasLast {
+		ss.Last = last
+	}
+	ss.Msgs = remaining
+	return remaining, nil
 }
 
-// Will recalculate the first and/or last sequence for this subject in this block.
-// Will avoid slower path message lookups and scan the cache directly instead.
-func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
-	// Need to make sure messages are loaded.
+// nextSeqForSubj returns the first live message for subj in the inclusive
+// range. It scans forward when first is true and backward otherwise.
+// Lock should be held.
+func (mb *msgBlock) nextSeqForSubj(subj string, start, end uint64, first bool) (uint64, error) {
 	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if needsCleanup {
 		defer mb.finishedWithCache()
 	}
 
-	startSlot := int(ss.First - mb.cache.fseq)
-	if startSlot < 0 {
-		startSlot = 0
-	}
-	if startSlot >= len(mb.cache.idx) {
-		ss.First = ss.Last
-		ss.firstNeedsUpdate = false
-		ss.lastNeedsUpdate = false
-		return nil
-	}
-
-	endSlot := int(ss.Last - mb.cache.fseq)
-	if endSlot < 0 {
-		endSlot = 0
-	}
-	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
-		return nil
-	}
-
-	var le = binary.LittleEndian
-	if ss.firstNeedsUpdate {
-		// Mark first as updated.
-		ss.firstNeedsUpdate = false
-
-		fseq := ss.First + 1
-		if mbFseq := atomic.LoadUint64(&mb.first.seq); fseq < mbFseq {
-			fseq = mbFseq
+	var smv StoreMsg
+	lookup := func(seq uint64) (bool, error) {
+		sm, err := mb.cacheLookupNoCopy(seq, &smv)
+		if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+			return false, nil
 		}
-		for slot := startSlot; slot < len(mb.cache.idx); slot++ {
-			bi := mb.cache.idx[slot] &^ cbit
-			if bi == dbit {
-				// delete marker so skip.
-				continue
+		if err != nil {
+			return false, err
+		}
+		return sm != nil && sm.subj == subj, nil
+	}
+
+	if first {
+		start = max(start, atomic.LoadUint64(&mb.first.seq))
+		for seq := start; seq <= end; seq++ {
+			if ok, err := lookup(seq); err != nil {
+				return 0, err
+			} else if ok {
+				return seq, nil
 			}
-			li := int(bi)
-			if li >= len(mb.cache.buf) {
-				ss.First = ss.Last
-				// Only need to reset ss.lastNeedsUpdate, ss.firstNeedsUpdate is already reset above.
-				ss.lastNeedsUpdate = false
-				return nil
-			}
-			buf := mb.cache.buf[li:]
-			hdr := buf[:msgHdrSize]
-			slen := int(le.Uint16(hdr[20:]))
-			if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
-				seq := le.Uint64(hdr[4:])
-				if seq < fseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
-					continue
-				}
-				ss.First = seq
-				if ss.Msgs == 1 {
-					ss.Last = seq
-					ss.lastNeedsUpdate = false
-					return nil
-				}
-				// Skip the start slot ahead, if we need to recalculate last we can stop early.
-				startSlot = slot
-				break
+		}
+	} else {
+		end = min(end, atomic.LoadUint64(&mb.last.seq))
+		for seq := end; seq >= start; seq-- {
+			if ok, err := lookup(seq); err != nil {
+				return 0, err
+			} else if ok {
+				return seq, nil
 			}
 		}
 	}
-	if ss.lastNeedsUpdate {
-		// Mark last as updated.
-		ss.lastNeedsUpdate = false
-
-		lseq := ss.Last - 1
-		if mbLseq := atomic.LoadUint64(&mb.last.seq); lseq > mbLseq {
-			lseq = mbLseq
-		}
-		for slot := endSlot; slot >= startSlot; slot-- {
-			bi := mb.cache.idx[slot] &^ cbit
-			if bi == dbit {
-				// delete marker so skip.
-				continue
-			}
-			li := int(bi)
-			if li >= len(mb.cache.buf) {
-				// Can't overwrite ss.Last, just skip.
-				return nil
-			}
-			buf := mb.cache.buf[li:]
-			hdr := buf[:msgHdrSize]
-			slen := int(le.Uint16(hdr[20:]))
-			if subj == bytesToString(buf[msgHdrSize:msgHdrSize+slen]) {
-				seq := le.Uint64(hdr[4:])
-				if seq > lseq || seq&ebit != 0 || mb.dmap.Exists(seq) {
-					continue
-				}
-				// Sequence should never be lower, but guard against it nonetheless.
-				if seq < ss.First {
-					seq = ss.First
-				}
-				ss.Last = seq
-				if ss.Msgs == 1 {
-					ss.First = seq
-					ss.firstNeedsUpdate = false
-				}
-				return nil
-			}
-		}
-	}
-	return nil
+	return 0, fmt.Errorf("no replacement endpoint for subject %q in [%d, %d]", subj, start, end)
 }
 
 // Lock should be held.
@@ -11913,7 +11715,6 @@ func (mb *msgBlock) generatePerSubjectInfo() error {
 			if ss, ok := mb.fss.Find(stringToBytes(sm.subj)); ok && ss != nil {
 				ss.Msgs++
 				ss.Last = seq
-				ss.lastNeedsUpdate = false
 			} else {
 				mb.fss.Insert(stringToBytes(sm.subj), SimpleState{Msgs: 1, First: seq, Last: seq})
 			}
