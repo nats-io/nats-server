@@ -16197,6 +16197,128 @@ func TestJetStreamClusterRetentionChangeWaitsForConsumerParity(t *testing.T) {
 	}
 }
 
+// A retention change that leaves no consumer to remap must apply in one go, without desired state.
+func TestJetStreamClusterRetentionChangeWithoutRemapAppliesImmediately(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Durables at parity with the stream, one by default and one explicitly.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DEFAULT", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "EXPLICIT", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+
+	// Stop the meta leader from reconciling desired state. A retention change that registers
+	// desired state can then never converge, so only a change applied in one go reaches the members.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	streamReconcile := mjs.cluster.streamReconcile
+	mjs.cluster.streamReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, streamReconcile)
+	ml.sysUnsubscribe(streamReconcile)
+
+	// Waits for the meta leader to have applied the change into retention, and reports whether
+	// the assignment still has desired state pending at that point.
+	metaApplied := func(t *testing.T, retention RetentionPolicy) (pending bool) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			require_True(t, ml == c.leader())
+			mjs.mu.RLock()
+			defer mjs.mu.RUnlock()
+			sa := mjs.streamAssignment(globalAccountName, "TEST")
+			if sa == nil {
+				return fmt.Errorf("stream assignment not found")
+			}
+			if sa.Config.Retention != retention {
+				return fmt.Errorf("meta leader at %v, expected %v", sa.Config.Retention, retention)
+			}
+			pending = sa.Group.Desired != nil
+			return nil
+		})
+		return pending
+	}
+	membersAt := func(retention RetentionPolicy) error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != retention {
+				return fmt.Errorf("server %q at %v, expected %v", s.Name(), r, retention)
+			}
+		}
+		return nil
+	}
+	requireApplied := func(t *testing.T, retention RetentionPolicy) {
+		t.Helper()
+		require_False(t, metaApplied(t, retention))
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error { return membersAt(retention) })
+		// The consumers must have been left alone.
+		for _, name := range []string{"DEFAULT", "EXPLICIT"} {
+			mjs.mu.RLock()
+			ca := mjs.consumerAssignment(globalAccountName, "TEST", name)
+			mjs.mu.RUnlock()
+			require_NotNil(t, ca)
+			require_Len(t, len(ca.Group.Peers), 3)
+			require_True(t, ca.Group.Desired == nil)
+		}
+	}
+
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireApplied(t, InterestPolicy)
+
+	// Going back to Limits needs no consumer scaled down either.
+	cfg.Retention = nats.LimitsPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireApplied(t, LimitsPolicy)
+
+	// But a consumer that must be scaled up first still forces the change through desired
+	// state, keeping the members on Limits until it has parity.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "R1", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_True(t, metaApplied(t, InterestPolicy))
+	require_NoError(t, membersAt(LimitsPolicy))
+
+	// Unblock reconciling, now the change converges the usual way.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "R1")
+		mjs.mu.RUnlock()
+		if sa == nil || sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		if ca == nil || len(ca.Group.Peers) != 3 || ca.Group.Desired != nil {
+			return fmt.Errorf("consumer not at parity yet")
+		}
+		return membersAt(InterestPolicy)
+	})
+}
+
 func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
@@ -16402,6 +16524,11 @@ func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
 	_, err := js.AddStream(cfg)
 	require_NoError(t, err)
 
+	// An R1 consumer must be scaled up before the stream can become Interest, so the
+	// retention change below has to go through desired state.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
 	// A retention change converges through desired state just like a scale does, so it
 	// can't combine with a move in a single update either. The guard fires before peer
 	// selection, so the placement doesn't need to resolve.
@@ -16422,8 +16549,8 @@ func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
 	require_NotNil(t, streamReconcile)
 	ml.sysUnsubscribe(streamReconcile)
 
-	// A retention change goes through desired state, it stays converging while
-	// reconciliation is blocked. No scale is involved.
+	// A retention change that must scale a consumer first goes through desired state,
+	// it stays converging while reconciliation is blocked. No stream scale is involved.
 	cfg.Retention = nats.InterestPolicy
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)

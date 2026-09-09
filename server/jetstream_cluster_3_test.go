@@ -11711,6 +11711,162 @@ func TestJetStreamClusterDesiredOriginRetention(t *testing.T) {
 	})
 }
 
+// A retention change only needs desired state if a consumer must be remapped first. If all
+// consumers already have parity with the stream, the change can be applied in one go. The
+// stream update request decides that by dry-running the consumer remap, exercised here.
+func TestJetStreamClusterRetentionChangeConvergedConsumers(t *testing.T) {
+	const a, b, c, d = "A", "B", "C", "D"
+	streamPeers := []string{a, b, c}
+
+	newStream := func(retention RetentionPolicy) *streamAssignment {
+		return &streamAssignment{
+			Config:    &StreamConfig{Name: "TEST", Retention: retention, Replicas: 3},
+			Group:     &raftGroup{Name: "S", Peers: streamPeers, Cluster: "C1"},
+			consumers: map[string]*consumerAssignment{},
+		}
+	}
+	newConsumer := func(name string, cfg *ConsumerConfig, peers ...string) *consumerAssignment {
+		return &consumerAssignment{
+			Name:   name,
+			Stream: "TEST",
+			Config: cfg,
+			Group:  &raftGroup{Name: "C", Peers: peers, Cluster: "C1"},
+		}
+	}
+	durable := func(name string, replicas int) *ConsumerConfig {
+		return &ConsumerConfig{Durable: name, Replicas: replicas}
+	}
+
+	limits, interest := LimitsPolicy, InterestPolicy
+	for _, test := range []struct {
+		name      string
+		retention RetentionPolicy
+		target    RetentionPolicy
+		consumers []*consumerAssignment
+		inflight  []*consumerAssignment
+		desired   bool // The stream itself already has desired state.
+		converged bool
+	}{
+		{
+			name: "NoConsumers", retention: limits, target: interest, converged: true,
+		},
+		{
+			// A durable without an explicit replica count follows the stream's.
+			name: "DurableDefaultReplicas", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 0), a, b, c)},
+			converged: true,
+		},
+		{
+			name: "DurableAtParity", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 3), c, a, b)},
+			converged: true,
+		},
+		{
+			// Going back to Limits needs no consumer scaled down either.
+			name: "DurableAtParityToLimits", retention: interest, target: limits,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 3), a, b, c)},
+			converged: true,
+		},
+		{
+			// An R1 durable must be scaled up first.
+			name: "DurableBelowParity", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 1), a)},
+		},
+		{
+			// A legacy ephemeral is R1 while the stream is Limits, it must be scaled up.
+			name: "LegacyEphemeralScaleUp", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("E", &ConsumerConfig{}, a)},
+		},
+		{
+			// And scaled back down to R1 when going back to Limits.
+			name: "LegacyEphemeralScaleDown", retention: interest, target: limits,
+			consumers: []*consumerAssignment{newConsumer("E", &ConsumerConfig{}, a, b, c)},
+		},
+		{
+			// The right count, but not on the stream's peers.
+			name: "OffStreamPeers", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 3), a, b, d)},
+		},
+		{
+			// Still moving toward its desired peer set.
+			name: "ConsumerConverging", retention: limits, target: interest,
+			consumers: func() []*consumerAssignment {
+				ca := newConsumer("C", durable("C", 3), a, b, c)
+				ca.Group.Desired = &desiredRaftGroup{ID: "ID", Peers: []string{a, b, c}}
+				return []*consumerAssignment{ca}
+			}(),
+		},
+		{
+			// Inflight consumers must be considered as well.
+			name: "InflightBelowParity", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 3), a, b, c)},
+			inflight:  []*consumerAssignment{newConsumer("I", durable("I", 1), b)},
+		},
+		{
+			name: "InflightAtParity", retention: limits, target: interest,
+			inflight:  []*consumerAssignment{newConsumer("I", durable("I", 3), a, b, c)},
+			converged: true,
+		},
+		{
+			// A change stacked onto a scale must converge through desired state.
+			name: "StreamHasDesiredState", retention: limits, target: interest,
+			consumers: []*consumerAssignment{newConsumer("C", durable("C", 3), a, b, c)},
+			desired:   true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			osa := newStream(test.retention)
+			for _, ca := range test.consumers {
+				osa.consumers[ca.Name] = ca
+			}
+			inflight := map[string]*inflightConsumerInfo{}
+			for _, ca := range test.inflight {
+				inflight[ca.Name] = &inflightConsumerInfo{consumerAssignment: ca}
+			}
+			js := &jetStream{cluster: &jetStreamCluster{
+				inflightConsumers: map[string]map[string]map[string]*inflightConsumerInfo{
+					globalAccountName: {"TEST": inflight},
+				},
+			}}
+
+			rg := osa.copyGroup().Group
+			if test.desired {
+				rg = osa.Group.withDesired(rg)
+			}
+			newCfg := osa.Config.clone()
+			newCfg.Retention = test.target
+
+			// The dry-run as done by the stream update request.
+			var converged bool
+			if rg.Desired == nil {
+				tsa := osa.clone()
+				tsa.Group, tsa.Config = rg, newCfg
+				consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, tsa)
+				converged = done && len(consumers) == 0 && len(deleted) == 0
+			}
+			require_Equal(t, converged, test.converged)
+
+			// The dry-run must not have touched the assignments.
+			require_Equal(t, osa.Config.Retention, test.retention)
+			for _, ca := range test.consumers {
+				require_True(t, slices.Equal(ca.Group.Peers, osa.consumers[ca.Name].Group.Peers))
+				require_Equal(t, ca.Config.Replicas, osa.consumers[ca.Name].Config.Replicas)
+			}
+
+			// A converged change applies in one go, otherwise desired state is registered.
+			rg = rg.withRetentionChange(osa, newCfg.Retention)
+			if converged {
+				// Only the caller skips desired state, withRetentionChange itself is
+				// unaware. Verify the config would be applied as-is without it.
+				require_Equal(t, newCfg.atDesiredOrigin(osa.Group).Retention, test.target)
+				return
+			}
+			require_NotNil(t, rg.Desired)
+			require_NotNil(t, rg.Desired.Origin)
+		})
+	}
+}
+
 // Moving into a more restrictive retention must keep the previous retention active
 // until all consumers have been scaled up to have parity with the stream.
 func TestJetStreamClusterDesiredOriginRetentionScaleUpFirst(t *testing.T) {
