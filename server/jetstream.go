@@ -2107,12 +2107,28 @@ func (a *Account) JetStreamEnabled() bool {
 	return enabled
 }
 
+func (jsa *jsAccount) removeRemoteUsage(rnode string) {
+	jsa.usageMu.Lock()
+	defer jsa.usageMu.Unlock()
+
+	rUsage := jsa.rusage[rnode]
+	if rUsage == nil {
+		return
+	}
+	for tierName, usage := range rUsage.tiers {
+		if total := jsa.usage[tierName]; total != nil {
+			total.total.mem -= usage.mem
+			total.total.store -= usage.store
+		}
+	}
+	jsa.apiTotal -= rUsage.api
+	jsa.apiErrors -= rUsage.err
+	delete(jsa.rusage, rnode)
+}
+
 func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account, subject, _ string, msg []byte) {
 	// jsa.js.srv is immutable and guaranteed to no be nil, so no lock needed.
 	s := jsa.js.srv
-
-	jsa.usageMu.Lock()
-	defer jsa.usageMu.Unlock()
 
 	if len(msg) < minUsageUpdateLen {
 		s.Warnf("Ignoring remote usage update with size too short")
@@ -2126,8 +2142,29 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		s.Warnf("Received remote usage update with no remote node")
 		return
 	}
+
+	// Capture the meta group before the usage lock so we do not invert lock ordering.
+	meta := jsa.js.getMetaGroup()
+	jsa.usageMu.Lock()
+	defer jsa.usageMu.Unlock()
+
 	rUsage, ok := jsa.rusage[rnode]
 	if !ok {
+		// Once a server has been removed from the meta group, a usage update that
+		// was already in flight must not recreate its remote usage entry. Only do
+		// the membership check for new entries; steady-state updates avoid it.
+		if meta != nil {
+			var current bool
+			for _, peer := range meta.VotingPeerNames() {
+				if peer == rnode {
+					current = true
+					break
+				}
+			}
+			if !current {
+				return
+			}
+		}
 		if jsa.rusage == nil {
 			jsa.rusage = make(map[string]*remoteUsage)
 		}
