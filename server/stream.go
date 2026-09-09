@@ -2971,6 +2971,11 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 				c.checkStateForInterestStream(&ss)
 			}
 		}
+		// Without consumers nothing above could have removed messages that
+		// are no longer of interest, check the stream itself.
+		if len(toUpdate) == 0 && cfg.Retention == InterestPolicy {
+			mset.checkInterestState()
+		}
 		mset.mu.Lock()
 	}
 
@@ -8901,8 +8906,22 @@ func (mset *stream) checkInterestState() {
 	var ss StreamState
 	mset.store.FastState(&ss)
 
+	mset.cfgMu.RLock()
+	rp := mset.cfg.Retention
+	mset.cfgMu.RUnlock()
+
+	consumers := mset.getConsumers()
+
+	// Interest retention with no consumers, removes all messages.
+	if rp == InterestPolicy && len(consumers) == 0 {
+		if ss.Msgs > 0 {
+			mset.store.Compact(ss.LastSeq + 1)
+		}
+		return
+	}
+
 	asflr := uint64(math.MaxUint64)
-	for _, o := range mset.getConsumers() {
+	for _, o := range consumers {
 		o.checkStateForInterestStream(&ss)
 		o.mu.RLock()
 		chkflr := o.chkflr
@@ -8910,9 +8929,6 @@ func (mset *stream) checkInterestState() {
 		asflr = min(asflr, chkflr)
 	}
 
-	mset.cfgMu.RLock()
-	rp := mset.cfg.Retention
-	mset.cfgMu.RUnlock()
 	// Remove as many messages from the "head" of the stream if there's no interest anymore.
 	if rp == InterestPolicy && asflr != math.MaxUint64 {
 		mset.store.Compact(asflr)
