@@ -9679,3 +9679,54 @@ func TestJetStreamClusterConsumerPauseRacingGroupRename(t *testing.T) {
 		c.waitOnServerHealthz(s)
 	}
 }
+
+// A consumer leader stepdown acts on the running consumer, so it must look at the
+// applied stream assignment. A client stream update that is proposed but not yet
+// applied carries no consumers, and resolving it as inflight on the meta leader made
+// the stepdown fail with "consumer not found" for a consumer leader on that server.
+func TestJetStreamClusterConsumerLeaderStepDownWithInflightStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	// Move the consumer leader onto the meta leader.
+	subj := fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "C")
+	if c.consumerLeader(globalAccountName, "TEST", "C") != ml {
+		req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: ml.Name()}})
+		require_NoError(t, err)
+		_, err = nc.Request(subj, req, 5*time.Second)
+		require_NoError(t, err)
+		c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+	}
+	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") == ml)
+
+	// Track a client stream update as an inflight proposal on the meta leader. As
+	// proposed by jsClusteredStreamUpdateRequestLocked it has no consumers.
+	mjs.mu.Lock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	usa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Client: osa.Client}
+	cc.trackInflightStreamProposal(globalAccountName, usa, false)
+	mjs.mu.Unlock()
+
+	msg, err := nc.Request(subj, nil, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Success)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") != ml)
+}
