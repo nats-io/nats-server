@@ -5868,7 +5868,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 	if isClustered {
 		js.mu.Lock()
-		sa := js.streamAssignment(acc.Name, stream)
+		sa := js.streamAssignmentOrInflight(acc.Name, stream)
 		if sa == nil {
 			js.mu.Unlock()
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
@@ -5880,9 +5880,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 			// Just let the request time out.
 			return
 		}
-
-		ca, ok := sa.consumers[consumer]
-		if !ok || ca == nil {
+		ca := js.consumerAssignmentOrInflight(acc.Name, stream, consumer)
+		if ca == nil {
 			js.mu.Unlock()
 			resp.Error = NewJSConsumerNotFoundError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
