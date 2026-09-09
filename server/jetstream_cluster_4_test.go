@@ -9302,3 +9302,188 @@ func TestJetStreamClusterConsumerCreateResponseConsumerClosed(t *testing.T) {
 	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerCreateErrF))
 	require_Contains(t, resp.Error.Description, errConsumerClosed.Error())
 }
+
+func TestJetStreamClusterCatchupCancelled(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "JSC", 3)
+	// Catchups held on a mocked store are drained until after shutdown,
+	// or a blocked one would hang it.
+	stop := make(chan struct{})
+	defer close(stop)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	payload := string(make([]byte, 1024))
+	const total = 100
+	for _, name := range []string{"A", "B"} {
+		_, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name}, Replicas: 3})
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, name)
+		for i := 0; i < total; i++ {
+			sendStreamMsg(t, nc, name, payload)
+		}
+	}
+	c.waitOnAllCurrent()
+
+	// Every message the leader loads for a catchup blocks until consumed from
+	// the returned channel, which lets us hold a catchup mid-flight.
+	mock := func(mset *stream, store StreamStore) catchupMockStore {
+		ms := catchupMockStore{StreamStore: store, ch: make(chan uint64)}
+		mset.mu.Lock()
+		mset.store = ms
+		mset.mu.Unlock()
+		return ms
+	}
+	load := func(ms catchupMockStore) {
+		t.Helper()
+		select {
+		case <-ms.ch:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Leader did not load a message for the catchup")
+		}
+	}
+	drain := func(ms catchupMockStore) {
+		go func() {
+			for {
+				select {
+				case <-ms.ch:
+				case <-stop:
+					return
+				}
+			}
+		}()
+	}
+	released := func(s *Server, mset *stream, peer string) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+			if slices.Contains(mset.catchupPeers(), peer) {
+				return fmt.Errorf("peer %q still tracked for catchup", peer)
+			}
+			if v := s.gcbTotal(); v != 0 {
+				return fmt.Errorf("expected gcbTotal to be 0, got %v", v)
+			}
+			return nil
+		})
+	}
+
+	// 1. A follower's stream stops mid-catchup while its server stays up. It
+	// must tell the leader, which releases the catchup right away instead of
+	// holding its bytes until the inactivity stall.
+	leader := c.streamLeader(globalAccountName, "A")
+	mset, err := leader.GlobalAccount().lookupStream("A")
+	require_NoError(t, err)
+	follower := c.randomNonStreamLeader(globalAccountName, "A")
+	follower.Shutdown()
+	follower.WaitForShutdown()
+	c.waitOnStreamLeader(globalAccountName, "A")
+	lnc, _ := jsClientConnect(t, leader)
+	defer lnc.Close()
+	for i := 0; i < total; i++ {
+		sendStreamMsg(t, lnc, "A", payload)
+	}
+	// Behind by a snapshot, the follower needs an out of band catchup.
+	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot(), true))
+	ms := mock(mset, mset.store)
+	defer drain(ms)
+	follower = c.restartServer(follower)
+	peer := follower.NodeName()
+	load(ms)
+	lag := mset.lagForCatchupPeer(peer)
+	require_True(t, lag > 0)
+	for i := 0; i < 5; i++ {
+		load(ms)
+	}
+	// Wait for an ack, so the follower knows the leader's reply subject.
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		if l := mset.lagForCatchupPeer(peer); l >= lag {
+			return fmt.Errorf("follower did not ack yet, lag %d", l)
+		}
+		return nil
+	})
+	l := &captureWarnLogger{warn: make(chan string, 100)}
+	leader.SetLogger(l, false, false)
+	fmset, err := follower.GlobalAccount().lookupStream("A")
+	require_NoError(t, err)
+	require_NoError(t, fmset.stop(true, false))
+	for aborted := false; !aborted; {
+		select {
+		case w := <-l.warn:
+			aborted = strings.Contains(w, "aborted on the remote")
+		case <-time.After(5 * time.Second):
+			t.Fatal("Leader was not told the follower stopped its catchup")
+		}
+	}
+	load(ms)
+	released(leader, mset, peer)
+	drain(ms)
+
+	// 2. A peer retries with a new reply subject before its first catchup made
+	// progress. The first catchup must be canceled, only the second one keeps
+	// running and only its reply subject receives data.
+	leader = c.streamLeader(globalAccountName, "B")
+	mset, err = leader.GlobalAccount().lookupStream("B")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	syncSubj, store := string(mset.syncSub.subject), mset.store
+	mset.mu.RUnlock()
+	sysNC := natsConnect(t, c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	defer sysNC.Close()
+	ms = mock(mset, store)
+	defer drain(ms)
+	sub1 := natsSubSync(t, sysNC, nats.NewInbox())
+	sub2 := natsSubSync(t, sysNC, nats.NewInbox())
+	b, _ := json.Marshal(&streamSyncRequest{FirstSeq: 1, LastSeq: total, Peer: "bozo"})
+	natsPubReq(t, sysNC, syncSubj, sub1.Subject, b)
+	load(ms)
+	mset.mu.RLock()
+	quit := mset.catchups["bozo"].quit
+	mset.mu.RUnlock()
+	natsPubReq(t, sysNC, syncSubj, sub2.Subject, b)
+	// The second request takes over the tracking entry.
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		mset.mu.RLock()
+		defer mset.mu.RUnlock()
+		if cp := mset.catchups["bozo"]; cp == nil || cp.quit == quit {
+			return fmt.Errorf("second catchup not registered yet")
+		}
+		return nil
+	})
+	drain(ms)
+	for seq := 1; seq <= total; seq++ {
+		msg := natsNexMsg(t, sub2, 2*time.Second)
+		require_True(t, len(msg.Data) > 0)
+	}
+	msg := natsNexMsg(t, sub2, 2*time.Second)
+	require_Equal(t, len(msg.Data), 0)
+	released(leader, mset, "bozo")
+	// The first catchup had sent the message it loaded before being superseded,
+	// and notices the cancellation after sending the one it was loading.
+	if n, _, _ := sub1.Pending(); n > 2 {
+		t.Fatalf("Expected at most 2 messages on the superseded reply subject, got %d", n)
+	}
+	// 3. A peer is removed from the group, like a scale down does, while its
+	// catchup is blocked. Applying the removal must cancel the catchup.
+	ms = mock(mset, store)
+	defer drain(ms)
+	peer = c.randomNonStreamLeader(globalAccountName, "B").NodeName()
+	sub := natsSubSync(t, sysNC, nats.NewInbox())
+	b, _ = json.Marshal(&streamSyncRequest{FirstSeq: 1, LastSeq: total, Peer: peer})
+	natsPubReq(t, sysNC, syncSubj, sub.Subject, b)
+	load(ms)
+	require_True(t, slices.Contains(mset.catchupPeers(), peer))
+	require_NoError(t, mset.raftNode().ProposeRemovePeer(peer))
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		if slices.Contains(mset.catchupPeers(), peer) {
+			return fmt.Errorf("peer %q still tracked for catchup", peer)
+		}
+		return nil
+	})
+	load(ms)
+	released(leader, mset, peer)
+	// At most the message being loaded when the removal landed was sent.
+	if n, _, _ := sub.Pending(); n > 2 {
+		t.Fatalf("Expected at most 2 messages sent after the peer was removed, got %d", n)
+	}
+	drain(ms)
+}

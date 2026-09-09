@@ -2951,6 +2951,7 @@ func TestJetStreamSuperClusterMovingStreamStaleCatchupPeerDoesNotBlock(t *testin
 	// store-current, so it must not hold up the handover to the desired peers.
 	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
 		mset.setCatchupPeer(stale, uint64(toSend))
+		mset.detachCatchupPeer(stale)
 		if peers := node.PeerNames(); len(peers) != 6 {
 			return fmt.Errorf("expected 6 peers, got %d", len(peers))
 		}
