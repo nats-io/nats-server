@@ -10756,8 +10756,20 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 	// If we're the first to specify an origin for desired state, capture it.
 	rg.populateOrigin(osa)
 
-	// A retention change must go through desired state, so consumers can be scaled first.
-	rg = rg.withRetentionChange(osa, newCfg.Retention)
+	// A retention change must go through desired state, so consumers (if any) can be scaled first.
+	if isRetentionChange {
+		var converged bool
+		// Only register the retention if any consumers need to be remapped (or we already had desired state).
+		if rg.Desired == nil {
+			// Simulate remapping against the updated group.
+			tsa := osa.clone()
+			tsa.Group, tsa.Config = rg, newCfg
+			_, _, converged = js.remapConsumerAssignments(acc.Name, tsa)
+		}
+		if !converged {
+			rg = rg.withRetentionChange(osa, newCfg.Retention)
+		}
+	}
 
 	syncSubject := osa.Sync
 	if syncSubject == _EMPTY_ {
