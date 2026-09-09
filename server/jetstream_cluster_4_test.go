@@ -9614,3 +9614,68 @@ func TestJetStreamClusterStreamDeleteRacingGroupRename(t *testing.T) {
 		c.waitOnServerHealthz(s)
 	}
 }
+
+// A consumer pause proposes a full assignment. If it is based on the committed
+// assignment while a rename of the consumer's group is proposed but not yet
+// applied, the pause is applied after the rename with the stale group and undoes
+// it. The pause request must resolve the inflight assignment instead.
+func TestJetStreamClusterConsumerPauseRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	// Track a rename of the consumer's group as an inflight proposal, as if the
+	// meta leader had just proposed it and it is not applied yet.
+	mjs.mu.Lock()
+	rca := mjs.consumerAssignment(globalAccountName, "TEST", "C").copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	rca.Reply = _EMPTY_
+	cc.trackInflightConsumerProposal(globalAccountName, "TEST", rca, false)
+	mjs.mu.Unlock()
+
+	pauseUntil := time.Now().Add(time.Hour).UTC()
+	req, err := json.Marshal(JSApiConsumerPauseRequest{PauseUntil: pauseUntil})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", "C"), req, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerPauseResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Paused)
+
+	// The pause must have been proposed against the inflight (renamed) assignment,
+	// so the rename sticks and the consumer is paused everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+			sjs.mu.RUnlock()
+			if ca == nil {
+				return fmt.Errorf("server %q has no assignment for consumer", s)
+			}
+			if ca.Group.Name != rca.Group.Name {
+				return fmt.Errorf("server %q has group %q, expected renamed group %q", s, ca.Group.Name, rca.Group.Name)
+			}
+			if ca.Config.PauseUntil == nil || !ca.Config.PauseUntil.Equal(pauseUntil) {
+				return fmt.Errorf("server %q assignment is not paused", s)
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnServerHealthz(s)
+	}
+}
