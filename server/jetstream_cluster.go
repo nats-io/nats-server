@@ -11432,19 +11432,13 @@ func (s *Server) jsClusteredConsumerDeleteRequest(ci *ClientInfo, acc *Account, 
 
 	var resp = JSApiConsumerDeleteResponse{ApiResponse: ApiResponse{Type: JSApiConsumerDeleteResponseType}}
 
-	sa := js.streamAssignment(acc.Name, stream)
+	sa := js.streamAssignmentOrInflight(acc.Name, stream)
 	if sa == nil {
 		resp.Error = NewJSStreamNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
 		return
-
 	}
-	if sa.consumers == nil {
-		resp.Error = NewJSConsumerNotFoundError()
-		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
-		return
-	}
-	oca := sa.consumers[consumer]
+	oca := js.consumerAssignmentOrInflight(acc.Name, stream, consumer)
 	if oca == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
