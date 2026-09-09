@@ -11621,8 +11621,20 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		if len(active) < replicas {
 			return nil, &selectPeerError{offline: true}
 		}
-		// First shuffle the active peers and then select to account for replica = 1.
-		rand.Shuffle(len(active), func(i, j int) { active[i], active[j] = active[j], active[i] })
+		// If the stream is moving, prioritize getting the consumer on those peers if they
+		// already host the stream. Otherwise, the consumer would need to migrate soon after.
+		targetPeers := sa.targetPeers()
+		n := 0
+		for i, peer := range active {
+			if slices.Contains(targetPeers, peer) {
+				active[n], active[i] = active[i], active[n]
+				n++
+			}
+		}
+		// Shuffle both partitions before selecting to account for replica = 1.
+		rand.Shuffle(n, func(i, j int) { active[i], active[j] = active[j], active[i] })
+		rest := active[n:]
+		rand.Shuffle(len(rest), func(i, j int) { rest[i], rest[j] = rest[j], rest[i] })
 		peers = active[:replicas]
 	}
 	storage := sa.Config.Storage

@@ -9730,3 +9730,71 @@ func TestJetStreamClusterConsumerLeaderStepDownWithInflightStreamUpdate(t *testi
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
 	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") != ml)
 }
+
+// A consumer created while its stream is moving to a known target peer set should be
+// placed on the target peers that already host the stream, so it does not need to
+// migrate right after, blocking the stream's own move in the meantime.
+func TestJetStreamClusterConsumerPlacementPrefersTargetPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	mjs.mu.RLock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST").copyGroup()
+	mjs.mu.RUnlock()
+	peers := copyStrings(sa.Group.Peers)
+	require_Equal(t, len(peers), 3)
+	target := peers[0]
+
+	// Scaling down to a single peer that has been selected already.
+	cfg := *sa.Config
+	cfg.Replicas = 1
+	sa.Config = &cfg
+	sa.Group.Desired = &desiredRaftGroup{ID: "scaledown", Peers: []string{target}}
+	for range 20 {
+		for _, ccfg := range []*ConsumerConfig{{Durable: "C", Replicas: 1}, {Replicas: 0}} {
+			rg, perr := cc.createGroupForConsumer(ccfg, sa)
+			require_True(t, perr == nil)
+			require_Equal(t, len(rg.Peers), 1)
+			require_Equal(t, rg.Peers[0], target)
+		}
+	}
+
+	// Scaling down, but the surviving peer is not selected yet. Any current peer will do.
+	sa.Group.Desired = &desiredRaftGroup{ID: "scaledown", Peers: peers, ScaleDown: true}
+	rg, perr := cc.createGroupForConsumer(&ConsumerConfig{Durable: "C", Replicas: 1}, sa)
+	require_True(t, perr == nil)
+	require_Equal(t, len(rg.Peers), 1)
+	require_True(t, slices.Contains(peers, rg.Peers[0]))
+
+	// Moving to a peer that does not host the stream yet. Fall back to the current peers.
+	sa.Group.Desired = &desiredRaftGroup{ID: "move", Peers: []string{"nowhere"}}
+	rg, perr = cc.createGroupForConsumer(&ConsumerConfig{Durable: "C", Replicas: 1}, sa)
+	require_True(t, perr == nil)
+	require_Equal(t, len(rg.Peers), 1)
+	require_True(t, slices.Contains(peers, rg.Peers[0]))
+
+	// Only one target peer hosts the stream, but the consumer needs two. The target
+	// peer must be one of them, the other is filled from the current peers.
+	sa.Config.Replicas = 3
+	sa.Group.Desired = &desiredRaftGroup{ID: "move", Peers: []string{target, "nowhere"}}
+	for range 20 {
+		rg, perr = cc.createGroupForConsumer(&ConsumerConfig{Durable: "C", Replicas: 2}, sa)
+		require_True(t, perr == nil)
+		require_Equal(t, len(rg.Peers), 2)
+		require_True(t, slices.Contains(rg.Peers, target))
+		for _, p := range rg.Peers {
+			require_True(t, slices.Contains(peers, p))
+		}
+	}
+}
