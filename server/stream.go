@@ -394,7 +394,7 @@ type DesiredClusterInfoOrigin struct {
 	Replicas int `json:"replicas"`
 	// Original placement before it was updated.
 	Placement *Placement `json:"placement,omitempty"`
-	// When changing between retention policies, this retention remains active until unset.
+	// Original retention before it was updated.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
