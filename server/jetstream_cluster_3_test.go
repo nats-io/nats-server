@@ -11989,3 +11989,685 @@ func TestJetStreamClusterNoResetClusteredStateAfterStreamRemap(t *testing.T) {
 		mset.mu.Unlock()
 	})
 }
+
+// Mimics a v2.15 server (the meta leader) recording desired state to scale an R1
+// stream up to R3. This server is only expected to persist that desired state and
+// expose it, the group leader acting on it lands in a later release.
+func TestJetStreamClusterDesiredStateFromNewerServerScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs, cc := ml.getJetStreamCluster()
+
+	// The peer set a v2.15 meta leader would have selected, with the origin peer first.
+	mjs.mu.RLock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, osa)
+	require_Len(t, len(osa.Group.Peers), 1)
+	origin := osa.Group.Peers[0]
+	peers := []string{origin}
+	for _, s := range c.servers {
+		if id := s.Node(); id != origin {
+			peers = append(peers, id)
+		}
+	}
+	// Build the assignment as a v2.15 meta leader would: the group stays at its
+	// origin peer set and only the desired state holds the target.
+	nsa := osa.copyGroup()
+	// Must not mutate the live assignment's config, it's shared by the clone.
+	nsa.Config = osa.Config.clone()
+	nsa.Config.Replicas = 3
+	nsa.Group.Name = groupNameForStream(peers, nsa.Group.Storage)
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created:   time.Now().UTC(),
+		ID:        "DESIRED",
+		Peers:     peers,
+		Cluster:   osa.Group.Cluster,
+		Preferred: origin,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:     copyStrings(osa.Group.Peers),
+			Cluster:   osa.Group.Cluster,
+			Replicas:  osa.Config.Replicas,
+			Placement: osa.Config.Placement.clone(),
+		},
+	}
+	desired := nsa.Group.Desired
+	oGroupName := osa.Group.Name
+	mjs.mu.RUnlock()
+
+	require_NoError(t, cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa)))
+
+	// Every server must have persisted the desired state onto its local assignment,
+	// without the assignment itself having moved toward it.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			var (
+				cfg *StreamConfig
+				rg  *raftGroup
+				d   *desiredRaftGroup
+			)
+			if sa != nil {
+				cfg, rg = sa.Config, sa.Group
+				d = rg.Desired
+			}
+			sjs.mu.RUnlock()
+
+			if sa == nil {
+				return fmt.Errorf("no stream assignment on %s", s)
+			}
+			if d == nil {
+				return fmt.Errorf("desired state not persisted on %s", s)
+			}
+			if d.ID != desired.ID {
+				return fmt.Errorf("desired ID on %s, got %q, want %q", s, d.ID, desired.ID)
+			}
+			if !slices.Equal(d.Peers, peers) {
+				return fmt.Errorf("desired peers on %s, got %+v, want %+v", s, d.Peers, peers)
+			}
+			if d.Preferred != origin {
+				return fmt.Errorf("desired preferred on %s, got %q, want %q", s, d.Preferred, origin)
+			}
+			if d.Origin == nil {
+				return fmt.Errorf("desired origin not persisted on %s", s)
+			}
+			if d.Origin.Replicas != 1 || !slices.Equal(d.Origin.Peers, []string{origin}) {
+				return fmt.Errorf("desired origin on %s, got %d/%+v, want 1/%+v",
+					s, d.Origin.Replicas, d.Origin.Peers, []string{origin})
+			}
+			// The config is the requested target, while the group must be untouched:
+			// this server persists desired state, it doesn't act on it.
+			if cfg.Replicas != 3 {
+				return fmt.Errorf("config replicas on %s, got %d, want 3", s, cfg.Replicas)
+			}
+			if !slices.Equal(rg.Peers, []string{origin}) {
+				return fmt.Errorf("group peers on %s, got %+v, want %+v", s, rg.Peers, []string{origin})
+			}
+			if rg.Name == oGroupName {
+				return fmt.Errorf("group not renamed on %s, still %q", s, rg.Name)
+			}
+			// The group keeps a node while the desired state is pending, even at a single
+			// peer, so the Raft term a newer server resumes the migration from survives.
+			// Only the peers the group is actually at, we don't act on the desired set.
+			if isOrigin := s.Node() == origin; isOrigin != (rg.node != nil) {
+				if isOrigin {
+					return fmt.Errorf("no raft node on origin %s while desired state is pending", s)
+				}
+				return fmt.Errorf("raft node created on %s, must not act on the desired peer set", s)
+			}
+		}
+		return nil
+	})
+
+	// The group has a node now that a desired state is pending, so wait for it to have
+	// settled on a leader before asking, or the answering peer is not suppressed below.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Stream info must expose the desired state as well.
+	var resp JSApiStreamInfoResponse
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_NotNil(t, resp.StreamInfo)
+
+	ci := resp.StreamInfo.Cluster
+	require_NotNil(t, ci)
+	// Still only the origin peer, and it's the server answering, so it's not listed.
+	require_Len(t, len(ci.Replicas), 0)
+	require_NotNil(t, ci.Desired)
+	require_Equal(t, ci.Desired.Name, desired.Cluster)
+	require_True(t, ci.Desired.Created.Equal(desired.Created))
+	require_NotNil(t, ci.Desired.Origin)
+	require_Equal(t, ci.Desired.Origin.Replicas, 1)
+
+	// The desired replicas are the full target set, named after the servers.
+	var names []string
+	for _, pi := range ci.Desired.Replicas {
+		names = append(names, pi.Name)
+	}
+	slices.Sort(names)
+	var expected []string
+	for _, s := range c.servers {
+		expected = append(expected, s.Name())
+	}
+	slices.Sort(expected)
+	require_True(t, slices.Equal(names, expected))
+}
+
+func TestJetStreamClusterDesiredStateRetentionReportedInStreamInfo(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.LimitsPolicy,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs, cc := ml.getJetStreamCluster()
+
+	// Build the assignment as a v2.15 meta leader would for a Limits->Interest
+	// retention change: the config holds the requested target, while the origin
+	// records what the stream must keep running at until the change is reached.
+	mjs.mu.RLock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, osa)
+	limits := LimitsPolicy
+	nsa := osa.copyGroup()
+	// Must not mutate the live assignment's config, it's shared by the clone.
+	nsa.Config = osa.Config.clone()
+	nsa.Config.Retention = InterestPolicy
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      "DESIRED",
+		Peers:   copyStrings(osa.Group.Peers),
+		Cluster: osa.Group.Cluster,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:     copyStrings(osa.Group.Peers),
+			Cluster:   osa.Group.Cluster,
+			Replicas:  osa.Config.Replicas,
+			Placement: osa.Config.Placement.clone(),
+			Retention: &limits,
+		},
+	}
+	mjs.mu.RUnlock()
+
+	require_NoError(t, cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa)))
+
+	// Every server must hold the requested retention on its assignment, while the
+	// stream itself keeps running at the origin retention until the change is reached.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			var cfg *StreamConfig
+			if sa != nil {
+				cfg = sa.Config
+			}
+			sjs.mu.RUnlock()
+
+			if sa == nil {
+				return fmt.Errorf("no stream assignment on %s", s)
+			}
+			if cfg.Retention != InterestPolicy {
+				return fmt.Errorf("assignment retention on %s, got %v, want %v", s, cfg.Retention, InterestPolicy)
+			}
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != LimitsPolicy {
+				return fmt.Errorf("running retention on %s, got %v, want %v", s, r, LimitsPolicy)
+			}
+		}
+		return nil
+	})
+
+	// Stream info must report the retention as requested, not the origin the
+	// stream is still running at.
+	var resp JSApiStreamInfoResponse
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), nil, time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_NotNil(t, resp.StreamInfo)
+	require_Equal(t, resp.StreamInfo.Config.Retention, InterestPolicy)
+	require_NotNil(t, resp.StreamInfo.Cluster)
+	require_NotNil(t, resp.StreamInfo.Cluster.Desired)
+	require_NotNil(t, resp.StreamInfo.Cluster.Desired.Origin)
+	require_NotNil(t, resp.StreamInfo.Cluster.Desired.Origin.Retention)
+	require_Equal(t, *resp.StreamInfo.Cluster.Desired.Origin.Retention, LimitsPolicy)
+
+	// The same must hold for the monitoring endpoint, which reports the config
+	// alongside the cluster info that already exposes the desired state.
+	for _, s := range c.servers {
+		jsz, err := s.Jsz(&JSzOptions{Accounts: true, Streams: true, Config: true})
+		require_NoError(t, err)
+		for _, ad := range jsz.AccountDetails {
+			for _, sd := range ad.Streams {
+				if sd.Name != "TEST" {
+					continue
+				}
+				require_NotNil(t, sd.Config)
+				require_Equal(t, sd.Config.Retention, InterestPolicy)
+				require_NotNil(t, sd.Cluster)
+				require_NotNil(t, sd.Cluster.Desired)
+				require_NotNil(t, sd.Cluster.Desired.Origin)
+				require_NotNil(t, sd.Cluster.Desired.Origin.Retention)
+				require_Equal(t, *sd.Cluster.Desired.Origin.Retention, LimitsPolicy)
+			}
+		}
+	}
+}
+
+// A v2.15 meta leader records the desired state on the stream first, its consumers
+// are only mapped onto the new peer set later, as part of the migration. This server
+// does not act on desired state, so both the stream and its consumers keep running at
+// their origin, without a Raft node, until a v2.15 server drives the migration. They
+// must not be reported unhealthy for that.
+func TestJetStreamClusterConsumerHealthCheckUnmappedDuringMigration(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 1,
+	})
+	require_NoError(t, err)
+	// No explicit replica count, so it inherits the stream's.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	// The single server hosting the R1 stream.
+	var s *Server
+	for _, cs := range c.servers {
+		if _, err := cs.globalAccount().lookupStream("TEST"); err == nil {
+			s = cs
+			break
+		}
+	}
+	require_NotNil(t, s)
+	acc := s.globalAccount()
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+
+	sjs := s.getJetStream()
+	sjs.mu.RLock()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	sjs.mu.RUnlock()
+	require_NotNil(t, sa)
+	require_NotNil(t, ca)
+
+	// Healthy to start with.
+	require_NoError(t, sjs.isStreamHealthy(acc, sa))
+	require_NoError(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca))
+
+	// Record desired state to scale up to R3, as a v2.15 meta leader would: the config
+	// holds the target while the group stays at its origin. The consumer is left
+	// untouched, it is only mapped onto the new peers later in the migration.
+	peers := []string{sa.Group.Peers[0]}
+	for _, cs := range c.servers {
+		if id := cs.Node(); id != sa.Group.Peers[0] {
+			peers = append(peers, id)
+		}
+	}
+	sjs.mu.Lock()
+	sa.Config.Replicas = 3
+	sa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      "DESIRED",
+		Peers:   peers,
+		Cluster: sa.Group.Cluster,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    copyStrings(sa.Group.Peers),
+			Cluster:  sa.Group.Cluster,
+			Replicas: 1,
+		},
+	}
+	sjs.mu.Unlock()
+	// The stream runs at its origin, but its replica count is the target already.
+	mset.cfgMu.Lock()
+	mset.cfg.Replicas = 3
+	mset.cfgMu.Unlock()
+
+	// Neither the stream nor the consumer moved: still on the origin peer, with no
+	// Raft node, while the replica count they are judged by is the target.
+	sjs.mu.RLock()
+	require_Len(t, len(sa.Group.Peers), 1)
+	require_True(t, sa.Group.node == nil)
+	require_Len(t, len(ca.Group.Peers), 1)
+	require_True(t, ca.Group.Desired == nil)
+	require_True(t, ca.Group.node == nil)
+	sjs.mu.RUnlock()
+	rc, err := mset.lookupConsumer("CONSUMER").replica()
+	require_NoError(t, err)
+	require_Equal(t, rc, 3)
+
+	// They must not be reported unhealthy for that.
+	require_NoError(t, sjs.isStreamHealthy(acc, sa))
+	require_NoError(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca))
+
+	// The stream can scale up while the consumer remap stalls, which is the normal
+	// case here: we don't drive the migration, so the consumer stays behind until a
+	// v2.15 server maps it. The group is no longer R1, but the consumer still is.
+	sjs.mu.Lock()
+	sa.Group.Peers = copyStrings(peers)
+	sjs.mu.Unlock()
+	sjs.mu.RLock()
+	require_Len(t, len(ca.Group.Peers), 1)
+	require_True(t, ca.Group.node == nil)
+	sjs.mu.RUnlock()
+	require_NoError(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca))
+	sjs.mu.Lock()
+	sa.Group.Peers = copyStrings(sa.Group.Desired.Origin.Peers)
+	sjs.mu.Unlock()
+
+	// Without the desired state there is nothing explaining the missing node, and both
+	// are reported. Confirms the checks above are not passing for some other reason.
+	sjs.mu.Lock()
+	desired := sa.Group.Desired
+	sa.Group.Desired = nil
+	sjs.mu.Unlock()
+	require_Error(t, sjs.isStreamHealthy(acc, sa), errors.New("group node missing"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("group node missing"))
+	sjs.mu.Lock()
+	sa.Group.Desired = desired
+	sjs.mu.Unlock()
+	require_NoError(t, sjs.isStreamHealthy(acc, sa))
+	require_NoError(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca))
+}
+
+// A stream left with desired state by a newer server must not stay frozen in between its
+// origin and target. The user asks for the config they were already reported to have,
+// which must not be a no-op: the scale up happens and the retention is released.
+func TestJetStreamClusterDesiredStateResolvedOnStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  1,
+		Retention: nats.LimitsPolicy,
+	})
+	require_NoError(t, err)
+	// No explicit replica count, so it follows the stream.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	for range 10 {
+		_, err = js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	ml := c.leader()
+	mjs, cc := ml.getJetStreamCluster()
+
+	// Record desired state as a newer meta leader would: the config holds the target
+	// while the group and the stream stay at their origin.
+	mjs.mu.RLock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, osa)
+	require_Len(t, len(osa.Group.Peers), 1)
+	origin, limits := osa.Group.Peers[0], LimitsPolicy
+	peers := []string{origin}
+	for _, s := range c.servers {
+		if id := s.Node(); id != origin {
+			peers = append(peers, id)
+		}
+	}
+	nsa := osa.copyGroup()
+	// Must not mutate the live assignment's config, it's shared by the clone.
+	nsa.Config = osa.Config.clone()
+	nsa.Config.Replicas, nsa.Config.Retention = 3, InterestPolicy
+	nsa.Group.Name = groupNameForStream(peers, nsa.Group.Storage)
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      "DESIRED",
+		Peers:   peers,
+		Cluster: osa.Group.Cluster,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:     copyStrings(osa.Group.Peers),
+			Cluster:   osa.Group.Cluster,
+			Replicas:  osa.Config.Replicas,
+			Retention: &limits,
+		},
+	}
+	mjs.mu.RUnlock()
+
+	require_NoError(t, cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa)))
+
+	// Confirm we did not act on it.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			var frozen bool
+			if sa != nil && sa.Group != nil {
+				frozen = sa.Group.Desired != nil && len(sa.Group.Peers) == 1
+			}
+			sjs.mu.RUnlock()
+			if !frozen {
+				return fmt.Errorf("desired state not pending on %s", s)
+			}
+			if mset, err := s.globalAccount().lookupStream("TEST"); err == nil {
+				if r := mset.config().Retention; r != LimitsPolicy {
+					return fmt.Errorf("running retention on %s, got %v", s, r)
+				}
+			}
+		}
+		return nil
+	})
+
+	// Ask for the config we're reported to have.
+	si, err := js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Replicas, 3)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+			var nPeers, nConsumerPeers int
+			var desired *desiredRaftGroup
+			if sa != nil {
+				nPeers, desired = len(sa.Group.Peers), sa.Group.Desired
+			}
+			if ca != nil {
+				nConsumerPeers = len(ca.Group.Peers)
+			}
+			sjs.mu.RUnlock()
+
+			if sa == nil {
+				return fmt.Errorf("no stream assignment on %s", s)
+			}
+			if desired != nil {
+				return fmt.Errorf("desired state not cleared on %s", s)
+			}
+			if nPeers != 3 {
+				return fmt.Errorf("group peers on %s, got %d, want 3", s, nPeers)
+			}
+			// The consumers must have followed onto the new peer set.
+			if nConsumerPeers != 3 {
+				return fmt.Errorf("consumer peers on %s, got %d, want 3", s, nConsumerPeers)
+			}
+			// And the stream must be running there, at the released retention.
+			acc := s.globalAccount()
+			mset, err := acc.lookupStream("TEST")
+			if err != nil {
+				return fmt.Errorf("stream not on %s: %s", s, err)
+			}
+			if r := mset.config().Retention; r != InterestPolicy {
+				return fmt.Errorf("running retention on %s, got %v", s, r)
+			}
+			if mset.raftNode() == nil {
+				return fmt.Errorf("no raft node on %s", s)
+			}
+			if err = sjs.isStreamHealthy(acc, sa); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	// Nothing is pending, so stream info must not report a desired state.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	var resp JSApiStreamInfoResponse
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "TEST"), nil, 2*time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_NotNil(t, resp.StreamInfo)
+	require_True(t, resp.StreamInfo.Cluster.Desired == nil)
+	require_Equal(t, resp.StreamInfo.State.Msgs, 10)
+}
+
+// Same, for a move. The requested placement equals the config's, so it's only recognized
+// as a move when compared against the placement the stream is still running at.
+func TestJetStreamClusterDesiredStateMoveResolvedOnStreamUpdate(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+	sc.waitOnPeerCount(6)
+
+	nc, js := jsClientConnect(t, sc.randomServer())
+	defer nc.Close()
+
+	var servers []*Server
+	for _, cl := range sc.clusters {
+		servers = append(servers, cl.servers...)
+	}
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: "C1"},
+	})
+	require_NoError(t, err)
+
+	for range 10 {
+		_, err = js.Publish("foo", []byte("OK"))
+		require_NoError(t, err)
+	}
+
+	ml := sc.leader()
+	mjs, cc := ml.getJetStreamCluster()
+
+	// Record desired state for a move to C2: the config holds the target placement while
+	// the group stays on the peers in C1.
+	mjs.mu.RLock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, osa)
+	require_Len(t, len(osa.Group.Peers), 3)
+	var desiredPeers []string
+	for _, s := range sc.clusterForName("C2").servers {
+		desiredPeers = append(desiredPeers, s.Node())
+	}
+	originPeers := copyStrings(osa.Group.Peers)
+	nsa := osa.copyGroup()
+	// Must not mutate the live assignment's config, it's shared by the clone.
+	nsa.Config = osa.Config.clone()
+	nsa.Config.Placement = &Placement{Cluster: "C2"}
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      "DESIRED",
+		Peers:   desiredPeers,
+		Cluster: "C2",
+		Move:    true,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:     originPeers,
+			Cluster:   osa.Group.Cluster,
+			Replicas:  osa.Config.Replicas,
+			Placement: osa.Config.Placement.clone(),
+		},
+	}
+	mjs.mu.RUnlock()
+
+	require_NoError(t, cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa)))
+
+	// Confirm the stream did not move.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			var frozen bool
+			if sa != nil && sa.Group != nil {
+				frozen = sa.Group.Desired != nil && slices.Equal(sa.Group.Peers, originPeers)
+			}
+			sjs.mu.RUnlock()
+			if !frozen {
+				return fmt.Errorf("desired move not pending on %s", s)
+			}
+		}
+		return nil
+	})
+
+	// Ask for the placement we're reported to have.
+	_, err = js.UpdateStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Replicas:  3,
+		Placement: &nats.Placement{Cluster: "C2"},
+	})
+	require_NoError(t, err)
+
+	// The move must now be driven to completion.
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			var peers []string
+			var desired *desiredRaftGroup
+			if sa != nil {
+				peers, desired = sa.Group.Peers, sa.Group.Desired
+			}
+			sjs.mu.RUnlock()
+			if sa == nil {
+				return fmt.Errorf("no stream assignment on %s", s)
+			}
+			if desired != nil {
+				return fmt.Errorf("desired state not cleared on %s", s)
+			}
+			if len(peers) != 3 {
+				return fmt.Errorf("group peers on %s, got %d, want 3", s, len(peers))
+			}
+			for _, p := range peers {
+				if !slices.Contains(desiredPeers, p) {
+					return fmt.Errorf("peer %q on %s is not in C2", p, s)
+				}
+			}
+		}
+		return nil
+	})
+
+	// The data moved with it.
+	sc.waitOnStreamLeader(globalAccountName, "TEST")
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 10)
+	require_Equal(t, si.Cluster.Name, "C2")
+}
