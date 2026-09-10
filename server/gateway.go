@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"slices"
@@ -689,7 +689,7 @@ func (s *Server) solicitGateways() {
 func (s *Server) reconnectGateway(cfg *gatewayCfg) {
 	defer s.grWG.Done()
 
-	delay := time.Duration(rand.Intn(100)) * time.Millisecond
+	delay := time.Duration(rand.IntN(100)) * time.Millisecond
 	if !cfg.isImplicit() {
 		delay += gatewayReconnectDelay
 	}

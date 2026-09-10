@@ -15,7 +15,9 @@ package server
 
 import (
 	"bytes"
+	"crypto/fips140"
 	crand "crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
@@ -23,7 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -102,6 +104,19 @@ var compressLastBlock = []byte{0x00, 0x00, 0xff, 0xff, 0x01, 0x00, 0x00, 0xff, 0
 
 // From https://tools.ietf.org/html/rfc6455#section-1.3
 var wsGUID = []byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+
+// Concatenate the key sent by the client with the GUID, then computes the SHA1 hash
+// and returns it as a based64 encoded string.
+func wsAcceptKey(key string) string {
+	var r []byte
+	fips140.WithoutEnforcement(func() {
+		h := sha1.New()
+		h.Write([]byte(key))
+		h.Write(wsGUID)
+		r = h.Sum(nil)
+	})
+	return base64.StdEncoding.EncodeToString(r)
+}
 
 // Test can enable this so that server does not support "no-masking" requests.
 var wsTestRejectNoMasking = false
@@ -656,7 +671,7 @@ func wsFillFrameHeader(fh []byte, useMasking, first, final, compressed bool, fra
 	if useMasking {
 		var keyBuf [4]byte
 		if _, err := io.ReadFull(crand.Reader, keyBuf[:4]); err != nil {
-			kv := mrand.Int31()
+			kv := mrand.Int32()
 			binary.LittleEndian.PutUint32(keyBuf[:4], uint32(kv))
 		}
 		copy(fh[n:], keyBuf[:4])
@@ -1125,9 +1140,6 @@ func validateWebsocketOptions(o *Options) error {
 	// If no port is defined, we don't care about other options
 	if wo.Port == 0 {
 		return nil
-	}
-	if !wsAllowedFIPS() {
-		return fmt.Errorf("websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later")
 	}
 	// Enforce TLS... unless NoTLS is set to true.
 	if wo.TLSConfig == nil && !wo.NoTLS {

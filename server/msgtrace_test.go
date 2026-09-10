@@ -5355,11 +5355,11 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 					case 1:
 						// Update stream to prevent rollups, and set a max size.
 						cfg.AllowRollup = false
-						cfg.MaxMsgSize = 100
+						cfg.MaxMsgSize = 256
 						_, err = js.UpdateStream(cfg)
 						require_NoError(t, err)
 					case 2:
-						msg.Data = make([]byte, 200)
+						msg.Data = make([]byte, 512)
 					case 3:
 						pa, err := jst.Publish(mainTest.stream, []byte("hello"))
 						require_NoError(t, err)

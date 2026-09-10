@@ -17,7 +17,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"runtime"
 	"strconv"
@@ -723,6 +723,15 @@ func TestValidateDestinationSubject(t *testing.T) {
 	checkError(ValidateMapping("*", "foo.{{partition(2,1)}}"), nil, t)
 	checkError(ValidateMapping("*.*", "foo.{{SplitFromLeft(2,1)}}"), nil, t)
 	checkError(ValidateMapping("*.*", "foo.{{SplitFromRight(2,1)}}"), nil, t)
+	checkError(ValidateMapping("*.*", "foo.{{SliceFromLeft(2,1)}}"), nil, t)
+	checkError(ValidateMapping("*.*", "foo.{{SliceFromRight(2,1)}}"), nil, t)
+	checkError(ValidateMapping("*.*", "foo.{{split(1,-)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{random(1)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{left(1,2)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{Left(1,2)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{right(1,2)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{Right(1,2)}}"), nil, t)
+	checkError(ValidateMapping("*", "foo.{{ left( 1 , 2 ) }}"), nil, t)
 	checkError(ValidateMapping("*", "foo.{{unknown(1)}}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMapping("foo", "foo..}"), ErrInvalidMappingDestination, t)
 	checkError(ValidateMapping("foo", "foo. bar}"), ErrInvalidMappingDestinationSubject, t)
@@ -2346,7 +2355,7 @@ func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) 
 	// Removers
 	for i := 0; i < numRemovers; i++ {
 		go func() {
-			prand := rand.New(rand.NewSource(time.Now().UnixNano()))
+			prand := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 			swg.Done()
 			swg.Wait()
 			for {
@@ -2357,7 +2366,7 @@ func cacheContentionTest(b *testing.B, numMatchers, numAdders, numRemovers int) 
 				default:
 					mu.RLock()
 					lh := len(subs) - 1
-					index := prand.Intn(lh)
+					index := prand.IntN(lh)
 					sub := subs[index]
 					mu.RUnlock()
 					s.Remove(sub)

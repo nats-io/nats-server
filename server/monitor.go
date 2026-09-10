@@ -277,6 +277,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	// Open clients
 	var openClients []*client
+	// Selected client
+	var cidClient *client
 	// Hold for closed clients if requested.
 	var closedClients []*closedClient
 
@@ -298,7 +300,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		a.mu.RUnlock()
 	}
 
-	// Walk the open client list with server lock held.
+	// Snapshot server connection state.
 	s.mu.RLock()
 	// Default to all client unless filled in above.
 	if clist == nil {
@@ -309,6 +311,11 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	// copy the server id for monitoring
 	c.ID = s.info.ID
+	// select client by CID
+	if cid > 0 {
+		cidClient = s.clients[cid]
+	}
+	s.mu.RUnlock()
 
 	// Number of total clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
@@ -365,8 +372,8 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		// Let's first check if user also selects on ConnOpen or ConnAll
 		// and look for opened connections.
 		if state == ConnOpen || state == ConnAll {
-			if client := s.clients[cid]; client != nil {
-				openClients = append(openClients, client)
+			if cidClient != nil {
+				openClients = append(openClients, cidClient)
 				closedClients = nil
 			}
 		}
@@ -412,7 +419,6 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			}
 		}
 	}
-	s.mu.RUnlock()
 
 	// Filter by subject now if needed. We do this outside of server lock.
 	if filter != _EMPTY_ {
@@ -3160,7 +3166,9 @@ func (s *Server) accountDetail(jsa *jsAccount, optStreams, optConsumers, optDire
 			ci := js.clusterInfo(rgroup)
 			var cfg *StreamConfig
 			if optCfg {
-				c := stream.config()
+				// Report the config as requested, the stream can still be running at its origin.
+				// Must be consistent with the desired state reported as part of the cluster info.
+				c := js.targetStreamConfig(stream, stream.config())
 				cfg = &c
 			}
 			// Skip if we are only looking for stream leaders.
@@ -4099,7 +4107,7 @@ func (s *Server) healthz(opts *HealthzOptions) *HealthStatus {
 			mset, _ := acc.lookupStream(stream)
 			// Now check consumers.
 			for consumer, ca := range sa.consumers {
-				if err := js.isConsumerHealthy(mset, consumer, ca); err != nil {
+				if err := js.isConsumerHealthy(mset, sa, consumer, ca); err != nil {
 					if !details {
 						health.Status = na
 						health.Error = fmt.Sprintf("JetStream consumer '%s > %s > %s' is not current: %s", acc, stream, consumer, err)

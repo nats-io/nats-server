@@ -13,6 +13,8 @@
 
 package server
 
+import "sync"
+
 // We wrap to hold onto optional items for /connz.
 type closedClient struct {
 	ConnInfo
@@ -23,6 +25,7 @@ type closedClient struct {
 
 // Fixed sized ringbuffer for closed connections.
 type closedRingBuffer struct {
+	mu    sync.Mutex
 	total uint64
 	conns []*closedClient
 }
@@ -37,15 +40,23 @@ func newClosedRingBuffer(max int) *closedRingBuffer {
 // Adds in a new closed connection. If there is no more room,
 // remove the oldest.
 func (rb *closedRingBuffer) append(cc *closedClient) {
-	rb.conns[rb.next()] = cc
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.conns[rb.nextLocked()] = cc
 	rb.total++
 }
 
-func (rb *closedRingBuffer) next() int {
+func (rb *closedRingBuffer) nextLocked() int {
 	return int(rb.total % uint64(cap(rb.conns)))
 }
 
 func (rb *closedRingBuffer) len() int {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.lenLocked()
+}
+
+func (rb *closedRingBuffer) lenLocked() int {
 	if rb.total > uint64(cap(rb.conns)) {
 		return cap(rb.conns)
 	}
@@ -53,6 +64,8 @@ func (rb *closedRingBuffer) len() int {
 }
 
 func (rb *closedRingBuffer) totalConns() uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
 	return rb.total
 }
 
@@ -63,10 +76,13 @@ func (rb *closedRingBuffer) totalConns() uint64 {
 // list inside monitor which allows programatic access, we do not
 // know when it would be done.
 func (rb *closedRingBuffer) closedClients() []*closedClient {
-	dup := make([]*closedClient, rb.len())
-	head := rb.next()
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	n := rb.lenLocked()
+	dup := make([]*closedClient, n)
+	head := rb.nextLocked()
 	if rb.total <= uint64(cap(rb.conns)) || head == 0 {
-		copy(dup, rb.conns[:rb.len()])
+		copy(dup, rb.conns[:n])
 	} else {
 		fp := rb.conns[head:]
 		sp := rb.conns[:head]

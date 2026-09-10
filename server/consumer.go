@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1477,13 +1477,13 @@ func (o *consumer) updateInactiveThreshold(cfg *ConsumerConfig) {
 	// Ephemerals will always have inactive thresholds.
 	if !o.isDurable() && cfg.InactiveThreshold <= 0 {
 		// Add in 1 sec of jitter above and beyond the default of 5s.
-		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+		o.dthresh = JsDeleteWaitTimeDefault + 100*time.Millisecond + time.Duration(rand.Int64N(900))*time.Millisecond
 		// Only stamp config with default sans jitter.
 		cfg.InactiveThreshold = JsDeleteWaitTimeDefault
 	} else if cfg.InactiveThreshold > 0 {
 		// Add in up to 1 sec of jitter if pull mode.
 		if o.isPullMode() {
-			o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int63n(900))*time.Millisecond
+			o.dthresh = cfg.InactiveThreshold + 100*time.Millisecond + time.Duration(rand.Int64N(900))*time.Millisecond
 		} else {
 			o.dthresh = cfg.InactiveThreshold
 		}
@@ -2189,6 +2189,17 @@ func (o *consumer) deleteNotActive() {
 		}
 	} else {
 		// Pull mode.
+		// Check if we still have valid requests waiting. This also expires
+		// requests, which updates the last activity, so must be checked first.
+		if o.checkWaitingForInterest() {
+			if o.dtmr != nil {
+				o.dtmr.Reset(o.dthresh)
+			} else {
+				o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
+			}
+			o.mu.Unlock()
+			return
+		}
 		elapsed := time.Since(o.waiting.last)
 		if elapsed < o.dthresh {
 			// These need to keep firing so reset but use delta.
@@ -2196,16 +2207,6 @@ func (o *consumer) deleteNotActive() {
 				o.dtmr.Reset(o.dthresh - elapsed)
 			} else {
 				o.dtmr = time.AfterFunc(o.dthresh-elapsed, o.deleteNotActive)
-			}
-			o.mu.Unlock()
-			return
-		}
-		// Check if we still have valid requests waiting.
-		if o.checkWaitingForInterest() {
-			if o.dtmr != nil {
-				o.dtmr.Reset(o.dthresh)
-			} else {
-				o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
 			}
 			o.mu.Unlock()
 			return
@@ -2294,7 +2295,7 @@ func (o *consumer) deleteNotActive() {
 		if ca != nil && meta != nil {
 			// Check to make sure we went away.
 			// Don't think this needs to be a monitored go routine.
-			jitter := time.Duration(rand.Int63n(int64(cnaStart)))
+			jitter := time.Duration(rand.Int64N(int64(cnaStart)))
 			interval := cnaStart + jitter
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -3382,7 +3383,7 @@ func (o *consumer) applyState(state *ConsumerState) {
 	if o.isLeader() && len(o.pending) > 0 {
 		// This is on startup or leader change. We want to check pending
 		// sooner in case there are inconsistencies etc. Pick between 500ms - 1.5s
-		delay := 500*time.Millisecond + time.Duration(rand.Int63n(1000))*time.Millisecond
+		delay := 500*time.Millisecond + time.Duration(rand.Int64N(1000))*time.Millisecond
 
 		// If normal is lower than this just use that.
 		if o.cfg.AckWait < delay {
@@ -3621,7 +3622,7 @@ func (o *consumer) shouldSample() bool {
 
 	// TODO(ripienaar) this is a tad slow so we need to rethink here, however this will only
 	// hit for those with sampling enabled and its not the default
-	return rand.Int31n(100) <= o.sfreq
+	return rand.Int32N(100) <= o.sfreq
 }
 
 func (o *consumer) sampleAck(sseq, dseq, dc uint64) {
@@ -4467,6 +4468,10 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 			}
+			// Expiring a request counts as activity for the inactive threshold.
+			if wr.expires.After(o.waiting.last) {
+				o.waiting.last = wr.expires
+			}
 			o.waiting.removeCurrent()
 			if o.node != nil {
 				o.removeClusterPendingRequest(wr.reply)
@@ -4850,6 +4855,22 @@ func (o *consumer) isEqualOrSubsetMatch(subj string) bool {
 	return false
 }
 
+// Check if all consumer filter subjects are subsets of the candidate subject.
+// Lock should be held.
+func (o *consumer) isFilterSubsetOf(subj string) bool {
+	if len(o.subjf) == 0 {
+		return false
+	}
+	tsa := [32]string{}
+	tts := tokenizeSubjectIntoSlice(tsa[:0], subj)
+	for _, filter := range o.subjf {
+		if !isSubsetMatchTokenized(filter.tokenizedSubject, tts) {
+			return false
+		}
+	}
+	return true
+}
+
 var (
 	errMaxAckPending = errors.New("max ack pending reached")
 	errBadConsumer   = errors.New("consumer not valid")
@@ -5016,6 +5037,9 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 			if expires {
 				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				if wr.expires.After(wq.last) {
+					wq.last = wr.expires
+				}
 				wr = remove(pre, wr)
 				continue
 			} else if wr.expires.IsZero() || wr.d > 0 {
@@ -5023,6 +5047,9 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 				// Return no messages instead, which is the same as if we'd rejected the pull request initially.
 				hdr := fmt.Appendf(nil, "NATS/1.0 404 No Messages\r\n\r\n")
 				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				if now.After(wq.last) {
+					wq.last = now
+				}
 				wr = remove(pre, wr)
 				continue
 			}
@@ -5196,7 +5223,7 @@ func (o *consumer) processInboundAcks(qch chan struct{}) {
 
 	// How often we will check for ack floor drift.
 	// Spread these out for large numbers on a server restart.
-	delta := time.Duration(rand.Int63n(int64(time.Minute)))
+	delta := time.Duration(rand.Int64N(int64(time.Minute)))
 	ticker := time.NewTicker(time.Minute + delta)
 	defer ticker.Stop()
 
@@ -5833,7 +5860,7 @@ func (o *consumer) fcReply() string {
 	sb.WriteString(o.name)
 	sb.WriteByte(btsep)
 	var b [4]byte
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base

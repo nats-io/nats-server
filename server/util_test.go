@@ -15,7 +15,7 @@ package server
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -280,7 +280,7 @@ func createTestSub() *subscription {
 
 func BenchmarkArrayRand(b *testing.B) {
 	b.StopTimer()
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 	// Create an array of 10 items
 	subs := []*subscription{}
 	for i := 0; i < 10; i++ {
@@ -289,7 +289,7 @@ func BenchmarkArrayRand(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		index := r.Intn(len(subs))
+		index := r.IntN(len(subs))
 		_ = subs[index]
 	}
 }

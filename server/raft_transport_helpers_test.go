@@ -101,6 +101,7 @@ func (h *raftTransportHub) publish(t *mockTransport, subject, reply string, msg 
 	afterMsgHook := h.afterMsg
 	sender := t.Node().ID()
 	partition := h.partitions[sender]
+	var subscriptions []*subscription
 
 	for id, transport := range h.transports {
 		if sender == id {
@@ -111,12 +112,16 @@ func (h *raftTransportHub) publish(t *mockTransport, subject, reply string, msg 
 			continue
 		}
 
-		res := transport.sub.Match(subject)
-		for _, sub := range res.psubs {
-			sub.icb(sub, nil, transport.acc, subject, reply, msg)
-		}
+		result := transport.sub.Match(subject)
+		subscriptions = append(subscriptions, result.psubs...)
 	}
 	h.mu.Unlock()
+
+	// Deliver without holding the hub lock, to avoid a lock inversion between
+	// Raft and hub locks.
+	for _, sub := range subscriptions {
+		sub.icb(sub, nil, nil, subject, reply, msg)
+	}
 
 	if afterMsgHook != nil {
 		afterMsgHook(subject, reply, msg)

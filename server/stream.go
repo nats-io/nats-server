@@ -22,7 +22,7 @@ import (
 	"io"
 	"math"
 	"math/big"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -369,13 +369,66 @@ type StreamAlternate struct {
 // ClusterInfo shows information about the underlying set of servers
 // that make up the stream or consumer.
 type ClusterInfo struct {
-	Name        string      `json:"name,omitempty"`
-	RaftGroup   string      `json:"raft_group,omitempty"`
-	Leader      string      `json:"leader,omitempty"`
-	LeaderSince *time.Time  `json:"leader_since,omitempty"`
-	SystemAcc   bool        `json:"system_account,omitempty"`
-	TrafficAcc  string      `json:"traffic_account,omitempty"`
-	Replicas    []*PeerInfo `json:"replicas,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	RaftGroup   string              `json:"raft_group,omitempty"`
+	Leader      string              `json:"leader,omitempty"`
+	LeaderSince *time.Time          `json:"leader_since,omitempty"`
+	SystemAcc   bool                `json:"system_account,omitempty"`
+	TrafficAcc  string              `json:"traffic_account,omitempty"`
+	Replicas    []*PeerInfo         `json:"replicas,omitempty"`
+	Desired     *DesiredClusterInfo `json:"desired,omitempty"`
+}
+
+// DesiredClusterInfo shows information of the desired set of servers
+// that should make up the stream or consumer.
+type DesiredClusterInfo struct {
+	Created  time.Time                 `json:"created"`
+	Name     string                    `json:"name,omitempty"`
+	Replicas []*DesiredPeerInfo        `json:"replicas,omitempty"`
+	Origin   *DesiredClusterInfoOrigin `json:"origin,omitempty"`
+	Status   *DesiredClusterInfoStatus `json:"status,omitempty"`
+}
+
+type DesiredClusterInfoOrigin struct {
+	// Original replicas before it was updated.
+	Replicas int `json:"replicas"`
+	// Original placement before it was updated.
+	Placement *Placement `json:"placement,omitempty"`
+	// When changing between retention policies, this retention remains active until unset.
+	Retention *RetentionPolicy `json:"retention,omitempty"`
+}
+
+// DesiredPeerInfo is a minimal version of PeerInfo that shows information about the desired peer set.
+type DesiredPeerInfo struct {
+	Name    string `json:"name"`              // Name is the unique name for the peer
+	Offline bool   `json:"offline,omitempty"` // Offline indicates if it has not been seen recently
+	Peer    string `json:"peer"`              // Peer is the unique ID for the peer
+}
+
+// MigrationStatusType classifies a migration status by what has to change for the
+// migration to advance, so it can be matched on without parsing the status line.
+type MigrationStatusType string
+
+const (
+	MigrationStatusMeta        MigrationStatusType = "meta"        // The meta leader must record or advance desired state.
+	MigrationStatusMembership  MigrationStatusType = "membership"  // A proposed membership change must commit.
+	MigrationStatusSnapshot    MigrationStatusType = "snapshot"    // A snapshot must be installed.
+	MigrationStatusCatchup     MigrationStatusType = "catchup"     // Peers must become store-current.
+	MigrationStatusQuorum      MigrationStatusType = "quorum"      // More peers must come online before we can act without losing quorum.
+	MigrationStatusBlocked     MigrationStatusType = "blocked"     // Another asset must move first, i.e. the stream/consumer ordering constraint.
+	MigrationStatusUnavailable MigrationStatusType = "unavailable" // Nothing to do here, we're shutting down, or the assignment is gone.
+)
+
+type DesiredClusterInfoStatus struct {
+	// Description is a short status line describing what the group leader is currently
+	// doing to move this group toward its desired state, or what it's waiting on.
+	Description string `json:"description"`
+	// Type classifies Description by what has to change for the migration to
+	// advance, so it can be matched on without parsing the status line.
+	Type MigrationStatusType `json:"type"`
+	// Err is the underlying failure behind this status, if it had one. Only set
+	// for faults that persist across cycles, never for races that resolve themselves.
+	Err string `json:"err,omitempty"`
 }
 
 // PeerInfo shows information about all the peers in the cluster that
@@ -387,6 +440,7 @@ type PeerInfo struct {
 	Active  time.Duration `json:"active"`            // Active is the timestamp it was last active
 	Lag     uint64        `json:"lag,omitempty"`     // Lag is how many operations behind it is
 	Peer    string        `json:"peer"`              // Peer is the unique ID for the peer
+	Pending bool          `json:"pending,omitempty"` // Pending indicates the peer is part of the assignment, but is not a peer of the Raft group (yet)
 	// For migrations.
 	cluster string
 }
@@ -1448,6 +1502,16 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 // headers and msgId in them. Would need signaling from the storage layer.
 // mset.mu and mset.ddMu locks should be held.
 func (mset *stream) rebuildDedupe() {
+	var smv StoreMsg
+	var state StreamState
+	mset.store.FastState(&state)
+
+	if state.LastSeq > 0 {
+		if sm, err := mset.store.LoadMsg(state.LastSeq, &smv); err == nil {
+			mset.lmsgId = getMsgId(sm.hdr)
+		}
+	}
+
 	duplicates := mset.cfg.Duplicates
 	if duplicates <= 0 {
 		return
@@ -1459,10 +1523,6 @@ func (mset *stream) rebuildDedupe() {
 		return
 	}
 
-	var smv StoreMsg
-	var state StreamState
-	mset.store.FastState(&state)
-
 	for seq := sseq; seq <= state.LastSeq; seq++ {
 		sm, err := mset.store.LoadMsg(seq, &smv)
 		if err != nil {
@@ -1473,9 +1533,6 @@ func (mset *stream) rebuildDedupe() {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
 				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
-		}
-		if seq == state.LastSeq {
-			mset.lmsgId = msgId
 		}
 	}
 }
@@ -2948,6 +3005,9 @@ func (mset *stream) purgeLocked(preq *JSApiStreamPurgeRequest, needLock bool) (p
 		if !doPurge && preq != nil && o.isFilteredMatch(preq.Subject) {
 			doPurge, isWider = true, true
 			start = state.FirstSeq
+		} else if doPurge && preq != nil && preq.Subject != _EMPTY_ && !o.isFilterSubsetOf(preq.Subject) {
+			isWider = true
+			start = state.FirstSeq
 		}
 		o.mu.RUnlock()
 		if doPurge {
@@ -3472,7 +3532,7 @@ func (mset *stream) scheduleSetupMirrorConsumerRetry() {
 	next += calculateRetryBackoff(mset.mirror.fails)
 
 	// Add some jitter.
-	next += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	next += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	stopAndClearTimer(&mset.mirrorConsumerSetup)
 	mset.mirrorConsumerSetup = time.AfterFunc(next, func() {
@@ -3957,7 +4017,7 @@ func (mset *stream) setupSourceConsumer(iname string, seq uint64, startTime time
 	}
 
 	// Always add some jitter
-	scheduleDelay += time.Duration(rand.Intn(int(100*time.Millisecond))) + 100*time.Millisecond
+	scheduleDelay += time.Duration(rand.IntN(int(100*time.Millisecond))) + 100*time.Millisecond
 
 	// Schedule the call to trySetupSourceConsumer
 	mset.sourceSetupSchedules[iname] = time.AfterFunc(scheduleDelay, func() {
@@ -4963,7 +5023,7 @@ func (mset *stream) subscribeToStream() error {
 		if mset.cfg.Replicas == 1 {
 			mset.setupSourceConsumers()
 		} else {
-			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.Intn(int(500*time.Millisecond)))+100*time.Millisecond, func() {
+			mset.sourcesConsumerSetup = time.AfterFunc(time.Duration(rand.IntN(int(500*time.Millisecond)))+100*time.Millisecond, func() {
 				mset.mu.Lock()
 				mset.setupSourceConsumers()
 				mset.mu.Unlock()
@@ -6362,6 +6422,28 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var incr *big.Int
 	var rollupSub, rollupAll bool
 
+	// Check to see if we are over the max msg size.
+	// Subtract to prevent against overflows.
+	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamMessageExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
+	if canConsistencyCheck && len(hdr) > math.MaxUint16 {
+		if canRespond {
+			resp.PubAck = &PubAck{Stream: name}
+			resp.Error = NewJSStreamHeaderExceedsMaximumError()
+			b, _ := json.Marshal(resp)
+			outq.sendMsg(reply, b)
+		}
+		return ErrMaxPayload
+	}
+
 	if len(hdr) > 0 {
 		// Certain checks have already been performed if in clustered mode, so only check if not.
 		// Note, for cluster mode but with message tracing (without message delivery), we need
@@ -6877,7 +6959,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		}
 	}
 
-	// Check to see if we are over the max msg size.
+	// Header processing above may have changed the message, such as when a
+	// counter increment generates its value payload. Check the resulting size
+	// against the stream limit as well as checking the inbound size early.
 	// Subtract to prevent against overflows.
 	if canConsistencyCheck && maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
 		if canRespond {

@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	os "os"
 	"path/filepath"
@@ -261,13 +261,13 @@ func TestJetStreamConsumerMultipleConsumersSingleFilter(t *testing.T) {
 		go func(subject string, messages int, wc bool) {
 			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
-			time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Millisecond)
+			time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Millisecond)
 			for i := 0; i < messages; i++ {
-				time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Microsecond)
+				time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Microsecond)
 				// If subject has wildcard, add random last subject token.
 				pubSubject := subject
 				if wc {
-					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int63n(10))
+					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int64N(10))
 				}
 				_, err := js.PublishAsync(pubSubject, []byte("data"))
 				require_NoError(t, err)
@@ -373,13 +373,13 @@ func TestJetStreamConsumerMultipleConsumersMultipleFilters(t *testing.T) {
 		go func(subject string, messages int, wc bool) {
 			nc, js := jsClientConnect(t, s)
 			defer nc.Close()
-			time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Millisecond)
+			time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Millisecond)
 			for i := 0; i < messages; i++ {
-				time.Sleep(time.Duration(rand.Int63n(1000)+1) * time.Microsecond)
+				time.Sleep(time.Duration(rand.Int64N(1000)+1) * time.Microsecond)
 				// If subject has wildcard, add random last subject token.
 				pubSubject := subject
 				if wc {
-					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int63n(10))
+					pubSubject = fmt.Sprintf("%v.%v", subject, rand.Int64N(10))
 				}
 				ack, err := js.PublishAsync(pubSubject, []byte("data"))
 				require_NoError(t, err)
@@ -944,6 +944,36 @@ func TestJetStreamConsumerIsEqualOrSubsetMatch(t *testing.T) {
 			if res := c.isEqualOrSubsetMatch(test.subject); res != test.result {
 				t.Fatalf("Subject %q subset match of %v, should be %v, got %v",
 					test.subject, test.filterSubjects, test.result, res)
+			}
+		})
+	}
+}
+
+func TestJetStreamConsumerIsFilterSubsetOf(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		filterSubjects []string
+		subject        string
+		result         bool
+	}{
+		{"no filter", nil, ">", false},
+		{"single literal equal", []string{"foo.a"}, "foo.a", true},
+		{"single literal mismatch", []string{"foo.a"}, "foo.b", false},
+		{"all literals contained", []string{"foo.a", "foo.b"}, "foo.>", true},
+		{"one literal outside", []string{"foo.a", "bar.a"}, "foo.>", false},
+		{"wildcards contained", []string{"foo.*", "foo.bar.>"}, "foo.>", true},
+		{"filter wider than subject", []string{"foo.>"}, "foo.bar", false},
+		{"rollup matches only one filter", []string{"events.host", "events.periodic"}, "events.periodic", false},
+		{"partial wildcard intersection", []string{"foo.*.bar"}, "foo.baz.>", false},
+		{"partial wildcard intersection short", []string{"*.bar"}, "foo.*", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := consumerWithFilterSubjects(test.filterSubjects)
+			if res := c.isFilterSubsetOf(test.subject); res != test.result {
+				t.Fatalf("Filters %v subset of subject %q should be %v, got %v",
+					test.filterSubjects, test.subject, test.result, res)
 			}
 		})
 	}
@@ -4781,7 +4811,7 @@ func TestJetStreamConsumerReplayRate(t *testing.T) {
 				lst = time.Now()
 				nc.Publish("DC", []byte("OK!"))
 				// Calculate a gap between messages.
-				gap := 10*time.Millisecond + time.Duration(rand.Intn(20))*time.Millisecond
+				gap := 10*time.Millisecond + time.Duration(rand.IntN(20))*time.Millisecond
 				time.Sleep(gap)
 			}
 
@@ -4891,7 +4921,7 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			totalMsgs := 10
 			for i := 0; i < totalMsgs; i++ {
 				nc.Request("DC", []byte("Hello World"), time.Second)
-				time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.IntN(5)) * time.Millisecond)
 			}
 			if state := mset.state(); state.Msgs != uint64(totalMsgs) {
 				t.Fatalf("Expected %d messages, got %d", totalMsgs, state.Msgs)
@@ -4908,7 +4938,7 @@ func TestJetStreamConsumerReplayRateNoAck(t *testing.T) {
 			}
 			defer o.delete()
 			// Sleep a random amount of time.
-			time.Sleep(time.Duration(rand.Intn(20)) * time.Millisecond)
+			time.Sleep(time.Duration(rand.IntN(20)) * time.Millisecond)
 
 			sub, _ := nc.SubscribeSync(subj)
 			nc.Flush()
@@ -7757,6 +7787,116 @@ func TestJetStreamConsumerPurge(t *testing.T) {
 
 }
 
+func TestJetStreamConsumerRollupMultiFilterDoesNotSkip(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"events.>"},
+		AllowRollup: true,
+	})
+	require_NoError(t, err)
+
+	deliver := nats.NewInbox()
+	sub, err := nc.SubscribeSync(deliver)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: deliver,
+		AckPolicy:      nats.AckExplicitPolicy,
+		MaxAckPending:  1,
+		FilterSubjects: []string{"events.host", "events.periodic"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("A"))
+	require_NoError(t, err)
+	msgA, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("B"))
+	require_NoError(t, err)
+	rollup := nats.NewMsg("events.periodic")
+	rollup.Header.Set(JSMsgRollup, JSMsgRollupSubject)
+	rollup.Data = []byte("periodic")
+	_, err = js.PublishMsg(rollup)
+	require_NoError(t, err)
+	require_NoError(t, msgA.AckSync())
+
+	msgB, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err := msgB.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(2))
+	require_Equal(t, string(msgB.Data), "B")
+	require_NoError(t, msgB.AckSync())
+
+	rollupMsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err = rollupMsg.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(3))
+	require_Equal(t, string(rollupMsg.Data), "periodic")
+}
+
+func TestJetStreamConsumerFilteredPurgeMultiFilterDoesNotSkip(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"events.>"},
+	})
+	require_NoError(t, err)
+
+	deliver := nats.NewInbox()
+	sub, err := nc.SubscribeSync(deliver)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	require_NoError(t, nc.Flush())
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "consumer",
+		DeliverSubject: deliver,
+		AckPolicy:      nats.AckExplicitPolicy,
+		MaxAckPending:  1,
+		FilterSubjects: []string{"events.host", "events.periodic"},
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("A"))
+	require_NoError(t, err)
+	msgA, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+
+	_, err = js.Publish("events.host", []byte("B"))
+	require_NoError(t, err)
+	_, err = js.Publish("events.periodic", []byte("P"))
+	require_NoError(t, err)
+
+	// Purge removes every message on one of the two filter subjects.
+	require_NoError(t, js.PurgeStream("TEST",
+		&nats.StreamPurgeRequest{Subject: "events.periodic"}))
+	require_NoError(t, msgA.AckSync())
+
+	msgB, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	metadata, err := msgB.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, metadata.Sequence.Stream, uint64(2))
+	require_Equal(t, string(msgB.Data), "B")
+}
+
 func TestJetStreamConsumerFilterUpdate(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -10485,6 +10625,153 @@ func TestJetStreamConsumerNotInactiveDuringAckWaitBackoff(t *testing.T) {
 
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamConsumerNotInactiveAfterPullRequestExpires(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: replicas,
+		})
+		require_NoError(t, err)
+
+		inactiveThreshold := time.Second
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+			Durable:           "CONSUMER",
+			AckPolicy:         nats.AckExplicitPolicy,
+			Replicas:          replicas,
+			InactiveThreshold: inactiveThreshold, // Pull mode adds up to 1 second randomly.
+		})
+		require_NoError(t, err)
+
+		// Send a pull request that expires right around the inactive threshold.
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(inbox)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		req := fmt.Sprintf(`{"batch":1,"expires":%d}`, inactiveThreshold.Nanoseconds())
+		require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), inbox, []byte(req)))
+
+		// Wait for the request to time out.
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		require_Equal(t, msg.Header.Get("Status"), "408")
+		expired := time.Now()
+
+		// The expired pull request should count as activity, so the consumer
+		// should only be deleted after (at least) the inactive threshold has
+		// passed since the request expired.
+		deleted := false
+		for time.Since(expired) < 4*time.Second {
+			if _, err = js.ConsumerInfo("TEST", "CONSUMER"); err != nil {
+				require_Error(t, err, nats.ErrConsumerNotFound)
+				deleted = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		require_True(t, deleted)
+		if since := time.Since(expired); since < inactiveThreshold {
+			t.Fatalf("consumer was deleted %v after the pull request expired, expected at least %v", since, inactiveThreshold)
+		}
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamConsumerNotInactiveAfterPullRequestExpiresInNextWaiting(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	inactiveThreshold := time.Second
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:           "CONSUMER",
+		AckPolicy:         nats.AckExplicitPolicy,
+		InactiveThreshold: inactiveThreshold, // Pull mode adds up to 1 second randomly.
+	})
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Send a pull request with a long expiry, so the expiry timer doesn't race with us.
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+
+	req := fmt.Sprintf(`{"batch":1,"expires":%d}`, (10 * time.Second).Nanoseconds())
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), inbox, []byte(req)))
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.waiting.len() != 1 {
+			return fmt.Errorf("expected 1 waiting request, got %d", o.waiting.len())
+		}
+		return nil
+	})
+
+	// Let some time pass since the request was received, so that we can distinguish
+	// between the request time and the expiry time being used as last activity.
+	time.Sleep(500 * time.Millisecond)
+
+	// A message wake-up that finds the request expired times it out in nextWaiting,
+	// rather than in processWaiting. Simulate that by backdating the expiry.
+	o.mu.Lock()
+	wr := o.waiting.peek()
+	require_NotNil(t, wr)
+	received := wr.received
+	expires := time.Now()
+	wr.expires = expires
+	require_True(t, o.nextWaiting(0) == nil)
+	require_True(t, o.waiting.isEmpty())
+	last, dthresh := o.waiting.last, o.dthresh
+	o.mu.Unlock()
+
+	// The client should have received the timeout.
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "408")
+
+	// The expiry should have been registered as last activity, not the received time.
+	require_True(t, last.After(received))
+	require_Equal(t, last, expires)
+
+	// The consumer should only be deleted after (at least) the inactive threshold
+	// has passed since the request expired.
+	deleted := false
+	for time.Since(expires) < dthresh+2*time.Second {
+		if _, err = js.ConsumerInfo("TEST", "CONSUMER"); err != nil {
+			require_Error(t, err, nats.ErrConsumerNotFound)
+			deleted = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require_True(t, deleted)
+	if since := time.Since(expires); since < dthresh {
+		t.Fatalf("consumer was deleted %v after the pull request expired, expected at least %v", since, dthresh)
+	}
 }
 
 func TestSortingConsumerPullRequests(t *testing.T) {

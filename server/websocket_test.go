@@ -23,7 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -1860,14 +1860,6 @@ func TestWSValidateOptions(t *testing.T) {
 			o.Websocket.Port = 0
 			return o
 		}, ""},
-		{"fips websocket listener", func() *Options {
-			return wso.Clone()
-		}, func() string {
-			if wsAllowedFIPS() {
-				return ""
-			}
-			return "websocket: cannot be used in FIPS-140 mode when built with this Go version, use Go 1.26 or later"
-		}()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateOptions(test.getOpts())
@@ -3480,7 +3472,7 @@ func TestWSCompressionFrameSizeLimit(t *testing.T) {
 
 			uncompressedPayload := make([]byte, 2*wsFrameSizeForBrowsers)
 			for i := 0; i < len(uncompressedPayload); i++ {
-				uncompressedPayload[i] = byte(rand.Intn(256))
+				uncompressedPayload[i] = byte(rand.IntN(256))
 			}
 
 			c.mu.Lock()
@@ -4632,7 +4624,7 @@ type partialWriteConn struct {
 func (c *partialWriteConn) Write(b []byte) (int, error) {
 	max := len(b)
 	if max > 0 {
-		max = rand.Intn(max)
+		max = rand.IntN(max)
 		if max == 0 {
 			max = 1
 		}
@@ -4676,7 +4668,7 @@ func TestWSWithPartialWrite(t *testing.T) {
 
 	var msgs [][]byte
 	for i := 0; i < 100; i++ {
-		msg := make([]byte, rand.Intn(10000)+10)
+		msg := make([]byte, rand.IntN(10000)+10)
 		for j := 0; j < len(msg); j++ {
 			msg[j] = byte('A' + j%26)
 		}
@@ -4979,7 +4971,7 @@ var ch = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!
 func sizedString(sz int) string {
 	b := make([]byte, sz)
 	for i := range b {
-		b[i] = ch[rand.Intn(len(ch))]
+		b[i] = ch[rand.IntN(len(ch))]
 	}
 	return string(b)
 }
@@ -4990,7 +4982,7 @@ func sizedStringForCompression(sz int) string {
 	s := 0
 	for i := range b {
 		if s%20 == 0 {
-			c = ch[rand.Intn(len(ch))]
+			c = ch[rand.IntN(len(ch))]
 		}
 		b[i] = c
 	}
@@ -5394,7 +5386,7 @@ func TestWSCompressedFragmentsDoNotShareNbPoolBuffer(t *testing.T) {
 	// Random data does not compress, so the compressed output stays larger than
 	// the browser frame-size limit and is split into multiple frames.
 	uncompressed := make([]byte, 4*wsFrameSizeForBrowsers)
-	n, err := io.ReadFull(rand.New(rand.NewSource(12345)), uncompressed)
+	n, err := io.ReadFull(rand.NewChaCha8([32]byte{42}), uncompressed)
 	require_NoError(t, err)
 	require_Equal(t, n, len(uncompressed))
 

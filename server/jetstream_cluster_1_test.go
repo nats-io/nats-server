@@ -24,7 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3806,6 +3806,106 @@ func TestJetStreamClusterPeerRemovalAndServerBroughtBack(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterAccountUsageAfterServerRemove(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 4)
+	defer c.shutdown()
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	msg := bytes.Repeat([]byte("A"), 32*1024)
+	for range 128 {
+		_, err = js.Publish("foo", msg)
+		require_NoError(t, err)
+	}
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	expectedStore := si.State.Bytes * 3
+
+	checkAccountStore := func(expected uint64) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			info, err := js.AccountInfo()
+			if err != nil {
+				return err
+			}
+			if info.Store != expected {
+				return fmt.Errorf("expected account store %d, got %d", expected, info.Store)
+			}
+			return nil
+		})
+	}
+	checkAccountStore(expectedStore)
+
+	// Remove a server that hosts a stream replica, but not the meta leader. The
+	// stream should move to the spare fourth server without changing the account's
+	// replicated storage total.
+	var removed *Server
+	for _, s := range c.servers {
+		if s != ml && s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			removed = s
+			break
+		}
+	}
+	require_NotNil(t, removed)
+	removedPeer := removed.Node()
+	removed.Shutdown()
+	removed.WaitForShutdown()
+
+	snc, _ := jsClientConnect(t, ml, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	b, err := json.Marshal(JSApiMetaServerRemoveRequest{Peer: removedPeer})
+	require_NoError(t, err)
+	rmsg, err := snc.Request(JSApiRemoveServer, b, 10*time.Second)
+	require_NoError(t, err)
+	var resp JSApiMetaServerRemoveResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_True(t, resp.Success)
+
+	c.waitOnPeerCount(3)
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if si.Cluster == nil || len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("stream has not returned to R3")
+		}
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				return fmt.Errorf("stream replica %q is not current", peer.Name)
+			}
+		}
+		return nil
+	})
+
+	checkAccountStore(expectedStore)
+
+	// A usage update already in flight when the peer removal commits must not
+	// recreate the departed server's remote usage entry.
+	jsa := ml.getJetStream().lookupAccount(ml.globalAccount())
+	require_NotNil(t, jsa)
+	lateUpdate := make([]byte, minUsageUpdateLen)
+	binary.LittleEndian.PutUint64(lateUpdate[8:], si.State.Bytes)
+	jsa.remoteUpdateUsage(nil, nil, nil, fmt.Sprintf(jsaUpdatesPubT, globalAccountName, removedPeer), _EMPTY_, lateUpdate)
+	jsa.usageMu.RLock()
+	_, stale := jsa.rusage[removedPeer]
+	jsa.usageMu.RUnlock()
+	require_False(t, stale)
+	checkAccountStore(expectedStore)
+}
+
 func TestJetStreamClusterPeerExclusionTag(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "C", 3,
 		func(serverName, clusterName, storeDir, conf string) string {
@@ -5613,7 +5713,7 @@ func TestJetStreamClusterStreamPerf(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			js := conns[rand.Intn(numConnections)]
+			js := conns[rand.IntN(numConnections)]
 			<-startCh
 			for i := 0; i < int(toSend)/numProducers; i++ {
 				if _, err = js.Publish("foo", payload); err != nil {
@@ -8359,7 +8459,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// The RAFT node should be closed. Checking health must not change that.
 	// Simulates a race condition where we're shutting down.
 	checkNodeIsClosed(sjs, ca)
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("monitor goroutine not running"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("monitor goroutine not running"))
 	checkNodeIsClosed(sjs, ca)
 
 	// We create a new RAFT group, the health check should detect this skew.
@@ -8369,7 +8469,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 	// We set creating to now, since previously it would delete all data but NOT restart if created within <10s.
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("cluster node skew detected"))
 
 	err = js.DeleteConsumer("TEST", "CONSUMER")
 	require_NoError(t, err)
@@ -8389,7 +8489,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 
 	// The underlying consumer has been deleted. Checking health must not recreate the consumer.
 	checkNodeIsClosed(sjs, ca)
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
+	require_Error(t, sjs.isConsumerHealthy(mset, sa, "CONSUMER", ca), errors.New("consumer not found"))
 	checkNodeIsClosed(sjs, ca)
 }
 
@@ -8469,7 +8569,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 	// The health check gets the Raft node of the assignment and checks it against the
 	// Raft node of the consumer. We simulate a race condition where the consumer's Raft node
 	// is not yet initialized. The health check MUST NOT delete the node.
-	sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Equal(t, node.State(), Follower)
 }
 
@@ -8558,7 +8658,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 	// Raft node of the consumer. We simulate a race condition where the assignment's Raft node
 	// is re-newed, but the consumer's node is still the old instance.
 	// The health check MUST NOT delete the node.
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("cluster node skew detected"))
+	require_Error(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca), errors.New("cluster node skew detected"))
 	require_NotEqual(t, node.State(), Closed)
 }
 
@@ -8598,14 +8698,14 @@ func TestJetStreamClusterConsumerHealthCheckDeleted(t *testing.T) {
 	// The health check gathers all assignments and does checking after.
 	// If the consumer was deleted in the meantime, it should not report an error.
 	require_NoError(t, js.DeleteConsumer("TEST", "CONSUMER"))
-	require_Error(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca), errors.New("consumer not found"))
+	require_Error(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca), errors.New("consumer not found"))
 
 	// The health check could run earlier than we're able to create the consumer.
 	// In that case, wait before erroring.
 	sjs.mu.Lock()
 	ca.Created = time.Now()
 	sjs.mu.Unlock()
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 }
 
 func TestJetStreamClusterStreamHealthCheckSurfacesAssignmentErr(t *testing.T) {
@@ -8679,7 +8779,7 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	require_True(t, ca != nil)
 
 	// Baseline: healthy.
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 
 	// Persisted assignment-level error must surface via the health check.
 	wantErr := errors.New("synthetic consumer assignment failure")
@@ -8687,7 +8787,7 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	ca.err = wantErr
 	sjs.mu.Unlock()
 
-	err = sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	err = sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Error(t, err)
 	require_Contains(t, err.Error(), wantErr.Error())
 
@@ -8695,13 +8795,13 @@ func TestJetStreamClusterConsumerHealthCheckSurfacesAssignmentErr(t *testing.T) 
 	sjs.mu.Lock()
 	ca.err = nil
 	sjs.mu.Unlock()
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", ca))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca))
 }
 
 func TestJetStreamClusterConsumerHealthCheckStreamMissingNoLockLeak(t *testing.T) {
 	js := &jetStream{}
 	ca := &consumerAssignment{}
-	err := js.isConsumerHealthy(nil, "consumer", ca)
+	err := js.isConsumerHealthy(nil, nil, "consumer", ca)
 	require_Error(t, err, errors.New("stream missing"))
 
 	// The JS lock must have been released. Attempt to acquire the write lock
@@ -9001,7 +9101,7 @@ func TestJetStreamClusterConsumerHealthCheckRecoversAfterSuccessfulUpdate(t *tes
 	sjs.mu.Lock()
 	ca.err = wantErr
 	sjs.mu.Unlock()
-	err = sjs.isConsumerHealthy(mset, "CONSUMER", ca)
+	err = sjs.isConsumerHealthy(mset, nil, "CONSUMER", ca)
 	require_Error(t, err)
 	require_Contains(t, err.Error(), wantErr.Error())
 
@@ -9022,7 +9122,7 @@ func TestJetStreamClusterConsumerHealthCheckRecoversAfterSuccessfulUpdate(t *tes
 	sjs.mu.RUnlock()
 	require_True(t, cur != nil)
 	require_NoError(t, gotErr)
-	require_NoError(t, sjs.isConsumerHealthy(mset, "CONSUMER", cur))
+	require_NoError(t, sjs.isConsumerHealthy(mset, nil, "CONSUMER", cur))
 }
 
 func TestJetStreamClusterRespectConsumerStartSeq(t *testing.T) {
@@ -12432,62 +12532,85 @@ func TestJetStreamClusterNoInterestDesyncOnConsumerCreate(t *testing.T) {
 }
 
 func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
-	c := createJetStreamClusterExplicit(t, "R3S", 3)
-	defer c.shutdown()
+	test := func(t *testing.T, stall bool) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
 
-	nc, js := jsClientConnect(t, c.randomServer())
-	defer nc.Close()
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:     "TEST",
-		Subjects: []string{"foo"},
-		Replicas: 3,
-	})
-	require_NoError(t, err)
+		_, err := js.AddStream(&nats.StreamConfig{
+			Name:     "TEST",
+			Subjects: []string{"foo"},
+			Replicas: 3,
+		})
+		require_NoError(t, err)
 
-	rs := c.randomNonLeader()
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
-			return errors.New("not assigned")
+		rs := c.randomNonLeader()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return errors.New("not assigned")
+			}
+			return nil
+		})
+
+		sjs := rs.getJetStream()
+		sjs.mu.Lock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		encodedDelete := encodeDeleteStreamAssignment(sa)
+		sjs.mu.Unlock()
+		meta := sjs.getMetaGroup().(*raft)
+		apply := meta.ApplyQ()
+
+		// Should not panic if we receive a nil entry "randomly".
+		_, err = apply.push(nil)
+		require_NoError(t, err)
+
+		// Should put us in upper-layer recovery mode.
+		// For this test using two large values so we remain in catchup.
+		meta.Lock()
+		meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+		meta.sendCatchupSignal()
+		meta.Unlock()
+
+		// Deleting a stream should be staged, not immediately performed.
+		_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
+		require_NoError(t, err)
+		time.Sleep(200 * time.Millisecond)
+		require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
+
+		// Healthz reports the in-flight catchup.
+		hs := rs.healthz(nil)
+		require_Equal(t, hs.Error, "JetStream is not current with the meta leader")
+
+		if stall {
+			// A stalled catchup is re-requested through createCatchup, which
+			// replaces the catchup state. The upper layer was already signaled,
+			// so completing this catchup must still signal it back.
+			meta.Lock()
+			meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+			meta.Unlock()
 		}
-		return nil
-	})
 
-	sjs := rs.getJetStream()
-	sjs.mu.Lock()
-	sa := sjs.streamAssignment(globalAccountName, "TEST")
-	encodedDelete := encodeDeleteStreamAssignment(sa)
-	sjs.mu.Unlock()
-	meta := sjs.getMetaGroup().(*raft)
-	apply := meta.ApplyQ()
+		// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+		meta.Lock()
+		meta.cancelCatchup()
+		meta.Unlock()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+				return errors.New("still assigned")
+			}
+			return nil
+		})
 
-	// Should not panic if we receive a nil entry "randomly".
-	_, err = apply.push(nil)
-	require_NoError(t, err)
+		// And healthz is healthy again.
+		hs = rs.healthz(nil)
+		require_Equal(t, hs.StatusCode, 200)
+		require_Equal(t, hs.Error, _EMPTY_)
+	}
 
-	// Should put us in upper-layer recovery mode.
-	// For this test using two large values so we remain in catchup.
-	meta.Lock()
-	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
-	meta.sendCatchupSignal()
-	meta.Unlock()
-
-	// Deleting a stream should be staged, not immediately performed.
-	_, err = apply.push(newCommittedEntry(1, []*Entry{{EntryNormal, encodedDelete}}))
-	require_NoError(t, err)
-	time.Sleep(200 * time.Millisecond)
-	require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
-
-	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
-	meta.Lock()
-	meta.cancelCatchup()
-	meta.Unlock()
-	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-		if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
-			return errors.New("still assigned")
-		}
-		return nil
-	})
+	t.Run("NoStall", func(t *testing.T) { test(t, false) })
+	t.Run("Stall", func(t *testing.T) { test(t, true) })
 }
 
 func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateStream(t *testing.T) {
@@ -12554,6 +12677,75 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateStream(t *testing
 		cfg := mset.config()
 		if cfg.Storage != MemoryStorage {
 			return errors.New("still the old stream config")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateStreamRemoved(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	rs := c.randomNonLeader()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if !rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			return errors.New("not assigned")
+		}
+		return nil
+	})
+
+	// The stream is removed, recreated under the same name (new raft group
+	// and creation time), and removed again, all while we are catching up.
+	sjs := rs.getJetStream()
+	sjs.mu.Lock()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	encodedDelete := encodeDeleteStreamAssignment(sa)
+	nsa := sa.copyGroup()
+	nsa.Group.Name = groupNameForStream(nsa.Group.Peers, FileStorage)
+	nsa.Created = time.Now().UTC()
+	encodedAdd := encodeAddStreamAssignment(nsa)
+	encodedDeleteRecreated := encodeDeleteStreamAssignment(nsa)
+	sjs.mu.Unlock()
+	meta := sjs.getMetaGroup().(*raft)
+	apply := meta.ApplyQ()
+
+	// Should put us in upper-layer recovery mode.
+	// For this test using two large values so we remain in catchup.
+	meta.Lock()
+	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.sendCatchupSignal()
+	meta.Unlock()
+
+	_, err = apply.push(newCommittedEntry(1, []*Entry{
+		{EntryNormal, encodedDelete},
+		{EntryNormal, encodedAdd},
+		{EntryNormal, encodedDeleteRecreated},
+	}))
+	require_NoError(t, err)
+	time.Sleep(200 * time.Millisecond)
+	require_True(t, rs.JetStreamIsStreamAssigned(globalAccountName, "TEST"))
+
+	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+	// The end state is no stream, and specifically not the incarnation we started with.
+	meta.Lock()
+	meta.cancelCatchup()
+	meta.Unlock()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if rs.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			return errors.New("still assigned")
+		}
+		if _, err := rs.globalAccount().lookupStream("TEST"); err == nil {
+			return errors.New("stream still exists")
 		}
 		return nil
 	})
@@ -12658,6 +12850,86 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateConsumer(t *testi
 	})
 }
 
+func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateConsumerRemoved(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", Replicas: 3})
+	require_NoError(t, err)
+
+	rs := c.randomNonLeader()
+	sjs := rs.getJetStream()
+	assigned := func() bool {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		return sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER") != nil
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if !assigned() {
+			return errors.New("not assigned")
+		}
+		return nil
+	})
+
+	// The consumer is removed, recreated under the same name (new raft group
+	// and creation time), and removed again, all while we are catching up.
+	sjs.mu.Lock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+	encodedDelete := encodeDeleteConsumerAssignment(ca)
+	cca := ca.copyGroup()
+	cca.Group.Name = groupNameForConsumer(cca.Group.Peers, FileStorage)
+	cca.Created = time.Now().UTC()
+	encodedAdd := encodeAddConsumerAssignment(cca)
+	encodedDeleteRecreated := encodeDeleteConsumerAssignment(cca)
+	sjs.mu.Unlock()
+	meta := sjs.getMetaGroup().(*raft)
+	apply := meta.ApplyQ()
+
+	// Should put us in upper-layer recovery mode.
+	// For this test using two large values so we remain in catchup.
+	meta.Lock()
+	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.sendCatchupSignal()
+	meta.Unlock()
+
+	_, err = apply.push(newCommittedEntry(1, []*Entry{
+		{EntryNormal, encodedDelete},
+		{EntryNormal, encodedAdd},
+		{EntryNormal, encodedDeleteRecreated},
+	}))
+	require_NoError(t, err)
+	time.Sleep(200 * time.Millisecond)
+	require_True(t, assigned())
+
+	// Canceling the catchup, because it's completed, should result in the staged changes to be applied.
+	// The end state is no consumer, and specifically not the incarnation we started with.
+	meta.Lock()
+	meta.cancelCatchup()
+	meta.Unlock()
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		if assigned() {
+			return errors.New("still assigned")
+		}
+		mset, err := rs.globalAccount().lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		if mset.lookupConsumer("CONSUMER") != nil {
+			return errors.New("consumer still exists")
+		}
+		return nil
+	})
+}
 func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 	test := func(t *testing.T, newStream bool) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)

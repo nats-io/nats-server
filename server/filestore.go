@@ -29,7 +29,7 @@ import (
 	"io"
 	"io/fs"
 	"math"
-	mrand "math/rand"
+	mrand "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -4203,12 +4203,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return isSubsetMatchTokenized(tsa, fsa)
 	}
 
-	// Handle last by subject a bit differently.
+	// Use the per-subject index when at most one message per subject should be counted.
+	// This applies to last-per-subject consumers and streams limited to one message per subject.
 	// We will scan PSIM since we accurately track the last block we have seen the subject in. This
 	// allows us to only need to load at most one block now.
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
-	if lastPerSubject {
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
 			return uint64(fs.psim.Size()), validThrough, nil
@@ -4543,12 +4544,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		return sl.HasInterest(subj)
 	}
 
-	// Handle last by subject a bit differently.
+	// Use the per-subject index when at most one message per subject should be counted.
+	// This applies to last-per-subject consumers and streams limited to one message per subject.
 	// We will scan PSIM since we accurately track the last block we have seen the subject in. This
 	// allows us to only need to load at most one block now.
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
-	if lastPerSubject {
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
 		// If we want all and our start sequence is equal or less than first return number of subjects.
 		if isAll && sseq <= fs.state.FirstSeq {
 			return uint64(fs.psim.Size()), validThrough, nil
@@ -5478,16 +5480,20 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 		}
 		seq = fs.state.LastSeq + 1
 	}
+	// Make sure the last sequence leaves room for the next message.
+	if num == 0 || seq == 0 || num > math.MaxUint64-seq {
+		return ErrSequenceMismatch
+	}
 
 	// Limit number of dmap entries
 	const maxDeletes = 64 * 1024
 	mb := fs.lmb
 
 	var msgs uint64
-	numDeletes := int(num)
+	numDeletes := num
 	if mb != nil {
 		mb.mu.RLock()
-		numDeletes += mb.dmap.Size()
+		numDeletes = addSaturate(numDeletes, uint64(mb.dmap.Size()))
 		msgs = mb.msgs
 		mb.mu.RUnlock()
 	}
@@ -5690,7 +5696,7 @@ func (fs *fileStore) enforceMsgLimit() error {
 			msgs := fmb.msgs
 			fmb.mu.RUnlock()
 			if nmsgs-msgs > uint64(fs.cfg.MaxMsgs) {
-				if err := fs.purgeMsgBlock(fmb); err != nil {
+				if err := fs.purgeMsgBlock(fmb, nil); err != nil {
 					return err
 				}
 				continue
@@ -5722,7 +5728,7 @@ func (fs *fileStore) enforceBytesLimit() error {
 			bytes := fmb.bytes
 			fmb.mu.RUnlock()
 			if bs-bytes > uint64(fs.cfg.MaxBytes) {
-				if err := fs.purgeMsgBlock(fmb); err != nil {
+				if err := fs.purgeMsgBlock(fmb, nil); err != nil {
 					return err
 				}
 				continue
@@ -5995,7 +6001,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 	isEmpty := mb.msgs == 1 // ... about to be zero though.
 
 	// We used to not have to load in the messages except with callbacks or the filtered subject state (which is now always on).
-	// Now just load regardless.
+	// Only load from disk if the cache is not already in memory, cacheNotLoaded will also revive a weakly held cache.
 	// TODO(dlc) - Figure out a way not to have to load it in, we need subject tracking outside main data block.
 	needsCleanup := mb.cache == nil
 	if mb.cacheNotLoaded() {
@@ -6069,6 +6075,14 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 
 	// Must always perform the erase, even if the block is empty as it could contain tombstones.
 	if secure {
+		// The cache may have been expired or recycled while we dropped mb.mu above.
+		if mb.cacheNotLoaded() {
+			if err := mb.loadMsgsWithLock(); err != nil {
+				finishedWithCache()
+				mb.mu.Unlock()
+				return false, err
+			}
+		}
 		// Grab record info, but use the pre-computed record length.
 		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
@@ -6202,8 +6216,9 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 }
 
 // Remove all messages in the range [first, last]
+// If agg is set the storage updates for fully removed blocks are aggregated.
 // Lock should be held.
-func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) error {
+func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool, agg *storeUpdateAgg) error {
 	last = min(last, fs.state.LastSeq)
 	if first > last {
 		return nil
@@ -6230,7 +6245,7 @@ func (fs *fileStore) removeMsgsInRange(first, last uint64, viaLimits bool) error
 			// purgeMgsBlock, which also removes the block from fs.blks.
 			// After purgeMsgBlock, i will be the index of the following
 			// msgBlock, if any. Therefore, continue without incrementing i.
-			if err := fs.purgeMsgBlock(mb); err != nil {
+			if err := fs.purgeMsgBlock(mb, agg); err != nil {
 				return err
 			}
 		} else {
@@ -7791,29 +7806,19 @@ func (mb *msgBlock) recompressOnDiskIfNeeded() error {
 		return err
 	}
 
-	meta := &CompressionInfo{}
-	if _, err := meta.UnmarshalMetadata(origBuf); err != nil {
-		// An error is only returned here if there's a problem with parsing
-		// the metadata. If the file has no metadata at all, no error is
-		// returned and the algorithm defaults to no compression.
-		return fmt.Errorf("failed to read existing metadata header: %w", err)
+	decoded, diskAlg, err := mb.decode(origBuf)
+	if err != nil {
+		return fmt.Errorf("failed to decode original block: %w", err)
 	}
-	if meta.Algorithm == alg {
+	if diskAlg == alg {
 		// The block is already compressed with the chosen algorithm so there
 		// is nothing else to do. This is not a common case, it is here only
 		// to ensure we don't do unnecessary work in case something asked us
 		// to recompress an already compressed block with the same algorithm.
 		return nil
-	} else if alg != NoCompression {
-		// The block is already compressed using some algorithm, so we need
-		// to decompress the block using the existing algorithm before we can
-		// recompress it with the new one.
-		if origBuf, err = meta.Algorithm.Decompress(origBuf); err != nil {
-			return fmt.Errorf("failed to decompress original block: %w", err)
-		}
 	}
 
-	return mb.atomicOverwriteFile(origBuf, true)
+	return mb.atomicOverwriteFile(decoded, true)
 }
 
 // Lock should be held.
@@ -7901,24 +7906,43 @@ func (mb *msgBlock) atomicOverwriteFile(buf []byte, allowCompress bool) error {
 }
 
 // Lock should be held.
-func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
+func (mb *msgBlock) decode(buf []byte) ([]byte, StoreCompression, error) {
 	var meta CompressionInfo
 	if n, err := meta.UnmarshalMetadata(buf); err != nil {
 		// There was a problem parsing the metadata header of the block.
 		// If there's no metadata header, an error isn't returned here,
 		// we will instead just use default values of no compression.
-		return nil, err
+		return nil, meta.Algorithm, err
 	} else if n == 0 {
 		// There were no metadata bytes, so we assume the block is not
 		// compressed and return it as-is.
-		return buf, nil
+		return buf, NoCompression, nil
 	} else {
-		// Metadata was present so it's quite likely the block contents
-		// are compressed. If by any chance the metadata claims that the
-		// block is uncompressed, then the input slice is just returned
-		// unmodified.
-		return meta.Algorithm.Decompress(buf[n:])
+		// Metadata was present, so try to decompress the block.
+		decoded, err := meta.Algorithm.Decompress(buf[n:])
+		if err == nil {
+			return decoded, meta.Algorithm, nil
+		}
+		// Decompression failed. Before returning the error, check if the
+		// buffer happens to store a valid uncompressed record.
+		// A record with length 24145251 without headers happens to
+		// collide with a valid compression header "cmp" and
+		// compression algorithm 1 (S2).
+		if meta.Algorithm == S2Compression && len(buf) >= 24145251 {
+			var sm StoreMsg
+			if _, msgErr := mb.msgFromBufNoCopy(buf, &sm, mb.hh); msgErr == nil {
+				return buf, NoCompression, nil
+			}
+		}
+		// Return the original error
+		return nil, meta.Algorithm, err
 	}
+}
+
+// Lock should be held.
+func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
+	decoded, _, err := mb.decode(buf)
+	return decoded, err
 }
 
 // Lock should be held.
@@ -11310,8 +11334,9 @@ func (fs *fileStore) forceRemoveMsgBlock(mb *msgBlock) error {
 }
 
 // Purges and removes the msgBlock from the store.
+// If agg is set the storage updates for fully removed blocks are aggregated.
 // Lock should be held.
-func (fs *fileStore) purgeMsgBlock(mb *msgBlock) error {
+func (fs *fileStore) purgeMsgBlock(mb *msgBlock, agg *storeUpdateAgg) error {
 	mb.mu.Lock()
 	// Adjust per-subject tracking if present.
 	if err := mb.ensurePerSubjectInfoLoaded(); err != nil {
@@ -11371,7 +11396,10 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock) error {
 		return err
 	}
 
-	if cb := fs.scb; cb != nil {
+	if agg != nil {
+		// Aggregating, so no callback and no need to release fs.mu.
+		agg.md, agg.bd = agg.md-int64(msgs), agg.bd-int64(bytes)
+	} else if cb := fs.scb; cb != nil {
 		// If we have a callback registered, we need to release lock regardless since consumers will recalculate pending.
 		fs.mu.Unlock()
 		// Storage updates.
@@ -11872,7 +11900,7 @@ func (fs *fileStore) setSyncTimer() {
 		// First time this fires will be between SyncInterval/2 and SyncInterval,
 		// so that different stores are spread out, rather than having many of
 		// them trying to all sync at once, causing blips and contending dios.
-		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int63n(int64(fs.fcfg.SyncInterval / 2))))
+		start := (fs.fcfg.SyncInterval / 2) + (time.Duration(mrand.Int64N(int64(fs.fcfg.SyncInterval / 2))))
 		fs.syncTmr = time.AfterFunc(start, fs.syncBlocks)
 	}
 }
@@ -11902,7 +11930,7 @@ func (fs *fileStore) flushStreamStateLoop(qch, done chan struct{}) {
 	// Make sure we do not try to write these out too fast.
 	// Spread these out for large numbers on a server restart.
 	const writeThreshold = 2 * time.Minute
-	writeJitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+	writeJitter := time.Duration(mrand.Int64N(int64(30 * time.Second)))
 	t := time.NewTicker(writeThreshold + writeJitter)
 	defer t.Stop()
 
@@ -12710,6 +12738,13 @@ func deleteMap(blks []*msgBlock) *interiorDeletes {
 	return &v
 }
 
+// storeUpdateAgg aggregates storage update deltas, so removing multiple blocks
+// fires one storage callback instead of one per block.
+// fs lock should be held for all access.
+type storeUpdateAgg struct {
+	md, bd int64
+}
+
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 // This will only process deleted state within our current state.
 func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
@@ -12728,6 +12763,21 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 	if err := fs.werr; err != nil {
 		return err
 	}
+
+	// Removing a block has all consumers recalculate their pending state, so
+	// aggregate those into one callback at the end. Single message removals
+	// keep NumPending up to date incrementally, which is cheaper.
+	agg := &storeUpdateAgg{}
+	defer func() {
+		if agg.md == 0 && agg.bd == 0 {
+			return
+		}
+		if cb := fs.scb; cb != nil {
+			fs.mu.Unlock()
+			cb(agg.md, agg.bd, 0, _EMPTY_)
+			fs.mu.Lock()
+		}
+	}()
 
 	lseq := fs.state.LastSeq
 	fs.readLockAllMsgBlocks()
@@ -12754,7 +12804,7 @@ func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
 
 		var err error
 		if _, ok := db.(*DeleteRange); ok {
-			err = fs.removeMsgsInRange(first, last, true)
+			err = fs.removeMsgsInRange(first, last, true, agg)
 		} else {
 			db.Range(func(dseq uint64) bool {
 				_, err = fs.removeMsg(dseq, false, true, false)
@@ -13993,7 +14043,9 @@ func (c *CompressionInfo) UnmarshalMetadata(b []byte) (int, error) {
 	if len(b) < 5 { // 4 + min 1 for uvarint uint64
 		return 0, nil
 	}
-	if b[0] != 'c' || b[1] != 'm' || b[2] != 'p' {
+	// An uncompressed record with length 7,368,035 starts with "cmp",
+	// so we also check algorithm byte.
+	if b[0] != 'c' || b[1] != 'm' || b[2] != 'p' || StoreCompression(b[3]) != S2Compression {
 		return 0, nil
 	}
 	var n int
