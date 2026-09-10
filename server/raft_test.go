@@ -504,7 +504,7 @@ func TestNRGProposalFastPath(t *testing.T) {
 	s := &Server{}
 
 	n := &raft{
-		prop: newIPQueue[*proposedEntry](s, "prop"),
+		prop: newIPQueue[*proposedEntry](s, "prop", ipqSizeCalculation((*proposedEntry).size)),
 		term: 1,
 	}
 
@@ -549,6 +549,43 @@ func TestNRGProposalFastPath(t *testing.T) {
 	n.fastPathTerm.Store(0)
 	require_Equal(t, n.fastPathTerm.Load(), uint64(0))
 	require_False(t, n.tryFastPathPropose(1, []byte("closed again")))
+}
+
+func TestNRGProposalFastPathLimits(t *testing.T) {
+	s := &Server{}
+	n := &raft{
+		prop: newIPQueue[*proposedEntry](s, "prop", ipqSizeCalculation((*proposedEntry).size)),
+		term: 1,
+	}
+	n.state.Store(int32(Leader))
+
+	for _, test := range []struct {
+		name          string
+		entries, size int
+	}{
+		{"limit entries", 8*maxBatchEntries + 1, 0},
+		{"limit bytes", 1, 8*maxBatchBytes + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n.fastPathTerm.Store(n.term)
+			data := make([]byte, test.size)
+			for range test.entries {
+				require_True(t, n.tryFastPathPropose(n.term, data))
+			}
+			// Adding more closes the fast path.
+			require_False(t, n.tryFastPathPropose(n.term, nil))
+			require_Equal(t, n.fastPathTerm.Load(), uint64(0))
+
+			// Reopen the fast path and try with propose multi
+			n.fastPathTerm.Store(n.term)
+			require_False(t, n.tryFastPathProposeMulti(n.term, []*Entry{newEntry(EntryNormal, nil)}))
+			require_Equal(t, n.fastPathTerm.Load(), uint64(0))
+			require_Equal(t, n.prop.len(), test.entries)
+
+			n.prop.drain()
+			require_False(t, n.checkFastPathLimits(n.term))
+		})
+	}
 }
 
 func TestNRGStepDownOnSameTermDoesntClearVote(t *testing.T) {
