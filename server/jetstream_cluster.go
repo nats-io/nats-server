@@ -344,9 +344,10 @@ func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
 		return cfg
 	}
 	newCfg := cfg.clone()
-	if rg.Desired.Origin.Placement != nil {
-		newCfg.Placement = rg.Desired.Origin.Placement.clone()
-	}
+	// The origin always records the placement it started from, nil included. An unconstrained
+	// origin must be restored just the same, or a stream that had no placement would run at the
+	// target it's still moving toward. clone() already handles nil.
+	newCfg.Placement = rg.Desired.Origin.Placement.clone()
 	if rg.Desired.Origin.Retention != nil {
 		// Any retention change means the stream acts under Limits until converged.
 		// Either we're moving from Limits to Interest, and we only apply Interest at the end.
