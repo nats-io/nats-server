@@ -1987,21 +1987,18 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			if resetTLSName {
 				s.mu.Lock()
 				if net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
-					// Restore from backup for DNS-only SAN certs (#8309);
-					// backup is consumed so IP fallback still works (#1256).
+					// Restore from backup for DNS-only SAN certs (#8309).
+					// The backup is not consumed so it remains available for
+					// future restores after IP-SAN fallback (#1256).
 					s.routeTLSName = s.routeTLSLastName
-					s.routeTLSLastName = _EMPTY_
 				} else {
 					s.routeTLSName = _EMPTY_
 				}
 				s.mu.Unlock()
-			} else if didSolicit && net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
-				// Handshake failed without resetTLSName, but the URL is an IP
-				// and we have a backup hostname. Restore it for the next attempt.
+			} else if didSolicit && net.ParseIP(rURL.Hostname()) != nil {
 				s.mu.Lock()
-				if s.routeTLSName == _EMPTY_ {
+				if s.routeTLSName == _EMPTY_ && s.routeTLSLastName != _EMPTY_ {
 					s.routeTLSName = s.routeTLSLastName
-					s.routeTLSLastName = _EMPTY_
 				}
 				s.mu.Unlock()
 			}

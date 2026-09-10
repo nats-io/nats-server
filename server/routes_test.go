@@ -2030,12 +2030,14 @@ func TestRouteTLSNameBackupRestoreOnHostnameError(t *testing.T) {
 	// The cluster should now be able to reform using the restored hostname.
 	checkClusterFormed(t, s1, s2)
 
-	// The backup should be consumed after the restore.
+	// The backup is not consumed on restore, so it remains available for
+	// future HostnameError recovery (e.g., after IP-SAN fallback clears
+	// routeTLSName, the backup can still restore it for DNS-only peers).
 	s2.mu.RLock()
 	savedTLSLastName = s2.routeTLSLastName
 	s2.mu.RUnlock()
-	if savedTLSLastName != _EMPTY_ {
-		t.Fatalf("routeTLSLastName should be consumed (empty), got %q", savedTLSLastName)
+	if savedTLSLastName != "localhost" {
+		t.Fatalf("routeTLSLastName should still be 'localhost' (not consumed), got %q", savedTLSLastName)
 	}
 }
 
