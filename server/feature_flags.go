@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	FeatureFlagJsAckFormatV2     = "js_ack_fc_v2"
-	FeatureFlagJsRaftDeleteRange = "js_raft_delete_range"
-	FeatureFlagJsSnapshotSources = "js_snapshot_sources"
+	FeatureFlagJsAckFormatV2      = "js_ack_fc_v2"
+	FeatureFlagJsAPIReplyFormatV2 = "js_api_reply_v2"
+	FeatureFlagJsRaftDeleteRange  = "js_raft_delete_range"
+	FeatureFlagJsSnapshotSources  = "js_snapshot_sources"
 )
 
 var featureFlags = map[string]bool{
@@ -34,6 +35,18 @@ var featureFlags = map[string]bool{
 	// - v2: $JS.ACK.<domain>.<account hash>.<stream name>.<consumer name>.<num delivered>.<stream sequence>.<consumer sequence>.<timestamp>.<num pending>
 	// See also: https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-15.md#jsack
 	FeatureFlagJsAckFormatV2: false,
+
+	// Use a scoped v2 format for replies to internally-issued JetStream API
+	// requests. This permits a leafnode to authorize only the replies for a
+	// specific remote stream/consumer instead of every $JSC.R reply in an
+	// account.
+	//
+	// - v1: $JSC.R.<uid>
+	// - v2: $JSC.R.<domain>.<account hash>.<stream name>.<consumer name>.<uid>
+	//
+	// The reply subject is opaque to the remote API server, so this is safe to
+	// enable independently on the server issuing the request.
+	FeatureFlagJsAPIReplyFormatV2: false,
 
 	// Propose delete range gaps as a single `deleteRangeOp` Raft append entry
 	// instead of one entry per deleted sequence. Dramatically reduces Raft cost

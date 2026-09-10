@@ -3064,7 +3064,7 @@ func (mset *stream) tryDeleteSourcingConsumer(kind string, source *StreamSource,
 		}
 
 		respCh := make(chan *JSApiConsumerDeleteResponse, 1)
-		reply := infoReplySubject()
+		reply := s.infoReplySubject(source.External.Domain(), acc.Name, sourceName, consumerName)
 		cdSub, err := acc.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 			_, msg := c.msgParts(rmsg)
 
@@ -3879,7 +3879,11 @@ func (mset *stream) setupMirrorConsumer() error {
 
 	newReplySubscription := func() (string, chan *JSApiConsumerCreateResponse, *subscription, error) {
 		respCh := make(chan *JSApiConsumerCreateResponse, 1)
-		reply := infoReplySubject()
+		consumer := req.Config.Name
+		if durableDeliverSubject != _EMPTY_ {
+			consumer = mirror.cname
+		}
+		reply := mset.srv.infoReplySubject(ext.Domain(), mset.acc.Name, mset.cfg.Mirror.Name, consumer)
 		crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 			_, msg := c.msgParts(rmsg)
 
@@ -4377,7 +4381,11 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 	}
 	newReplySubscription := func() (string, chan *consumerCreateResp, *subscription, error) {
 		respCh := make(chan *consumerCreateResp, 1)
-		reply := infoReplySubject()
+		consumer := req.Config.Name
+		if durableDeliverSubject != _EMPTY_ {
+			consumer = si.cname
+		}
+		reply := mset.srv.infoReplySubject(ext.Domain(), mset.acc.Name, si.name, consumer)
 		crSub, err := mset.subscribeInternal(reply, func(sub *subscription, c *client, _ *Account, subject, reply string, rmsg []byte) {
 			hdr, msg := c.msgParts(rmsg)
 			var ccr JSApiConsumerCreateResponse
