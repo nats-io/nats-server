@@ -647,11 +647,13 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		if !cfg.Recovering {
 			n.initializing = true
 		}
-		// If we're scaling up and our log is empty, must put ourselves into observer
-		// and wait for data from the leader.
+		// No observer for a scale up. An empty log is now weighed where the decision is
+		// actually made, in runAsCandidate: we can campaign, but we can only win by
+		// hearing from every server. Observer mode can only be left by hearing from a
+		// leader, so it deadlocks precisely when there is none to hear from - a peer
+		// restarting empty during a move, or the R1 source being removed mid scale up.
 		if !cfg.Observer && cfg.ScaleUp {
 			n.scaleUp = true
-			n.setObserverLocked(true, extUndetermined)
 		}
 	}
 	n.Unlock()
@@ -4164,13 +4166,21 @@ func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
 	n.votes.drain()
+	// Only while scaling up: elsewhere an empty log is normal (nothing proposed yet)
+	// and must still be able to win on quorum.
+	selfEmpty := n.pindex == 0 && n.scaleUp
 	n.Unlock()
 
 	// Send out our request for votes.
 	n.requestVote()
 
-	// We vote for ourselves.
-	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true})
+	// We vote for ourselves. Report our own empty log the same way a voter does:
+	// a voter that's initializing hides its emptiness so a new cohort can reach
+	// quorum, and without this our own vote would launder that relaxation into a
+	// win for an empty candidate. Counting ourselves as empty forces us down the
+	// "heard from every server" path instead, which is what keeps empty servers
+	// from forming quorum among themselves.
+	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true, empty: selfEmpty})
 
 	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
