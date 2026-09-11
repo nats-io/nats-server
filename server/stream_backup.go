@@ -229,6 +229,11 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 			errCh <- fmt.Errorf("couldn't load next message after seq %d: %s", seq+1, err)
 			return
 		}
+		// Concurrent deletions and publishes can move the next available
+		// message beyond the snapshot's original sequence range.
+		if seq > state.LastSeq {
+			break
+		}
 		if err = writeStoreMsg(&sm); err != nil {
 			errCh <- err
 			return

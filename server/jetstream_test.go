@@ -3401,6 +3401,55 @@ func TestJetStreamSnapshots(t *testing.T) {
 	}
 }
 
+func TestJetStreamRestoreV2RejectsExistingStream(t *testing.T) {
+	for _, storage := range []StorageType{MemoryStorage, FileStorage} {
+		for _, restoring := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/restoring=%t", storage, restoring), func(t *testing.T) {
+				s := RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+				acc := s.GlobalAccount()
+				cfg := StreamConfig{
+					Name:     "TEST",
+					Subjects: []string{"foo"},
+					Storage:  storage,
+				}
+				var mset *stream
+				var err error
+				if restoring {
+					mset, err = acc.addStreamForRestore(&cfg)
+				} else {
+					mset, err = acc.addStream(&cfg)
+				}
+				require_NoError(t, err)
+				require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("original"), 1, time.Now().UnixNano(), 0, false))
+				state := mset.store.State()
+				usage := acc.JetStreamUsage()
+
+				// Exercise the creation check directly: another restore may have
+				// passed its initial existence check before this stream was created.
+				// Matching configurations must not allow it to reuse the stream,
+				// whether the first restore is still running or has already finished.
+				other, err := acc.addStreamForRestore(&cfg)
+				require_True(t, IsNatsErr(err, JSStreamNameExistRestoreFailedErr))
+				require_True(t, other == nil)
+
+				current, err := acc.lookupStream(cfg.Name)
+				require_NoError(t, err)
+				require_True(t, current == mset)
+				require_True(t, reflect.DeepEqual(mset.store.State(), state))
+				require_True(t, reflect.DeepEqual(acc.JetStreamUsage(), usage))
+				msg, err := mset.store.LoadMsg(1, nil)
+				require_NoError(t, err)
+				require_Equal(t, string(msg.msg), "original")
+				mset.mu.RLock()
+				stillRestoring := mset.restoring
+				mset.mu.RUnlock()
+				require_Equal(t, stillRestoring, restoring)
+			})
+		}
+	}
+}
+
 func TestJetStreamSnapshotV2ClampsConsumerStateToStream(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

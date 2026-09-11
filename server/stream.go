@@ -889,6 +889,11 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 	jsa.mu.Lock()
 	if mset, ok := jsa.streams[cfg.Name]; ok {
 		jsa.mu.Unlock()
+		// A restore must create its own stream. Another restore or create may
+		// have claimed the name since the restore's initial existence check.
+		if restoring {
+			return nil, NewJSStreamNameExistRestoreFailedError()
+		}
 		// Check to see if configs are same.
 		ocfg := mset.config()
 
