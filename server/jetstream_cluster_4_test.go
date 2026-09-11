@@ -9737,3 +9737,71 @@ func TestJetStreamClusterConsumerLeaderStepDownWithInflightStreamUpdate(t *testi
 	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
 	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") != ml)
 }
+
+func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := &nats.StreamConfig{
+				Name:      "TEST",
+				Subjects:  []string{"foo"},
+				Retention: nats.LimitsPolicy,
+				Replicas:  replicas,
+			}
+			_, err := js.AddStream(cfg)
+			require_NoError(t, err)
+
+			for i := 0; i < 10; i++ {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 10)
+			require_Equal(t, si.State.Consumers, 0)
+
+			// Interest retention without any consumers means there is no interest
+			// in any of the messages, the pre-existing ones must be removed as well.
+			cfg.Retention = nats.InterestPolicy
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				for _, s := range c.servers {
+					mset, err := s.GlobalAccount().lookupStream("TEST")
+					if err != nil {
+						// Not a replica.
+						continue
+					}
+					if mset.config().Retention != InterestPolicy {
+						return fmt.Errorf("%s: retention not yet interest", s.Name())
+					}
+					var ss StreamState
+					mset.store.FastState(&ss)
+					if ss.Msgs != 0 {
+						return fmt.Errorf("%s: expected 0 messages, got %d (first %d, last %d)",
+							s.Name(), ss.Msgs, ss.FirstSeq, ss.LastSeq)
+					}
+					if ss.LastSeq != 10 {
+						return fmt.Errorf("%s: expected last sequence 10, got %d", s.Name(), ss.LastSeq)
+					}
+				}
+				return nil
+			})
+
+			// New messages must be skipped as well.
+			pa, err := js.Publish("foo", []byte("msg"))
+			require_NoError(t, err)
+			require_Equal(t, pa.Sequence, 11)
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 0)
+			require_Equal(t, si.State.LastSeq, 11)
+		})
+	}
+}
