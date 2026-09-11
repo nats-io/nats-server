@@ -2305,7 +2305,25 @@ func startJSClusterAndConnect(b *testing.B, clusterSize int) (c *cluster, s *Ser
 		s.opts.SyncInterval = 5 * time.Minute
 		s.optsMu.Unlock()
 	} else {
-		c = createJetStreamClusterExplicit(b, "BENCH_PUB", clusterSize)
+		tmpl := `
+			listen: 127.0.0.1:-1
+			server_name: %s
+			jetstream: {max_mem_store: 2GB, max_file_store: 4GB, store_dir: '%s'}
+
+			leaf {
+				listen: 127.0.0.1:-1
+			}
+
+			cluster {
+				name: %s
+				listen: 127.0.0.1:%d
+				routes = [%s]
+			}
+
+			# For access to system account.
+			accounts { $SYS { users = [ { user: "admin", pass: "s3cr3t!" } ] } }
+		`
+		c = createJetStreamClusterWithTemplate(b, tmpl, "BENCH_PUB", clusterSize)
 		c.waitOnClusterReadyWithNumPeers(clusterSize)
 		c.waitOnLeader()
 		s = c.leader()
