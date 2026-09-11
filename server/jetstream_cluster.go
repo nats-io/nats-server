@@ -12837,7 +12837,7 @@ var (
 // Catchup inactivity timers.
 const (
 	defaultStreamCatchupStartInterval    = 5 * time.Second
-	defaultStreamCatchupActivityInterval = 30 * time.Second
+	defaultStreamCatchupActivityInterval = 10 * time.Second
 )
 
 var (
