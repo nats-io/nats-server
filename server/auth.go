@@ -802,12 +802,14 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		pinnedAcounts map[string]struct{}
 	)
 	tlsMap := opts.TLSMap
+	certMapTmpl := tlsCertMapTemplate(opts.tlsConfigOpts)
 	if c.kind == CLIENT {
 		switch c.clientType() {
 		case MQTT:
 			mo := &opts.MQTT
 			// Always override TLSMap.
 			tlsMap = mo.TLSMap
+			certMapTmpl = tlsCertMapTemplate(mo.tlsConfigOpts)
 			// The rest depends on if there was any auth override in
 			// the mqtt's config.
 			if s.mqtt.authOverride {
@@ -821,6 +823,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			wo := &opts.Websocket
 			// Always override TLSMap.
 			tlsMap = wo.TLSMap
+			certMapTmpl = tlsCertMapTemplate(wo.tlsConfigOpts)
 			// The rest depends on if there was any auth override in
 			// the websocket's config.
 			if s.websocket.authOverride {
@@ -832,7 +835,11 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 			}
 		}
 	} else {
+		// A leaf tunneled over websocket terminates TLS with the websocket{}
+		// config but still maps from here, so a verify_and_map set only
+		// under websocket{} won't apply. Long-standing TLSMap behavior.
 		tlsMap = opts.LeafNode.TLSMap
+		certMapTmpl = tlsCertMapTemplate(opts.LeafNode.tlsConfigOpts)
 	}
 
 	if !ao {
@@ -924,54 +931,63 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	if hasUsers && nkey == nil {
 		// Check if we are tls verify and are mapping users from the client_certificate.
 		if tlsMap {
-			authorized := checkClientTLSCertSubject(c, func(u string, certDN *ldap.DN, _ bool) (string, bool) {
-				// First do literal lookup using the resulting string representation
-				// of RDNSequence as implemented by the pkix package from Go.
-				if u != _EMPTY_ {
+			authorized := mapCertToUser(c, certMapTmpl,
+				func(u string) (string, bool) {
 					usr, ok := s.users[u]
-					if !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
+					if u == _EMPTY_ || !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
 						return _EMPTY_, false
 					}
 					user = usr
 					return usr.Username, true
-				}
+				},
+				func(u string, certDN *ldap.DN, _ bool) (string, bool) {
+					// First do literal lookup using the resulting string representation
+					// of RDNSequence as implemented by the pkix package from Go.
+					if u != _EMPTY_ {
+						usr, ok := s.users[u]
+						if !ok || !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
+							return _EMPTY_, false
+						}
+						user = usr
+						return usr.Username, true
+					}
 
-				if certDN == nil {
+					if certDN == nil {
+						return _EMPTY_, false
+					}
+
+					// Look through the accounts for a DN that is equal to the one
+					// presented by the certificate.
+					dns := make(map[*User]*ldap.DN)
+					for _, usr := range s.users {
+						if !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
+							continue
+						}
+						// TODO: Use this utility to make a full validation pass
+						// on start in case tlsmap feature is being used.
+						inputDN, err := ldap.ParseDN(usr.Username)
+						if err != nil {
+							continue
+						}
+						if inputDN.Equal(certDN) {
+							user = usr
+							return usr.Username, true
+						}
+
+						// In case it did not match exactly, then collect the DNs
+						// and try to match later in case the DN was reordered.
+						dns[usr] = inputDN
+					}
+
+					// Check in case the DN was reordered.
+					for usr, inputDN := range dns {
+						if inputDN.RDNsMatch(certDN) {
+							user = usr
+							return usr.Username, true
+						}
+					}
 					return _EMPTY_, false
-				}
-
-				// Look through the accounts for a DN that is equal to the one
-				// presented by the certificate.
-				dns := make(map[*User]*ldap.DN)
-				for _, usr := range s.users {
-					if !c.connectionTypeAllowed(usr.AllowedConnectionTypes) {
-						continue
-					}
-					// TODO: Use this utility to make a full validation pass
-					// on start in case tlsmap feature is being used.
-					inputDN, err := ldap.ParseDN(usr.Username)
-					if err != nil {
-						continue
-					}
-					if inputDN.Equal(certDN) {
-						user = usr
-						return usr.Username, true
-					}
-
-					// In case it did not match exactly, then collect the DNs
-					// and try to match later in case the DN was reordered.
-					dns[usr] = inputDN
-				}
-
-				// Check in case the DN was reordered.
-				for usr, inputDN := range dns {
-					if inputDN.RDNsMatch(certDN) {
-						user = usr
-						return usr.Username, true
-					}
-				}
-				return _EMPTY_, false
-			})
+				})
 			if !authorized {
 				s.mu.Unlock()
 				return false
@@ -1625,7 +1641,7 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 	} else if len(opts.LeafNode.Users) > 0 {
 		if opts.LeafNode.TLSMap {
 			var user *User
-			found := checkClientTLSCertSubject(c, func(u string, _ *ldap.DN, _ bool) (string, bool) {
+			lookup := func(u string) (string, bool) {
 				// This is expected to be a very small array.
 				for _, usr := range opts.LeafNode.Users {
 					if u == usr.Username {
@@ -1634,7 +1650,11 @@ func (s *Server) isLeafNodeAuthorized(c *client) bool {
 					}
 				}
 				return _EMPTY_, false
-			})
+			}
+			found := mapCertToUser(c, tlsCertMapTemplate(opts.LeafNode.tlsConfigOpts), lookup,
+				func(u string, _ *ldap.DN, _ bool) (string, bool) {
+					return lookup(u)
+				})
 			if !found {
 				return false
 			}
