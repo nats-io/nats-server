@@ -3601,6 +3601,24 @@ func (c *client) checkDenySub(subject, queue string) bool {
 	return denied
 }
 
+// importTargetSubject returns the subject that will actually be delivered to
+// this subscription. For a shadow subscription created by a stream import, the
+// delivered subject is the import's local (post-transform) form, which can
+// differ from the subject the message was published on in the exporting
+// account. For any other subscription the subject is returned unchanged.
+func (s *subscription) importTargetSubject(subj []byte) []byte {
+	if s == nil || s.im == nil {
+		return subj
+	}
+	if s.im.tr != nil {
+		return []byte(s.im.tr.TransformSubject(bytesToString(subj)))
+	}
+	if !s.im.usePub {
+		return []byte(s.im.to)
+	}
+	return subj
+}
+
 // Create a message header for routes or leafnodes. Header and origin cluster aware.
 func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
 	hasHeader := c.pa.hdr > 0
@@ -3636,14 +3654,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// Leaf nodes are LMSG
 		mh[0] = 'L'
 		// Remap subject if its a shadow subscription, treat like a normal client.
-		if rt.sub.im != nil {
-			if rt.sub.im.tr != nil {
-				to := rt.sub.im.tr.TransformSubject(bytesToString(subj))
-				subj = []byte(to)
-			} else if !rt.sub.im.usePub {
-				subj = []byte(rt.sub.im.to)
-			}
-		}
+		subj = rt.sub.importTargetSubject(subj)
 	}
 	mh = append(mh, subj...)
 	mh = append(mh, ' ')
@@ -3809,7 +3820,17 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		subjectToCheck, _ := getGWRoutedSubjectOrSelf(subject)
+		// For a shadow subscription created by a stream import, the subject that
+		// goes on the wire is the import's local (post-transform) form, see
+		// msgHeaderForRouteOrLeaf() above. Check the permissions against that
+		// form: the exporting account's subject is never sent to the leafnode,
+		// and requiring a permission for it would grant the leafnode an
+		// unrelated capability in its own account.
+		// The import transform is applied first and an internal gateway reply
+		// prefix is stripped from its result, because the header path transforms
+		// the complete subject as well. Stripping first could authorize a
+		// subject that differs from the one placed on the wire.
+		subjectToCheck, _ := getGWRoutedSubjectOrSelf(sub.importTargetSubject(subject))
 		if !client.pubAllowedFullCheck(string(subjectToCheck), true, true) {
 			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
