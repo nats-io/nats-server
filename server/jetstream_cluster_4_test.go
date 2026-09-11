@@ -9866,3 +9866,440 @@ func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T)
 		})
 	}
 }
+
+// A stream leader must not hand a group to a desired peer that does not hold the stream.
+// Reproduction of Antithesis run c18820123545c9af7e5f01a7751f7a02-60-7: the desired peer was
+// Raft current with an empty stream store, its sync request lost while stream leadership
+// moved, so leaders transferred to it about 100ms after being elected, the transfer was
+// swallowed because its applies were paused waiting on that catchup, and the scale-down
+// never converged. The leader now asks the peer where its store is, so this no longer
+// depends on leadership having changed: the leader that started the migration refuses too.
+func TestJetStreamClusterScaleDownWaitsForDesiredPeerStreamPosition(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	payload := string(make([]byte, 1024))
+	const batch = 100
+	for i := 0; i < batch; i++ {
+		sendStreamMsg(t, nc, "foo", payload)
+	}
+	c.waitOnAllCurrent()
+
+	leader := c.streamLeader(globalAccountName, "TEST")
+	mset, err := leader.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// The desired peer, a follower that falls behind by a snapshot.
+	x := c.randomNonStreamLeader(globalAccountName, "TEST")
+	xPeer := x.NodeName()
+	x.Shutdown()
+	x.WaitForShutdown()
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	require_Equal(t, c.streamLeader(globalAccountName, "TEST"), leader)
+
+	lnc, _ := jsClientConnect(t, leader)
+	defer lnc.Close()
+	for i := 0; i < batch; i++ {
+		sendStreamMsg(t, lnc, "foo", payload)
+	}
+	// Behind by a snapshot, the follower needs an out of band catchup.
+	require_NoError(t, mset.raftNode().InstallSnapshot(mset.stateSnapshot(), true))
+
+	// Only a stream leader is subscribed to the sync subject, so a request sent while
+	// leadership moves is dropped with nobody to answer it. Simulate that, and keep it up
+	// for as long as we want the follower to look current while holding nothing.
+	loseSyncRequests := func() {
+		sl := c.streamLeader(globalAccountName, "TEST")
+		if sl == nil {
+			return
+		}
+		if lmset, err := sl.GlobalAccount().lookupStream("TEST"); err == nil {
+			lmset.mu.Lock()
+			lmset.stopClusterSubs()
+			lmset.mu.Unlock()
+		}
+	}
+	serveSyncRequests := func() {
+		sl := c.streamLeader(globalAccountName, "TEST")
+		if sl == nil {
+			return
+		}
+		if lmset, err := sl.GlobalAccount().lookupStream("TEST"); err == nil {
+			lmset.mu.Lock()
+			lmset.startClusterSubs()
+			lmset.mu.Unlock()
+		}
+	}
+	loseSyncRequests()
+
+	// Capture leadership transfers on all servers that could do one.
+	loggers := make(map[*Server]*DummyLogger)
+	for _, s := range c.servers {
+		if s == x {
+			continue
+		}
+		l := &DummyLogger{AllMsgs: []string{}}
+		loggers[s] = l
+		s.SetLogger(l, true, false)
+		s.reloadDebugRaftNodes(true)
+	}
+	transfers := func() int {
+		var n int
+		for _, l := range loggers {
+			l.Lock()
+			for _, msg := range l.AllMsgs {
+				if strings.Contains(msg, "stepping down due to leadership transfer") {
+					n++
+				}
+			}
+			l.Unlock()
+		}
+		return n
+	}
+
+	x = c.restartServer(x)
+	c.waitOnServerCurrent(x)
+
+	// The follower must be paused waiting for its lost catchup, while the leader sees it as
+	// Raft current and not catching up. That combination is what used to be enough to hand
+	// leadership over.
+	var xmset *stream
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		xmset, err = x.GlobalAccount().lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		if !xmset.isCatchingUp() {
+			return errors.New("follower not waiting for a catchup yet")
+		}
+		var seen bool
+		for _, p := range mset.raftNode().Peers() {
+			if p.ID != xPeer {
+				continue
+			}
+			seen = true
+			if !p.Current {
+				return fmt.Errorf("follower not Raft current yet, lag %d", p.Lag)
+			}
+		}
+		if !seen {
+			return errors.New("follower not seen by the leader")
+		}
+		if slices.Contains(mset.catchupPeers(), xPeer) {
+			return errors.New("leader unexpectedly registered a catchup for the follower")
+		}
+		return nil
+	})
+
+	// Install desired state as the meta leader would hold it once the peers to scale down
+	// to have been selected: R1 onto the behind follower.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	nsa := sa.copyGroup()
+	cfg := *sa.Config
+	cfg.Replicas = 1
+	nsa.Config = &cfg
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   []string{xPeer},
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    copyStrings(sa.Group.Peers),
+			Replicas: 3,
+		},
+	}
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa))
+	if err == nil {
+		cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	assignment := func(s *Server) (int, *DesiredClusterInfoStatus) {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return 0, nil
+		}
+		return len(sa.Group.Peers), sa.Group.migration
+	}
+
+	// The follower can't answer where its store is with anything that reaches us, so we must
+	// keep leadership rather than hand the group to it. Note this is the leader that started
+	// the migration, no leadership change is needed to get the right behavior any more.
+	base := transfers()
+	var held bool
+	for deadline := time.Now().Add(6 * time.Second); time.Now().Before(deadline); {
+		loseSyncRequests()
+		require_Equal(t, c.streamLeader(globalAccountName, "TEST"), leader)
+		require_Equal(t, transfers(), base)
+		// Shedding the peers we're leaving behind is fine and expected, converging onto the
+		// one we can't vouch for is not, and neither is handing leadership to it.
+		peers, status := assignment(leader)
+		require_True(t, peers >= 2)
+		if status != nil && status.Type == MigrationStatusCatchup {
+			held = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	require_True(t, held)
+	require_True(t, xmset.isCatchingUp())
+
+	// And for the right reason: the follower's store really is behind ours, which is what
+	// it would be answering with.
+	lmset, err := leader.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_True(t, xmset.state().LastSeq < lmset.state().LastSeq)
+
+	// The hold bought the follower's retry a leader that is still there to answer it. Once
+	// it has the data the migration goes ahead and the scale down converges onto it.
+	checkFor(t, 45*time.Second, 250*time.Millisecond, func() error {
+		serveSyncRequests()
+		sl := c.streamLeader(globalAccountName, "TEST")
+		if sl != x {
+			return fmt.Errorf("stream leader is not the desired peer yet: %v", sl)
+		}
+		if xmset.isCatchingUp() {
+			return errors.New("follower still catching up")
+		}
+		var state StreamState
+		xmset.store.FastState(&state)
+		if state.Msgs != 2*batch {
+			return fmt.Errorf("follower has %d messages, want %d", state.Msgs, 2*batch)
+		}
+		// The peer set and the desired state are finalized by separate assignment
+		// updates, so both have to be checked here.
+		xjs := x.getJetStream()
+		xjs.mu.RLock()
+		defer xjs.mu.RUnlock()
+		xsa := xjs.streamAssignment(globalAccountName, "TEST")
+		if xsa == nil || xsa.Group == nil {
+			return errors.New("no stream assignment")
+		}
+		if !slices.Equal(xsa.Group.Peers, []string{xPeer}) {
+			return fmt.Errorf("assignment peers are %v", xsa.Group.Peers)
+		}
+		if xsa.Group.Desired != nil {
+			return errors.New("desired state not finalized yet")
+		}
+		return nil
+	})
+}
+
+// A desired peer that never answers is never trusted, even when it looks perfectly healthy
+// to Raft. The migration waits rather than hand the group to a peer it can't vouch for,
+// which is also what a peer too old to answer looks like.
+func TestJetStreamClusterScaleDownWaitsOnSilentDesiredPeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+	c.waitOnAllCurrent()
+
+	// The peer we'll scale down onto is healthy and current, it just can't answer.
+	x := c.randomNonStreamLeader(globalAccountName, "TEST")
+	xPeer := x.Node()
+	xmset, err := x.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	xmset.mu.Lock()
+	x.sysUnsubscribe(xmset.infoSub)
+	xmset.infoSub = nil
+	xmset.mu.Unlock()
+
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	// It must not converge onto the peer that won't say where it is.
+	ml := c.leader()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		mjs := ml.getJetStream()
+		mjs.mu.RLock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		var peers []string
+		if sa != nil && sa.Group != nil {
+			peers = copyStrings(sa.Group.Peers)
+		}
+		mjs.mu.RUnlock()
+		if len(peers) == 1 {
+			require_False(t, peers[0] == xPeer)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Let it answer again and the scale-down completes, onto whichever peer is left.
+	xmset.mu.Lock()
+	isubj := fmt.Sprintf(clusterStreamInfoT, xmset.jsa.acc(), xmset.cfg.Name)
+	xmset.infoSub, _ = x.systemSubscribe(isubj, _EMPTY_, false, xmset.sysc, xmset.handleClusterStreamInfoRequest)
+	xmset.mu.Unlock()
+
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if len(si.Cluster.Replicas) != 0 {
+			return fmt.Errorf("still at %d replicas", len(si.Cluster.Replicas)+1)
+		}
+		return nil
+	})
+}
+
+// Asking peers where their stream is must never block the monitor routine, which also
+// drains the apply queue. An unreachable desired peer must not stall publishes.
+func TestJetStreamClusterStreamPositionDoesNotStallApplies(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnAllCurrent()
+
+	leader := c.streamLeader(globalAccountName, "TEST")
+	mset, err := leader.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Ask on an inbox nobody reads, so the answers go nowhere.
+	positions := &peerPositions{reply: infoReplySubject()}
+	for i := 0; i < 20; i++ {
+		positions.asked = time.Time{}
+		positions.ask(mset, globalAccountName, "TEST")
+		start := time.Now()
+		_, err := js.Publish("foo", []byte("msg"))
+		require_NoError(t, err)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("publish took %v, asking for peer positions is blocking", elapsed)
+		}
+	}
+}
+
+// The bar a peer has to reach is where our store was when we first asked, and is then
+// held, so an answer that arrives late still says something true. Crossing the bar is
+// worth waking up for, answering again above it is not, and an answer that says nothing
+// keeps what we had.
+func TestJetStreamClusterStreamPositionBarHeldSteady(t *testing.T) {
+	mset := &stream{srv: &Server{}}
+	positions := &peerPositions{}
+
+	// Without an inbox to answer on there is nothing to ask.
+	positions.ask(mset, globalAccountName, "TEST")
+	require_True(t, positions.asked.IsZero())
+	require_False(t, positions.holds("A"))
+
+	// Short of the bar is not good enough.
+	positions.bar = 100
+	require_False(t, positions.record(&clusterStreamInfoResponse{Peer: "C", State: &StreamState{LastSeq: 99}}))
+	require_False(t, positions.holds("C"))
+
+	require_True(t, positions.record(&clusterStreamInfoResponse{Peer: "A", State: &StreamState{LastSeq: 100}}))
+	require_True(t, positions.holds("A"))
+	require_False(t, positions.record(&clusterStreamInfoResponse{Peer: "A", State: &StreamState{LastSeq: 5000}}))
+	require_True(t, positions.holds("A"))
+
+	// An answer carrying no state, which is what an older server's reply unmarshals into,
+	// says nothing and changes nothing.
+	require_False(t, positions.record(&clusterStreamInfoResponse{Peer: "A"}))
+	require_True(t, positions.holds("A"))
+	require_False(t, positions.record(&clusterStreamInfoResponse{Peer: "B"}))
+	require_False(t, positions.holds("B"))
+}
+
+// A peer that is only lagging behind the log answers the first ask just short of the bar
+// and reaches it moments later, so the first retry goes out on the next tick rather than
+// waiting out the interval. Any after that do wait it out.
+func TestJetStreamClusterStreamPositionFirstRetryIsQuick(t *testing.T) {
+	mset := &stream{srv: &Server{}}
+	positions := &peerPositions{reply: infoReplySubject()}
+
+	positions.ask(mset, globalAccountName, "TEST")
+	first := positions.asked
+	require_False(t, first.IsZero())
+	require_Equal(t, positions.retries, 0)
+
+	// Straight away is fine for the first retry.
+	positions.ask(mset, globalAccountName, "TEST")
+	require_Equal(t, positions.retries, 1)
+	require_True(t, positions.asked.After(first))
+
+	// But not for the next one.
+	second := positions.asked
+	positions.ask(mset, globalAccountName, "TEST")
+	require_Equal(t, positions.retries, 1)
+	require_Equal(t, positions.asked, second)
+
+	// Until the interval has passed.
+	positions.asked = time.Now().Add(-migratePosAskInterval)
+	positions.ask(mset, globalAccountName, "TEST")
+	require_Equal(t, positions.retries, 2)
+}
+
+// A member answers where its stream store is only while its group is migrating. A settled
+// group stays quiet, so an answer is itself the statement that a migration is under way.
+func TestJetStreamClusterStreamPositionQuietWhenSettled(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for i := 0; i < 10; i++ {
+		sendStreamMsg(t, nc, "foo", "msg")
+	}
+	c.waitOnAllCurrent()
+
+	leader := c.streamLeader(globalAccountName, "TEST")
+	mset, err := leader.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Ask the group directly, the way a migrating leader would.
+	replies := make(chan *clusterStreamInfoResponse, 8)
+	reply := infoReplySubject()
+	sub, err := leader.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
+		var resp clusterStreamInfoResponse
+		if json.Unmarshal(copyBytes(msg), &resp) == nil {
+			select {
+			case replies <- &resp:
+			default:
+			}
+		}
+	})
+	require_NoError(t, err)
+	defer leader.sysUnsubscribe(sub)
+
+	b, err := json.Marshal(&clusterStreamInfoRequest{State: true})
+	require_NoError(t, err)
+	leader.sendInternalMsgLocked(fmt.Sprintf(clusterStreamInfoT, globalAccountName, "TEST"), reply, nil, b)
+
+	// Nothing is migrating, so nobody says anything.
+	select {
+	case resp := <-replies:
+		t.Fatalf("peer %q answered while the group was settled", resp.Peer)
+	case <-time.After(time.Second):
+	}
+	require_False(t, mset.isMigrating())
+}
