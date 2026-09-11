@@ -2015,7 +2015,20 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			c.mu.Unlock()
 			if resetTLSName {
 				s.mu.Lock()
-				s.routeTLSName = _EMPTY_
+				if net.ParseIP(rURL.Hostname()) != nil && s.routeTLSLastName != _EMPTY_ {
+					// Restore from backup for DNS-only SAN certs (#8309).
+					// The backup is not consumed so it remains available for
+					// future restores after IP-SAN fallback (#1256).
+					s.routeTLSName = s.routeTLSLastName
+				} else {
+					s.routeTLSName = _EMPTY_
+				}
+				s.mu.Unlock()
+			} else if didSolicit && net.ParseIP(rURL.Hostname()) != nil {
+				s.mu.Lock()
+				if s.routeTLSName == _EMPTY_ && s.routeTLSLastName != _EMPTY_ {
+					s.routeTLSName = s.routeTLSLastName
+				}
 				s.mu.Unlock()
 			}
 			return nil
@@ -3024,8 +3037,14 @@ func (c *client) isSolicitedRoute() bool {
 // Lock is held on entry
 func (s *Server) saveRouteTLSName(routes []*url.URL) {
 	for _, u := range routes {
-		if s.routeTLSName == _EMPTY_ && net.ParseIP(u.Hostname()) == nil {
-			s.routeTLSName = u.Hostname()
+		host := u.Hostname()
+		if net.ParseIP(host) == nil {
+			if s.routeTLSName == _EMPTY_ {
+				s.routeTLSName = host
+			}
+			if s.routeTLSLastName == _EMPTY_ {
+				s.routeTLSLastName = host
+			}
 		}
 	}
 }
