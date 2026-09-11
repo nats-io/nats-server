@@ -1881,6 +1881,52 @@ func reloadUpdateConfig(t *testing.T, s *Server, conf, content string) {
 	}
 }
 
+func TestConfigReloadJetStreamForwardAdvisories(t *testing.T) {
+	storeDir := t.TempDir()
+	// %q store_dir, %v forward_advisories.
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: %q, forward_advisories: %v}
+		system_account: SYS
+		accounts {
+			JS  { jetstream: enabled, users: [ {user: pp, password: foo} ] }
+			SYS { users: [ {user: admin, password: foo} ] }
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, false)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	require_False(t, s.getOpts().JetStreamForwardAdvisories)
+
+	// Must be reloadable (the diff otherwise rejects the changed field) and take
+	// effect immediately, so a sys-account observer sees JS-account advisories.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, true))
+	require_True(t, s.getOpts().JetStreamForwardAdvisories)
+
+	ncSys, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "foo"))
+	require_NoError(t, err)
+	defer ncSys.Close()
+	sub, err := ncSys.SubscribeSync("$SYS.ACCOUNT.JS.JS.EVENT.ADVISORY.>")
+	require_NoError(t, err)
+	require_NoError(t, ncSys.Flush())
+
+	ncJS, err := nats.Connect(s.ClientURL(), nats.UserInfo("pp", "foo"))
+	require_NoError(t, err)
+	defer ncJS.Close()
+	js, err := ncJS.JetStream()
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "ORDERS"})
+	require_NoError(t, err)
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(msg.Subject, "$SYS.ACCOUNT.JS.JS.EVENT.ADVISORY."))
+
+	// Disabling again must also be supported.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, false))
+	require_False(t, s.getOpts().JetStreamForwardAdvisories)
+}
+
 func TestConfigReloadClusterAdvertise(t *testing.T) {
 	s, _, conf := runReloadServerWithContent(t, []byte(`
 		listen: "0.0.0.0:-1"
