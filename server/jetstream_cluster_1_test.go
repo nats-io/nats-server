@@ -4459,22 +4459,39 @@ func TestJetStreamClusterPeerRemoveAndEvacuateMatrix(t *testing.T) {
 			}
 
 			// Target a stream peer that is not the meta leader, so the meta layer
-			// stays put for the duration of the operation.
-			rs := c.randomNonStreamLeader(globalAccountName, "TEST")
-			if rs == nil {
-				rs = c.streamLeader(globalAccountName, "TEST")
-			}
-			require_NotNil(t, rs)
+			// stays put for the duration of the operation. Leadership can still be
+			// settling right after the cluster forms, so wait for a peers to show up first.
+			var rs *Server
+			checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+				if rs = c.randomNonStreamLeader(globalAccountName, "TEST"); rs == nil {
+					rs = c.streamLeader(globalAccountName, "TEST")
+				}
+				if rs == nil {
+					return errors.New("no stream peer yet")
+				}
+				return nil
+			})
 			target := rs.Node()
 
-			ml := c.leader()
-			if ml == rs {
-				require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
-				c.waitOnLeader()
-				ml = c.leader()
-			}
-			require_NotNil(t, ml)
-			require_NotEqual(t, ml, rs)
+			// Likewise wait for a meta leader, and hand the meta layer to another
+			// server if it landed on the peer we are about to take out.
+			var ml *Server
+			checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+				if ml = c.leader(); ml == nil {
+					return errors.New("no meta leader yet")
+				}
+				if ml == rs {
+					err := ml.getJetStream().getMetaGroup().StepDown()
+					ml = nil
+				if err := ml.getJetStream().getMetaGroup().StepDown(); err != nil {
+					ml = nil
+					return fmt.Errorf("step down failed: %v", err)
+				}
+				ml = nil
+				return errors.New("waiting for new meta leader after step down")
+				}
+				return nil
+			})
 
 			// Wait for the stream to settle on the expected number of peers. The targeted
 			// peer must be gone if the op was applied, and still there if it was rejected.
