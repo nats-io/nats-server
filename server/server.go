@@ -3606,7 +3606,8 @@ func (s *Server) saveClosedClient(c *client, nc net.Conn, subs map[string]*subsc
 	// Note that cc.fill is using len(c.subs), which may have been set to nil by now,
 	// so replace cc.NumSubs with len(subs).
 	cc.NumSubs = uint32(len(subs))
-	cc.Stop = &now
+	stop := now.UTC()
+	cc.Stop = &stop
 	cc.Reason = reason.String()
 
 	// Do subs, do not place by default in main ConnInfo
