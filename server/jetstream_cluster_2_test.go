@@ -9093,7 +9093,7 @@ func TestJetStreamClusterStreamCatchupPeers(t *testing.T) {
 	// Presence of an entry, not its lag, signals a peer requiring catchup.
 	// A zero-lag entry is included: it can mean a catchup stalled on its
 	// final message, kept so we don't lose track of the peer.
-	mset := &stream{catchups: map[string]uint64{"A": 0, "B": 100}}
+	mset := &stream{catchups: map[string]*catchupPeer{"A": {}, "B": {lag: 100}}}
 	peers := mset.catchupPeers()
 	slices.Sort(peers)
 	require_True(t, slices.Equal(peers, []string{"A", "B"}))
