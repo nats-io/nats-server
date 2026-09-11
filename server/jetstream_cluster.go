@@ -13414,6 +13414,10 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 				ci.Replicas = append(ci.Replicas, pi)
 			}
 		}
+	} else {
+		// Desired state exists, but our Raft node hasn't started yet. We have no
+		// group state to name a leader from, so don't suppress ourselves either.
+		id = _EMPTY_
 	}
 
 	generatePeer := func(peer string) *DesiredPeerInfo {
