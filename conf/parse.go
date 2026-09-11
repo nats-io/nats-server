@@ -39,6 +39,11 @@ import (
 
 const _EMPTY_ = ""
 
+const (
+	maxInt64 = int64(1<<63 - 1)
+	minInt64 = -1 << 63
+)
+
 type parser struct {
 	mapping map[string]any
 	lx      *lexer
@@ -318,34 +323,40 @@ func (p *parser) processItem(it item, fp string) error {
 		// Process a suffix
 		suffix := strings.ToLower(strings.TrimSpace(it.val[lastDigit:]))
 
+		multiplier := int64(1)
 		switch suffix {
 		case "":
-			setValue(it, num)
 		case "k":
-			setValue(it, num*1000)
+			multiplier = 1000
 		case "kb", "ki", "kib":
-			setValue(it, num*1024)
+			multiplier = 1024
 		case "m":
-			setValue(it, num*1000*1000)
+			multiplier = 1000 * 1000
 		case "mb", "mi", "mib":
-			setValue(it, num*1024*1024)
+			multiplier = 1024 * 1024
 		case "g":
-			setValue(it, num*1000*1000*1000)
+			multiplier = 1000 * 1000 * 1000
 		case "gb", "gi", "gib":
-			setValue(it, num*1024*1024*1024)
+			multiplier = 1024 * 1024 * 1024
 		case "t":
-			setValue(it, num*1000*1000*1000*1000)
+			multiplier = 1000 * 1000 * 1000 * 1000
 		case "tb", "ti", "tib":
-			setValue(it, num*1024*1024*1024*1024)
+			multiplier = 1024 * 1024 * 1024 * 1024
 		case "p":
-			setValue(it, num*1000*1000*1000*1000*1000)
+			multiplier = 1000 * 1000 * 1000 * 1000 * 1000
 		case "pb", "pi", "pib":
-			setValue(it, num*1024*1024*1024*1024*1024)
+			multiplier = 1024 * 1024 * 1024 * 1024 * 1024
 		case "e":
-			setValue(it, num*1000*1000*1000*1000*1000*1000)
+			multiplier = 1000 * 1000 * 1000 * 1000 * 1000 * 1000
 		case "eb", "ei", "eib":
-			setValue(it, num*1024*1024*1024*1024*1024*1024)
+			multiplier = 1024 * 1024 * 1024 * 1024 * 1024 * 1024
+		default:
+			return fmt.Errorf("invalid integer suffix '%s' in '%s'", suffix, it.val)
 		}
+		if multiplier > 1 && (num > maxInt64/multiplier || num < minInt64/multiplier) {
+			return fmt.Errorf("integer '%s' is out of the range", it.val)
+		}
+		setValue(it, num*multiplier)
 	case itemFloat:
 		num, err := strconv.ParseFloat(it.val, 64)
 		if err != nil {
