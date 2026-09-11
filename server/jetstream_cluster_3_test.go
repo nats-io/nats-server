@@ -14858,6 +14858,56 @@ func TestJetStreamClusterPendingPeersReportedInClusterInfo(t *testing.T) {
 	}
 }
 
+// A group can have desired state before its Raft node has started, either during
+// the window in which processClusterUpdateStream creates the node, or for as long
+// as that creation keeps failing. Without a node there is no leader to report, so
+// the local peer must not be suppressed from the replica set as it is for a leader.
+func TestJetStreamClusterLocalPeerReportedInClusterInfoWithoutNode(t *testing.T) {
+	s := &Server{}
+	s.sys = &internal{shash: "a"}
+	js := &jetStream{srv: s}
+
+	hasPeer := func(ci *ClusterInfo, peer string) bool {
+		t.Helper()
+		return slices.ContainsFunc(ci.Replicas, func(pi *PeerInfo) bool { return pi.Peer == peer })
+	}
+
+	// Scaling up from R1: we are the only current peer and the node isn't up yet.
+	rg := &raftGroup{
+		Name:    "test",
+		Peers:   []string{"a"},
+		Desired: &desiredRaftGroup{ID: "id", Cluster: "C1", Peers: []string{"a", "b", "c"}},
+	}
+	ci := js.clusterInfo(rg)
+	require_Equal(t, ci.Leader, _EMPTY_)
+	require_Len(t, len(ci.Replicas), 1)
+	require_True(t, hasPeer(ci, "a"))
+	require_Len(t, len(ci.Desired.Replicas), 3)
+
+	// Same for a multi-peer group that's being remapped, where the node was cleared.
+	rg.Peers = []string{"a", "b", "c"}
+	ci = js.clusterInfo(rg)
+	require_Equal(t, ci.Leader, _EMPTY_)
+	require_Len(t, len(ci.Replicas), 3)
+	require_True(t, hasPeer(ci, "a"))
+
+	// Scaling down doesn't report desired peers, but must still report the current set.
+	rg.Desired.ScaleDown = true
+	ci = js.clusterInfo(rg)
+	require_Equal(t, ci.Leader, _EMPTY_)
+	require_Len(t, len(ci.Replicas), 3)
+	require_True(t, hasPeer(ci, "a"))
+	require_Len(t, len(ci.Desired.Replicas), 0)
+
+	// With a node we keep suppressing ourselves, the leader is reported separately.
+	rg.node = &raft{peers: map[string]*lps{"a": {}, "b": {}, "c": {}}, leader: "a"}
+	s.nodeToInfo.Store("a", nodeInfo{name: "S-1"})
+	ci = js.clusterInfo(rg)
+	require_Equal(t, ci.Leader, "S-1")
+	require_Len(t, len(ci.Replicas), 2)
+	require_False(t, hasPeer(ci, "a"))
+}
+
 func TestJetStreamClusterMigrationStatusReportedInClusterInfo(t *testing.T) {
 	js := &jetStream{srv: &Server{}}
 
