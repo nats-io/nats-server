@@ -17,6 +17,7 @@
 package ats
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -25,12 +26,20 @@ import (
 const TickInterval = 100 * time.Millisecond
 
 var (
+	// Serializes Register/Unregister so the lifetime of the time-keeping Go
+	// routine (and its WaitGroup) is never manipulated concurrently. Stores can
+	// be created and stopped from different goroutines, so the refs 0<->1
+	// transitions that start and stop the routine must not overlap.
+	mu sync.Mutex
 	// Our unix nano time.
 	utime atomic.Int64
 	// How may registered users do we have, controls lifetime of Go routine.
 	refs atomic.Int64
 	// To signal the shutdown of the Go routine.
 	done chan struct{}
+	// To wait for the Go routine to actually exit on shutdown, so that
+	// Unregister is synchronous and does not leak a goroutine past its return.
+	wg sync.WaitGroup
 )
 
 func init() {
@@ -40,12 +49,16 @@ func init() {
 
 // Register usage. This will happen on filestore creation.
 func Register() {
+	mu.Lock()
+	defer mu.Unlock()
 	if v := refs.Add(1); v == 1 {
 		// This is the first to register (could also go up and down),
 		// so spin up Go routine and grab initial time.
 		utime.Store(time.Now().UnixNano())
 
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			ticker := time.NewTicker(TickInterval)
 			defer ticker.Stop()
 			for {
@@ -62,8 +75,14 @@ func Register() {
 
 // Unregister usage. We will shutdown the go routine if no more registered users.
 func Unregister() {
+	mu.Lock()
+	defer mu.Unlock()
 	if v := refs.Add(-1); v == 0 {
 		done <- struct{}{}
+		// Wait for the Go routine to fully exit before returning so that,
+		// once Unregister returns, the access time service is completely
+		// shut down and no goroutine lingers into a subsequent Register.
+		wg.Wait()
 	} else if v < 0 {
 		refs.Store(0)
 		panic("unbalanced unregister for access time state")
