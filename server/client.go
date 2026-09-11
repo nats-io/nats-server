@@ -852,6 +852,9 @@ func (c *client) RemoteAddress() net.Addr {
 // Helper function to report errors.
 func (c *client) reportErrRegisterAccount(acc *Account, err error) {
 	if err == ErrTooManyAccountConnections {
+		// Record the reason so that processConnect() can tell this apart from an
+		// authentication rejection, which has to be reported differently.
+		c.setAuthError(err)
 		c.maxAccountConnExceeded()
 		return
 	}
@@ -2362,7 +2365,6 @@ func (c *client) processConnect(arg []byte) error {
 	if srv != nil && srv.trustedKeys == nil {
 		c.opts.JWT = _EMPTY_
 	}
-	ujwt := c.opts.JWT
 
 	// For headers both client and server need to support.
 	c.headers = supportsHeaders && c.opts.Headers
@@ -2390,17 +2392,11 @@ func (c *client) processConnect(arg []byte) error {
 
 		// Check for Auth
 		if ok := srv.checkAuthentication(c); !ok {
-			// We may fail here because we reached max limits on an account.
-			if ujwt != _EMPTY_ {
-				c.mu.Lock()
-				acc := c.acc
-				c.mu.Unlock()
-				srv.mu.Lock()
-				tooManyAccCons := acc != nil && acc != srv.gacc
-				srv.mu.Unlock()
-				if tooManyAccCons {
-					return ErrTooManyAccountConnections
-				}
+			// We may fail here because we reached max limits on an account, in
+			// which case registerWithAccount() has already notified the client
+			// and closed the connection, so don't report an auth violation.
+			if c.getAuthError() == ErrTooManyAccountConnections {
+				return ErrTooManyAccountConnections
 			}
 			c.authViolation()
 			return ErrAuthentication
