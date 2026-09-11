@@ -275,6 +275,10 @@ type proposedEntry struct {
 	term  uint64 // Raft term in which it was accepted.
 }
 
+func (pe *proposedEntry) size() uint64 {
+	return uint64(len(pe.Data)) + 1
+}
+
 // catchupState structure that holds our subscription, and catchup term and index
 // as well as starting term and index and how many updates we have seen.
 type catchupState struct {
@@ -491,7 +495,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		quit:     make(chan struct{}),
 		reqs:     newIPQueue[*voteRequest](s, qpfx+"vreq"),
 		votes:    newIPQueue[*voteResponse](s, qpfx+"vresp"),
-		prop:     newIPQueue[*proposedEntry](s, qpfx+"entry"),
+		prop:     newIPQueue[*proposedEntry](s, qpfx+"entry", ipqSizeCalculation((*proposedEntry).size)),
 		entry:    newIPQueue[*appendEntry](s, qpfx+"appendEntry"),
 		resp:     newIPQueue[*appendEntryResponse](s, qpfx+"appendEntryResponse"),
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
@@ -931,13 +935,30 @@ func (s *Server) transferRaftLeaders() bool {
 	return didTransfer
 }
 
+// checkFastPathLimits reports whether the proposal queue exceeds a fixed
+// entry count or byte limit. When the limit is exceeded, the proposal
+// fast path is closed for the given term so proposals fall back to the
+// locking path.
+func (n *raft) checkFastPathLimits(term uint64) bool {
+	const (
+		maxBatches = 8
+		maxBytes   = maxBatches * maxBatchBytes
+		maxEntries = maxBatches * maxBatchEntries
+	)
+	if n.prop.len() > maxEntries || n.prop.size() > maxBytes {
+		n.fastPathTerm.CompareAndSwap(term, 0)
+		return true
+	}
+	return false
+}
+
 // tryFastPathPropose enqueues the given data buffer to the
 // proposal queue, provided that the fast path is open, and that
 // the given term matches the current raft term.
 // Returns true if it was successfully enqueued. False if the
 // caller should fall back to the locking proposal path.
 func (n *raft) tryFastPathPropose(term uint64, data []byte) bool {
-	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader {
+	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader || n.checkFastPathLimits(term) {
 		return false
 	}
 	n.prop.push(newProposedEntry(newEntry(EntryNormal, data), _EMPTY_, term))
@@ -950,7 +971,7 @@ func (n *raft) tryFastPathPropose(term uint64, data []byte) bool {
 // Returns true if the entries were successfully enqueued. False if the
 // caller should fall back to the locking proposal path.
 func (n *raft) tryFastPathProposeMulti(term uint64, entries []*Entry) bool {
-	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader {
+	if term == 0 || term != n.fastPathTerm.Load() || n.State() != Leader || n.checkFastPathLimits(term) {
 		return false
 	}
 	_, err := n.prop.pushMany(func(yield func(*proposedEntry) bool) {
@@ -3429,6 +3450,11 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	return true
 }
 
+const (
+	maxBatchBytes   = 256 * 1024
+	maxBatchEntries = 4096 // larger batches showed no benefit
+)
+
 func (n *raft) runAsLeader() {
 	if n.State() == Closed {
 		return
@@ -3482,8 +3508,6 @@ func (n *raft) runAsLeader() {
 			}
 			n.resp.recycle(&ars)
 		case <-n.prop.ch:
-			const maxBatch = 256 * 1024
-			const maxEntries = 4096 // larger batches showed no benefit
 			var entries []*Entry
 
 			es, sz := n.prop.pop(), 0
@@ -3499,7 +3523,7 @@ func (n *raft) runAsLeader() {
 				// Increment size.
 				sz += len(b.Data) + 1
 				// If below thresholds go ahead and send.
-				if sz < maxBatch && len(entries) < maxEntries {
+				if sz < maxBatchBytes && len(entries) < maxBatchEntries {
 					continue
 				}
 				n.sendAppendEntry(entries)
@@ -5140,7 +5164,7 @@ func (n *raft) sendAppendEntryLocked(entries []*Entry, checkLeader bool) error {
 	// more proposals (no errors, not overrun), allow Propose
 	// and ProposeMulti to enqueue proposals for the current
 	// term without acquiring the raft mutex.
-	if checkLeader && n.werr == nil && !n.isLeaderOverrun() {
+	if checkLeader && n.werr == nil && !n.isLeaderOverrun() && !n.checkFastPathLimits(n.term) {
 		n.fastPathTerm.Store(n.term)
 		defer n.fastPathTerm.Store(0)
 	}
