@@ -2577,6 +2577,11 @@ func (c *client) maxPayloadViolation(sz int, max int32) {
 	c.closeConnection(MaxPayloadExceeded)
 }
 
+func (c *client) serviceImportMaxPayloadExceeded() bool {
+	maxPayload := atomic.LoadInt32(&c.mpay)
+	return maxPayload != jwt.NoLimit && int64(c.pa.size) > int64(maxPayload)
+}
+
 // queueOutbound queues data for a clientconnection.
 // Lock should be held.
 func (c *client) queueOutbound(data []byte) {
@@ -5012,6 +5017,12 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 			if b, _ := json.Marshal(ci); b != nil {
 				msg = c.setHeader(ClientInfoHdr, bytesToString(b), msg)
 			}
+		}
+		if c.serviceImportMaxPayloadExceeded() {
+			siAcc.removeRespServiceImport(rsi, rsiNoDelivery)
+			c.pa = pacopy
+			c.pa.delivered = false
+			return false
 		}
 	}
 

@@ -4275,7 +4275,7 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 		  default: {
 			jetstream: true
 			users: [ {user: me, password: pwd} ]
-			limits { max_payload: 512 }
+			limits { max_payload: 768 }
 		  }
 		}
 	`, t.TempDir())))
@@ -4292,11 +4292,11 @@ func TestNoRaceJetStreamStreamInfoSubjectDetailsLimits(t *testing.T) {
 	// Make sure to flush so we process the 2nd INFO.
 	nc.Flush()
 
-	// Make sure we cannot send larger than 512 bytes.
+	// Make sure we cannot send larger than 768 bytes.
 	// But we can receive larger.
 	sub, err := nc.SubscribeSync("foo")
 	require_NoError(t, err)
-	err = nc.Publish("foo", []byte(strings.Repeat("A", 600)))
+	err = nc.Publish("foo", []byte(strings.Repeat("A", 800)))
 	require_Error(t, err, nats.ErrMaxPayload)
 	sub.Unsubscribe()
 
