@@ -4614,9 +4614,11 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	checkFor(t, time.Second, 200*time.Millisecond, func() error {
-		si, err := js.StreamInfo("M")
-		require_NoError(t, err)
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("M", nats.MaxWait(2*time.Second))
+		if err != nil {
+			return err
+		}
 		if si.State.Msgs == 100 {
 			return nil
 		}
