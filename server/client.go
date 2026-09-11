@@ -4855,6 +4855,21 @@ var (
 	jsDirectGetPreB   = []byte(jsDirectGetPre)
 )
 
+// Reports whether the given account has already seen the message being
+// processed, either as the publisher's account or as one of the accounts
+// the service import chain passed through.
+func (c *client) accOnServiceImportPath(acc *Account) bool {
+	if acc == c.acc {
+		return true
+	}
+	for _, si := range c.pa.psi {
+		if acc == si.acc {
+			return true
+		}
+	}
+	return false
+}
+
 // processServiceImport is an internal callback when a subscription matches an imported service
 // from another account. This includes response mappings as well.
 func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byte) bool {
@@ -5379,8 +5394,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
-			// If this message was a service import do not re-export to an exported stream.
-			if flags&pmrMsgImportedFromService != 0 {
+			// If this message was a service import, deliver only to stream imports
+			// of accounts the message has not passed through yet. Delivering back
+			// to one of those could loop the message or siphon off queue deliveries.
+			if flags&pmrMsgImportedFromService != 0 && c.accOnServiceImportPath(sub.client.acc) {
 				continue
 			}
 			if sub.im.tr != nil {
@@ -5605,8 +5622,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil {
-				// If this message was a service import do not re-export to an exported stream.
-				if flags&pmrMsgImportedFromService != 0 {
+				// If this message was a service import, deliver only to stream imports
+				// of accounts the message has not passed through yet. Delivering back
+				// to one of those could loop the message or siphon off queue deliveries.
+				if flags&pmrMsgImportedFromService != 0 && c.accOnServiceImportPath(sub.client.acc) {
 					continue
 				}
 				if sub.im.tr != nil {
