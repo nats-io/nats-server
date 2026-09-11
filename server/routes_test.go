@@ -1814,13 +1814,14 @@ func TestRouteReconnectExponentialBackoff(t *testing.T) {
 	}
 }
 
-func TestRouteSaveTLSName(t *testing.T) {
+func TestRouteImplictUsesAdvertisedURLForTLSName(t *testing.T) {
 	c1Conf := createConfFile(t, []byte(`
 		port: -1
 		cluster {
 			name: "abc"
 			port: -1
 			pool_size: -1
+			advertise: "localhost"
 			tls {
 				cert_file: '../test/configs/certs/server-noip.pem'
 				key_file: '../test/configs/certs/server-key-noip.pem'
@@ -1837,7 +1838,8 @@ func TestRouteSaveTLSName(t *testing.T) {
 		name: "abc"
 		port: -1
 		pool_size: -1
-		routes: ["nats://%s:%d"]
+		routes: ["nats://localhost:%d"]
+		%s
 		tls {
 			cert_file: '../test/configs/certs/server-noip.pem'
 			key_file: '../test/configs/certs/server-key-noip.pem'
@@ -1845,62 +1847,56 @@ func TestRouteSaveTLSName(t *testing.T) {
 		}
 	}
 	`
-	c2And3Conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, "localhost", o1.Cluster.Port)))
+	c2And3Conf := createConfFile(t, fmt.Appendf(nil, tmpl, o1.Cluster.Port, _EMPTY_))
 	s2, _ := RunServerWithConfig(c2And3Conf)
 	defer s2.Shutdown()
 
 	checkClusterFormed(t, s1, s2)
 
-	s3, _ := RunServerWithConfig(c2And3Conf)
-	defer s3.Shutdown()
-
-	checkClusterFormed(t, s1, s2, s3)
-
-	reloadUpdateConfig(t, s2, c2And3Conf, fmt.Sprintf(tmpl, "127.0.0.1", o1.Cluster.Port))
-
-	s2.mu.RLock()
-	s2.forEachRoute(func(r *client) {
-		r.mu.Lock()
-		if r.route.routeType == Implicit {
-			r.nc.Close()
-		}
-		r.mu.Unlock()
-	})
-	s2.mu.RUnlock()
-
-	checkClusterFormed(t, s1, s2, s3)
-
-	// Set a logger to capture errors trying to connect after clearing
-	// the routeTLSName and causing a disconnect
+	// Set a logger to capture error indicating that s2 can't connect to the
+	// discovered server s3 because it connects using an IP and the certs
+	// don't allow for that.
 	l := &captureErrorLogger{errCh: make(chan string, 1)}
 	s2.SetLogger(l, false, false)
 
+	s3, _ := RunServerWithConfig(c2And3Conf)
+	defer s3.Shutdown()
+
 	var gotIt bool
 	for i := 0; !gotIt && i < 5; i++ {
-		s2.mu.Lock()
-		s2.routeTLSName = _EMPTY_
-		s2.forEachRoute(func(r *client) {
-			r.mu.Lock()
-			if r.route.routeType == Implicit {
-				r.nc.Close()
-			}
-			r.mu.Unlock()
-		})
-		s2.mu.Unlock()
 		select {
-		case <-l.errCh:
-			gotIt = true
-		case <-time.After(time.Second):
-			// Try again
+		case err := <-l.errCh:
+			if strings.Contains(err, "handshake") {
+				gotIt = true
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Timed-out waiting for handshake error")
 		}
 	}
 	if !gotIt {
 		t.Fatal("Did not get the handshake error")
 	}
 
-	// Now get back to localhost in config and reload config and
-	// it should start to work again.
-	reloadUpdateConfig(t, s2, c2And3Conf, fmt.Sprintf(tmpl, "localhost", o1.Cluster.Port))
+	// Stop the servers and update the configuration to have the advertise
+	// address set to "localhost".
+	s2.Shutdown()
+	s3.Shutdown()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if n := s1.NumRoutes(); n != 0 {
+			return fmt.Errorf("Server s1 has still %v routes", n)
+		}
+		return nil
+	})
+
+	c2And3Conf = createConfFile(t, fmt.Appendf(nil, tmpl, o1.Cluster.Port, "advertise: localhost"))
+	s2, _ = RunServerWithConfig(c2And3Conf)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	s3, _ = RunServerWithConfig(c2And3Conf)
+	defer s3.Shutdown()
+
 	checkClusterFormed(t, s1, s2, s3)
 }
 
