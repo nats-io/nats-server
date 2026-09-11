@@ -1313,13 +1313,13 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	disconnectClients := []*client{}
 	protoToPinned := map[int]PinnedCertSet{}
 	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
-		protoToPinned[NATS] = curOpts.TLSPinnedCerts
+		protoToPinned[NATS] = newOpts.TLSPinnedCerts
 	}
 	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
-		protoToPinned[MQTT] = curOpts.MQTT.TLSPinnedCerts
+		protoToPinned[MQTT] = newOpts.MQTT.TLSPinnedCerts
 	}
 	if !reflect.DeepEqual(newOpts.Websocket.TLSPinnedCerts, curOpts.Websocket.TLSPinnedCerts) {
-		protoToPinned[WS] = curOpts.Websocket.TLSPinnedCerts
+		protoToPinned[WS] = newOpts.Websocket.TLSPinnedCerts
 	}
 	for _, c := range s.clients {
 		if c.kind != CLIENT {
