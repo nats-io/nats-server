@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	crand "crypto/rand"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -127,7 +128,7 @@ func TestLongKVPutWithServerRestarts(t *testing.T) {
 		valueBuffer := make([]byte, ValueSize)
 		updateRandomKey := func() error {
 			key := keys[rand.IntN(NumKeys)]
-			_, err := rng.Read(valueBuffer)
+			_, err := crand.Read(valueBuffer)
 			require_NoError(t, err)
 			_, err = kv.Put(key, valueBuffer)
 			return err
