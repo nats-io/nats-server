@@ -9811,7 +9811,15 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 						(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
 				})
 			}
-			if !removals {
+			// Nor can we skip while the consumer still holds a peer the stream has already
+			// dropped. Only the peers it converges to are weighed above, so once it's been
+			// given desired state it would look settled forever, while the peer it's on
+			// can't host it and blocks the stream from scaling down. Fall through, the
+			// peers that are no longer the stream's are dropped below.
+			stale := slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
+				return !slices.Contains(sa.Group.Peers, p)
+			})
+			if !removals && !stale {
 				continue
 			}
 		}
