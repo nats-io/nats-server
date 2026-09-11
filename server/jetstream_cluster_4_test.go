@@ -9234,3 +9234,71 @@ func TestJetStreamClusterConsumerAssignmentDeleteAPI(t *testing.T) {
 	_, err = js.ConsumerInfo("TEST", "CONSUMER")
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
+
+func TestJetStreamClusterConsumerCreateResponseConsumerClosed(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer on a replicated stream responds through the R1 leader change path.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	s := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, s)
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+
+	// Redirect the create response to us, as if it had not been answered yet.
+	// API responses are sent on the system account, so listen there.
+	snc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	inbox := nats.NewInbox()
+	sub, err := snc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	require_NoError(t, snc.Flush())
+	ca := o.consumerAssignment()
+	require_NotNil(t, ca)
+	ca = ca.clone()
+	ca.Reply = inbox
+	ca.clearResponded()
+
+	// Simulate the consumer being torn down concurrently: the closed check at the
+	// start of processConsumerLeaderChangeWithAssignment has already passed, but by
+	// the time the response is built o.info() returns nil.
+	o.mu.Lock()
+	o.mset = nil
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.mset = mset
+		o.mu.Unlock()
+	}()
+
+	// Must not panic, and must answer with an error rather than an empty response.
+	require_NoError(t, s.getJetStream().processConsumerLeaderChangeWithAssignment(o, ca, true, 0))
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ConsumerInfo == nil)
+	require_NotNil(t, resp.Error)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerCreateErrF))
+	require_Contains(t, resp.Error.Description, errConsumerClosed.Error())
+}

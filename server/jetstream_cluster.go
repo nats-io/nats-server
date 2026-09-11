@@ -7276,14 +7276,15 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 							if err != nil {
 								resp.Error = NewJSConsumerCreateError(err, Unless(err))
 								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							} else if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+								// The consumer was closed before we could respond.
+								resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							} else if resp.Config.Direct || resp.Config.Sourcing {
+								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
+								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
 							} else {
-								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-								if resp.Config.Direct || resp.Config.Sourcing {
-									rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
-									s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
-								} else {
-									s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-								}
+								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 							}
 						},
 						pprofLabels{
@@ -7366,15 +7367,22 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 								resp.Error = NewJSConsumerInvalidResetError(err)
 								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 							} else if canRespond {
-								resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+								if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+									// The consumer was closed before we could respond.
+									resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
+									s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+								}
 								resp.ResetSeq = resetSeq
 								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
 								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
 							}
 						} else {
 							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-							resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
-							if resp.Config.Direct || resp.Config.Sourcing {
+							if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+								// The consumer was closed before we could respond.
+								resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+							} else if resp.Config.Direct || resp.Config.Sourcing {
 								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
 								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
 							} else {
@@ -8285,7 +8293,11 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 							a = nil
 						}
 						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
-						resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+						if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+							// The consumer was closed before we could respond.
+							resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
+							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						}
 						resp.ResetSeq = sseq
 						if rr.identity {
 							rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
@@ -8515,19 +8527,26 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 				rresp.Error = NewJSConsumerInvalidResetError(err)
 				s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
 			} else if canRespond {
-				rresp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+				if rresp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); rresp.ConsumerInfo == nil {
+					// The consumer was closed before we could respond.
+					rresp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
+					s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&rresp))
+					return nil
+				}
 				rresp.ResetSeq = resetSeq
 				rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
 				s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&rresp))
 			}
+		} else if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo()); resp.ConsumerInfo == nil {
+			// The consumer was closed before we could respond.
+			resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+			s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+			return nil
+		} else if resp.Config.Direct || resp.Config.Sourcing {
+			rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
+			s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
 		} else {
-			resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
-			if resp.Config.Direct || resp.Config.Sourcing {
-				rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
-				s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
-			} else {
-				s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-			}
+			s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 		}
 		o.sendCreateAdvisory()
 	}
