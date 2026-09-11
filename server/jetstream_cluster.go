@@ -4088,6 +4088,36 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 	// For migration tracking.
 	var mmt *time.Timer
 	var mmtc <-chan time.Time
+	// Where the peers we may hand this group to say their stream store is, and the inbox
+	// they answer on. Only this routine asks and only this routine reads the answers, so
+	// none of it needs locking, and it is all dropped when we stop leading.
+	var positions peerPositions
+	posQ := newIPQueue[*clusterStreamInfoResponse](s, fmt.Sprintf("[ACC:%s] stream '%s' positions", accName, mset.name()))
+	defer posQ.unregister()
+	// Only a leader that is actually migrating asks anyone anything, so don't hold an inbox
+	// open for every stream on the server just because its monitor is running.
+	listenForPositions := func() {
+		if positions.sub != nil {
+			return
+		}
+		reply := infoReplySubject()
+		sub, err := s.sysSubscribe(reply, func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
+			var resp clusterStreamInfoResponse
+			if json.Unmarshal(copyBytes(msg), &resp) == nil {
+				posQ.push(&resp)
+			}
+		})
+		if err == nil {
+			positions.reply, positions.sub = reply, sub
+		}
+	}
+	stopListeningForPositions := func() {
+		if positions.sub != nil {
+			s.sysUnsubscribe(positions.sub)
+		}
+		positions = peerPositions{}
+	}
+	defer stopListeningForPositions()
 
 	resetMigrationMonitoring := func(delay time.Duration) {
 		if mmt != nil {
@@ -4114,8 +4144,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			mmt.Stop()
 			mmt, mmtc = nil, nil
 		}
-		// Don't leave a stale status behind for a migration that's done or abandoned.
+		// Don't leave a stale status behind for a migration that's done or abandoned, nor
+		// the inbox and answers we only needed while it was running.
 		js.setMigrationStatus(mset.raftGroup(), nil)
+		stopListeningForPositions()
 	}
 	defer stopMigrationMonitoring()
 
@@ -4309,6 +4341,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				continue
 			}
 			isLeader, leaderTerm = lc.isLeader, lc.term
+			// What peers told us was only good while we were the one asking.
+			stopListeningForPositions()
 			// Process our leader change.
 			js.processStreamLeaderChange(mset, isLeader, lc.term)
 
@@ -4420,6 +4454,18 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			} else {
 				stopMigrationMonitoring()
 			}
+		case <-posQ.ch:
+			// A peer told us where its stream store is. Nothing here blocks, and if it's
+			// news we look at the migration again right away rather than on the next tick.
+			var news bool
+			for _, resp := range posQ.pop() {
+				news = positions.record(resp) || news
+			}
+			posQ.recycle(nil)
+			if news && isLeader {
+				resetMigrationMonitoring(migrateFastCheckInterval)
+			}
+
 		case <-mmtc:
 			if !isLeader {
 				// We're not the leader, but check if we're out of quorum and
@@ -4433,7 +4479,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			}
 			// Reset to the slower fallback speed.
 			resetMigrationMonitoring(migrateFallbackCheckInterval)
-			status := js.runStreamMigration(mset, sa, n, leaderTerm)
+			listenForPositions()
+			status := js.runStreamMigration(mset, sa, n, leaderTerm, &positions)
 			// Only retry meta leader requests slowly, their reply wakes us on the fast path.
 			if status != nil && status.Type == MigrationStatusMeta {
 				resetMigrationMonitoring(migrateMetaRetryInterval)
@@ -4518,6 +4565,11 @@ type desiredNeed int
 const (
 	desiredReady desiredNeed = iota
 	desiredMissing
+	// desiredUnrecordedTerm is desired state no leader has recorded a term for yet, it was
+	// only just created, so we're the first to drive it rather than taking it over.
+	desiredUnrecordedTerm
+	// desiredStaleTerm is desired state recorded under another leader's term, so we took
+	// over a migration that was already in flight.
 	desiredStaleTerm
 )
 
@@ -4533,6 +4585,8 @@ func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bo
 	}
 	if desired == nil || desired.ID == _EMPTY_ {
 		needDesired = desiredMissing
+	} else if desired.Term == 0 {
+		needDesired = desiredUnrecordedTerm
 	} else if desired.Term != leaderTerm {
 		needDesired = desiredStaleTerm
 	}
@@ -4610,7 +4664,7 @@ func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current,
 }
 
 // Migrate a stream from peer set A to peer set B.
-func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64) *DesiredClusterInfoStatus {
+func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n RaftNode, leaderTerm uint64, positions *peerPositions) *DesiredClusterInfoStatus {
 	// Sanity-check: we're still the leader.
 	if leaderTerm == 0 || !n.Leader() {
 		return nil
@@ -4735,13 +4789,6 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			js.mu.RUnlock()
 			return mstat(MigrationStatusMeta, "desired state changed, reassessing")
 		}
-		// Peers that were already in the group before this desired state began. They have a
-		// copy of the stream data, which is what lets us shed the surplus before the peers
-		// we're moving to have caught up.
-		var originPeers []string
-		if o := sa.Group.Desired.Origin; o != nil {
-			originPeers = copyStrings(o.Peers)
-		}
 		var blockedBy string
 		for name, c := range sa.consumers {
 			if c.unsupported != nil {
@@ -4766,6 +4813,10 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			return mstat(MigrationStatusBlocked, "waiting for consumer '%s' to migrate", blockedBy)
 		}
 
+		// Ask the peers we may hand this group to where their stream store is. Their answers
+		// land in our cache and wake us, this does not wait for them.
+		positions.ask(mset, accName, streamName)
+
 		// Remove old peers one at a time, the leader selected last.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
 
@@ -4776,23 +4827,27 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		//   current. We use this where we only need them to have the data.
 		// - copiesAfterRemoval: whether we have sufficient copies of the data after
 		//   having removed the peer, so it's tallied without it.
+		// A peer is vouched for once it told us its store holds the stream, being current
+		// on the log is not enough for that. See peerPositions.holds.
 		var currentDesired []string
 		var caughtUpDesired, copiesAfterRemoval int
 		for _, p := range actual {
 			inCatchup := slices.Contains(catchups, p.ID)
 			isDesired := slices.Contains(desiredPeers, p.ID)
-			if isDesired && !inCatchup {
+			vouched := p.ID == ourPeerId || positions.holds(p.ID)
+			if isDesired && !inCatchup && vouched {
 				caughtUpDesired++
 			}
-			if p.Current && !inCatchup && isDesired {
+			if p.Current && !inCatchup && isDesired && vouched {
 				currentDesired = append(currentDesired, p.ID)
 			}
 			if p.ID == remove {
 				continue
 			}
-			// A peer has the stream if it was in the group before this desired state
-			// began, or if it was added and has caught up since.
-			if !inCatchup && (slices.Contains(originPeers, p.ID) || p.Current) {
+			// A peer has the stream if it told us so. Having been in the group before this
+			// desired state began is not enough: a peer that went away and came back on a
+			// snapshot was an origin peer too, and holds nothing.
+			if !inCatchup && vouched {
 				copiesAfterRemoval++
 			}
 		}
@@ -4837,7 +4892,12 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 			return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
 		}
-		err := n.StepDown()
+		// Removing ourselves hands the group over without naming a successor, so it needs a
+		// peer we can vouch for just as much as a targeted step down does.
+		if len(currentDesired) == 0 {
+			return mstat(MigrationStatusCatchup, "waiting for a desired peer to catch up before stepping down")
+		}
+		err := n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, currentDesired))
 		return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 	}
 
@@ -5786,6 +5846,11 @@ const (
 	migrateFastCheckInterval     = 50 * time.Millisecond
 	migrateFallbackCheckInterval = 500 * time.Millisecond
 	migrateMetaRetryInterval     = 5 * time.Second
+
+	// migratePosAskInterval is how often a migrating leader re-asks where the members of the
+	// group have their stream store, so a peer that hasn't answered yet, or answered short
+	// of what we need, gets another chance.
+	migratePosAskInterval = 2 * time.Second
 )
 
 // Determines if we should send lost quorum advisory. We throttle these after first one.
@@ -12487,6 +12552,21 @@ type streamSyncRequest struct {
 	MinApplied     uint64 `json:"min_applied"`
 }
 
+// clusterStreamInfoRequest is the optional body on a cluster stream info request. Without
+// it only the leader answers, and answers with the full stream info. Asking for the state
+// instead has every member that is migrating answer with just where its own store is, which
+// is how a group leader tells a peer that holds the stream from one that holds nothing:
+// both persist our log just the same.
+type clusterStreamInfoRequest struct {
+	State bool `json:"state,omitempty"`
+}
+
+// clusterStreamInfoResponse is one member's answer, saying which member it is.
+type clusterStreamInfoResponse struct {
+	Peer  string       `json:"peer"`
+	State *StreamState `json:"state,omitempty"`
+}
+
 // Given a stream state that represents a snapshot, calculate the sync request based on our current state.
 // Stream lock must be held.
 func (mset *stream) calculateSyncRequest(state *StreamState, snap *StreamReplicatedState, index uint64) *streamSyncRequest {
@@ -12648,6 +12728,68 @@ func (mset *stream) catchupPeers() []string {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 	return slices.Collect(maps.Keys(mset.catchups))
+}
+
+// peerPositions is what the members of a group have told its leader about where their
+// stream store is. Owned by the stream's monitor routine, which is the only thing that asks
+// and the only thing that reads the answers, so it needs no locking.
+type peerPositions struct {
+	// bar is where our store was when we first asked, and is then held. Raising it on every
+	// ask would make it unreachable on a stream being published to faster than we can ask
+	// and hear back. What is written past the bar reaches the peers through our log, what
+	// we are checking for is a peer that is missing what came before it.
+	bar   uint64
+	asked time.Time         // When we last asked, so we don't ask on every tick.
+	seqs  map[string]uint64 // Where each peer last said its store was.
+	// retries counts the asks after the first. A peer that is only lagging behind the log
+	// answers the first ask just short of the bar and reaches it moments later, so the
+	// first retry goes out on the next tick. Any after that wait out migratePosAskInterval,
+	// a peer that stays short is not going to answer differently for being asked more.
+	retries int
+	reply   string // Inbox the answers come back on, empty while not listening.
+	sub     *subscription
+}
+
+// holds reports whether a peer told us its store reaches the bar. This is what p.Current
+// could never say: being current means a peer persisted our log, not that its store
+// reflects it, and a peer that took a snapshot and is waiting on an out-of-band catchup is
+// current while holding nothing. A peer that doesn't answer doesn't count, we can't vouch
+// for silence.
+func (pp *peerPositions) holds(peer string) bool {
+	seq, ok := pp.seqs[peer]
+	return ok && seq >= pp.bar
+}
+
+// record folds an answer in and reports whether it is news: a peer we could not vouch for
+// that we now can, which is worth looking at the migration again for.
+func (pp *peerPositions) record(resp *clusterStreamInfoResponse) bool {
+	if resp.State == nil {
+		return false
+	}
+	was := pp.holds(resp.Peer)
+	if pp.seqs == nil {
+		pp.seqs = make(map[string]uint64)
+	}
+	pp.seqs[resp.Peer] = resp.State.LastSeq
+	return !was && pp.holds(resp.Peer)
+}
+
+// ask asks every member where its store is, unless we asked recently. One request reaches
+// all of them and each answers for itself. Fire and forget: answers arrive on the reply
+// subject and are folded in by the monitor routine, we never wait for them here.
+func (pp *peerPositions) ask(mset *stream, accName, streamName string) {
+	if pp.reply == _EMPTY_ {
+		return
+	}
+	if pp.asked.IsZero() {
+		pp.bar = mset.state().LastSeq
+	} else if pp.retries > 0 && time.Since(pp.asked) < migratePosAskInterval {
+		return
+	} else {
+		pp.retries++
+	}
+	pp.asked = time.Now()
+	mset.srv.sendInternalMsgLocked(fmt.Sprintf(clusterStreamInfoT, accName, streamName), pp.reply, nil, []byte(`{"state":true}`))
 }
 
 func (mset *stream) setCatchingUp() {
@@ -13366,8 +13508,31 @@ func (js *jetStream) streamAlternates(ci *ClientInfo, stream string) []StreamAlt
 }
 
 // Internal request for stream info, this is coming on the wire so do not block here.
-func (mset *stream) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, subject, reply string, _ []byte) {
+func (mset *stream) handleClusterStreamInfoRequest(_ *subscription, c *client, _ *Account, subject, reply string, msg []byte) {
+	// A request body asks for something more specific than the stream info. An older server
+	// ignores it and answers as it always did, which reads to us as not answering at all.
+	if len(msg) > 0 {
+		var req clusterStreamInfoRequest
+		if err := json.Unmarshal(msg, &req); err == nil && req.State {
+			go mset.processClusterStreamStateRequest(reply)
+			return
+		}
+	}
 	go mset.processClusterStreamInfoRequest(reply)
+}
+
+// Answer with where our stream store actually is. Deliberately cheap: state() is a
+// FastState and takes no stream lock, so we can still answer while our own monitor
+// routine is stuck waiting on a catchup of its own.
+func (mset *stream) processClusterStreamStateRequest(reply string) {
+	mset.mu.RLock()
+	sysc, node := mset.sysc, mset.node
+	mset.mu.RUnlock()
+	if sysc == nil || node == nil || !mset.isMigrating() {
+		return
+	}
+	state := mset.state()
+	sysc.sendInternalMsg(reply, _EMPTY_, nil, &clusterStreamInfoResponse{Peer: node.ID(), State: &state})
 }
 
 func (mset *stream) processClusterStreamInfoRequest(reply string) {
