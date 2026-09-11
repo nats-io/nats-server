@@ -375,39 +375,8 @@ func UnpackIfErrorCtx(err error) string {
 	return err.Error()
 }
 
-// implements: go 1.13 errors.Unwrap(err error) error
-// TODO replace with native code once we no longer support go1.12
-func errorsUnwrap(err error) error {
-	u, ok := err.(interface {
-		Unwrap() error
-	})
-	if !ok {
-		return nil
-	}
-	return u.Unwrap()
-}
-
-// ErrorIs implements: go 1.13 errors.Is(err, target error) bool
-// TODO replace with native code once we no longer support go1.12
+// ErrorIs reports whether err or any error in its chain matches target.
+// Thin wrapper around the standard library errors.Is.
 func ErrorIs(err, target error) bool {
-	// this is an outright copy of go 1.13 errors.Is(err, target error) bool
-	// removed isComparable
-	if err == nil || target == nil {
-		return err == target
-	}
-
-	for {
-		if err == target {
-			return true
-		}
-		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(target) {
-			return true
-		}
-		// TODO: consider supporing target.Is(err). This would allow
-		// user-definable predicates, but also may allow for coping with sloppy
-		// APIs, thereby making it easier to get away with them.
-		if err = errorsUnwrap(err); err == nil {
-			return false
-		}
-	}
+	return errors.Is(err, target)
 }
