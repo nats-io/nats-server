@@ -136,6 +136,10 @@ type Info struct {
 	RemoteAccount     string   `json:"remote_account,omitempty"` // Lets the client or leafnode side know the remote account that they bind to.
 	IsSystemAccount   bool     `json:"acc_is_sys,omitempty"`     // Indicates if the account is a system account.
 	JSApiLevel        int      `json:"api_lvl,omitempty"`
+	// Leafnode specific: indicates this server runs JetStream in standalone
+	// mode (no meta controller) and can never be part of a shared JetStream
+	// meta group. Old servers never set this, which preserves their behavior.
+	JetStreamNotExtendable bool `json:"js_no_ext,omitempty"`
 
 	// Route Specific
 	Import        *SubjectPermission `json:"import,omitempty"`
