@@ -9448,6 +9448,42 @@ func TestFileStoreMessageTTL(t *testing.T) {
 	require_Equal(t, ss.Msgs, 0)
 }
 
+func TestFileStoreMessageTTLRemovedOutOfBandDoesNotLeakTHW(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true, AllowRollup: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 10)
+
+	// Remove the messages out of band, the way a rollup or a subject purge does.
+	// This path does not consult the THW, so the entries stay behind.
+	purged, err := fs.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+
+	// Once the TTLs are due, the expiry pass must notice the messages are already
+	// gone and drop the entries, instead of retrying them on every pass forever.
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count = fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
 func TestFileStoreMessageTTLRestart(t *testing.T) {
 	dir := t.TempDir()
 
