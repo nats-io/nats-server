@@ -7356,7 +7356,14 @@ func (fs *fileStore) expireMsgs() {
 	// Remove messages collected by THW.
 	if !sdmEnabled {
 		for _, rm := range rmSeqs {
-			fs.removeMsg(rm.Seq, false, false, false)
+			removed, err := fs.removeMsg(rm.Seq, false, false, false)
+			// The message may already be gone, removed out of band by a purge, a rollup
+			// or a compact, none of which consult the THW. Drop the entry in that case,
+			// otherwise it is collected again on every pass forever. A genuine removal
+			// failure (write error, closed store) keeps the entry so it is retried.
+			if !removed && (err == nil || err == ErrStoreMsgNotFound) {
+				fs.ttls.Remove(rm.Seq, rm.Expires)
+			}
 		}
 	} else {
 		// THW is unordered, so must sort by sequence and must not be holding the lock.
