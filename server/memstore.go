@@ -1439,7 +1439,12 @@ func (ms *memStore) expireMsgs() {
 	// Remove messages collected by THW.
 	if !sdmEnabled {
 		for _, rm := range rmSeqs {
-			ms.removeMsg(rm.Seq, false)
+			// The message may already be gone, removed out of band by a path that
+			// does not consult the THW. Drop the entry in that case, otherwise it is
+			// collected again on every pass forever.
+			if !ms.removeMsg(rm.Seq, false) {
+				ms.ttls.Remove(rm.Seq, rm.Expires)
+			}
 		}
 	} else {
 		// THW is unordered, so must sort by sequence and must not be holding the lock.
