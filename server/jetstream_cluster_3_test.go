@@ -8041,6 +8041,157 @@ func TestJetStreamClusterConcurrentConsumerCreateWithMaxConsumers(t *testing.T) 
 	})
 }
 
+func TestJetStreamClusterCoalesceEquivalentInflightConsumerRequests(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// Prevent the first consumer assignment from committing so every request
+	// deterministically encounters the same in-flight assignment.
+	for _, s := range c.servers {
+		if s != ml {
+			s.Shutdown()
+		}
+	}
+
+	req, err := json.Marshal(CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{Name: "C", AckPolicy: AckExplicit, Replicas: 1},
+		Action: ActionCreateOrUpdate,
+	})
+	require_NoError(t, err)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, "TEST") + ".C"
+	const duplicates = 100
+	require_NoError(t, nc.PublishRequest(subject, "reply.first", req))
+	require_NoError(t, nc.Flush())
+
+	sjs, cc := ml.getJetStreamCluster()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if streams := cc.inflightConsumers[globalAccountName]; streams != nil {
+			if consumers := streams["TEST"]; consumers != nil && consumers["C"] != nil {
+				return nil
+			}
+		}
+		return errors.New("consumer assignment is not in flight")
+	})
+
+	// A duplicate without a reply still needs to be retained by the forwarder
+	// so it receives the same API accounting and audit advisory as a proposal.
+	require_NoError(t, nc.Publish(subject, req))
+	for i := 1; i < duplicates; i++ {
+		require_NoError(t, nc.PublishRequest(subject, fmt.Sprintf("reply.%d", i), req))
+	}
+	require_NoError(t, nc.Flush())
+
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		inflight := cc.inflightConsumers[globalAccountName]["TEST"]["C"]
+		if inflight == nil {
+			return errors.New("consumer assignment is not in flight")
+		}
+		if inflight.ops != 1 {
+			return fmt.Errorf("expected one meta proposal, got %d", inflight.ops)
+		}
+		if inflight.responseForwarder == nil {
+			return errors.New("response forwarder was not created")
+		}
+		inflight.responseForwarder.mu.Lock()
+		pending := len(inflight.responseForwarder.pending)
+		noReply := false
+		for _, response := range inflight.responseForwarder.pending {
+			if response.reply == _EMPTY_ {
+				noReply = response.track
+			}
+		}
+		inflight.responseForwarder.mu.Unlock()
+		if pending != duplicates+1 {
+			return fmt.Errorf("expected %d pending responses, got %d", duplicates+1, pending)
+		}
+		if !noReply {
+			return errors.New("no-reply request was not retained for API accounting")
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterClearInflightConsumerProposalsClosesForwarders(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sjs, cc := c.leader().getJetStreamCluster()
+	rf := &consumerResponseForwarder{pending: []pendingConsumerResponse{{reply: "reply"}}}
+	sjs.mu.Lock()
+	cc.inflightConsumers = map[string]map[string]map[string]*inflightConsumerInfo{
+		globalAccountName: {
+			"TEST": {
+				"C": {responseForwarder: rf},
+			},
+		},
+	}
+	cc.clearInflightConsumerProposals()
+	sjs.mu.Unlock()
+
+	rf.mu.Lock()
+	done, pending := rf.done, len(rf.pending)
+	rf.mu.Unlock()
+	require_True(t, done)
+	require_Equal(t, pending, 0)
+	require_True(t, cc.inflightConsumers == nil)
+}
+
+func TestJetStreamClusterEquivalentInflightConsumerResponses(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	req, err := json.Marshal(CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{Name: "C", AckPolicy: AckExplicit, Replicas: 3},
+		Action: ActionCreateOrUpdate,
+	})
+	require_NoError(t, err)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, "TEST") + ".C"
+
+	const requests = 100
+	subs := make([]*nats.Subscription, 0, requests)
+	for range requests {
+		reply := nats.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		subs = append(subs, sub)
+		require_NoError(t, nc.PublishRequest(subject, reply, req))
+	}
+	require_NoError(t, nc.Flush())
+
+	for i, sub := range subs {
+		msg, err := sub.NextMsg(5 * time.Second)
+		if err != nil {
+			t.Fatalf("request %d did not receive a response: %v", i, err)
+		}
+		var resp JSApiConsumerCreateResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_NotNil(t, resp.ConsumerInfo)
+	}
+}
+
 func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

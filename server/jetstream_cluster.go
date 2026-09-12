@@ -116,6 +116,24 @@ type inflightConsumerInfo struct {
 	ops     uint64 // Inflight operations, i.e. inflight consumer creates/updates/deletes.
 	deleted bool   // Whether the consumer has been deleted.
 	*consumerAssignment
+	responseForwarder *consumerResponseForwarder
+}
+
+type pendingConsumerResponse struct {
+	client  *ClientInfo
+	subject string
+	reply   string
+	request string
+	track   bool
+}
+
+// consumerResponseForwarder fans out the response for an in-flight consumer
+// assignment to equivalent requests that did not need another meta proposal.
+type consumerResponseForwarder struct {
+	mu      sync.Mutex
+	client  *client
+	done    bool
+	pending []pendingConsumerResponse
 }
 
 // Used to track inflight peer-remove info to respond 'success' after quorum.
@@ -587,10 +605,11 @@ type consumerAssignment struct {
 	Reply      string          `json:"reply,omitempty"`
 	State      *ConsumerState  `json:"state,omitempty"`
 	// Internal
-	responded   atomic.Bool // copied via clone() to satisfy go vet's noCopy check
-	recovering  bool
-	err         error
-	unsupported *unsupportedConsumerAssignment
+	responded         atomic.Bool // copied via clone() to satisfy go vet's noCopy check
+	recovering        bool
+	err               error
+	unsupported       *unsupportedConsumerAssignment
+	responseForwarder *consumerResponseForwarder
 }
 
 func (ca *consumerAssignment) hasResponded() bool {
@@ -625,19 +644,20 @@ func (ca *consumerAssignment) sameIdentity(nca *consumerAssignment) bool {
 // responded via markResponded/clearResponded without holding js.mu.
 func (ca *consumerAssignment) clone() *consumerAssignment {
 	cca := &consumerAssignment{
-		Client:      ca.Client,
-		Created:     ca.Created,
-		Name:        ca.Name,
-		Stream:      ca.Stream,
-		ConfigJSON:  ca.ConfigJSON,
-		Config:      ca.Config,
-		Group:       ca.Group,
-		Subject:     ca.Subject,
-		Reply:       ca.Reply,
-		State:       ca.State,
-		recovering:  ca.recovering,
-		err:         ca.err,
-		unsupported: ca.unsupported,
+		Client:            ca.Client,
+		Created:           ca.Created,
+		Name:              ca.Name,
+		Stream:            ca.Stream,
+		ConfigJSON:        ca.ConfigJSON,
+		Config:            ca.Config,
+		Group:             ca.Group,
+		Subject:           ca.Subject,
+		Reply:             ca.Reply,
+		State:             ca.State,
+		recovering:        ca.recovering,
+		err:               ca.err,
+		unsupported:       ca.unsupported,
+		responseForwarder: ca.responseForwarder,
 	}
 	cca.responded.Store(ca.responded.Load())
 	return cca
@@ -1682,8 +1702,132 @@ func (cc *jetStreamCluster) trackInflightConsumerProposal(accName, streamName st
 		inflight.ops++
 		inflight.deleted = deleted
 		inflight.consumerAssignment = ca
+		inflight.responseForwarder = ca.responseForwarder
 	} else {
-		consumers[ca.Name] = &inflightConsumerInfo{1, deleted, ca}
+		consumers[ca.Name] = &inflightConsumerInfo{ops: 1, deleted: deleted, consumerAssignment: ca, responseForwarder: ca.responseForwarder}
+	}
+}
+
+// queueInflightConsumerResponse avoids proposing an equivalent consumer
+// assignment while one is already in flight. The first assignment's response
+// is observed and forwarded to the duplicate request.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) queueInflightConsumerResponse(acc *Account, stream, consumer string, cfg *ConsumerConfig, ci *ClientInfo, subject, reply, request string) bool {
+	streams := cc.inflightConsumers[acc.Name]
+	if streams == nil {
+		return false
+	}
+	consumers := streams[stream]
+	if consumers == nil {
+		return false
+	}
+	inflight := consumers[consumer]
+	if inflight == nil || inflight.deleted || inflight.consumerAssignment == nil || !reflect.DeepEqual(cfg, inflight.Config) {
+		return false
+	}
+	rf := inflight.responseForwarder
+	if rf == nil {
+		return false
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.done {
+		return false
+	}
+	rf.pending = append(rf.pending, pendingConsumerResponse{client: ci, subject: subject, reply: reply, request: request, track: true})
+	return true
+}
+
+// clearInflightConsumerProposals releases response forwarders before clearing
+// their proposals. This prevents their internal client subscriptions from
+// surviving a metadata leader change.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) clearInflightConsumerProposals() {
+	for _, streams := range cc.inflightConsumers {
+		for _, consumers := range streams {
+			for _, inflight := range consumers {
+				if inflight.responseForwarder != nil {
+					inflight.responseForwarder.close()
+				}
+			}
+		}
+	}
+	cc.inflightConsumers = nil
+}
+
+func newConsumerResponseForwarder(s *Server, acc *Account, response pendingConsumerResponse) (*consumerResponseForwarder, string, error) {
+	rf := &consumerResponseForwarder{pending: []pendingConsumerResponse{response}}
+	reply := syncSubject("$JSC.R.CC")
+	ic := s.createInternalJetStreamClient()
+	sysAcc := s.SystemAccount()
+	if sysAcc == nil {
+		ic.closeConnection(ClientClosed)
+		return nil, _EMPTY_, ErrNoSysAccount
+	}
+	if err := ic.registerWithAccount(sysAcc); err != nil {
+		ic.closeConnection(ClientClosed)
+		return nil, _EMPTY_, err
+	}
+	_, err := ic.processSub([]byte(reply), nil, []byte("1"), func(_ *subscription, c *client, _ *Account, _, _ string, rmsg []byte) {
+		hdr, msg := c.msgParts(copyBytes(rmsg))
+		rf.forward(s, acc, hdr, msg)
+	}, false)
+	if err != nil {
+		ic.closeConnection(ClientClosed)
+		return nil, _EMPTY_, err
+	}
+	rf.client = ic
+	return rf, reply, nil
+}
+
+func (rf *consumerResponseForwarder) forward(s *Server, acc *Account, hdr, msg []byte) {
+	rf.mu.Lock()
+	if rf.done {
+		rf.mu.Unlock()
+		return
+	}
+	rf.done = true
+	pending, ic := rf.pending, rf.client
+	rf.pending, rf.client = nil, nil
+	rf.mu.Unlock()
+	if ic != nil {
+		ic.closeConnection(ClientClosed)
+	}
+	var apiResp JSApiConsumerCreateResponse
+	isErr := json.Unmarshal(msg, &apiResp) == nil && apiResp.Error != nil
+	for _, response := range pending {
+		if !response.track {
+			if len(hdr) > 0 {
+				s.sendInternalAccountMsgWithReply(nil, response.reply, _EMPTY_, hdr, msg, false)
+			} else {
+				s.sendInternalAccountMsg(nil, response.reply, msg)
+			}
+			continue
+		}
+		if isErr {
+			s.sendAPIErrResponse(response.client, acc, response.subject, response.reply, response.request, string(msg))
+			continue
+		}
+		if len(hdr) > 0 {
+			s.sendAPIHdrResponse(response.client, acc, response.subject, response.reply, response.request, hdr, string(msg))
+		} else {
+			s.sendAPIResponse(response.client, acc, response.subject, response.reply, response.request, string(msg))
+		}
+	}
+}
+
+func (rf *consumerResponseForwarder) close() {
+	rf.mu.Lock()
+	if rf.done {
+		rf.mu.Unlock()
+		return
+	}
+	rf.done = true
+	ic := rf.client
+	rf.pending, rf.client = nil, nil
+	rf.mu.Unlock()
+	if ic != nil {
+		ic.closeConnection(ClientClosed)
 	}
 }
 
@@ -9447,7 +9591,7 @@ func (js *jetStream) processLeaderChange(isLeader bool, term uint64) {
 
 	// Clear inflight proposal tracking.
 	js.cluster.inflightStreams = nil
-	js.cluster.inflightConsumers = nil
+	js.cluster.clearInflightConsumerProposals()
 
 	if isLeader {
 		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {
@@ -11812,6 +11956,13 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		setStaticConsumerMetadata(cfg)
 	}
 
+	// Equivalent requests for an assignment that has already been proposed do
+	// not need their own meta proposal. Observe the authoritative response to
+	// the first request and fan it out to the duplicate callers instead.
+	if action == ActionCreateOrUpdate && ca != nil && cc.queueInflightConsumerResponse(acc, stream, oname, cfg, ci, subject, reply, string(msg)) {
+		return
+	}
+
 	// If this is new consumer.
 	if ca == nil {
 		if action == ActionUpdate {
@@ -11973,8 +12124,23 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 		ca = nca
 	}
 
+	// Route the authoritative assignment response through a local forwarder.
+	// Equivalent requests can then share this proposal and response without
+	// changing the replicated consumer-assignment format.
+	ca.responseForwarder = nil
+	if action == ActionCreateOrUpdate && ca.Reply != _EMPTY_ {
+		response := pendingConsumerResponse{client: ca.Client, subject: ca.Subject, reply: ca.Reply, request: string(msg)}
+		if rf, forwardReply, err := newConsumerResponseForwarder(s, acc, response); err == nil {
+			ca.responseForwarder = rf
+			ca.Reply = forwardReply
+		}
+	}
+
 	// Do formal proposal.
 	if err := cc.meta.Propose(cc.term, encodeAddConsumerAssignment(ca)); err != nil {
+		if ca.responseForwarder != nil {
+			ca.responseForwarder.close()
+		}
 		return
 	}
 	cc.trackInflightConsumerProposal(acc.Name, stream, ca, false)
