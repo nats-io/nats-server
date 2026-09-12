@@ -94,7 +94,29 @@ type route struct {
 	// the creation of the next after receiving a PONG, ensuring
 	// that authentication did not fail.
 	startNewRoute *routeInfo
+	// Subscriptions received for accounts that are not configured yet.
+	// They are held here (protected by the client lock, like `subs`)
+	// and installed once a reload introduces the account, without
+	// registering anything visible to LookupAccount.
+	pendingSubs map[string]*pendingRouteSub
 }
+
+// pendingRouteSub is interest received over a route for an account that
+// is not configured yet. Copies are kept so the install after a reload
+// does not reference the route read buffer.
+type pendingRouteSub struct {
+	accName string
+	subject []byte
+	queue   []byte
+	origin  []byte
+	sid     []byte
+	qw      int32
+	leaf    bool
+}
+
+// Maximum number of held subscriptions per route for not-yet-configured
+// accounts. Bounds memory when a remote names accounts that never appear.
+const maxPendingRouteSubsPerRoute = 1024
 
 // This contains the information required to create a new route.
 type routeInfo struct {
@@ -1439,30 +1461,13 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 	if accInProto {
 		accountName = accNameFromProto
 	}
-	// Lookup the account
-	var acc *Account
-	if v, ok := srv.accounts.Load(accountName); ok {
-		acc = v.(*Account)
-	} else {
-		c.Debugf("Unknown account %q for subject %q", accountName, subject)
-		return nil
-	}
-
-	c.mu.Lock()
-	if c.isClosed() {
-		c.mu.Unlock()
-		return nil
-	}
-
 	_keya := [128]byte{}
 	_key := _keya[:0]
 
 	var key string
 	if !originSupport && !noOrigin {
-		// If it is an LS- or RS-, we use the protocol as-is as the key.
 		key = bytesToString(arg)
 	} else {
-		// We need to prefix with the sub type.
 		if leafUnsub {
 			_key = append(_key, keyRoutedLeafSubByte)
 		} else {
@@ -1472,6 +1477,26 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 		_key = append(_key, arg...)
 		key = bytesToString(_key)
 	}
+	// Lookup the account
+	var acc *Account
+	if v, ok := srv.accounts.Load(accountName); ok {
+		acc = v.(*Account)
+	} else {
+		c.mu.Lock()
+		cancelled := c.cancelPendingRemoteSub(key)
+		c.mu.Unlock()
+		if !cancelled {
+			c.Debugf("Unknown account %q for subject %q", accountName, subject)
+		}
+		return nil
+	}
+
+	c.mu.Lock()
+	if c.isClosed() {
+		c.mu.Unlock()
+		return nil
+	}
+
 	delta := int32(1)
 	sub, ok := c.subs[key]
 	if ok {
@@ -1480,6 +1505,8 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 		if len(sub.queue) > 0 {
 			delta = sub.qw
 		}
+	} else {
+		c.cancelPendingRemoteSub(key)
 	}
 	c.mu.Unlock()
 
@@ -1657,8 +1684,8 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 		// When a client comes along, expiration will prevent it from being used,
 		// cause a fetch and update the account to what is should be.
 		if staticResolver {
-			c.Errorf("Unknown account %q for remote subject %q", accountName, sub.subject)
-			return
+			c.holdRemoteSubForUnknownAccount(accountName, sub)
+			return nil
 		}
 		c.Debugf("Unknown account %q for remote subject %q", accountName, sub.subject)
 
@@ -1711,6 +1738,9 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 	osub := c.subs[key]
 	if osub == nil {
 		c.subs[key] = sub
+		if c.route.pendingSubs != nil {
+			delete(c.route.pendingSubs, key)
+		}
 		// Now place into the account sl.
 		if err = sl.Insert(sub); err != nil {
 			delete(c.subs, key)
@@ -1724,6 +1754,11 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 		delta = sub.qw - atomic.LoadInt32(&osub.qw)
 		atomic.StoreInt32(&osub.qw, sub.qw)
 		sl.UpdateRemoteQSub(osub)
+		if c.route.pendingSubs != nil {
+			delete(c.route.pendingSubs, key)
+		}
+	} else if c.route.pendingSubs != nil {
+		delete(c.route.pendingSubs, key)
 	}
 	c.mu.Unlock()
 
@@ -1739,6 +1774,169 @@ func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err err
 	}
 
 	return nil
+}
+
+// holdRemoteSubForUnknownAccount keeps interest received over a route for
+// an account that is not configured yet. It is installed once a reload
+// introduces the account. Nothing is registered, so LookupAccount behaves
+// exactly as before and the auth callout path is untouched.
+func (c *client) holdRemoteSubForUnknownAccount(accountName string, sub *subscription) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.isClosed() || c.route == nil {
+		return
+	}
+	if c.perms != nil && !c.canExport(string(sub.subject)) {
+		c.Debugf("Can not export %q, ignoring remote subscription request", sub.subject)
+		return
+	}
+	if c.subsAtLimit() {
+		c.maxSubsExceeded()
+		return
+	}
+	key := strings.Clone(bytesToString(sub.sid))
+	if c.route.pendingSubs == nil {
+		c.route.pendingSubs = make(map[string]*pendingRouteSub)
+	}
+	if ps, ok := c.route.pendingSubs[key]; ok {
+		if sub.queue != nil {
+			ps.qw = sub.qw
+			if len(sub.queue) > 0 {
+				ps.queue = append(ps.queue[:0], sub.queue...)
+			}
+		}
+		return
+	}
+	if len(c.route.pendingSubs) >= maxPendingRouteSubsPerRoute {
+		c.Debugf("Dropping remote subscription for unknown account %q, held interest at limit", accountName)
+		return
+	}
+	ps := &pendingRouteSub{
+		accName: strings.Clone(accountName),
+		qw:      sub.qw,
+		leaf:    sub.leaf,
+	}
+	if len(sub.subject) > 0 {
+		ps.subject = append([]byte(nil), sub.subject...)
+	}
+	if len(sub.queue) > 0 {
+		ps.queue = append([]byte(nil), sub.queue...)
+	}
+	if len(sub.origin) > 0 {
+		ps.origin = append([]byte(nil), sub.origin...)
+	}
+	if len(sub.sid) > 0 {
+		ps.sid = append([]byte(nil), sub.sid...)
+	}
+	c.route.pendingSubs[key] = ps
+	c.Debugf("Holding remote subscription for unknown account %q", accountName)
+}
+
+// cancelPendingRemoteSub removes held interest matching the given unsub key.
+// Returns true when held interest was cancelled.
+func (c *client) cancelPendingRemoteSub(key string) bool {
+	if c.route == nil || c.route.pendingSubs == nil {
+		return false
+	}
+	if _, ok := c.route.pendingSubs[key]; ok {
+		delete(c.route.pendingSubs, key)
+		return true
+	}
+	return false
+}
+
+// installPendingRouteSubs installs held interest for accounts that are now
+// configured. Routes must have been collected under the server lock.
+func (s *Server) installPendingRouteSubs(routes []*client) {
+	for _, route := range routes {
+		if route == nil {
+			continue
+		}
+		route.mu.Lock()
+		if route.isClosed() || route.route == nil || len(route.route.pendingSubs) == 0 {
+			route.mu.Unlock()
+			continue
+		}
+		type pendingEntry struct {
+			key     string
+			accName string
+		}
+		snapshot := make([]pendingEntry, 0, len(route.route.pendingSubs))
+		for k, ps := range route.route.pendingSubs {
+			snapshot = append(snapshot, pendingEntry{key: k, accName: ps.accName})
+		}
+		route.mu.Unlock()
+
+		for _, e := range snapshot {
+			acc, err := s.LookupAccount(e.accName)
+			if err != nil || acc == nil {
+				continue
+			}
+			route.mu.Lock()
+			if route.isClosed() || route.route == nil {
+				route.mu.Unlock()
+				continue
+			}
+			ps, ok := route.route.pendingSubs[e.key]
+			if !ok {
+				route.mu.Unlock()
+				continue
+			}
+			if _, ok := route.subs[e.key]; ok {
+				delete(route.route.pendingSubs, e.key)
+				route.mu.Unlock()
+				continue
+			}
+			if route.perms != nil && !route.canExport(string(ps.subject)) {
+				delete(route.route.pendingSubs, e.key)
+				route.mu.Unlock()
+				continue
+			}
+			if route.subsAtLimit() {
+				route.mu.Unlock()
+				continue
+			}
+			acc.mu.RLock()
+			if route.kind == ROUTER && !route.route.noPool &&
+				acc.routePoolIdx == accTransitioningToDedicatedRoute && route.route.poolIdx >= 0 {
+				acc.mu.RUnlock()
+				route.mu.Unlock()
+				continue
+			}
+			sl := acc.sl
+			acc.mu.RUnlock()
+			nsub := &subscription{client: route, leaf: ps.leaf, qw: ps.qw}
+			if len(ps.subject) > 0 {
+				nsub.subject = append([]byte(nil), ps.subject...)
+			}
+			if len(ps.queue) > 0 {
+				nsub.queue = append([]byte(nil), ps.queue...)
+			}
+			if len(ps.origin) > 0 {
+				nsub.origin = append([]byte(nil), ps.origin...)
+			}
+			if len(ps.sid) > 0 {
+				nsub.sid = append([]byte(nil), ps.sid...)
+			}
+			delta := int32(1)
+			if nsub.qw > 1 {
+				delta = nsub.qw
+			}
+			route.subs[e.key] = nsub
+			if err := sl.Insert(nsub); err != nil {
+				delete(route.subs, e.key)
+				route.Errorf("Could not insert held subscription: %v", err)
+				route.mu.Unlock()
+				continue
+			}
+			delete(route.route.pendingSubs, e.key)
+			route.mu.Unlock()
+			if s.gateway.enabled {
+				s.gatewayUpdateSubInterest(acc.Name, nsub, delta)
+			}
+			acc.updateLeafNodes(nsub, delta)
+		}
+	}
 }
 
 // Lock is held on entry
