@@ -1725,10 +1725,6 @@ func (cc *jetStreamCluster) queueInflightConsumerResponse(acc *Account, stream, 
 	if inflight == nil || inflight.deleted || inflight.consumerAssignment == nil || !reflect.DeepEqual(cfg, inflight.Config) {
 		return false
 	}
-	// A request without a reply does not need a response.
-	if reply == _EMPTY_ {
-		return true
-	}
 	rf := inflight.responseForwarder
 	if rf == nil {
 		return false
@@ -1740,6 +1736,23 @@ func (cc *jetStreamCluster) queueInflightConsumerResponse(acc *Account, stream, 
 	}
 	rf.pending = append(rf.pending, pendingConsumerResponse{client: ci, subject: subject, reply: reply, request: request, track: true})
 	return true
+}
+
+// clearInflightConsumerProposals releases response forwarders before clearing
+// their proposals. This prevents their internal client subscriptions from
+// surviving a metadata leader change.
+// (Write) Lock held on entry.
+func (cc *jetStreamCluster) clearInflightConsumerProposals() {
+	for _, streams := range cc.inflightConsumers {
+		for _, consumers := range streams {
+			for _, inflight := range consumers {
+				if inflight.responseForwarder != nil {
+					inflight.responseForwarder.close()
+				}
+			}
+		}
+	}
+	cc.inflightConsumers = nil
 }
 
 func newConsumerResponseForwarder(s *Server, acc *Account, response pendingConsumerResponse) (*consumerResponseForwarder, string, error) {
@@ -9578,7 +9591,7 @@ func (js *jetStream) processLeaderChange(isLeader bool, term uint64) {
 
 	// Clear inflight proposal tracking.
 	js.cluster.inflightStreams = nil
-	js.cluster.inflightConsumers = nil
+	js.cluster.clearInflightConsumerProposals()
 
 	if isLeader {
 		if meta := js.cluster.meta; meta != nil && meta.IsObserver() {

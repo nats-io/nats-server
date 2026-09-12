@@ -8087,7 +8087,10 @@ func TestJetStreamClusterCoalesceEquivalentInflightConsumerRequests(t *testing.T
 		return errors.New("consumer assignment is not in flight")
 	})
 
-	for i := range duplicates {
+	// A duplicate without a reply still needs to be retained by the forwarder
+	// so it receives the same API accounting and audit advisory as a proposal.
+	require_NoError(t, nc.Publish(subject, req))
+	for i := 1; i < duplicates; i++ {
 		require_NoError(t, nc.PublishRequest(subject, fmt.Sprintf("reply.%d", i), req))
 	}
 	require_NoError(t, nc.Flush())
@@ -8107,12 +8110,46 @@ func TestJetStreamClusterCoalesceEquivalentInflightConsumerRequests(t *testing.T
 		}
 		inflight.responseForwarder.mu.Lock()
 		pending := len(inflight.responseForwarder.pending)
+		noReply := false
+		for _, response := range inflight.responseForwarder.pending {
+			if response.reply == _EMPTY_ {
+				noReply = response.track
+			}
+		}
 		inflight.responseForwarder.mu.Unlock()
 		if pending != duplicates+1 {
 			return fmt.Errorf("expected %d pending responses, got %d", duplicates+1, pending)
 		}
+		if !noReply {
+			return errors.New("no-reply request was not retained for API accounting")
+		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterClearInflightConsumerProposalsClosesForwarders(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sjs, cc := c.leader().getJetStreamCluster()
+	rf := &consumerResponseForwarder{pending: []pendingConsumerResponse{{reply: "reply"}}}
+	sjs.mu.Lock()
+	cc.inflightConsumers = map[string]map[string]map[string]*inflightConsumerInfo{
+		globalAccountName: {
+			"TEST": {
+				"C": {responseForwarder: rf},
+			},
+		},
+	}
+	cc.clearInflightConsumerProposals()
+	sjs.mu.Unlock()
+
+	rf.mu.Lock()
+	done, pending := rf.done, len(rf.pending)
+	rf.mu.Unlock()
+	require_True(t, done)
+	require_Equal(t, pending, 0)
+	require_True(t, cc.inflightConsumers == nil)
 }
 
 func TestJetStreamClusterEquivalentInflightConsumerResponses(t *testing.T) {
