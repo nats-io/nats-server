@@ -11398,12 +11398,12 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleStream(t *testing.T) {
 	// The public API refuses to update an offline stream, but a partition or a
 	// crash right after the proposal has the same effect. Build and propose the
 	// scaled-up assignment like jsClusteredStreamUpdateRequest would: this
-	// renames the raft group, but keeps the assignment created time and the
-	// stream data.
+	// renames the raft group and records the new peer set as desired state,
+	// but keeps the assignment created time and the stream data.
 	mljs := ml.getJetStream()
 	mljs.mu.Lock()
-	var nsa *streamAssignment
-	if osa := mljs.streamAssignment(globalAccountName, "TEST"); osa != nil {
+	var osa, nsa *streamAssignment
+	if osa = mljs.streamAssignment(globalAccountName, "TEST"); osa != nil {
 		nsa = osa.copyGroup()
 	}
 	cc := mljs.cluster
@@ -11414,10 +11414,10 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleStream(t *testing.T) {
 	ncfg := *nsa.Config
 	ncfg.Replicas = 3
 	nsa.Config = &ncfg
-	nsa.Group.Preferred = nsa.Group.Peers[0]
-	nsa.Group.ScaleUp = true
 	nsa.Group.Peers = peers
 	nsa.Group.Name = groupNameForStream(peers, nsa.Group.Storage)
+	nsa.Group = osa.Group.withDesired(nsa.Group)
+	nsa.Group.populateOrigin(osa)
 	require_NoError(t, meta.Propose(term, encodeUpdateStreamAssignment(nsa)))
 
 	// Wait until the update is applied.
@@ -11517,11 +11517,12 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	// The public API refuses to update an offline consumer, but a partition or a
 	// crash right after the proposal has the same effect. Build and propose the
 	// scaled-up assignment like jsClusteredConsumerRequest would: this renames
-	// the raft group, but keeps the assignment created time and consumer state.
+	// the raft group and records the new peer set as desired state, but keeps
+	// the assignment created time and consumer state.
 	mljs := ml.getJetStream()
 	mljs.mu.Lock()
-	var nca *consumerAssignment
-	if oca := mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); oca != nil {
+	var oca, nca *consumerAssignment
+	if oca = mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); oca != nil {
 		nca = oca.copyGroup()
 	}
 	cc := mljs.cluster
@@ -11532,10 +11533,9 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	ncfg := *nca.Config
 	ncfg.Replicas = 3
 	nca.Config = &ncfg
-	nca.Group.Preferred = nca.Group.Peers[0]
-	nca.Group.ScaleUp = true
 	nca.Group.Peers = peers
 	nca.Group.Name = groupNameForConsumer(peers, nca.Group.Storage)
+	nca.Group = oca.Group.withDesired(nca.Group)
 	require_NoError(t, meta.Propose(term, encodeAddConsumerAssignment(nca)))
 
 	// Wait until the update is applied.

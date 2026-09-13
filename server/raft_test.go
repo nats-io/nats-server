@@ -9044,7 +9044,98 @@ func TestNRGCachePendingEntryBytesAccounting(t *testing.T) {
 	require_Equal(t, n.paeBytes, 0)
 }
 
-func TestNRGScaleUpEmptyLogObserverWhileRecovering(t *testing.T) {
+// An empty peer that is scaling up must not win an election on quorum alone, even when
+// the peers that grant it are hiding their own empty logs because they're initializing.
+// This is the protection that bb0f67388 / 4fd14c21f were after, enforced in the vote
+// path rather than by refusing to campaign: A holds the data and is unreachable, C is a
+// fresh scale up peer whose grant reports a non-empty log, and B must still lose.
+func TestNRGScaleUpEmptyCandidateNeedsAllServers(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	const dataHolder = "S1Nunr6R" // has the stream, does not answer
+	const freshPeer = "yrzKKRBu"  // initializing, so its grant claims to be non-empty
+
+	n.Lock()
+	n.scaleUp = true // we were added by a scale up and came up with an empty log
+	n.addPeer(dataHolder)
+	n.addPeer(freshPeer)
+	n.lsut = time.Time{}
+	n.Unlock()
+
+	require_Equal(t, n.pindex, 0)
+	require_Equal(t, n.csz, 3)
+	require_Equal(t, n.QuorumNeeded(), 2)
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+		req := decodeVoteRequest(m.Data, m.Reply)
+		// Only the fresh peer answers, and it hides its empty log.
+		resp := voteResponse{term: req.term, peer: freshPeer, granted: true, empty: false}
+		m.Respond(resp.encode())
+	})
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	n.runAsCandidate()
+	// Our own vote must count as empty, so one grant can't carry us to quorum, and we
+	// haven't heard from all three. Winning here would truncate the data holder.
+	require_Equal(t, n.State(), Candidate)
+}
+
+// Reproduction of Antithesis run Ud2-22ehgGNLXuVFU9d42E1G. A peer that restarts with an
+// empty log while its group is still marked as scaling up must be able to campaign. It
+// used to be put into observer mode, which can only be left by hearing from a leader, so
+// when the restarted peer was the only one that could become leader the group was stuck
+// forever: the consumer's move never completed and the stream's scale down stayed blocked
+// on it for the whole 2m retry budget. The same shape occurs if the R1 source is peer
+// removed mid scale up and every remaining peer is empty.
+func TestNRGScaleUpEmptyPeerCanLeadWhenAllEmpty(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	const other = "S1Nunr6R"
+
+	n.Lock()
+	n.scaleUp = true
+	n.addPeer(other)
+	n.lsut = time.Time{}
+	n.Unlock()
+
+	require_Equal(t, n.pindex, 0)
+	require_Equal(t, n.csz, 2)
+	// Must not be muzzled: there is no leader left to be fed by.
+	require_False(t, n.IsObserver())
+
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+		req := decodeVoteRequest(m.Data, m.Reply)
+		// The only other peer is empty too, so nothing can be truncated.
+		resp := voteResponse{term: req.term, peer: other, granted: true, empty: true}
+		m.Respond(resp.encode())
+	})
+	require_NoError(t, err)
+	defer sub.Drain()
+	require_NoError(t, nc.Flush())
+
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Candidate)
+	n.runAsCandidate()
+	// Heard from every server and they're all empty, so it is safe to elect.
+	require_Equal(t, n.State(), Leader)
+}
+
+// A peer created for a scale up with an empty log must not be parked in observer mode,
+// recovering or not. Replaces the structural assertion in the test added by 4fd14c21f:
+// the empty log is now weighed in runAsCandidate, see the two tests above.
+func TestNRGScaleUpEmptyLogNotObserver(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	s := c.servers[0]
@@ -9059,7 +9150,7 @@ func TestNRGScaleUpEmptyLogObserverWhileRecovering(t *testing.T) {
 			require_NoError(t, err)
 			defer n.shutdown()
 
-			require_True(t, n.IsObserver())
+			require_False(t, n.IsObserver())
 			require_True(t, n.scaleUp)
 		})
 	}
