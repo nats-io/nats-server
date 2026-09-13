@@ -1426,7 +1426,7 @@ func (n *raft) ResumeApply() {
 	n.resetElectionTimeout()
 
 	// Run catchup..
-	if n.hcommit > n.commit {
+	if n.hcommit > n.commit && n.votingMemberLocked() {
 		n.debug("Resuming %d replays", n.hcommit+1-n.commit)
 		for index := n.commit + 1; index <= n.hcommit; index++ {
 			if err := n.applyCommit(index); err != nil {
@@ -4150,6 +4150,23 @@ func (n *raft) trackPeer(peer string) error {
 	return nil
 }
 
+// votingMemberLocked reports whether we may treat the leader's commit index
+// as ours. For managed groups the meta layer can hand us to a group leader
+// before that leader has added us to the peer set. Until the add entry is in
+// our log we are a learner: we store what we are sent, but nothing is
+// committed or applied on our side, and we cannot campaign either. That way a
+// leader that loses its log (memory storage) and restarts with a peer state
+// that never counted us cannot find committed entries on us that it has to
+// truncate. A pending removal of ourselves is exempt: we must still apply it
+// to learn we were removed.
+// Lock should be held.
+func (n *raft) votingMemberLocked() bool {
+	if !n.managed || n.peers[n.id] != nil {
+		return true
+	}
+	return n.membChange != nil && n.membChange.peer == n.id
+}
+
 // LastHeardFromPeer returns when we last heard from the given peer, even if
 // it's not in our peer set yet. Zero if we never heard from it. The upper
 // layer uses this to judge if a meta-assigned peer is up before adding it.
@@ -4816,8 +4833,17 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
-			n.commit = ae.pindex
 			n.resetInitializing()
+
+			if !n.votingMemberLocked() {
+				// Not a member yet: the snapshot is installed, but not committed or
+				// applied until we are, see votingMemberLocked. It is re-read from
+				// disk then.
+				n.debug("Not a member of the group, not applying leader snapshot [%d:%d]", ae.pterm, ae.pindex)
+				n.Unlock()
+				return
+			}
+			n.commit = ae.pindex
 
 			if !hadPreviousSnapshot {
 				// If the first snapshot we install is received from another server, then we immediately signal
@@ -4885,6 +4911,14 @@ CONTINUE:
 					}
 				}
 			}
+		case EntryPeerState:
+			// Membership takes effect when stored, like the add and remove peer
+			// entries below, see votingMemberLocked. Persisted on commit as before.
+			if n.managed && n.State() != Leader {
+				if ps, err := decodePeerState(e.Data); err == nil {
+					n.updatePeerState(ps)
+				}
+			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
@@ -4919,7 +4953,25 @@ CONTINUE:
 	aeReply := ae.reply
 
 	// Apply anything we need here.
-	if aeCommit > n.commit {
+	if !n.votingMemberLocked() {
+		// Learner: store only, see votingMemberLocked.
+		if aeCommit > n.commit {
+			n.debug("Not a member of the group, not applying %d", aeCommit)
+		}
+	} else if n.papplied > n.commit {
+		// We became a member with a leader snapshot installed past our commit
+		// while we were not: apply it first, the log continues from there.
+		if snap, err := n.loadLastSnapshot(); err == nil && snap.lastIndex == n.papplied {
+			n.debug("Applying leader snapshot [%d:%d] installed while not a member", snap.lastTerm, snap.lastIndex)
+			n.commit = snap.lastIndex
+			// If still catching up, let the upper layer coalesce what follows.
+			n.sendCatchupSignal()
+			n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+		} else {
+			n.warn("Could not load leader snapshot installed while not a member: %v", err)
+		}
+	}
+	if aeCommit > n.commit && n.votingMemberLocked() {
 		// If we're catching up, we might need to signal that it's okay to potentially coalesce entries from here.
 		if catchingUp {
 			n.sendCatchupSignal()
@@ -4964,6 +5016,13 @@ func (n *raft) resetInitializing() {
 // over the wire or when we're updating known peers.
 // Lock should be held.
 func (n *raft) processPeerState(ps *peerState) {
+	n.updatePeerState(ps)
+	n.writePeerState(ps)
+}
+
+// updatePeerState takes on the leader's peer state without persisting it.
+// Lock should be held.
+func (n *raft) updatePeerState(ps *peerState) {
 	// Update our version of peers to that of the leader. Calculate
 	// the number of nodes needed to establish a quorum.
 	n.csz = ps.clusterSize
@@ -4998,7 +5057,6 @@ func (n *raft) processPeerState(ps *peerState) {
 		}
 	}
 	n.debug("Update peers from leader to %+v", n.peers)
-	n.writePeerState(ps)
 }
 
 // processAppendEntryResponse is called when we receive an append entry

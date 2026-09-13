@@ -9155,3 +9155,123 @@ func TestNRGScaleUpEmptyLogNotObserver(t *testing.T) {
 		})
 	}
 }
+
+// A memory-storage source of a scale up (size 1) restarts empty before it has
+// added the destination. The destination is a learner: it stores what it is
+// sent but commits nothing until the add entry reaches it, so when the source
+// comes back and leads again there are no commits on the destination to
+// truncate ("Truncate to earlier entry would lose commits").
+func TestNRGLearnerDoesNotCommitBeforeMembership(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 2)
+	defer c.shutdown()
+	s1, s2 := c.servers[0], c.servers[1]
+	p1, p2 := s1.Node(), s2.Node()
+	rgPeers := []string{p1, p2}
+
+	cfg1 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true}
+	sm1 := c.createStateMachine(s1, cfg1, []string{p1}, newStateAdder)
+	n1 := sm1.node()
+	require_NoError(t, n1.CampaignImmediately())
+	require_NotNil(t, smGroup{sm1}.waitOnLeader())
+	a1 := sm1.(*stateAdder)
+	a1.proposeDelta(10)
+	a1.proposeDelta(20)
+	a1.proposeDelta(30)
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if a1.total() != 60 {
+			return fmt.Errorf("n1 total %d", a1.total())
+		}
+		return nil
+	})
+
+	cfg2 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true, ScaleUp: true}
+	sm2 := c.createStateMachine(s2, cfg2, rgPeers, newStateAdder)
+	n2 := sm2.node()
+	a2 := sm2.(*stateAdder)
+
+	// Give the destination time to be caught up; it may store entries but must
+	// not commit or apply any while the leader has not added it.
+	time.Sleep(2 * time.Second)
+	i2, c2, _ := n2.Progress()
+	t.Logf("destination before restart: index %d commit %d total %d (leader peers %v)", i2, c2, a2.total(), n1.PeerNames())
+	if c2 > 0 || a2.total() != 0 {
+		t.Fatalf("destination committed %d entries (total %d) while not a member of the leader's peer set %v", c2, a2.total(), n1.PeerNames())
+	}
+
+	// Restart the source as createRaftGroup would: fresh memstore on the same
+	// store dir, ScaleUp from the assignment.
+	a1.stop()
+	cfg1.ScaleUp = true
+	a1.restart()
+	leader := smGroup{sm1, sm2}.waitOnLeader()
+	require_NotNil(t, leader)
+	n := leader.node()
+	index, _, _ := n.Progress()
+	t.Logf("leader after restart: %s term %d index %d, peers %v", n.ID(), n.Term(), index, n.PeerNames())
+	if index < c2 {
+		t.Fatalf("leader %s at index %d below a peer's committed index %d", n.ID(), index, c2)
+	}
+}
+
+// The source did add the destination and the add committed before the source
+// restarted empty. The destination is a voter with the longer log, the source's
+// persisted peer state says two, so it cannot elect itself and the destination
+// wins with the data intact.
+func TestNRGMemoryLeaderRestartAfterPeerAddKeepsCommits(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 2)
+	defer c.shutdown()
+	s1, s2 := c.servers[0], c.servers[1]
+	p1, p2 := s1.Node(), s2.Node()
+	rgPeers := []string{p1, p2}
+
+	cfg1 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true}
+	sm1 := c.createStateMachine(s1, cfg1, []string{p1}, newStateAdder)
+	n1 := sm1.node()
+	require_NoError(t, n1.CampaignImmediately())
+	require_NotNil(t, smGroup{sm1}.waitOnLeader())
+	a1 := sm1.(*stateAdder)
+	a1.proposeDelta(10)
+	a1.proposeDelta(20)
+	a1.proposeDelta(30)
+
+	cfg2 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true, ScaleUp: true}
+	sm2 := c.createStateMachine(s2, cfg2, rgPeers, newStateAdder)
+	n2 := sm2.node()
+	a2 := sm2.(*stateAdder)
+
+	// The leader adds the destination; only then is it caught up, and the add
+	// commits once it has the log.
+	require_NoError(t, n1.ProposeAddPeer(p2))
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if a2.total() != 60 {
+			return fmt.Errorf("n2 total %d", a2.total())
+		}
+		rn := n2.(*raft)
+		rn.RLock()
+		pending, member := rn.membChange != nil, rn.peers[rn.id] != nil
+		rn.RUnlock()
+		if pending || !member {
+			return fmt.Errorf("n2 add pending %v member %v", pending, member)
+		}
+		return nil
+	})
+	_, c2, _ := n2.Progress()
+
+	a1.stop()
+	cfg1.ScaleUp = true
+	a1.restart()
+	leader := smGroup{sm1, sm2}.waitOnLeader()
+	require_NotNil(t, leader)
+	n := leader.node()
+	index, _, _ := n.Progress()
+	t.Logf("leader after restart: %s term %d index %d; destination commit before restart %d", n.ID(), n.Term(), index, c2)
+	if index < c2 {
+		t.Fatalf("leader %s at index %d lost committed entries up to %d", n.ID(), index, c2)
+	}
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if a2.total() != 60 {
+			return fmt.Errorf("n2 total %d", a2.total())
+		}
+		return nil
+	})
+}
