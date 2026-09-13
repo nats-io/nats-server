@@ -7053,7 +7053,7 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 		if sa := accStreams[ca.Stream]; sa != nil && sa.consumers != nil && sa.consumers[ca.Name] != nil {
 			oca := sa.consumers[ca.Name]
 			// Make sure this removal is for what we have, otherwise ignore.
-			if ca.Group != nil && oca.Group != nil && ca.Group.Name == oca.Group.Name {
+			if ca.Group != nil && oca.Group != nil && (ca.Group.Name == oca.Group.Name || (!ca.Created.IsZero() && ca.Created.Equal(oca.Created))) {
 				needDelete = true
 				delete(sa.consumers, ca.Name)
 				// A consumer dropped during a stream migration could be the last one

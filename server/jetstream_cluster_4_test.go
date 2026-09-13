@@ -9370,6 +9370,52 @@ func TestJetStreamClusterConsumerDeleteRacingGroupRename(t *testing.T) {
 	}
 }
 
+// A removal must be recognized by the consumer's identity, not only by its
+// group name. A single node group is renamed by every remap, and a server that
+// catches up on the rename and the removal together only sees the removal (the
+// staged rename is dropped by recoveryUpdates.removeConsumer), under a group
+// name it never had. A same-name recreate has a different creation time and
+// must still be ignored.
+func TestJetStreamClusterConsumerRemovalMatchesRenamedGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// A server that only holds the assignment, not the consumer itself.
+	s := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	sjs := s.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for a recreated consumer with the same name is not ours.
+	nca := ca.copyGroup()
+	nca.Group.Name = groupNameForConsumer(nca.Group.Peers, nca.Group.Storage)
+	nca.Created = time.Now().UTC()
+	sjs.processConsumerRemoval(nca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for our consumer under its renamed group is.
+	rca := ca.copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	sjs.processConsumerRemoval(rca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_True(t, ca == nil)
+}
+
 // Stream counterpart of the above. The stream delete request already resolves
 // inflight assignments and stream removal does not match on the group name, so
 // this passes as-is and guards against a regression.
