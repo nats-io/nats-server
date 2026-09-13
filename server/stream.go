@@ -2960,6 +2960,14 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 		var ss StreamState
 		mset.store.FastState(&ss)
+		// Switching to interest without any consumers means there is no
+		// interest in any of the existing messages, remove them all but keep
+		// the sequence. This must only happen as part of the retention change
+		// itself, and not in checkInterestState(), since having no consumers
+		// is a transient state while a stream and its consumers are recovered.
+		if cfg.Retention == InterestPolicy && len(toUpdate) == 0 && ss.Msgs > 0 {
+			mset.store.Compact(ss.LastSeq + 1)
+		}
 		mset.mu.Unlock()
 		for _, c := range toUpdate {
 			c.mu.Lock()
