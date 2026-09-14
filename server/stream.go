@@ -586,6 +586,7 @@ type stream struct {
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
 	ddMu      sync.Mutex              // Lock for dedupe state.
+	ddwin     time.Duration           // The dedupe window, mirrors cfg.Duplicates.
 	ddmap     map[string]*ddentry     // The dedupe map.
 	ddarr     []*ddentry              // The dedupe array.
 	ddindex   int                     // The dedupe index.
@@ -1019,6 +1020,7 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		acc:       a,
 		jsa:       jsa,
 		cfg:       *cfg,
+		ddwin:     cfg.Duplicates,
 		js:        js,
 		srv:       s,
 		client:    c,
@@ -1628,13 +1630,12 @@ func (mset *stream) rebuildDedupe() {
 		}
 	}
 
-	duplicates := mset.cfg.Duplicates
-	if duplicates <= 0 {
+	if mset.ddwin <= 0 {
 		return
 	}
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
-	sseq := mset.store.GetSeqFromTime(time.Now().Add(-duplicates))
+	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.ddwin))
 	if sseq == 0 {
 		return
 	}
@@ -2961,6 +2962,11 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	mset.cfgMu.Lock()
 	mset.cfg = *cfg
 	mset.cfgMu.Unlock()
+
+	// All replicas track msg ids, so update the dedupe window everywhere.
+	mset.ddMu.Lock()
+	mset.ddwin = cfg.Duplicates
+	mset.ddMu.Unlock()
 
 	// If we're changing retention, whip through and update the consumer retention.
 	if ocfg.Retention != cfg.Retention {
@@ -5558,13 +5564,10 @@ func (mset *stream) checkMsgId(id string) *ddentry {
 // Should be called from a timer.
 func (mset *stream) purgeMsgIds() {
 	now := time.Now().UnixNano()
-	mset.cfgMu.RLock()
-	tmrNext := mset.cfg.Duplicates
-	mset.cfgMu.RUnlock()
-	window := int64(tmrNext)
-
 	mset.ddMu.Lock()
 	defer mset.ddMu.Unlock()
+	tmrNext := mset.ddwin
+	window := int64(tmrNext)
 
 	for i, dde := range mset.ddarr[mset.ddindex:] {
 		if now-dde.ts >= window {
@@ -5613,17 +5616,16 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 // mset.ddMu lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	// Zero means disabled.
-	if mset.cfg.Duplicates <= 0 {
+	if mset.ddwin <= 0 {
 		return
 	}
-
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
 	mset.ddmap[dde.id] = dde
 	mset.ddarr = append(mset.ddarr, dde)
 	if mset.ddtmr == nil {
-		mset.ddtmr = time.AfterFunc(mset.cfg.Duplicates, mset.purgeMsgIds)
+		mset.ddtmr = time.AfterFunc(mset.ddwin, mset.purgeMsgIds)
 	}
 }
 
