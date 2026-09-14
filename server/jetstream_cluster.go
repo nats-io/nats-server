@@ -6289,6 +6289,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 
 	// Check if we already have this consumer running.
 	var didCreate, isConfigUpdate, needsLocalResponse bool
+	var oreply string
 	if o == nil {
 		// Add in the consumer if needed.
 		if o, err = mset.addConsumerWithAssignment(ca.Config, ca.Name, ca, js.isMetaRecovering(), ActionCreateOrUpdate, false); err == nil {
@@ -6330,6 +6331,9 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		// Check if we already had a consumer assignment and its still pending.
 		cca, oca := ca, o.consumerAssignment()
 		if oca != nil {
+			// An internal re-proposal (scale, move, peer remove, reconcile) carries
+			// the reply of the request it copied, only a client update brings a new one.
+			oreply = oca.Reply
 			if !oca.hasResponded() {
 				// We can't override info for replying here otherwise leader once elected can not respond.
 				// So copy over original client and the reply from the old ca.
@@ -6342,7 +6346,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// If we look like we are scaling up, let's send our current state to the group.
 			sendState = (len(ca.Group.Peers) > len(oca.Group.Peers) || ca.Group.Desired != nil) && o.IsLeader() && n != nil
 			// Signal that this is an update
-			if ca.Reply != _EMPTY_ {
+			if ca.Reply != _EMPTY_ && ca.Reply != oreply {
 				isConfigUpdate = true
 			}
 		}
@@ -6533,7 +6537,9 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 					js.mu.RLock()
 					client, subject, reply, recovering, sourcing := ca.Client, ca.Subject, ca.Reply, ca.recovering, ca.Config.Sourcing
 					js.mu.RUnlock()
-					if !recovering {
+					// Only a client update needs a response, an internal re-proposal has
+					// nothing to answer and must not reset a sourcing consumer.
+					if !recovering && reply != _EMPTY_ && reply != oreply {
 						// If it's a sourcing consumer, we need to respond after the consumer has been reset instead.
 						if sourcing {
 							var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
