@@ -12471,10 +12471,12 @@ func TestJetStreamClusterDesiredOriginTarget(t *testing.T) {
 		runRetention RetentionPolicy
 	}{
 		{
-			name:            "NoOrigin",
+			// Adding a placement is held back like any other move. A nil origin retention
+			// instead means retention never changed, so the target retention stays.
+			name:            "PlacementAddedNoRetentionChange",
 			origin:          &desiredRaftGroupOrigin{},
 			targetPlacement: target, targetRetention: interest,
-			runPlacement: target, runRetention: interest,
+			runPlacement: nil, runRetention: interest,
 		},
 		{
 			// Only placement is held back, the retention was not changed.
@@ -12486,7 +12488,7 @@ func TestJetStreamClusterDesiredOriginTarget(t *testing.T) {
 		{
 			// And only retention is held back, the placement was not changed.
 			name:            "RetentionOnly",
-			origin:          &desiredRaftGroupOrigin{Retention: &limits},
+			origin:          &desiredRaftGroupOrigin{Placement: target, Retention: &limits},
 			targetPlacement: target, targetRetention: interest,
 			runPlacement: target, runRetention: limits,
 		},
@@ -12494,14 +12496,14 @@ func TestJetStreamClusterDesiredOriginTarget(t *testing.T) {
 			// The origin retention is what a cancel reverts to, but it also marks the change
 			// as in flight. The stream must act under Limits then, not under the origin.
 			name:            "RetentionFromInterest",
-			origin:          &desiredRaftGroupOrigin{Retention: &interest},
+			origin:          &desiredRaftGroupOrigin{Placement: target, Retention: &interest},
 			targetPlacement: target, targetRetention: limits,
 			runPlacement: target, runRetention: limits,
 		},
 		{
 			// And the same when moving back toward Interest before the change converged.
 			name:            "RetentionBackToInterest",
-			origin:          &desiredRaftGroupOrigin{Retention: &interest},
+			origin:          &desiredRaftGroupOrigin{Placement: target, Retention: &interest},
 			targetPlacement: target, targetRetention: interest,
 			runPlacement: target, runRetention: limits,
 		},
