@@ -3242,7 +3242,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, _ *Account, su
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -3370,7 +3370,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -3665,7 +3665,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, _ *Account, 
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
