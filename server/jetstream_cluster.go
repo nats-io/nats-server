@@ -236,7 +236,8 @@ type desiredRaftGroupOrigin struct {
 	Cluster   string     `json:"cluster,omitempty"`
 	Replicas  int        `json:"replicas"`
 	Placement *Placement `json:"placement,omitempty"`
-	// When changing between retention policies, this retention remains active until unset.
+	// When changing between retention policies, this is the origin retention.
+	// While recorded the stream acts under Limits retention until converged.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
@@ -347,7 +348,10 @@ func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
 		newCfg.Placement = rg.Desired.Origin.Placement.clone()
 	}
 	if rg.Desired.Origin.Retention != nil {
-		newCfg.Retention = *rg.Desired.Origin.Retention
+		// Any retention change means the stream acts under Limits until converged.
+		// Either we're moving from Limits to Interest, and we only apply Interest at the end.
+		// Or, we're moving from Interest to Limits, and must release the Interest restrictions prior to converging.
+		newCfg.Retention = LimitsPolicy
 	}
 	return newCfg
 }
@@ -407,6 +411,7 @@ func (rg *raftGroup) populateOrigin(osa *streamAssignment) {
 		Cluster:   currCluster,
 		Replicas:  osa.Config.Replicas,
 		Placement: osa.Config.Placement.clone(),
+		Retention: nil, // Don't capture retention, only a retention change does.
 	}
 }
 
@@ -414,10 +419,10 @@ func (rg *raftGroup) populateOrigin(osa *streamAssignment) {
 // into newRetention. Returned as-is if the retention is unchanged, or for a singleton without
 // desired state, since then it can be applied immediately.
 //
-// The config always holds the retention to move to. Moving into Interest or WorkQueue needs
-// consumers to have parity with the stream first, so the origin retention stays active until the
-// desired state is reached. Moving into Limits has no such restriction and applies immediately,
-// clearing the origin retention, but still needs desired state to remap consumers back down.
+// The config always holds the retention to move to, and the origin what retention can be rolled
+// back to. While recorded the stream functions under Limits retention until converged. Moving into
+// Interest or WorkQueue needs consumers to have parity with the stream first. Similarly, the reverse
+// requires releasing those restrictions back to Limits prior to converging.
 func (rg *raftGroup) withRetentionChange(osa *streamAssignment, newRetention RetentionPolicy) *raftGroup {
 	if newRetention == osa.Config.Retention {
 		return rg
@@ -436,10 +441,6 @@ func (rg *raftGroup) withRetentionChange(osa *streamAssignment, newRetention Ret
 	}
 	// Desired state MUST always have an origin recorded, or it can't be rolled back or canceled.
 	rg.populateOrigin(osa)
-	if newRetention == LimitsPolicy {
-		rg.Desired.Origin.Retention = nil
-		return rg
-	}
 	// Only record the retention if we hadn't already recorded it, the origin must remain
 	// the retention from before any desired state changes were made. Must check osa, since
 	// populateOrigin above could have just recorded a fresh origin onto rg without a retention.
