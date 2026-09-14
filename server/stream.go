@@ -586,6 +586,7 @@ type stream struct {
 	stype     StorageType             // The storage type.
 	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
 	ddMu      sync.Mutex              // Lock for dedupe state.
+	ddwin     time.Duration           // The dedupe window, mirrors cfg.Duplicates.
 	ddmap     map[string]*ddentry     // The dedupe map.
 	ddarr     []*ddentry              // The dedupe array.
 	ddindex   int                     // The dedupe index.
@@ -636,19 +637,19 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa        *streamAssignment // What the meta controller uses to assign streams to peers.
-	node      RaftNode          // Our RAFT node for the stream's group.
-	catchup   atomic.Bool       // Used to signal we are in catchup mode.
-	catchups  map[string]uint64 // The number of messages that need to be caught per peer.
-	syncSub   *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub   *subscription     // Internal subscription for stream info requests.
-	clMu      sync.Mutex        // The mutex for clseq and clfs.
-	clseq     uint64            // The current last seq being proposed to the NRG layer.
-	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch       chan struct{}     // The channel to signal updates to the monitor routine.
-	inMonitor bool              // True if the monitor routine has been started.
-	werr      error             // If a write error was encountered, and if so what error.
+	sa        *streamAssignment       // What the meta controller uses to assign streams to peers.
+	node      RaftNode                // Our RAFT node for the stream's group.
+	catchup   atomic.Bool             // Used to signal we are in catchup mode.
+	catchups  map[string]*catchupPeer // Peers being caught up out of band, see catchupPeer.
+	syncSub   *subscription           // Internal subscription for sync messages (on "$JSC.SYNC").
+	infoSub   *subscription           // Internal subscription for stream info requests.
+	clMu      sync.Mutex              // The mutex for clseq and clfs.
+	clseq     uint64                  // The current last seq being proposed to the NRG layer.
+	clfs      uint64                  // The count (offset) of the number of failed NRG sequences used to compute clseq.
+	lqsent    time.Time               // The time at which the last lost quorum advisory was sent. Used to rate limit.
+	uch       chan struct{}           // The channel to signal updates to the monitor routine.
+	inMonitor bool                    // True if the monitor routine has been started.
+	werr      error                   // If a write error was encountered, and if so what error.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
 	inflightTransform           map[uint64]string                       // Inflight message's optional transformed subject.
@@ -1019,6 +1020,7 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		acc:       a,
 		jsa:       jsa,
 		cfg:       *cfg,
+		ddwin:     cfg.Duplicates,
 		js:        js,
 		srv:       s,
 		client:    c,
@@ -1305,15 +1307,10 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 	// Set our node.
 	mset.node = node
 
-	// Stop tracking peers for catchup if they're no longer part of the group.
-	if len(mset.catchups) > 0 {
-		for peer := range mset.catchups {
-			if !slices.Contains(peers, peer) {
-				delete(mset.catchups, peer)
-			}
-		}
-		if len(mset.catchups) == 0 {
-			mset.catchups = nil
+	// Stop catching up peers if they're no longer part of the group.
+	for peer := range mset.catchups {
+		if !slices.Contains(peers, peer) {
+			mset.clearCatchupPeerLocked(peer)
 		}
 	}
 
@@ -1448,8 +1445,6 @@ func (mset *stream) setLeader(isLeader bool, term uint64) error {
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
 		mset.unsubscribeToStream(false, false)
-		// Clear catchup state
-		mset.clearAllCatchupPeers()
 		mset.store.ResetState()
 	}
 
@@ -1628,13 +1623,12 @@ func (mset *stream) rebuildDedupe() {
 		}
 	}
 
-	duplicates := mset.cfg.Duplicates
-	if duplicates <= 0 {
+	if mset.ddwin <= 0 {
 		return
 	}
 
 	// We have some messages. Lookup starting sequence by duplicate time window.
-	sseq := mset.store.GetSeqFromTime(time.Now().Add(-duplicates))
+	sseq := mset.store.GetSeqFromTime(time.Now().Add(-mset.ddwin))
 	if sseq == 0 {
 		return
 	}
@@ -2962,6 +2956,11 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 	mset.cfg = *cfg
 	mset.cfgMu.Unlock()
 
+	// All replicas track msg ids, so update the dedupe window everywhere.
+	mset.ddMu.Lock()
+	mset.ddwin = cfg.Duplicates
+	mset.ddMu.Unlock()
+
 	// If we're changing retention, whip through and update the consumer retention.
 	if ocfg.Retention != cfg.Retention {
 		toUpdate := make([]*consumer, 0, len(mset.consumers))
@@ -2970,6 +2969,10 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 		var ss StreamState
 		mset.store.FastState(&ss)
+		// Switching to Interest without any consumers drops all messages.
+		if cfg.Retention == InterestPolicy && len(toUpdate) == 0 && ss.Msgs > 0 {
+			mset.store.Compact(ss.LastSeq + 1)
+		}
 		mset.mu.Unlock()
 		for _, c := range toUpdate {
 			c.mu.Lock()
@@ -5558,13 +5561,10 @@ func (mset *stream) checkMsgId(id string) *ddentry {
 // Should be called from a timer.
 func (mset *stream) purgeMsgIds() {
 	now := time.Now().UnixNano()
-	mset.cfgMu.RLock()
-	tmrNext := mset.cfg.Duplicates
-	mset.cfgMu.RUnlock()
-	window := int64(tmrNext)
-
 	mset.ddMu.Lock()
 	defer mset.ddMu.Unlock()
+	tmrNext := mset.ddwin
+	window := int64(tmrNext)
 
 	for i, dde := range mset.ddarr[mset.ddindex:] {
 		if now-dde.ts >= window {
@@ -5613,17 +5613,16 @@ func (mset *stream) storeMsgId(dde *ddentry) {
 // mset.ddMu lock should be held.
 func (mset *stream) storeMsgIdLocked(dde *ddentry) {
 	// Zero means disabled.
-	if mset.cfg.Duplicates <= 0 {
+	if mset.ddwin <= 0 {
 		return
 	}
-
 	if mset.ddmap == nil {
 		mset.ddmap = make(map[string]*ddentry)
 	}
 	mset.ddmap[dde.id] = dde
 	mset.ddarr = append(mset.ddarr, dde)
 	if mset.ddtmr == nil {
-		mset.ddtmr = time.AfterFunc(mset.cfg.Duplicates, mset.purgeMsgIds)
+		mset.ddtmr = time.AfterFunc(mset.ddwin, mset.purgeMsgIds)
 	}
 }
 

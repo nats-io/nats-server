@@ -9234,3 +9234,600 @@ func TestJetStreamClusterConsumerAssignmentDeleteAPI(t *testing.T) {
 	_, err = js.ConsumerInfo("TEST", "CONSUMER")
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
+
+func TestJetStreamClusterConsumerCreateResponseConsumerClosed(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// An R1 consumer on a replicated stream responds through the R1 leader change path.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "C",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	s := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, s)
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+
+	// Redirect the create response to us, as if it had not been answered yet.
+	// API responses are sent on the system account, so listen there.
+	snc, _ := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t!"))
+	defer snc.Close()
+	inbox := nats.NewInbox()
+	sub, err := snc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	require_NoError(t, snc.Flush())
+	ca := o.consumerAssignment()
+	require_NotNil(t, ca)
+	ca = ca.clone()
+	ca.Reply = inbox
+	ca.clearResponded()
+
+	// Simulate the consumer being torn down concurrently: the closed check at the
+	// start of processConsumerLeaderChangeWithAssignment has already passed, but by
+	// the time the response is built o.info() returns nil.
+	o.mu.Lock()
+	o.mset = nil
+	o.mu.Unlock()
+	defer func() {
+		o.mu.Lock()
+		o.mset = mset
+		o.mu.Unlock()
+	}()
+
+	// Must not panic and must answer with an error rather than an empty response.
+	require_NoError(t, s.getJetStream().processConsumerLeaderChangeWithAssignment(o, ca, true, 0))
+
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerCreateResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.ConsumerInfo == nil)
+	require_NotNil(t, resp.Error)
+	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerCreateErrF))
+	require_Contains(t, resp.Error.Description, errConsumerClosed.Error())
+}
+
+func TestJetStreamClusterConsumerDeleteRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	// Propose a rename of the consumer's group (what the meta leader does once a
+	// single node group converges after a migration) and immediately run the
+	// client delete request on the meta leader, before the rename is applied.
+	mjs.mu.Lock()
+	rca := mjs.consumerAssignment(globalAccountName, "TEST", "C").copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	rca.Reply = _EMPTY_
+	err = cc.meta.Propose(cc.term, encodeAddConsumerAssignment(rca))
+	if err == nil {
+		cc.trackInflightConsumerProposal(globalAccountName, "TEST", rca, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+	ci := &ClientInfo{Account: globalAccountName}
+	ml.jsClusteredConsumerDeleteRequest(ci, ml.GlobalAccount(), "TEST", "C", fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "C"), _EMPTY_, nil)
+
+	// The delete must have been proposed against the inflight (renamed) assignment.
+	mjs.mu.RLock()
+	inflight := cc.inflightConsumers[globalAccountName]["TEST"]["C"]
+	mjs.mu.RUnlock()
+	require_NotNil(t, inflight)
+	require_True(t, inflight.deleted)
+	require_Equal(t, inflight.consumerAssignment.Group.Name, rca.Group.Name)
+
+	// Both the assignment and the consumer must be gone everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+			sjs.mu.RUnlock()
+			if ca != nil {
+				return fmt.Errorf("server %q still has an assignment for consumer (group %q)", s, ca.Group.Name)
+			}
+			if mset, err := s.GlobalAccount().lookupStream("TEST"); err == nil && mset.lookupConsumer("C") != nil {
+				return fmt.Errorf("server %q still has the consumer running", s)
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnServerHealthz(s)
+	}
+}
+
+func TestJetStreamClusterStreamDeleteRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	mjs.mu.Lock()
+	rsa := mjs.streamAssignment(globalAccountName, "TEST").copyGroup()
+	rsa.Group.Name = groupNameForStream(rsa.Group.Peers, rsa.Group.Storage)
+	rsa.Reply = _EMPTY_
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(rsa))
+	if err == nil {
+		cc.trackInflightStreamProposal(globalAccountName, rsa, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+	ci := &ClientInfo{Account: globalAccountName}
+	ml.jsClusteredStreamDeleteRequest(ci, ml.GlobalAccount(), "TEST", fmt.Sprintf(JSApiStreamDeleteT, "TEST"), _EMPTY_, nil)
+
+	// The delete must have been proposed against the inflight (renamed) assignment.
+	mjs.mu.RLock()
+	inflight := cc.inflightStreams[globalAccountName]["TEST"]
+	mjs.mu.RUnlock()
+	require_NotNil(t, inflight)
+	require_True(t, inflight.deleted)
+	require_Equal(t, inflight.streamAssignment.Group.Name, rsa.Group.Name)
+
+	// Both the assignment and the stream must be gone everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			sjs.mu.RUnlock()
+			if sa != nil {
+				return fmt.Errorf("server %q still has an assignment for stream (group %q)", s, sa.Group.Name)
+			}
+			if _, err := s.GlobalAccount().lookupStream("TEST"); err == nil {
+				return fmt.Errorf("server %q still has the stream running", s)
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnServerHealthz(s)
+	}
+}
+
+func TestJetStreamClusterConsumerPauseRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	// Track a rename of the consumer's group as an inflight proposal, as if the
+	// meta leader had just proposed it, and it is not applied yet.
+	mjs.mu.Lock()
+	rca := mjs.consumerAssignment(globalAccountName, "TEST", "C").copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	rca.Reply = _EMPTY_
+	cc.trackInflightConsumerProposal(globalAccountName, "TEST", rca, false)
+	mjs.mu.Unlock()
+
+	pauseUntil := time.Now().Add(time.Hour).UTC()
+	req, err := json.Marshal(JSApiConsumerPauseRequest{PauseUntil: pauseUntil})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiConsumerPauseT, "TEST", "C"), req, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerPauseResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Paused)
+
+	// The pause must have been proposed against the inflight (renamed) assignment,
+	// so the rename sticks and the consumer is paused everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+			sjs.mu.RUnlock()
+			if ca == nil {
+				return fmt.Errorf("server %q has no assignment for consumer", s)
+			}
+			if ca.Group.Name != rca.Group.Name {
+				return fmt.Errorf("server %q has group %q, expected renamed group %q", s, ca.Group.Name, rca.Group.Name)
+			}
+			if ca.Config.PauseUntil == nil || !ca.Config.PauseUntil.Equal(pauseUntil) {
+				return fmt.Errorf("server %q assignment is not paused", s)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerLeaderStepDownWithInflightStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "C", ml)
+
+	// Track a client stream update as an inflight proposal on the meta leader. As
+	// proposed by jsClusteredStreamUpdateRequestLocked it has no consumers.
+	mjs.mu.Lock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	usa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Client: osa.Client}
+	cc.trackInflightStreamProposal(globalAccountName, usa, false)
+	mjs.mu.Unlock()
+
+	subj := fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "C")
+	msg, err := nc.Request(subj, nil, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiConsumerLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Success)
+
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") != ml)
+}
+
+func TestJetStreamClusterStreamInfoWithInflightStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The stream leader serves stream info, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownStreamLeader(nc, globalAccountName, "TEST", ml)
+
+	// Need an R1 consumer on another peer, so the local count is lower than the cluster-wide one.
+	var consumers int
+	var remote bool
+	for ; !remote && consumers < 10; consumers++ {
+		name := fmt.Sprintf("C%d", consumers)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: name, Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		remote = c.consumerLeader(globalAccountName, "TEST", name) != ml
+	}
+	require_True(t, remote)
+
+	// Track a client stream update as an inflight proposal, it has no consumers.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	usa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Client: osa.Client}
+	mjs.cluster.trackInflightStreamProposal(globalAccountName, usa, false)
+	mjs.mu.Unlock()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Consumers, consumers)
+}
+
+func TestJetStreamClusterConsumerInfoWithInflightConsumerDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// The consumer leader serves consumer info, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "C", ml)
+
+	// Track a consumer delete as an inflight proposal.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "C")
+	mjs.cluster.trackInflightConsumerProposal(globalAccountName, "TEST", ca, true)
+	mjs.mu.Unlock()
+
+	ci, err := js.ConsumerInfo("TEST", "C")
+	require_NoError(t, err)
+	require_Equal(t, ci.Name, "C")
+}
+
+func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := &nats.StreamConfig{
+				Name:      "TEST",
+				Subjects:  []string{"foo"},
+				Retention: nats.LimitsPolicy,
+				Replicas:  replicas,
+			}
+			_, err := js.AddStream(cfg)
+			require_NoError(t, err)
+
+			for range 10 {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 10)
+			require_Equal(t, si.State.Consumers, 0)
+
+			// Change to Interest retention without any consumers should drop all messages.
+			cfg.Retention = nats.InterestPolicy
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+
+			checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+				for _, s := range c.servers {
+					mset, err := s.globalAccount().lookupStream("TEST")
+					if err != nil {
+						// Not a replica.
+						continue
+					}
+					if mset.config().Retention != InterestPolicy {
+						return fmt.Errorf("%s: retention not yet interest", s.Name())
+					}
+					var ss StreamState
+					mset.store.FastState(&ss)
+					if ss.Msgs != 0 {
+						return fmt.Errorf("%s: expected 0 messages, got %d (first %d, last %d)",
+							s.Name(), ss.Msgs, ss.FirstSeq, ss.LastSeq)
+					}
+					if ss.LastSeq != 10 {
+						return fmt.Errorf("%s: expected last sequence 10, got %d", s.Name(), ss.LastSeq)
+					}
+				}
+				return nil
+			})
+
+			// New messages must be skipped as well.
+			pa, err := js.Publish("foo", []byte("msg"))
+			require_NoError(t, err)
+			require_Equal(t, pa.Sequence, 11)
+			si, err = js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 0)
+			require_Equal(t, si.State.LastSeq, 11)
+		})
+	}
+}
+
+func TestJetStreamClusterConsumerRemovalMatchesRenamedGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// A server that only holds the assignment, not the consumer itself.
+	s := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	sjs := s.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for a recreated consumer with the same name is not ours.
+	nca := ca.copyGroup()
+	nca.Group.Name = groupNameForConsumer(nca.Group.Peers, nca.Group.Storage)
+	nca.Created = time.Now().UTC()
+	sjs.processConsumerRemoval(nca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for our consumer under its renamed group is.
+	rca := ca.copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	sjs.processConsumerRemoval(rca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_True(t, ca == nil)
+}
+
+func TestJetStreamClusterStreamLeaderStepDownWithInflightStreamDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The stream leader serves the request, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownStreamLeader(nc, globalAccountName, "TEST", ml)
+
+	// Track a stream delete as an inflight proposal.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	mjs.cluster.trackInflightStreamProposal(globalAccountName, sa, true)
+	mjs.mu.Unlock()
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Success)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	require_True(t, c.streamLeader(globalAccountName, "TEST") != ml)
+}
+
+func TestJetStreamClusterMsgGetDeletePurgeWithInflightStreamDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 2 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// The stream leader serves the requests, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownStreamLeader(nc, globalAccountName, "TEST", ml)
+
+	// Track a stream delete as an inflight proposal.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	mjs.cluster.trackInflightStreamProposal(globalAccountName, sa, true)
+	mjs.mu.Unlock()
+
+	_, err = js.GetMsg("TEST", 1)
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteMsg("TEST", 1))
+	require_NoError(t, js.PurgeStream("TEST"))
+}
+
+// Moving a stream re-proposes its consumers. That must not be treated as a
+// consumer update, which for a sourcing consumer resets its delivery state
+// and makes the sourcing stream re-create the consumer.
+func TestJetStreamClusterSourcingConsumerMoveDoesNotReset(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// A sourcing consumer is only assigned through the meta layer on a non-Limits stream.
+	cfg := &nats.StreamConfig{
+		Name:      "ORIGIN",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Placement: &nats.Placement{Tags: []string{"server:S-1"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{{Name: "ORIGIN"}}})
+	require_NoError(t, err)
+	// Interest retention drops messages until the sourcing consumer exists.
+	var name string
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for name = range js.ConsumerNames("ORIGIN") {
+			return nil
+		}
+		return fmt.Errorf("no sourcing consumer yet")
+	})
+
+	sourced := func(n uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("SOURCE")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != n {
+				return fmt.Errorf("expected %d sourced messages, got %d", n, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sourced(10)
+
+	// The client can't decode the sourcing consumer's ack policy, use the raw API.
+	consumerInfo := func() *ConsumerInfo {
+		t.Helper()
+		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "ORIGIN", name), nil, 5*time.Second)
+		require_NoError(t, err)
+		var resp JSApiConsumerInfoResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		return resp.ConsumerInfo
+	}
+	require_Equal(t, consumerInfo().Delivered.Consumer, 10)
+
+	// Move the origin, which re-proposes the sourcing consumer.
+	cfg.Placement.Tags = []string{"server:S-2"}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "ORIGIN")
+	require_Equal(t, c.streamLeader(globalAccountName, "ORIGIN").Name(), "S-2")
+
+	// Give the sourcing stream a few heartbeats to notice a reset.
+	time.Sleep(3 * sourceHealthHB)
+	require_Equal(t, consumerInfo().Delivered.Consumer, 10)
+
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sourced(20)
+	require_Equal(t, consumerInfo().Delivered.Consumer, 20)
+}
