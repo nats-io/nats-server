@@ -9748,3 +9748,86 @@ func TestJetStreamClusterMsgGetDeletePurgeWithInflightStreamDelete(t *testing.T)
 	require_NoError(t, js.DeleteMsg("TEST", 1))
 	require_NoError(t, js.PurgeStream("TEST"))
 }
+
+// Moving a stream re-proposes its consumers. That must not be treated as a
+// consumer update, which for a sourcing consumer resets its delivery state
+// and makes the sourcing stream re-create the consumer.
+func TestJetStreamClusterSourcingConsumerMoveDoesNotReset(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, clusterName, storeDir, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// A sourcing consumer is only assigned through the meta layer on a non-Limits stream.
+	cfg := &nats.StreamConfig{
+		Name:      "ORIGIN",
+		Subjects:  []string{"foo"},
+		Retention: nats.InterestPolicy,
+		Placement: &nats.Placement{Tags: []string{"server:S-1"}},
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "SOURCE", Sources: []*nats.StreamSource{{Name: "ORIGIN"}}})
+	require_NoError(t, err)
+	// Interest retention drops messages until the sourcing consumer exists.
+	var name string
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for name = range js.ConsumerNames("ORIGIN") {
+			return nil
+		}
+		return fmt.Errorf("no sourcing consumer yet")
+	})
+
+	sourced := func(n uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("SOURCE")
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != n {
+				return fmt.Errorf("expected %d sourced messages, got %d", n, si.State.Msgs)
+			}
+			return nil
+		})
+	}
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sourced(10)
+
+	// The client can't decode the sourcing consumer's ack policy, use the raw API.
+	consumerInfo := func() *ConsumerInfo {
+		t.Helper()
+		msg, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "ORIGIN", name), nil, 5*time.Second)
+		require_NoError(t, err)
+		var resp JSApiConsumerInfoResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		return resp.ConsumerInfo
+	}
+	require_Equal(t, consumerInfo().Delivered.Consumer, 10)
+
+	// Move the origin, which re-proposes the sourcing consumer.
+	cfg.Placement.Tags = []string{"server:S-2"}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "ORIGIN")
+	require_Equal(t, c.streamLeader(globalAccountName, "ORIGIN").Name(), "S-2")
+
+	// Give the sourcing stream a few heartbeats to notice a reset.
+	time.Sleep(3 * sourceHealthHB)
+	require_Equal(t, consumerInfo().Delivered.Consumer, 10)
+
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sourced(20)
+	require_Equal(t, consumerInfo().Delivered.Consumer, 20)
+}
