@@ -4581,7 +4581,12 @@ func (o *consumer) processResetReq(_ *subscription, c *client, a *Account, _, re
 		resp.Error = NewJSConsumerInvalidResetError(err)
 		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 	} else if canRespond {
-		resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info())
+		if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+			// The consumer was closed before we could respond.
+			resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
+			s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+			return
+		}
 		resp.ResetSeq = resetSeq
 		s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
 	}

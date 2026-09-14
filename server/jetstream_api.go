@@ -1886,7 +1886,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	if cc != nil {
 		// Check to make sure the stream is assigned.
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, streamName)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
+		if sa == nil {
+			// Fallback for a stream that's being created.
+			sa = js.streamAssignmentOrInflight(acc.Name, streamName)
+		}
 		var offline bool
 		if sa != nil {
 			clusterWideConsCount = len(sa.consumers)
@@ -2116,7 +2120,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, _ *
 	}
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, name)
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
 	js.mu.RUnlock()
 
 	if isLeader && sa == nil {
@@ -2233,7 +2237,7 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 	consumer := tokenAt(subject, 7)
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 	js.mu.RUnlock()
 
 	if isLeader && sa == nil {
@@ -3238,7 +3242,7 @@ func (s *Server) jsMsgDeleteRequest(sub *subscription, c *client, _ *Account, su
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -3366,7 +3370,7 @@ func (s *Server) jsMsgGetRequest(sub *subscription, c *client, _ *Account, subje
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -3661,7 +3665,7 @@ func (s *Server) jsStreamPurgeRequest(sub *subscription, c *client, _ *Account, 
 		}
 
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, stream)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
 		js.mu.RUnlock()
 
 		if isLeader && sa == nil {
@@ -4654,7 +4658,12 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
+	if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo()); resp.ConsumerInfo == nil {
+		// The consumer was closed before we could respond.
+		resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 	s.sendAPIResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(resp))
 
 	o.mu.RLock()
@@ -4945,7 +4954,15 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 		groupCreated := meta.Created()
 
 		js.mu.RLock()
-		isLeader, sa, ca := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, streamName), js.consumerAssignmentOrInflight(acc.Name, streamName, consumerName)
+		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
+		if sa == nil {
+			// Fallback for a stream that's being created.
+			sa = js.streamAssignmentOrInflight(acc.Name, streamName)
+		}
+		if sa != nil && ca == nil {
+			// Fallback for a consumer that's being created.
+			ca = js.consumerAssignmentOrInflight(acc.Name, streamName, consumerName)
+		}
 		var rg *raftGroup
 		var offline, isMember bool
 		if ca != nil {
@@ -5250,7 +5267,7 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 
 	if isClustered {
 		js.mu.Lock()
-		sa := js.streamAssignment(acc.Name, stream)
+		sa := js.streamAssignmentOrInflight(acc.Name, stream)
 		if sa == nil {
 			js.mu.Unlock()
 			resp.Error = NewJSStreamNotFoundError(Unless(err))
@@ -5262,9 +5279,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 			// Just let the request time out.
 			return
 		}
-
-		ca, ok := sa.consumers[consumer]
-		if !ok || ca == nil {
+		ca := js.consumerAssignmentOrInflight(acc.Name, stream, consumer)
+		if ca == nil {
 			js.mu.Unlock()
 			resp.Error = NewJSConsumerNotFoundError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -5277,6 +5293,8 @@ func (s *Server) jsConsumerPauseRequest(sub *subscription, c *client, _ *Account
 		}
 
 		nca := ca.clone()
+		// Don't respond to the original create request again.
+		nca.Reply = _EMPTY_
 		// We need a copy to prevent concurrent reads/writes.
 		ncfg := *ca.Config
 		ncfg.Metadata = maps.Clone(ncfg.Metadata)
