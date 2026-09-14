@@ -1474,6 +1474,36 @@ func (c *cluster) randomNonConsumerLeader(account, stream, consumer string) *Ser
 	return nil
 }
 
+// stepDownStreamLeader steps the stream leader down to the given server if it's not equal.
+func (c *cluster) stepDownStreamLeader(nc *nats.Conn, account, stream string, s *Server) {
+	c.t.Helper()
+	req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: s.Name()}})
+	require_NoError(c.t, err)
+	sl := c.streamLeader(account, stream)
+	if sl != s {
+		_, err = nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, stream), req, 5*time.Second)
+		require_NoError(c.t, err)
+		c.waitOnStreamLeader(account, stream)
+		sl = c.streamLeader(account, stream)
+	}
+	require_Equal(c.t, sl, s)
+}
+
+// stepDownConsumerLeader steps the consumer leader down to the given server if it's not equal.
+func (c *cluster) stepDownConsumerLeader(nc *nats.Conn, account, stream, consumer string, s *Server) {
+	c.t.Helper()
+	req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: s.Name()}})
+	require_NoError(c.t, err)
+	cl := c.consumerLeader(account, stream, consumer)
+	if cl != s {
+		_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, stream, consumer), req, 5*time.Second)
+		require_NoError(c.t, err)
+		c.waitOnConsumerLeader(account, stream, consumer)
+		cl = c.consumerLeader(account, stream, consumer)
+	}
+	require_Equal(c.t, cl, s)
+}
+
 func (c *cluster) waitOnStreamLeader(account, stream string) {
 	c.t.Helper()
 	expires := time.Now().Add(30 * time.Second)
