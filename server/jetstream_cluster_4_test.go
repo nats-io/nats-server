@@ -9009,6 +9009,44 @@ func TestJetStreamClusterConsumerLeaderStepDownWithInflightStreamUpdate(t *testi
 	require_True(t, c.consumerLeader(globalAccountName, "TEST", "C") != ml)
 }
 
+func TestJetStreamClusterStreamInfoWithInflightStreamUpdate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The stream leader serves stream info, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownStreamLeader(nc, globalAccountName, "TEST", ml)
+
+	// Need an R1 consumer on another peer, so the local count is lower than the cluster-wide one.
+	var consumers int
+	var remote bool
+	for ; !remote && consumers < 10; consumers++ {
+		name := fmt.Sprintf("C%d", consumers)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: name, Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		remote = c.consumerLeader(globalAccountName, "TEST", name) != ml
+	}
+	require_True(t, remote)
+
+	// Track a client stream update as an inflight proposal, it has no consumers.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	osa := mjs.streamAssignment(globalAccountName, "TEST")
+	usa := &streamAssignment{Group: osa.Group, Sync: osa.Sync, Created: osa.Created, Config: osa.Config, Client: osa.Client}
+	mjs.cluster.trackInflightStreamProposal(globalAccountName, usa, false)
+	mjs.mu.Unlock()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Consumers, consumers)
+}
+
 func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {

@@ -1886,7 +1886,11 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 	if cc != nil {
 		// Check to make sure the stream is assigned.
 		js.mu.RLock()
-		isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, streamName)
+		isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, streamName)
+		if sa == nil {
+			// Fallback for a stream that's being created.
+			sa = js.streamAssignmentOrInflight(acc.Name, streamName)
+		}
 		var offline bool
 		if sa != nil {
 			clusterWideConsCount = len(sa.consumers)
