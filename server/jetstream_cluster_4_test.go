@@ -9047,6 +9047,34 @@ func TestJetStreamClusterStreamInfoWithInflightStreamUpdate(t *testing.T) {
 	require_Equal(t, si.State.Consumers, consumers)
 }
 
+func TestJetStreamClusterConsumerInfoWithInflightConsumerDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// The consumer leader serves consumer info, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "C", ml)
+
+	// Track a consumer delete as an inflight proposal.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	ca := mjs.consumerAssignment(globalAccountName, "TEST", "C")
+	mjs.cluster.trackInflightConsumerProposal(globalAccountName, "TEST", ca, true)
+	mjs.mu.Unlock()
+
+	ci, err := js.ConsumerInfo("TEST", "C")
+	require_NoError(t, err)
+	require_Equal(t, ci.Name, "C")
+}
+
 func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
