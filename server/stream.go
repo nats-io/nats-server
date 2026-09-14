@@ -609,19 +609,19 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa        *streamAssignment // What the meta controller uses to assign streams to peers.
-	node      RaftNode          // Our RAFT node for the stream's group.
-	catchup   atomic.Bool       // Used to signal we are in catchup mode.
-	catchups  map[string]uint64 // The number of messages that need to be caught per peer.
-	syncSub   *subscription     // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub   *subscription     // Internal subscription for stream info requests.
-	clMu      sync.Mutex        // The mutex for clseq and clfs.
-	clseq     uint64            // The current last seq being proposed to the NRG layer.
-	clfs      uint64            // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	lqsent    time.Time         // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch       chan struct{}     // The channel to signal updates to the monitor routine.
-	inMonitor bool              // True if the monitor routine has been started.
-	werr      error             // If a write error was encountered, and if so what error.
+	sa        *streamAssignment       // What the meta controller uses to assign streams to peers.
+	node      RaftNode                // Our RAFT node for the stream's group.
+	catchup   atomic.Bool             // Used to signal we are in catchup mode.
+	catchups  map[string]*catchupPeer // Peers being caught up out of band, see catchupPeer.
+	syncSub   *subscription           // Internal subscription for sync messages (on "$JSC.SYNC").
+	infoSub   *subscription           // Internal subscription for stream info requests.
+	clMu      sync.Mutex              // The mutex for clseq and clfs.
+	clseq     uint64                  // The current last seq being proposed to the NRG layer.
+	clfs      uint64                  // The count (offset) of the number of failed NRG sequences used to compute clseq.
+	lqsent    time.Time               // The time at which the last lost quorum advisory was sent. Used to rate limit.
+	uch       chan struct{}           // The channel to signal updates to the monitor routine.
+	inMonitor bool                    // True if the monitor routine has been started.
+	werr      error                   // If a write error was encountered, and if so what error.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
 	inflightTransform           map[uint64]string                       // Inflight message's optional transformed subject.
@@ -1243,6 +1243,13 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		mset.node.UpdateKnownPeers(peers)
 	}
 
+	// Stop catching up peers if they're no longer part of the group.
+	for peer := range mset.catchups {
+		if !slices.Contains(peers, peer) {
+			mset.clearCatchupPeerLocked(peer)
+		}
+	}
+
 	// Setup our info sub here as well for all stream members. This is now by design.
 	if mset.infoSub == nil {
 		isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
@@ -1353,8 +1360,6 @@ func (mset *stream) setLeader(isLeader bool, term uint64) error {
 		mset.stopClusterSubs()
 		// Unsubscribe from direct stream.
 		mset.unsubscribeToStream(false, false)
-		// Clear catchup state
-		mset.clearAllCatchupPeers()
 		mset.store.ResetState()
 	}
 
