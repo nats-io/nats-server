@@ -5401,6 +5401,12 @@ func (js *jetStream) applyStreamEntries(mset *stream, n RaftNode, ce *CommittedE
 				ourID = js.cluster.meta.ID()
 			}
 			js.mu.RUnlock()
+			// Cancel any catchup if one was still running for this peer.
+			if mset != nil {
+				mset.mu.Lock()
+				mset.clearCatchupPeerLocked(string(e.Data))
+				mset.mu.Unlock()
+			}
 			// We only need to do processing if this is us.
 			if peer := string(e.Data); peer == ourID && mset != nil {
 				// Double check here with the registered stream assignment.
@@ -12572,16 +12578,29 @@ func (mset *stream) processSnapshotDeletes(snap *StreamReplicatedState) error {
 	return nil
 }
 
-func (mset *stream) setCatchupPeer(peer string, lag uint64) {
+// catchupPeer tracks a peer the leader is catching up out of band.
+type catchupPeer struct {
+	lag  uint64        // Lag is the number of messages that still need to be sent to the peer.
+	quit chan struct{} // Quit channel is closed to cancel the runCatchup serving this peer.
+}
+
+// setCatchupPeer records that this peer is catching up, and returns its quit channel.
+func (mset *stream) setCatchupPeer(peer string, lag uint64) <-chan struct{} {
 	if peer == _EMPTY_ {
-		return
+		return nil
 	}
 	mset.mu.Lock()
+	defer mset.mu.Unlock()
 	if mset.catchups == nil {
-		mset.catchups = make(map[string]uint64)
+		mset.catchups = make(map[string]*catchupPeer)
 	}
-	mset.catchups[peer] = lag
-	mset.mu.Unlock()
+	// Cancel if there was a previous catchup for this peer.
+	if cp := mset.catchups[peer]; cp != nil && cp.quit != nil {
+		close(cp.quit)
+	}
+	quit := make(chan struct{})
+	mset.catchups[peer] = &catchupPeer{lag: lag, quit: quit}
+	return quit
 }
 
 // Will decrement by one.
@@ -12590,8 +12609,8 @@ func (mset *stream) updateCatchupPeer(peer string) {
 		return
 	}
 	mset.mu.Lock()
-	if lag := mset.catchups[peer]; lag > 0 {
-		mset.catchups[peer] = lag - 1
+	if cp := mset.catchups[peer]; cp != nil && cp.lag > 0 {
+		cp.lag--
 	}
 	mset.mu.Unlock()
 }
@@ -12601,39 +12620,66 @@ func (mset *stream) decrementCatchupPeer(peer string, num uint64) {
 		return
 	}
 	mset.mu.Lock()
-	if lag := mset.catchups[peer]; lag > 0 {
-		if lag >= num {
-			lag -= num
+	if cp := mset.catchups[peer]; cp != nil && cp.lag > 0 {
+		if cp.lag >= num {
+			cp.lag -= num
 		} else {
-			lag = 0
+			cp.lag = 0
 		}
-		mset.catchups[peer] = lag
 	}
 	mset.mu.Unlock()
 }
 
-func (mset *stream) clearCatchupPeer(peer string) {
+// detachCatchupPeer detaches the quit channel for the peer, leaving it tracked after exiting runCatchup.
+func (mset *stream) detachCatchupPeer(peer string, quit <-chan struct{}) {
 	mset.mu.Lock()
-	if mset.catchups != nil {
-		delete(mset.catchups, peer)
+	if cp := mset.catchups[peer]; cp != nil && cp.quit != nil && cp.quit == quit {
+		cp.quit = nil
+	}
+	mset.mu.Unlock()
+}
+
+// clearCatchupPeer stops tracking the peer if its quit channel matches.
+func (mset *stream) clearCatchupPeer(peer string, quit <-chan struct{}) {
+	mset.mu.Lock()
+	if cp := mset.catchups[peer]; cp != nil && cp.quit != nil && cp.quit == quit {
+		mset.clearCatchupPeerLocked(peer)
 	}
 	mset.mu.Unlock()
 }
 
 // Lock should be held.
-func (mset *stream) clearAllCatchupPeers() {
-	if mset.catchups != nil {
+func (mset *stream) clearCatchupPeerLocked(peer string) {
+	if cp := mset.catchups[peer]; cp != nil {
+		if cp.quit != nil {
+			close(cp.quit)
+			cp.quit = nil
+		}
+		delete(mset.catchups, peer)
+	}
+	if len(mset.catchups) == 0 {
 		mset.catchups = nil
 	}
+}
+
+// Lock should be held.
+func (mset *stream) clearAllCatchupPeers() {
+	for _, cp := range mset.catchups {
+		if cp.quit != nil {
+			close(cp.quit)
+			cp.quit = nil
+		}
+	}
+	mset.catchups = nil
 }
 
 func (mset *stream) lagForCatchupPeer(peer string) uint64 {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
-	if mset.catchups == nil {
-		return 0
+	if cp := mset.catchups[peer]; cp != nil {
+		return cp.lag
 	}
-	return mset.catchups[peer]
+	return 0
 }
 
 func (mset *stream) hasCatchupPeers() bool {
@@ -12878,11 +12924,13 @@ RETRY:
 	}
 	// This is used to notify the leader that it should stop the runCatchup
 	// because we are either bailing out or going to retry due to an error.
-	notifyLeaderStopCatchup := func(mrec *im, err error) {
-		if mrec.reply == _EMPTY_ {
-			return
+	var lastReply string
+	notifyLeaderStopCatchup := func(reply string, err error) error {
+		if reply == _EMPTY_ {
+			return err
 		}
-		s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, err.Error())
+		s.sendInternalMsgLocked(reply, _EMPTY_, nil, err.Error())
+		return err
 	}
 
 	msgsQ := newIPQueue[*im](s, qname)
@@ -12918,6 +12966,9 @@ RETRY:
 			mrecs := msgsQ.pop()
 			for _, mrec := range mrecs {
 				msg := mrec.msg
+				if mrec.reply != _EMPTY_ {
+					lastReply = mrec.reply
+				}
 				// Check for eof signaling.
 				if len(msg) == 0 {
 					msgsQ.recycle(&mrecs)
@@ -12944,9 +12995,9 @@ RETRY:
 					if elapsed < minRetryWait {
 						select {
 						case <-s.quitCh:
-							return ErrServerNotRunning
+							return notifyLeaderStopCatchup(lastReply, ErrServerNotRunning)
 						case <-qch:
-							return errCatchupStreamStopped
+							return notifyLeaderStopCatchup(lastReply, errCatchupStreamStopped)
 						case <-time.After(minRetryWait - elapsed):
 						}
 					}
@@ -12957,11 +13008,11 @@ RETRY:
 						s.sendInternalMsgLocked(mrec.reply, _EMPTY_, nil, nil)
 					}
 				} else if isOutOfSpaceErr(err) {
-					notifyLeaderStopCatchup(mrec, err)
+					_ = notifyLeaderStopCatchup(mrec.reply, err)
 					msgsQ.recycle(&mrecs)
 					return err
 				} else if err == NewJSInsufficientResourcesError() {
-					notifyLeaderStopCatchup(mrec, err)
+					_ = notifyLeaderStopCatchup(mrec.reply, err)
 					if mset.js.limitsExceeded(st) {
 						s.resourcesExceededError(st)
 					} else {
@@ -12973,12 +13024,12 @@ RETRY:
 					// A bad/corrupt catchup message (e.g. a failed s2 decode) is a
 					// deterministic failure: requesting a fresh sync from the leader
 					// returns the same bytes, so retrying would churn indefinitely.
-					notifyLeaderStopCatchup(mrec, err)
+					_ = notifyLeaderStopCatchup(mrec.reply, err)
 					s.Warnf("Catchup for stream '%s > %s' errored, bad message: %v", mset.account(), mset.name(), err)
 					msgsQ.recycle(&mrecs)
 					return err
 				} else {
-					notifyLeaderStopCatchup(mrec, err)
+					_ = notifyLeaderStopCatchup(mrec.reply, err)
 					s.Warnf("Catchup for stream '%s > %s' errored, will retry: %v", mset.account(), mset.name(), err)
 					msgsQ.recycle(&mrecs)
 
@@ -13002,7 +13053,7 @@ RETRY:
 		case <-notActive.C:
 			if mrecs := msgsQ.pop(); len(mrecs) > 0 {
 				mrec := mrecs[0]
-				notifyLeaderStopCatchup(mrec, errCatchupStalled)
+				_ = notifyLeaderStopCatchup(mrec.reply, errCatchupStalled)
 				msgsQ.recycle(&mrecs)
 			}
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
@@ -13013,9 +13064,9 @@ RETRY:
 			}
 			goto RETRY
 		case <-s.quitCh:
-			return ErrServerNotRunning
+			return notifyLeaderStopCatchup(lastReply, ErrServerNotRunning)
 		case <-qch:
-			return errCatchupStreamStopped
+			return notifyLeaderStopCatchup(lastReply, errCatchupStreamStopped)
 		}
 	}
 }
@@ -13498,6 +13549,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	nextBatchC := make(chan struct{}, 4)
 	nextBatchC <- struct{}{}
 	remoteQuitCh := make(chan struct{})
+	var remoteQuitOnce sync.Once
 
 	activityInterval := streamCatchupActivityInterval
 	notActive := time.NewTimer(activityInterval)
@@ -13510,7 +13562,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			s.Warnf("Catchup for stream '%s > %s' was aborted on the remote due to: %q",
 				mset.account(), mset.name(), msg)
 			s.sysUnsubscribe(sub)
-			close(remoteQuitCh)
+			// The unsubscribe is skipped during shutdown, so guard against a repeated abort.
+			remoteQuitOnce.Do(func() { close(remoteQuitCh) })
 			return
 		}
 		sz := ackReplySize(subject)
@@ -13561,7 +13614,7 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 	}
 
 	start := time.Now()
-	mset.setCatchupPeer(sreq.Peer, last-seq)
+	quit := mset.setCatchupPeer(sreq.Peer, last-seq)
 
 	var spb int
 	const minWait = 5 * time.Second
@@ -13599,6 +13652,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 				case <-qch:
 					return false
 				case <-remoteQuitCh:
+					return false
+				case <-quit:
 					return false
 				}
 			}
@@ -13735,6 +13790,8 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 			select {
 			case <-remoteQuitCh:
 				return false
+			case <-quit:
+				return false
 			default:
 			}
 		}
@@ -13766,26 +13823,30 @@ func (mset *stream) runCatchup(sendSubject string, sreq *streamSyncRequest) {
 		case <-qch:
 			return
 		case <-remoteQuitCh:
-			mset.clearCatchupPeer(sreq.Peer)
+			mset.clearCatchupPeer(sreq.Peer, quit)
+			return
+		case <-quit:
+			// Superseded by a newer request from this peer, or the peer left the group.
 			return
 		case <-notActive.C:
 			s.Warnf("Catchup for stream '%s > %s' stalled", mset.account(), mset.name())
 			// Do NOT clear the catchup peer on a transient inactivity stall, this allows the
 			// follower to retry without us losing track of it requiring catchup.
+			mset.detachCatchupPeer(sreq.Peer, quit)
 			return
 		case <-nextBatchC:
 			if !sendNextBatchAndContinue(qch) {
-				mset.clearCatchupPeer(sreq.Peer)
+				mset.clearCatchupPeer(sreq.Peer, quit)
 				return
 			}
 		case <-cbKick:
 			if !sendNextBatchAndContinue(qch) {
-				mset.clearCatchupPeer(sreq.Peer)
+				mset.clearCatchupPeer(sreq.Peer, quit)
 				return
 			}
 		case <-retryTimer.C:
 			if !sendNextBatchAndContinue(qch) {
-				mset.clearCatchupPeer(sreq.Peer)
+				mset.clearCatchupPeer(sreq.Peer, quit)
 				return
 			}
 		}
