@@ -16,6 +16,8 @@ package server
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -2632,5 +2634,24 @@ func TestConfigCheckMultipleErrors(t *testing.T) {
 		if !strings.Contains(errMsg, extra) {
 			t.Fatalf("Expected to find error %q (%s)", extra, errMsg)
 		}
+	}
+}
+
+func TestConfigCheckResolverDoesNotCreateDir(t *testing.T) {
+	baseDir := t.TempDir()
+	resolverDir := filepath.Join(baseDir, "resolver", "jwt")
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		resolver: {
+			type: "full"
+			dir: %q
+		}
+	`, filepath.ToSlash(resolverDir))))
+
+	opts := &Options{CheckConfig: true}
+	if err := opts.ProcessConfigFile(conf); err != nil {
+		t.Fatalf("Unexpected error processing config in check mode: %v", err)
+	}
+	if _, err := os.Stat(resolverDir); !os.IsNotExist(err) {
+		t.Fatalf("Expected resolver directory to not be created in check mode, got err=%v", err)
 	}
 }
