@@ -9580,3 +9580,43 @@ func TestJetStreamClusterRetentionUpdateToInterestWithoutConsumers(t *testing.T)
 		})
 	}
 }
+
+func TestJetStreamClusterConsumerRemovalMatchesRenamedGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// A server that only holds the assignment, not the consumer itself.
+	s := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	sjs := s.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for a recreated consumer with the same name is not ours.
+	nca := ca.copyGroup()
+	nca.Group.Name = groupNameForConsumer(nca.Group.Peers, nca.Group.Storage)
+	nca.Created = time.Now().UTC()
+	sjs.processConsumerRemoval(nca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+
+	// A removal for our consumer under its renamed group is.
+	rca := ca.copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	sjs.processConsumerRemoval(rca)
+	sjs.mu.RLock()
+	ca = sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_True(t, ca == nil)
+}
