@@ -2816,6 +2816,10 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		}
 		var ss StreamState
 		mset.store.FastState(&ss)
+		// Switching to Interest without any consumers drops all messages.
+		if cfg.Retention == InterestPolicy && len(toUpdate) == 0 && ss.Msgs > 0 {
+			mset.store.Compact(ss.LastSeq + 1)
+		}
 		mset.mu.Unlock()
 		for _, c := range toUpdate {
 			c.mu.Lock()
