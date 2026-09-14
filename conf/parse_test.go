@@ -84,6 +84,19 @@ func TestSimpleVariable(t *testing.T) {
 	test(t, varSample, ex)
 }
 
+var varSampleWithBraces = `
+  index = 22
+  foo = ${index}
+`
+
+func TestSimpleVariableWithBraces(t *testing.T) {
+	ex := map[string]any{
+		"index": int64(22),
+		"foo":   int64(22),
+	}
+	test(t, varSampleWithBraces, ex)
+}
+
 var varNestedSample = `
   index = 22
   nest {
@@ -107,6 +120,14 @@ func TestNestedVariable(t *testing.T) {
 
 func TestMissingVariable(t *testing.T) {
 	_, err := Parse("foo=$index")
+	if err == nil {
+		t.Fatalf("Expected an error for a missing variable, got none")
+	}
+	if !strings.HasPrefix(err.Error(), "variable reference") {
+		t.Fatalf("Wanted a variable reference err, got %q\n", err)
+	}
+
+	_, err = Parse("foo=${index}")
 	if err == nil {
 		t.Fatalf("Expected an error for a missing variable, got none")
 	}
@@ -164,6 +185,90 @@ func TestEnvVariableStringStartingWithNumberUsingQuotes(t *testing.T) {
 	os.Setenv(evar, "'3xyz'")
 	defer os.Unsetenv(evar)
 	test(t, fmt.Sprintf("foo = $%s", evar), ex)
+}
+
+func TestEnvVariableEmbedded(t *testing.T) {
+	cluster := `
+		cluster {
+			# set the variable token
+			TOKEN: abc
+			authorization {
+				user: user
+				password: "${TOKEN}"
+			}
+			routes = [ "nats://user:${TOKEN}@server.example.com:6222" ]
+		}`
+	ex := map[string]any{
+		"cluster": map[string]any{
+			"TOKEN": "abc",
+			"authorization": map[string]any{
+				"user":     "user",
+				"password": "abc",
+			},
+			"routes": []any{
+				"nats://user:abc@server.example.com:6222",
+			},
+		},
+	}
+
+	// don't use test() here because we want to test the Parse function without checking pedantic mode.
+	m, err := Parse(cluster)
+	if err != nil {
+		t.Fatalf("Received err: %v\n", err)
+	}
+	if m == nil {
+		t.Fatal("Received nil map")
+	}
+
+	if !reflect.DeepEqual(m, ex) {
+		t.Fatalf("Not Equal:\nReceived: '%+v'\nExpected: '%+v'\n", m, ex)
+	}
+}
+
+func TestEnvVariableEmbeddedMissing(t *testing.T) {
+	cluster := `
+		cluster {
+			authorization {
+				user: user
+				password: ${TOKEN}
+			}
+		}`
+
+	_, err := Parse(cluster)
+	if err == nil {
+		t.Fatalf("Expected err not being able to process embedded variable, got none")
+	}
+}
+
+func TestEnvVariableEmbeddedOutsideOfQuotes(t *testing.T) {
+	cluster := `
+		cluster {
+			# set the variable token
+			TOKEN: abc
+			authorization {
+				user: user
+				# ok
+				password: ${TOKEN}
+			}
+			# not ok
+			routes = [ nats://user:${TOKEN}@server.example.com:6222 ]
+		}`
+
+	_, err := Parse(cluster)
+	if err == nil {
+		t.Fatalf("Expected err not being able to process embedded variable, got none")
+	}
+}
+
+func TestEnvVariableEmbeddedSYS(t *testing.T) {
+	// https://github.com/nats-io/nats-server/pull/5544#discussion_r1641577620
+	cluster := `
+		system_account: "$SYS"
+		`
+	ex := map[string]any{
+		"system_account": "$SYS",
+	}
+	test(t, cluster, ex)
 }
 
 func TestBcryptVariable(t *testing.T) {
