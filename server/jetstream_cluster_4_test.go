@@ -9686,3 +9686,34 @@ func TestJetStreamClusterConsumerRemovalMatchesRenamedGroup(t *testing.T) {
 	sjs.mu.RUnlock()
 	require_True(t, ca == nil)
 }
+
+func TestJetStreamClusterStreamLeaderStepDownWithInflightStreamDelete(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The stream leader serves the request, the meta leader tracks inflight proposals.
+	ml := c.leader()
+	c.stepDownStreamLeader(nc, globalAccountName, "TEST", ml)
+
+	// Track a stream delete as an inflight proposal.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	mjs.cluster.trackInflightStreamProposal(globalAccountName, sa, true)
+	mjs.mu.Unlock()
+
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamLeaderStepDownT, "TEST"), nil, 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamLeaderStepDownResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Error == nil)
+	require_True(t, resp.Success)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	require_True(t, c.streamLeader(globalAccountName, "TEST") != ml)
+}
