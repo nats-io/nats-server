@@ -8797,3 +8797,120 @@ func TestJetStreamClusterConsumerCreateResponseConsumerClosed(t *testing.T) {
 	require_Equal(t, resp.Error.ErrCode, uint16(JSConsumerCreateErrF))
 	require_Contains(t, resp.Error.Description, errConsumerClosed.Error())
 }
+
+func TestJetStreamClusterConsumerDeleteRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 1, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	// Propose a rename of the consumer's group (what the meta leader does once a
+	// single node group converges after a migration) and immediately run the
+	// client delete request on the meta leader, before the rename is applied.
+	mjs.mu.Lock()
+	rca := mjs.consumerAssignment(globalAccountName, "TEST", "C").copyGroup()
+	rca.Group.Name = groupNameForConsumer(rca.Group.Peers, rca.Group.Storage)
+	rca.Reply = _EMPTY_
+	err = cc.meta.Propose(cc.term, encodeAddConsumerAssignment(rca))
+	if err == nil {
+		cc.trackInflightConsumerProposal(globalAccountName, "TEST", rca, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+	ci := &ClientInfo{Account: globalAccountName}
+	ml.jsClusteredConsumerDeleteRequest(ci, ml.GlobalAccount(), "TEST", "C", fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "C"), _EMPTY_, nil)
+
+	// The delete must have been proposed against the inflight (renamed) assignment.
+	mjs.mu.RLock()
+	inflight := cc.inflightConsumers[globalAccountName]["TEST"]["C"]
+	mjs.mu.RUnlock()
+	require_NotNil(t, inflight)
+	require_True(t, inflight.deleted)
+	require_Equal(t, inflight.consumerAssignment.Group.Name, rca.Group.Name)
+
+	// Both the assignment and the consumer must be gone everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+			sjs.mu.RUnlock()
+			if ca != nil {
+				return fmt.Errorf("server %q still has an assignment for consumer (group %q)", s, ca.Group.Name)
+			}
+			if mset, err := s.GlobalAccount().lookupStream("TEST"); err == nil && mset.lookupConsumer("C") != nil {
+				return fmt.Errorf("server %q still has the consumer running", s)
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnServerHealthz(s)
+	}
+}
+
+func TestJetStreamClusterStreamDeleteRacingGroupRename(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+
+	mjs.mu.Lock()
+	rsa := mjs.streamAssignment(globalAccountName, "TEST").copyGroup()
+	rsa.Group.Name = groupNameForStream(rsa.Group.Peers, rsa.Group.Storage)
+	rsa.Reply = _EMPTY_
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(rsa))
+	if err == nil {
+		cc.trackInflightStreamProposal(globalAccountName, rsa, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+	ci := &ClientInfo{Account: globalAccountName}
+	ml.jsClusteredStreamDeleteRequest(ci, ml.GlobalAccount(), "TEST", fmt.Sprintf(JSApiStreamDeleteT, "TEST"), _EMPTY_, nil)
+
+	// The delete must have been proposed against the inflight (renamed) assignment.
+	mjs.mu.RLock()
+	inflight := cc.inflightStreams[globalAccountName]["TEST"]
+	mjs.mu.RUnlock()
+	require_NotNil(t, inflight)
+	require_True(t, inflight.deleted)
+	require_Equal(t, inflight.streamAssignment.Group.Name, rsa.Group.Name)
+
+	// Both the assignment and the stream must be gone everywhere.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			sa := sjs.streamAssignment(globalAccountName, "TEST")
+			sjs.mu.RUnlock()
+			if sa != nil {
+				return fmt.Errorf("server %q still has an assignment for stream (group %q)", s, sa.Group.Name)
+			}
+			if _, err := s.GlobalAccount().lookupStream("TEST"); err == nil {
+				return fmt.Errorf("server %q still has the stream running", s)
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnServerHealthz(s)
+	}
+}
