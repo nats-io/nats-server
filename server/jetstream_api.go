@@ -5262,7 +5262,12 @@ func (s *Server) jsConsumerCreateRequest(sub *subscription, c *client, a *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
 		return
 	}
-	resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo())
+	if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.initialInfo()); resp.ConsumerInfo == nil {
+		// The consumer was closed before we could respond.
+		resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
+		return
+	}
 	if streamIdentity != _EMPTY_ {
 		rhdr := genHeader(nil, JSStreamIdentity, streamIdentity)
 		s.sendAPIHdrResponse(ci, acc, subject, reply, string(msg), rhdr, s.jsonResponse(resp))
