@@ -734,9 +734,6 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 		}
 	}()
 
-	if fs.isClosed() {
-		return ErrStoreClosed
-	}
 	if cfg.Name == _EMPTY_ {
 		return fmt.Errorf("name required")
 	}
@@ -748,6 +745,10 @@ func (fs *fileStore) UpdateConfig(cfg *StreamConfig) error {
 	}
 
 	fs.mu.Lock()
+	if fs.isClosed() {
+		fs.mu.Unlock()
+		return ErrStoreClosed
+	}
 	new_cfg := FileStreamInfo{Created: fs.cfg.Created, StreamConfig: *cfg}
 	old_cfg := fs.cfg
 	// The reference story has changed here, so this full msg block lock
@@ -5587,6 +5588,9 @@ func (fs *fileStore) skipMsg(seq uint64, noInterest bool) (uint64, error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	if fs.isClosed() {
+		return 0, ErrStoreClosed
+	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		return 0, err
@@ -5643,6 +5647,9 @@ func (fs *fileStore) SkipMsgs(seq uint64, num uint64) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		return err
@@ -8214,6 +8221,12 @@ func (fs *fileStore) syncBlocks() {
 	fs.mu.Unlock()
 
 	storeFsWerr := func(err error) {
+		// A file or directory that no longer exists was removed by a
+		// concurrent purge, compact or delete. Syncing it is moot, not a
+		// write failure.
+		if os.IsNotExist(err) {
+			return
+		}
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		fs.setWriteErr(err)
@@ -10346,10 +10359,11 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 	var tombs []msgId
 	var lowSeq uint64
 
+	fs.mu.Lock()
 	if fs.isClosed() {
+		fs.mu.Unlock()
 		return purged, ErrStoreClosed
 	}
-	fs.mu.Lock()
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		fs.mu.Unlock()
@@ -10577,11 +10591,11 @@ func (fs *fileStore) Purge() (uint64, error) {
 }
 
 func (fs *fileStore) purge(fseq uint64) (uint64, error) {
+	fs.mu.Lock()
 	if fs.isClosed() {
+		fs.mu.Unlock()
 		return 0, ErrStoreClosed
 	}
-
-	fs.mu.Lock()
 	cb := fs.scb
 	purged, bytes, err := fs.purgeLocked(fseq)
 	if err != nil {
@@ -10790,13 +10804,13 @@ func (fs *fileStore) Compact(seq uint64) (uint64, error) {
 }
 
 func (fs *fileStore) compact(seq uint64) (uint64, error) {
-	if fs.isClosed() {
-		return 0, ErrStoreClosed
-	}
-
 	var err error
 	var purged, bytes uint64
 	fs.mu.Lock()
+	if fs.isClosed() {
+		fs.mu.Unlock()
+		return 0, ErrStoreClosed
+	}
 	if seq == 0 || seq > fs.state.LastSeq {
 		purged, bytes, err = fs.purgeLocked(seq)
 	} else {
@@ -11081,11 +11095,11 @@ SKIP:
 
 // Will completely reset our store.
 func (fs *fileStore) reset() error {
+	fs.mu.Lock()
 	if fs.isClosed() {
+		fs.mu.Unlock()
 		return ErrStoreClosed
 	}
-
-	fs.mu.Lock()
 
 	var purged, bytes uint64
 	cb := fs.scb
@@ -11232,16 +11246,16 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 
 // Truncate will truncate a stream store up to seq. Sequence needs to be valid.
 func (fs *fileStore) Truncate(seq uint64) (rerr error) {
-	if fs.isClosed() {
-		return ErrStoreClosed
-	}
-
 	// Check for request to reset.
 	if seq == 0 {
 		return fs.reset()
 	}
 
 	fs.mu.Lock()
+	if fs.isClosed() {
+		fs.mu.Unlock()
+		return ErrStoreClosed
+	}
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		fs.mu.Unlock()
@@ -12703,6 +12717,14 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	cb, bytes := fs.scb, int64(fs.state.Bytes)
 	fs.mu.Unlock()
 
+	// Wait for any in-flight syncBlocks to finish now that we are marked
+	// closed. This ensures a Delete can't remove or rename directories from
+	// underneath a running sync. Any sync starting after this sees closed and
+	// returns immediately. Must not hold fs.mu here, syncBlocks acquires
+	// syncMu before fs.mu.
+	fs.syncMu.Lock()
+	fs.syncMu.Unlock() //nolint:staticcheck // Only waiting for in-flight syncBlocks.
+
 	fs.cmu.Lock()
 	var _cfs [256]ConsumerStore
 	cfs := append(_cfs[:0], fs.cfs...)
@@ -13195,16 +13217,16 @@ type storeUpdateAgg struct {
 // SyncDeleted will make sure this stream has same deleted state as dbs.
 // This will only process deleted state within our current state.
 func (fs *fileStore) SyncDeleted(dbs DeleteBlocks) error {
-	if fs.isClosed() {
-		return ErrStoreClosed
-	}
-
 	if len(dbs) == 0 {
 		return nil
 	}
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
 
 	// Always return previous write errors.
 	if err := fs.werr; err != nil {
