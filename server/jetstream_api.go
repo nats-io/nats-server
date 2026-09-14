@@ -2120,7 +2120,7 @@ func (s *Server) jsStreamLeaderStepDownRequest(sub *subscription, c *client, _ *
 	}
 
 	js.mu.RLock()
-	isLeader, sa := cc.isLeader(), js.streamAssignmentOrInflight(acc.Name, name)
+	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, name)
 	js.mu.RUnlock()
 
 	if isLeader && sa == nil {
