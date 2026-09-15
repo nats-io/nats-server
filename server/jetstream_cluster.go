@@ -7513,11 +7513,6 @@ func (js *jetStream) consumerAssignmentOrInflight(account, stream, consumer stri
 // Will gather all consumer assignments for the specified account and stream, both applied and inflight assignments.
 // Lock should be held.
 func (js *jetStream) consumerAssignmentsOrInflightSeq(account, stream string) iter.Seq[*consumerAssignment] {
-	return js.consumerAssignmentsOrInflightSeqFor(account, stream, nil)
-}
-
-// Lock should be held.
-func (js *jetStream) consumerAssignmentsOrInflightSeqFor(account string, stream string, sa *streamAssignment) iter.Seq[*consumerAssignment] {
 	return func(yield func(*consumerAssignment) bool) {
 		cc := js.cluster
 		if cc == nil {
@@ -7533,10 +7528,9 @@ func (js *jetStream) consumerAssignmentsOrInflightSeqFor(account string, stream 
 				return
 			}
 		}
+		sa := js.streamAssignment(account, stream)
 		if sa == nil {
-			if sa = js.streamAssignment(account, stream); sa == nil {
-				return
-			}
+			return
 		}
 		for _, ca := range sa.consumers {
 			// Skip if we already iterated over it as inflight.
@@ -9718,7 +9712,7 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignment) (consumers, deleted []*consumerAssignment, done bool) {
 	targetPeers := sa.targetPeers()
 	done = true
-	for ca := range js.consumerAssignmentsOrInflightSeqFor(accName, sa.Config.Name, sa) {
+	for ca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
 		if ca.Config == nil || ca.unsupported != nil {
 			continue
 		}
@@ -10777,8 +10771,20 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 	// If we're the first to specify an origin for desired state, capture it.
 	rg.populateOrigin(osa)
 
-	// A retention change must go through desired state, so consumers can be scaled first.
-	rg = rg.withRetentionChange(osa, newCfg.Retention)
+	// A retention change must go through desired state, so consumers (if any) can be scaled first.
+	if isRetentionChange {
+		var converged bool
+		// Only register the retention if any consumers need to be remapped (or we already had desired state).
+		if rg.Desired == nil {
+			// Simulate remapping against the updated group. Only the group and config
+			// are needed, the consumers are looked up on the applied assignment.
+			tsa := &streamAssignment{Group: rg, Config: newCfg}
+			_, _, converged = js.remapConsumerAssignments(acc.Name, tsa)
+		}
+		if !converged {
+			rg = rg.withRetentionChange(osa, newCfg.Retention)
+		}
+	}
 
 	syncSubject := osa.Sync
 	if syncSubject == _EMPTY_ {
