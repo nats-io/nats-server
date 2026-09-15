@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -15364,4 +15365,135 @@ func TestJetStreamClusterConsumerScaleDownDesiredAfterMetaLeaderChange(t *testin
 		t.Fatalf("Consumer assignment scaled down to peers=%v, while desired state is still a scale down from %v",
 			ca.Group.Peers, ca.Group.Desired.Peers)
 	}
+}
+
+func TestJetStreamClusterReconcileMigratesConsumerBeforeDroppingStreamPeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// R1 consumer, so it lives on exactly one of the stream's peers.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+		Replicas:  1,
+	})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mjs := ml.getJetStream()
+
+	// The peer hosting the consumer is the one the scale down drops.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	require_NotNil(t, cl)
+	victim := cl.Node()
+	var metaPeers []string
+	for _, s := range c.servers {
+		if p := s.Node(); p != victim {
+			metaPeers = append(metaPeers, p)
+		}
+	}
+	require_Len(t, len(metaPeers), 2)
+
+	// Scale down R3->R1 onto a peer that isn't hosting the consumer, as a stream leader
+	// that didn't know about the consumer would have selected. The term is deliberately
+	// far ahead of any real group term, so the real group leader's updates are fenced off,
+	// and only the requests below are applied.
+	const desiredID = "reconcile-consumer-hosted-peer"
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	if sa != nil {
+		sa.Group.Desired = &desiredRaftGroup{
+			ID:      desiredID,
+			Term:    math.MaxUint64,
+			Peers:   []string{metaPeers[0]},
+			Created: time.Now().UTC(),
+		}
+	}
+	mjs.mu.Unlock()
+	require_NotNil(t, sa)
+
+	// The stream leader reports it already removed the peer from its group.
+	reconcile := func(id string) {
+		t.Helper()
+		msg, err := json.Marshal(&streamAssignmentReconcile{
+			Account: globalAccountName,
+			Stream:  "TEST",
+			desiredAssignmentUpdate: desiredAssignmentUpdate{
+				ID:         id,
+				Term:       math.MaxUint64,
+				MetaPeers:  metaPeers,
+				PeersMatch: true,
+			},
+		})
+		require_NoError(t, err)
+		mjs.reconcileDesiredStreamAssignment(nil, nil, nil, _EMPTY_, _EMPTY_, msg)
+	}
+	reconcile(desiredID)
+
+	// The consumer must be migrated off the peer, keeping it while it moves so its state
+	// is copied over, and the stream must hold on to that peer until the move completes.
+	// Asserted on the applied assignments, so this also waits for the staged proposals to
+	// land, and the state we adjust below isn't overwritten by one arriving afterward.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		if ca == nil || ca.Group == nil || ca.Group.Desired == nil {
+			return errors.New("consumer not migrating yet")
+		}
+		if !slices.Contains(ca.Group.Peers, victim) {
+			return fmt.Errorf("consumer must keep %q while it migrates, got %+v", victim, ca.Group.Peers)
+		}
+		if slices.Contains(ca.Group.Desired.Peers, victim) {
+			return fmt.Errorf("consumer must migrate off %q, got %+v", victim, ca.Group.Desired.Peers)
+		}
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
+			return errors.New("stream assignment not applied yet")
+		}
+		// The stream can't drop the peer from under the consumer, it would have nothing
+		// to migrate its state from.
+		if !slices.Contains(sa.Group.Peers, victim) {
+			return fmt.Errorf("stream dropped %q while the consumer is hosted there, got %+v", victim, sa.Group.Peers)
+		}
+		return nil
+	})
+
+	// Land the consumer on its desired peers, as completing the migration would.
+	var nextID string
+	mjs.mu.Lock()
+	if ca := mjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER"); ca != nil && ca.Group.Desired != nil {
+		ca.Group.Peers, ca.Group.Desired = ca.Group.Desired.Peers, nil
+	}
+	if sa := mjs.streamAssignment(globalAccountName, "TEST"); sa != nil && sa.Group.Desired != nil {
+		nextID = sa.Group.Desired.ID
+	}
+	mjs.mu.Unlock()
+	require_NotEqual(t, nextID, _EMPTY_)
+
+	// Nothing holds the peer anymore, so now the same update drops it.
+	reconcile(nextID)
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		sa := mjs.streamAssignmentOrInflight(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return errors.New("no stream assignment")
+		}
+		if slices.Contains(sa.Group.Peers, victim) {
+			return fmt.Errorf("expected %q to be dropped, got %+v", victim, sa.Group.Peers)
+		}
+		return nil
+	})
 }

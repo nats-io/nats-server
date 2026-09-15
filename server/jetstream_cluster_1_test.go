@@ -5727,6 +5727,66 @@ func TestJetStreamClusterRemapConsumerPendingScaleDown(t *testing.T) {
 	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
 }
 
+func TestJetStreamClusterRemapConsumerOnDroppedStreamPeer(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	// The stream is scaling down onto B. C is a leaving peer, but the consumer is still hosted on it.
+	newAssignments := func(metaPeers []string, durable bool) (*jetStream, *streamAssignment) {
+		cfg := &ConsumerConfig{Replicas: 1}
+		if durable {
+			cfg.Durable = "CONSUMER"
+		}
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 1, Retention: LimitsPolicy},
+			Group: &raftGroup{
+				Name:    "S",
+				Peers:   metaPeers,
+				Desired: &desiredRaftGroup{Peers: []string{b}},
+			},
+			consumers: map[string]*consumerAssignment{"CONSUMER": {
+				Name:   "CONSUMER",
+				Stream: "TEST",
+				Config: cfg,
+				Group:  &raftGroup{Name: "C", Peers: []string{c}},
+			}},
+		}
+		js := &jetStream{cluster: &jetStreamCluster{
+			streams: map[string]map[string]*streamAssignment{globalAccountName: {sa.Config.Name: sa}},
+		}}
+		return js, sa
+	}
+
+	// The stream's peer set still lists C, it has been removed from the meta group but the
+	// assignment has not caught up yet. The consumer is moved through desired state, so it
+	// stays assigned to C, which is what keeps blocking the stream's scale-down.
+	js, sa := newAssignments([]string{a, b, c}, false)
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	require_True(t, slices.Equal(consumers[0].Group.Peers, []string{c}))
+	require_True(t, slices.Equal(consumers[0].Group.Desired.Peers, []string{b}))
+	require_False(t, done)
+
+	// Once the stream's peer set has caught up, the consumer must not be skipped: it holds
+	// a peer the stream no longer has, and nothing else can move it there. An ephemeral is
+	// deleted, which unblocks the scale-down and lets the desired state complete.
+	sa.Group.Peers = []string{a, b}
+	sa.consumers["CONSUMER"] = consumers[0]
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_Len(t, len(deleted), 1)
+	require_Equal(t, deleted[0].Name, "CONSUMER")
+	require_False(t, done)
+
+	// A durable can't be deleted, it moves onto the peers the stream is keeping.
+	js, sa = newAssignments([]string{a, b}, true)
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	require_True(t, slices.Equal(consumers[0].Group.Peers, []string{b}))
+	require_False(t, done)
+}
+
 func TestJetStreamClusterRemapConsumerOverReplicated(t *testing.T) {
 	const a, b, c = "A", "B", "C"
 

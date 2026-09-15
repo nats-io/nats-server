@@ -4491,7 +4491,9 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			listenForPositions()
 			status := js.runStreamMigration(mset, sa, n, leaderTerm, &positions)
 			// Only retry meta leader requests slowly, their reply wakes us on the fast path.
-			if status != nil && status.Type == MigrationStatusMeta {
+			// Being blocked on a consumer is the same, the last consumer to converge signals
+			// the stream monitor, so there's nothing to poll for in between.
+			if status != nil && (status.Type == MigrationStatusMeta || status.Type == MigrationStatusBlocked) {
 				resetMigrationMonitoring(migrateMetaRetryInterval)
 			}
 			// Resolve after determining the status, so that we don't set it on a stale group.
@@ -4608,42 +4610,50 @@ func peerIDs(peers []*Peer) []string {
 // longer part of the meta group, it has been evicted from the cluster, e.g. by a
 // server peer-remove. It can't take part in a migration, so remove it from the
 // group right away rather than waiting for the rest of the migration to complete.
-// Returns a status if we've acted, and the migration must wait for the next cycle.
-func (s *Server) removeEvictedPeers(n, meta RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) *DesiredClusterInfoStatus {
+// Returns (trimmed) hosted peers, and a status if we've acted, in which case the
+// migration must wait for the next cycle.
+func (s *Server) removeEvictedPeers(n, meta RaftNode, actual []*Peer, actualPeers, current, desiredPeers, hosted []string) ([]string, *DesiredClusterInfoStatus) {
 	metaPeers := meta.PeerNames()
+	isEvicted := func(peer string) bool {
+		return !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer)
+	}
+	hosted = slices.DeleteFunc(hosted, isEvicted)
 	var evicted []string
 	for _, peer := range actualPeers {
-		if !slices.Contains(current, peer) || !slices.Contains(metaPeers, peer) {
+		if isEvicted(peer) {
 			evicted = append(evicted, peer)
 		}
 	}
 	if len(evicted) == 0 {
-		return nil
+		return hosted, nil
 	}
 	// Remove evicted peers one at a time, the leader last so leadership stays
 	// stable throughout. Step down and perform a leader transfer if we'd remove
 	// ourselves, preferring a successor that is already in the desired peer set.
 	ourPeerId := n.ID()
-	remove := s.selectPeerToRemove(ourPeerId, actual, evicted)
+	remove := s.selectPeerToRemove(ourPeerId, actual, evicted, nil)
 	if remove == ourPeerId {
 		err := n.StepDown(s.selectStepDownPreferred(ourPeerId, actual, desiredPeers))
-		return mstat(MigrationStatusMembership, "stepping down, evicted from group").withErr(err)
+		return hosted, mstat(MigrationStatusMembership, "stepping down, evicted from group").withErr(err)
 	}
 	err := n.ProposeRemovePeer(remove)
 	name := s.serverNameForNode(remove)
 	if name == _EMPTY_ {
 		name = fmt.Sprintf("with id %s", remove)
 	}
-	return mstat(MigrationStatusMembership, "removing evicted peer %s", name).withErr(err)
+	return hosted, mstat(MigrationStatusMembership, "removing evicted peer %s", name).withErr(err)
 }
 
 // extendPeerSet extends the actual peer set through the log, but only with peers
-// that are part of the desired set.
+// that are part of the desired set, or that still host a consumer.
 // Returns a status if we've acted, and the migration must wait for the next cycle.
-func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current, desiredPeers []string) *DesiredClusterInfoStatus {
+func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current, desiredPeers, hosted []string) *DesiredClusterInfoStatus {
 	var candidates []string
 	for _, peer := range current {
-		if !slices.Contains(actualPeers, peer) && slices.Contains(desiredPeers, peer) {
+		if slices.Contains(actualPeers, peer) {
+			continue
+		}
+		if slices.Contains(desiredPeers, peer) || slices.Contains(hosted, peer) {
 			candidates = append(candidates, peer)
 		}
 	}
@@ -4693,6 +4703,8 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	meta := cc.meta
 	accName, streamName, replicas := sa.Client.serviceAccount(), sa.Config.Name, sa.Config.Replicas
 	current := copyStrings(sa.Group.Peers)
+	// Peers we can't drop yet; they still host a consumer.
+	hostedPeers := sa.consumerHostedPeers()
 	desiredID, desiredScaleDown, desiredPeers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
 
@@ -4732,11 +4744,12 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	actualPeers := peerIDs(actual)
 
 	// Remove any peers that have been evicted from the cluster.
-	if status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers); status != nil {
+	hostedPeers, status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers, hostedPeers)
+	if status != nil {
 		return status
 	}
 	// Extend the actual peer set through the log.
-	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers); status != nil {
+	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers, hostedPeers); status != nil {
 		return status
 	}
 	// If scaling down, we need to select where to.
@@ -4791,6 +4804,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			js.mu.RUnlock()
 			return mstat(MigrationStatusMeta, "desired state changed, reassessing")
 		}
+		hostedPeers = sa.consumerHostedPeers()
 		var blockedBy string
 		for name, c := range sa.consumers {
 			if c.unsupported != nil {
@@ -4819,7 +4833,10 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		positions.request(mset, accName, streamName)
 
 		// Remove old peers one at a time, the leader selected last.
-		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
+		remove := s.selectPeerToRemove(ourPeerId, actual, remaining, hostedPeers)
+		if remove == _EMPTY_ {
+			return mstat(MigrationStatusBlocked, "waiting to select a peer to remove")
+		}
 
 		// Tally up what we can rely on before removing a peer.
 		// - currentDesired: desired peers that are current and caught up. We can only
@@ -8041,11 +8058,11 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	actualPeers := peerIDs(actual)
 
 	// Remove any peers that have been evicted from the cluster.
-	if status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers); status != nil {
+	if _, status := s.removeEvictedPeers(n, meta, actual, actualPeers, current, desiredPeers, nil); status != nil {
 		return status
 	}
 	// Extend the actual peer set through the log.
-	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers); status != nil {
+	if status := s.extendPeerSet(n, actual, actualPeers, current, desiredPeers, nil); status != nil {
 		return status
 	}
 	// If scaling down, we need to select where to.
@@ -8101,7 +8118,10 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
 		// member is already in the desired peer set so any successor works.
-		remove := s.selectPeerToRemove(ourPeerId, actual, remaining)
+		remove := s.selectPeerToRemove(ourPeerId, actual, remaining, nil)
+		if remove == _EMPTY_ {
+			return mstat(MigrationStatusBlocked, "waiting to select a peer to remove")
+		}
 		// The group left after the removal must still be able to commit.
 		if !s.canRemovePeer(ourPeerId, remove, actual) {
 			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
@@ -8902,6 +8922,28 @@ func (js *jetStream) reconcileDesiredStreamAssignment(_ *subscription, _ *client
 	if !noDesired && !osa.Group.Desired.ScaleDown {
 		// Need to remap any consumers.
 		consumers, deleted, done = js.remapConsumerAssignments(reconcile.Account, osa)
+	}
+
+	// Keep any peer that still hosts a consumer, since the stream leader can report dropping
+	// a peer whose consumer was assigned after it looked, and the consumer needs that peer to
+	// migrate its state off.
+	if len(reconcile.MetaPeers) > 0 {
+		for ca := range js.consumerAssignmentsOrInflightSeq(reconcile.Account, reconcile.Stream) {
+			if ca.Config == nil || ca.unsupported != nil {
+				continue
+			}
+			// Ephemerals we're deleting are on their way out, they don't hold a peer.
+			if slices.ContainsFunc(deleted, func(d *consumerAssignment) bool { return d.Name == ca.Name }) {
+				continue
+			}
+			for _, peer := range ca.Group.Peers {
+				if !slices.Contains(reconcile.MetaPeers, peer) && slices.Contains(osa.Group.Peers, peer) {
+					// What we apply is no longer what the group leader reported.
+					reconcile.MetaPeers = append(reconcile.MetaPeers, peer)
+					reconcile.PeersMatch = false
+				}
+			}
+		}
 	}
 
 	ng := osa.Group.reconcileDesiredState(reconcile.desiredAssignmentUpdate, osa.Config.Replicas, done)
@@ -9747,6 +9789,24 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 	return csa, replaced
 }
 
+// Reports which peers still host a consumer of this stream, and so can't
+// be dropped from this group yet.
+// Lock should be held.
+func (sa *streamAssignment) consumerHostedPeers() []string {
+	var hosted []string
+	for _, ca := range sa.consumers {
+		if ca.Config == nil || ca.unsupported != nil {
+			continue
+		}
+		for _, peer := range ca.Group.Peers {
+			if !slices.Contains(hosted, peer) {
+				hosted = append(hosted, peer)
+			}
+		}
+	}
+	return hosted
+}
+
 // Remaps the stream's consumers onto its target peer set. Also reports if all consumers have
 // converged, meaning none need to be remapped and none are still moving toward their desired
 // peer set.
@@ -9793,14 +9853,15 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		}
 		// Leave the consumer alone if its peer set is unaffected.
 		if kept == len(consumerPeers) && kept == size {
-			// If the consumer has any peers that need to be peer-removed, we can't skip.
-			var removals bool
-			if sa.Group.Desired != nil && len(sa.Group.Desired.Removed) > 0 {
-				removals = slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
-					return slices.Contains(sa.Group.Desired.Removed, p) &&
-						(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
-				})
-			}
+			// If the consumer has any peers the stream no longer has, or that still need
+			// to be peer-removed, we can't skip.
+			removals := slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
+				if !slices.Contains(sa.Group.Peers, p) {
+					return true
+				}
+				return sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Removed, p) &&
+					(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
+			})
 			if !removals {
 				continue
 			}
@@ -11055,7 +11116,12 @@ func (s *Server) selectScaleDownPeers(curLeader string, current []*Peer, peers [
 // remove during scale-down: peers unknown to the group first, then offline
 // peers, then online peers with the most lag. The current leader, if among the
 // candidates, is picked last so leadership is transferred at most once.
-func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining []string) string {
+func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining, hosted []string) string {
+	// A peer that still hosts a consumer keeps serving the stream's data until the
+	// consumer has migrated off, so it's not up for removal yet.
+	remaining = slices.DeleteFunc(remaining, func(peer string) bool {
+		return slices.Contains(hosted, peer)
+	})
 	if len(remaining) == 0 {
 		return _EMPTY_
 	}
