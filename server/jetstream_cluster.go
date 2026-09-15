@@ -1823,6 +1823,13 @@ func (ru *recoveryUpdates) addStream(sa *streamAssignment) {
 
 func (ru *recoveryUpdates) updateStream(sa *streamAssignment) {
 	key := sa.recoveryKey()
+	// A stream still staged for creation must just be replaced. Otherwise,
+	// a R1 create followed by R3 scale up would temporarily run as R1 still.
+	if _, staged := ru.addStreams[key]; staged {
+		ru.addStreams[key] = sa
+		delete(ru.updateStreams, key)
+		return
+	}
 	ru.updateStreams[key] = sa
 }
 

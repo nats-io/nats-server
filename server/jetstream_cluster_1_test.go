@@ -9133,9 +9133,9 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			preConsumers: []string{"C1"},
 		},
 		{
-			// A stream created and then updated during recovery is staged in both addStreams and
-			// updateStreams. When superseded, the addStreams loop must clear the updateStreams entry
-			// too (so the update is not later applied against a stream that no longer exists).
+			// A stream created and then updated during recovery is staged once, in addStreams,
+			// with the updated assignment (the update replaces the staged add). When superseded
+			// it is dropped.
 			name: "added-and-updated stream",
 			entries: []*Entry{
 				addStream("TEST"),
@@ -9143,15 +9143,12 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			},
 			snapshot:    []snapStream{{name: "KEEP"}},
 			preStreams:  []string{"TEST"},
-			preUpdates:  []string{"TEST"},
 			wantStreams: []string{"KEEP"},
 		},
 		{
-			// A stream created and then updated during recovery is staged in both addStreams and
-			// updateStreams. When the snapshot keeps the stream it re-stages it as an add, which must
-			// clear the now-stale staged update. Otherwise recovery completion applies the add and then
-			// reapplies the older update (adds run before updates), rolling the stream config back away
-			// from the snapshot state.
+			// A stream created and then updated during recovery is staged once, in addStreams,
+			// with the updated assignment. When the snapshot keeps the stream it re-stages it as
+			// an add; nothing is left in updateStreams to be reapplied after the add.
 			name: "added-and-updated stream kept",
 			entries: []*Entry{
 				addStream("TEST"),
@@ -9159,9 +9156,7 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			},
 			snapshot:    []snapStream{{name: "TEST"}},
 			preStreams:  []string{"TEST"},
-			preUpdates:  []string{"TEST"},
 			wantStreams: []string{"TEST"},
-			// wantUpdates intentionally empty: the snapshot's re-add supersedes the stale staged update.
 		},
 		{
 			// A stream staged only in updateStreams (its add is outside this recovery batch) is
@@ -9376,31 +9371,39 @@ func TestJetStreamClusterMetaRecoveryAddAndUpdateStream(t *testing.T) {
 	require_Len(t, len(ru.updateStreams), 0)
 	require_Len(t, len(ru.removeStreams), 0)
 
-	// Now update the stream. The recovery updates should contain both the add and update.
-	// If only the update would exist, the stream would not be created below.
+	// Now update the stream. The stream is still only staged for creation, so the
+	// update must replace the staged add: creating it from the old assignment and
+	// updating it afterwards would briefly run the stale assignment.
 	sa.Config.Subjects = []string{"foo"}
 	entries = []*Entry{{EntryNormal, encodeUpdateStreamAssignment(sa)}}
 	_, _, err = js.applyMetaEntries(entries, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
-	require_Len(t, len(ru.updateStreams), 1)
+	require_Len(t, len(ru.updateStreams), 0)
 	require_Len(t, len(ru.removeStreams), 0)
 
-	// Check the stream is properly added.
+	// Check the stream is added with the updated assignment.
 	for _, sa := range ru.addStreams {
 		js.processStreamAssignment(sa)
 	}
 	sa = js.streamAssignment(globalAccountName, "TEST")
 	require_NotNil(t, sa)
-	require_Len(t, len(sa.Config.Subjects), 0)
+	require_Len(t, len(sa.Config.Subjects), 1)
 
-	// Check the stream is properly updated.
+	// An update for a stream that already exists is staged as an update.
+	sa.Config.Subjects = []string{"foo", "bar"}
+	entries = []*Entry{{EntryNormal, encodeUpdateStreamAssignment(sa)}}
+	ru.addStreams = make(map[string]*streamAssignment)
+	_, _, err = js.applyMetaEntries(entries, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.addStreams), 0)
+	require_Len(t, len(ru.updateStreams), 1)
 	for _, sa := range ru.updateStreams {
 		js.processUpdateStreamAssignment(sa)
 	}
 	sa = js.streamAssignment(globalAccountName, "TEST")
 	require_NotNil(t, sa)
-	require_Len(t, len(sa.Config.Subjects), 1)
+	require_Len(t, len(sa.Config.Subjects), 2)
 }
 
 // https://github.com/nats-io/nats-server/issues/7229
