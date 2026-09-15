@@ -400,7 +400,7 @@ type nodeInfo struct {
 	stats           *JetStreamStats
 	offline         bool
 	js              bool
-	binarySnapshots bool
+	binarySnapshots bool // Deprecated, binary snapshots are always used; versions 2.10.0+ support it.
 	accountNRG      bool
 }
 

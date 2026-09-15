@@ -5727,6 +5727,66 @@ func TestJetStreamClusterRemapConsumerPendingScaleDown(t *testing.T) {
 	require_True(t, slices.Equal(cca.Group.Desired.Peers, []string{a, b}))
 }
 
+func TestJetStreamClusterRemapConsumerOnDroppedStreamPeer(t *testing.T) {
+	const a, b, c = "A", "B", "C"
+
+	// The stream is scaling down onto B. C is a leaving peer, but the consumer is still hosted on it.
+	newAssignments := func(metaPeers []string, durable bool) (*jetStream, *streamAssignment) {
+		cfg := &ConsumerConfig{Replicas: 1}
+		if durable {
+			cfg.Durable = "CONSUMER"
+		}
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 1, Retention: LimitsPolicy},
+			Group: &raftGroup{
+				Name:    "S",
+				Peers:   metaPeers,
+				Desired: &desiredRaftGroup{Peers: []string{b}},
+			},
+			consumers: map[string]*consumerAssignment{"CONSUMER": {
+				Name:   "CONSUMER",
+				Stream: "TEST",
+				Config: cfg,
+				Group:  &raftGroup{Name: "C", Peers: []string{c}},
+			}},
+		}
+		js := &jetStream{cluster: &jetStreamCluster{
+			streams: map[string]map[string]*streamAssignment{globalAccountName: {sa.Config.Name: sa}},
+		}}
+		return js, sa
+	}
+
+	// The stream's peer set still lists C, it has been removed from the meta group but the
+	// assignment has not caught up yet. The consumer is moved through desired state, so it
+	// stays assigned to C, which is what keeps blocking the stream's scale-down.
+	js, sa := newAssignments([]string{a, b, c}, false)
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	require_True(t, slices.Equal(consumers[0].Group.Peers, []string{c}))
+	require_True(t, slices.Equal(consumers[0].Group.Desired.Peers, []string{b}))
+	require_False(t, done)
+
+	// Once the stream's peer set has caught up, the consumer must not be skipped: it holds
+	// a peer the stream no longer has, and nothing else can move it there. An ephemeral is
+	// deleted, which unblocks the scale-down and lets the desired state complete.
+	sa.Group.Peers = []string{a, b}
+	sa.consumers["CONSUMER"] = consumers[0]
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_Len(t, len(deleted), 1)
+	require_Equal(t, deleted[0].Name, "CONSUMER")
+	require_False(t, done)
+
+	// A durable can't be deleted, it moves onto the peers the stream is keeping.
+	js, sa = newAssignments([]string{a, b}, true)
+	consumers, deleted, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(deleted), 0)
+	require_Len(t, len(consumers), 1)
+	require_True(t, slices.Equal(consumers[0].Group.Peers, []string{b}))
+	require_False(t, done)
+}
+
 func TestJetStreamClusterRemapConsumerOverReplicated(t *testing.T) {
 	const a, b, c = "A", "B", "C"
 
@@ -9073,9 +9133,9 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			preConsumers: []string{"C1"},
 		},
 		{
-			// A stream created and then updated during recovery is staged in both addStreams and
-			// updateStreams. When superseded, the addStreams loop must clear the updateStreams entry
-			// too (so the update is not later applied against a stream that no longer exists).
+			// A stream created and then updated during recovery is staged once, in addStreams,
+			// with the updated assignment (the update replaces the staged add). When superseded
+			// it is dropped.
 			name: "added-and-updated stream",
 			entries: []*Entry{
 				addStream("TEST"),
@@ -9083,15 +9143,12 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			},
 			snapshot:    []snapStream{{name: "KEEP"}},
 			preStreams:  []string{"TEST"},
-			preUpdates:  []string{"TEST"},
 			wantStreams: []string{"KEEP"},
 		},
 		{
-			// A stream created and then updated during recovery is staged in both addStreams and
-			// updateStreams. When the snapshot keeps the stream it re-stages it as an add, which must
-			// clear the now-stale staged update. Otherwise recovery completion applies the add and then
-			// reapplies the older update (adds run before updates), rolling the stream config back away
-			// from the snapshot state.
+			// A stream created and then updated during recovery is staged once, in addStreams,
+			// with the updated assignment. When the snapshot keeps the stream it re-stages it as
+			// an add; nothing is left in updateStreams to be reapplied after the add.
 			name: "added-and-updated stream kept",
 			entries: []*Entry{
 				addStream("TEST"),
@@ -9099,9 +9156,7 @@ func TestJetStreamClusterMetaRecoverySnapshotReconcilesStagedUpdates(t *testing.
 			},
 			snapshot:    []snapStream{{name: "TEST"}},
 			preStreams:  []string{"TEST"},
-			preUpdates:  []string{"TEST"},
 			wantStreams: []string{"TEST"},
-			// wantUpdates intentionally empty: the snapshot's re-add supersedes the stale staged update.
 		},
 		{
 			// A stream staged only in updateStreams (its add is outside this recovery batch) is
@@ -9316,31 +9371,39 @@ func TestJetStreamClusterMetaRecoveryAddAndUpdateStream(t *testing.T) {
 	require_Len(t, len(ru.updateStreams), 0)
 	require_Len(t, len(ru.removeStreams), 0)
 
-	// Now update the stream. The recovery updates should contain both the add and update.
-	// If only the update would exist, the stream would not be created below.
+	// Now update the stream. The stream is still only staged for creation, so the
+	// update must replace the staged add: creating it from the old assignment and
+	// updating it afterwards would briefly run the stale assignment.
 	sa.Config.Subjects = []string{"foo"}
 	entries = []*Entry{{EntryNormal, encodeUpdateStreamAssignment(sa)}}
 	_, _, err = js.applyMetaEntries(entries, ru)
 	require_NoError(t, err)
 	require_Len(t, len(ru.addStreams), 1)
-	require_Len(t, len(ru.updateStreams), 1)
+	require_Len(t, len(ru.updateStreams), 0)
 	require_Len(t, len(ru.removeStreams), 0)
 
-	// Check the stream is properly added.
+	// Check the stream is added with the updated assignment.
 	for _, sa := range ru.addStreams {
 		js.processStreamAssignment(sa)
 	}
 	sa = js.streamAssignment(globalAccountName, "TEST")
 	require_NotNil(t, sa)
-	require_Len(t, len(sa.Config.Subjects), 0)
+	require_Len(t, len(sa.Config.Subjects), 1)
 
-	// Check the stream is properly updated.
+	// An update for a stream that already exists is staged as an update.
+	sa.Config.Subjects = []string{"foo", "bar"}
+	entries = []*Entry{{EntryNormal, encodeUpdateStreamAssignment(sa)}}
+	ru.addStreams = make(map[string]*streamAssignment)
+	_, _, err = js.applyMetaEntries(entries, ru)
+	require_NoError(t, err)
+	require_Len(t, len(ru.addStreams), 0)
+	require_Len(t, len(ru.updateStreams), 1)
 	for _, sa := range ru.updateStreams {
 		js.processUpdateStreamAssignment(sa)
 	}
 	sa = js.streamAssignment(globalAccountName, "TEST")
 	require_NotNil(t, sa)
-	require_Len(t, len(sa.Config.Subjects), 1)
+	require_Len(t, len(sa.Config.Subjects), 2)
 }
 
 // https://github.com/nats-io/nats-server/issues/7229
@@ -16297,6 +16360,128 @@ func TestJetStreamClusterRetentionChangeWaitsForConsumerParity(t *testing.T) {
 	}
 }
 
+// A retention change that leaves no consumer to remap must apply in one go, without desired state.
+func TestJetStreamClusterRetentionChangeWithoutRemapAppliesImmediately(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	ml := c.leader()
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: nats.LimitsPolicy,
+		Replicas:  3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Durables at parity with the stream, one by default and one explicitly.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DEFAULT", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "EXPLICIT", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+
+	// Stop the meta leader from reconciling desired state. A retention change that registers
+	// desired state can then never converge, so only a change applied in one go reaches the members.
+	mjs := ml.getJetStream()
+	mjs.mu.Lock()
+	streamReconcile := mjs.cluster.streamReconcile
+	mjs.cluster.streamReconcile = nil
+	mjs.mu.Unlock()
+	require_NotNil(t, streamReconcile)
+	ml.sysUnsubscribe(streamReconcile)
+
+	// Waits for the meta leader to have applied the change into retention, and reports whether
+	// the assignment still has desired state pending at that point.
+	metaApplied := func(t *testing.T, retention RetentionPolicy) (pending bool) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			require_True(t, ml == c.leader())
+			mjs.mu.RLock()
+			defer mjs.mu.RUnlock()
+			sa := mjs.streamAssignment(globalAccountName, "TEST")
+			if sa == nil {
+				return fmt.Errorf("stream assignment not found")
+			}
+			if sa.Config.Retention != retention {
+				return fmt.Errorf("meta leader at %v, expected %v", sa.Config.Retention, retention)
+			}
+			pending = sa.Group.Desired != nil
+			return nil
+		})
+		return pending
+	}
+	membersAt := func(retention RetentionPolicy) error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if r := mset.config().Retention; r != retention {
+				return fmt.Errorf("server %q at %v, expected %v", s.Name(), r, retention)
+			}
+		}
+		return nil
+	}
+	requireApplied := func(t *testing.T, retention RetentionPolicy) {
+		t.Helper()
+		require_False(t, metaApplied(t, retention))
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error { return membersAt(retention) })
+		// The consumers must have been left alone.
+		for _, name := range []string{"DEFAULT", "EXPLICIT"} {
+			mjs.mu.RLock()
+			ca := mjs.consumerAssignment(globalAccountName, "TEST", name)
+			mjs.mu.RUnlock()
+			require_NotNil(t, ca)
+			require_Len(t, len(ca.Group.Peers), 3)
+			require_True(t, ca.Group.Desired == nil)
+		}
+	}
+
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireApplied(t, InterestPolicy)
+
+	// Going back to Limits needs no consumer scaled down either.
+	cfg.Retention = nats.LimitsPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	requireApplied(t, LimitsPolicy)
+
+	// But a consumer that must be scaled up first still forces the change through desired
+	// state, keeping the members on Limits until it has parity.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "R1", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_True(t, metaApplied(t, InterestPolicy))
+	require_NoError(t, membersAt(LimitsPolicy))
+
+	// Unblock reconciling, now the change converges the usual way.
+	require_True(t, ml == c.leader())
+	mjs.mu.Lock()
+	mjs.startUpdatesSub()
+	mjs.mu.Unlock()
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		sa := mjs.streamAssignment(globalAccountName, "TEST")
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "R1")
+		mjs.mu.RUnlock()
+		if sa == nil || sa.Group.Desired != nil {
+			return fmt.Errorf("desired state still pending")
+		}
+		if ca == nil || len(ca.Group.Peers) != 3 || ca.Group.Desired != nil {
+			return fmt.Errorf("consumer not at parity yet")
+		}
+		return membersAt(InterestPolicy)
+	})
+}
+
 func TestJetStreamClusterRetentionChangeOriginSurvivesScale(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
@@ -16502,6 +16687,11 @@ func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
 	_, err := js.AddStream(cfg)
 	require_NoError(t, err)
 
+	// An R1 consumer must be scaled up before the stream can become Interest, so the
+	// retention change below has to go through desired state.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
 	// A retention change converges through desired state just like a scale does, so it
 	// can't combine with a move in a single update either. The guard fires before peer
 	// selection, so the placement doesn't need to resolve.
@@ -16522,8 +16712,8 @@ func TestJetStreamClusterRetentionChangeMoveExclusion(t *testing.T) {
 	require_NotNil(t, streamReconcile)
 	ml.sysUnsubscribe(streamReconcile)
 
-	// A retention change goes through desired state, it stays converging while
-	// reconciliation is blocked. No scale is involved.
+	// A retention change that must scale a consumer first goes through desired state,
+	// it stays converging while reconciliation is blocked. No stream scale is involved.
 	cfg.Retention = nats.InterestPolicy
 	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)

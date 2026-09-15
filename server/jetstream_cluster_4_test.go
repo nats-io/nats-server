@@ -9831,3 +9831,148 @@ func TestJetStreamClusterSourcingConsumerMoveDoesNotReset(t *testing.T) {
 	sourced(20)
 	require_Equal(t, consumerInfo().Delivered.Consumer, 20)
 }
+
+func TestJetStreamClusterScaleDownWaitsForPeerStateAnswer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		sendStreamMsg(t, nc, "foo", "hello")
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Temporarily stop the follower from answering with the state of its stream store.
+	mset.mu.Lock()
+	isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
+	rs.sysUnsubscribe(mset.infoSub)
+	mset.mu.Unlock()
+
+	// Scale down to the leader and the silent follower.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	nsa := sa.copyGroup()
+	cfg := *sa.Config
+	cfg.Replicas = 2
+	nsa.Config = &cfg
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   []string{sl.NodeName(), rs.NodeName()},
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    copyStrings(sa.Group.Peers),
+			Replicas: 3,
+		},
+	}
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa))
+	if err == nil {
+		cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	sjs := sl.getJetStream()
+	assignment := func() (int, *DesiredClusterInfoStatus) {
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return 0, nil
+		}
+		return len(sa.Group.Peers), sa.Group.migration
+	}
+
+	// No peer may be removed while the follower stays silent, we'd be down to one copy we
+	// can account for.
+	var held bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		peers, status := assignment()
+		require_Equal(t, peers, 3)
+		if status != nil && status.Type == MigrationStatusCatchup {
+			held = true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require_True(t, held)
+
+	// Once it answers again, the scale down goes ahead, onto the peers we asked for.
+	mset.mu.Lock()
+	mset.infoSub, err = rs.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
+	mset.mu.Unlock()
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	sa = sjs.streamAssignment(globalAccountName, "TEST")
+	require_True(t, slices.Contains(sa.Group.Peers, rs.NodeName()))
+	require_True(t, slices.Contains(sa.Group.Peers, sl.NodeName()))
+}
+
+func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
+	mset := &stream{srv: &Server{}}
+	pos := &peerPositions{}
+
+	// Without an inbox to answer on, there is nothing to ask.
+	pos.request(mset, globalAccountName, "TEST")
+	require_True(t, pos.asked.IsZero())
+	require_False(t, pos.isCaughtUp("A"))
+
+	// Short of the bar is not good enough.
+	pos.bar = 100
+	require_False(t, pos.record(&clusterStreamInfoResponse{Peer: "C", State: &StreamState{LastSeq: 99}}))
+	require_False(t, pos.isCaughtUp("C"))
+
+	require_True(t, pos.record(&clusterStreamInfoResponse{Peer: "A", State: &StreamState{LastSeq: 100}}))
+	require_True(t, pos.isCaughtUp("A"))
+	require_False(t, pos.record(&clusterStreamInfoResponse{Peer: "A", State: &StreamState{LastSeq: 5000}}))
+	require_True(t, pos.isCaughtUp("A"))
+
+	// An answer carrying no state says nothing and changes nothing.
+	require_False(t, pos.record(&clusterStreamInfoResponse{Peer: "A"}))
+	require_True(t, pos.isCaughtUp("A"))
+	require_False(t, pos.record(&clusterStreamInfoResponse{Peer: "B"}))
+	require_False(t, pos.isCaughtUp("B"))
+
+	// An older server answers with a full stream info, which unmarshals into a state
+	// without a peer. We can't attribute that to anyone, so it's ignored.
+	require_False(t, pos.record(&clusterStreamInfoResponse{State: &StreamState{LastSeq: 5000}}))
+	require_Len(t, len(pos.seqs), 2)
+
+	// Now with an inbox to answer on, so asks actually go out.
+	pos = &peerPositions{reply: syncReplySubject()}
+	pos.request(mset, globalAccountName, "TEST")
+	first := pos.asked
+	require_False(t, first.IsZero())
+	require_False(t, pos.retried)
+
+	// Straight away is fine for the first retry.
+	pos.request(mset, globalAccountName, "TEST")
+	require_True(t, pos.retried)
+	require_True(t, pos.asked.After(first))
+
+	// But not for the next one.
+	second := pos.asked
+	pos.request(mset, globalAccountName, "TEST")
+	require_Equal(t, pos.asked, second)
+
+	// Until the interval has passed.
+	pos.asked = time.Now().Add(-migratePosAskInterval)
+	pos.request(mset, globalAccountName, "TEST")
+	require_True(t, pos.asked.After(second))
+}
