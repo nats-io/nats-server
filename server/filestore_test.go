@@ -9448,6 +9448,114 @@ func TestFileStoreMessageTTL(t *testing.T) {
 	require_Equal(t, ss.Msgs, 0)
 }
 
+func TestFileStoreMessageTTLRemovedOutOfBandDoesNotLeakTHW(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true, AllowRollup: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 10)
+
+	// Remove the messages out of band, the way a rollup or a subject purge does.
+	// This path does not consult the THW, so the entries stay behind.
+	purged, err := fs.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+
+	// Once the TTLs are due, the expiry pass must notice the messages are already
+	// gone and drop the entries, instead of retrying them on every pass forever.
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count = fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
+func TestFileStoreMessageTTLTruncatedBelowDoesNotLeakTHW(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	// Truncate below the last TTL message. LastSeq drops to 5 and the entries for
+	// 6..10 now point past the end of the stream, so removeMsg reports ErrStoreEOF.
+	require_NoError(t, fs.Truncate(5))
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.LastSeq, 5)
+
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
+func TestFileStoreMessageTTLRemovedOutOfBandPrunedTHWIsPersisted(t *testing.T) {
+	dir := t.TempDir()
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true, AllowRollup: true}
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: dir}, cfg)
+	require_NoError(t, err)
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	// Remove out of band and flush, so thw.db on disk still carries the ten entries
+	// and nothing after this point dirties the state except the pruning itself.
+	purged, err := fs.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+	require_NoError(t, fs.forceWriteFullState())
+
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+
+	// A restart must not bring the stale entries back from thw.db.
+	fs.Stop()
+	fs, err = newFileStore(FileStoreConfig{StoreDir: dir}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.RLock()
+	count = fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
 func TestFileStoreMessageTTLRestart(t *testing.T) {
 	dir := t.TempDir()
 
