@@ -159,6 +159,21 @@ type JSConsumerDeliveryTerminatedAdvisory struct {
 	Domain      string `json:"domain,omitempty"`
 }
 
+// JSConsumerDeliveryInProgressType is the schema type for JSConsumerDeliveryInProgress
+const JSConsumerDeliveryInProgressType = "io.nats.jetstream.advisory.v1.in_progress"
+
+// JSConsumerDeliveryInProgress is a advisory informing that a message was
+// InProgress'ed by a consumer
+type JSConsumerDeliveryInProgress struct {
+	TypedEvent
+	Stream      string `json:"stream"`
+	StreamSeq   uint64 `json:"stream_seq"`
+	Consumer    string `json:"consumer"`
+	ConsumerSeq uint64 `json:"consumer_seq"`
+	Deliveries  uint64 `json:"deliveries"`
+	Domain      string `json:"domain,omitempty"`
+}
+
 // JSConsumerDeliveryTerminatedAdvisoryType is the schema type for JSConsumerDeliveryTerminatedAdvisory
 const JSConsumerDeliveryTerminatedAdvisoryType = "io.nats.jetstream.advisory.v1.terminated"
 
