@@ -3587,7 +3587,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		}
 		// This will overwrite existing entries
-		a.AddWeightedMappings(string(sub), mappings...)
+		if err := a.AddWeightedMappings(string(sub), mappings...); err != nil {
+			s.Warnf("Error updating mappings for account %s: %v", a.Name, err)
+		}
 	}
 	// remove mappings
 	for _, rmMapping := range removeList {
