@@ -12769,11 +12769,19 @@ func TestJetStreamClusterStreamPeerRemoveAfterScaleDownRestoresQuorum(t *testing
 	defer c.shutdown()
 
 	// The meta leader must be outside the stream's peer set so it stays able to propose.
-	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
-		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
-		c.waitOnLeader()
-	}
 	ml := c.leader()
+	require_NotNil(t, ml)
+	for ml.Name() != "S-4" && ml.Name() != "S-5" {
+		old := ml
+		require_NoError(t, old.getJetStream().getMetaGroup().StepDown())
+		checkFor(t, 30*time.Second, 10*time.Millisecond, func() error {
+			ml = c.leader()
+			if ml == nil || ml == old {
+				return errors.New("waiting for leader change")
+			}
+			return nil
+		})
+	}
 
 	nc, js := jsClientConnect(t, ml)
 	defer nc.Close()
@@ -12915,11 +12923,19 @@ func TestJetStreamClusterStreamPeerRemoveWithUncommittedSelfRemoval(t *testing.T
 	defer c.shutdown()
 
 	// The meta leader must be outside the stream's peer set so it stays able to propose.
-	for c.leader().Name() != "S-4" && c.leader().Name() != "S-5" {
-		require_NoError(t, c.leader().getJetStream().getMetaGroup().StepDown())
-		c.waitOnLeader()
-	}
 	ml := c.leader()
+	require_NotNil(t, ml)
+	for ml.Name() != "S-4" && ml.Name() != "S-5" {
+		old := ml
+		require_NoError(t, old.getJetStream().getMetaGroup().StepDown())
+		checkFor(t, 30*time.Second, 10*time.Millisecond, func() error {
+			ml = c.leader()
+			if ml == nil || ml == old {
+				return errors.New("waiting for leader change")
+			}
+			return nil
+		})
+	}
 
 	nc, js := jsClientConnect(t, ml)
 	defer nc.Close()
