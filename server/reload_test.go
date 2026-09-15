@@ -7673,3 +7673,103 @@ func TestConfigReloadJetStreamLimits(t *testing.T) {
 	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
 	require_NoError(t, err)
 }
+
+func TestConfigReloadRetainsRouteInterestForNewAccount(t *testing.T) {
+	baseAccs := `
+	accounts {
+		ACC1 {
+			users = [{user: u1, password: pwd}]
+		}
+	}`
+	fullAccs := `
+	accounts {
+		ACC1 {
+			users = [{user: u1, password: pwd}]
+		}
+		ACC2 {
+			users = [{user: u2, password: pwd}]
+		}
+	}`
+	confATemplate := `
+	listen: 127.0.0.1:-1
+	server_name: RLD_A
+	cluster {
+		name: RLD
+		listen: 127.0.0.1:-1
+		%s
+	}
+	no_sys_acc: true
+	%s`
+	confA := createConfFile(t, []byte(fmt.Sprintf(confATemplate, _EMPTY_, baseAccs)))
+	srva, _ := RunServerWithConfig(confA)
+	defer srva.Shutdown()
+
+	confBTemplate := `
+	listen: 127.0.0.1:-1
+	server_name: RLD_B
+	cluster {
+		name: RLD
+		listen: 127.0.0.1:-1
+		routes = [nats://127.0.0.1:%d]
+		%s
+	}
+	no_sys_acc: true
+	%s`
+	confB := createConfFile(t, []byte(fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port, _EMPTY_, baseAccs)))
+	srvb, _ := RunServerWithConfig(confB)
+	defer srvb.Shutdown()
+
+	checkClusterFormed(t, srva, srvb)
+
+	urlB := func(user string) string {
+		return fmt.Sprintf("nats://%s:pwd@127.0.0.1:%d", user, srvb.Addr().(*net.TCPAddr).Port)
+	}
+
+	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, _EMPTY_, fullAccs))
+	checkClusterFormed(t, srva, srvb)
+
+	nca, err := nats.Connect(fmt.Sprintf("nats://u2:pwd@127.0.0.1:%d", srva.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca.Close()
+	sub, err := nca.SubscribeSync("foo")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nca.Flush()
+
+	time.Sleep(300 * time.Millisecond)
+
+	reloadUpdateConfig(t, srvb, confB, fmt.Sprintf(confBTemplate, srva.ClusterAddr().Port, _EMPTY_, fullAccs))
+	checkClusterFormed(t, srva, srvb)
+
+	ncb, err := nats.Connect(urlB("u2"))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer ncb.Close()
+	if err := ncb.Publish("foo", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	if _, err := sub.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("Importing subscriber did not get the message: %v", err)
+	}
+
+	nca2, err := nats.Connect(fmt.Sprintf("nats://u2:pwd@127.0.0.1:%d", srva.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("Error on connect: %v", err)
+	}
+	defer nca2.Close()
+	sub2, err := nca2.SubscribeSync("bar")
+	if err != nil {
+		t.Fatalf("Error on subscribe: %v", err)
+	}
+	nca2.Flush()
+	if err := ncb.Publish("bar", []byte("hello")); err != nil {
+		t.Fatalf("Error on publish: %v", err)
+	}
+	if _, err := sub2.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("Control subscriber did not get the message: %v", err)
+	}
+}
