@@ -3545,7 +3545,7 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 	require_NoError(t, err)
 
 	// Retry in case stream is still being created and without a leader we won't receive a response
-	var cancelResp JSApiStreamUpdateResponse
+	var cancelResp JSApiStreamCancelMoveResponse
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 1*time.Second)
 		if errors.Is(err, nats.ErrTimeout) {
@@ -3553,6 +3553,7 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 		}
 		require_NoError(t, err)
 		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+		require_Equal(t, cancelResp.Type, JSApiStreamCancelMoveResponseType)
 		return nil
 	})
 	require_True(t, cancelResp.Error == nil)
@@ -3703,8 +3704,9 @@ func TestJetStreamSuperClusterMoveCancel(t *testing.T) {
 
 		rmsg, err = ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, "$G", "TEST"), nil, 5*time.Second)
 		require_NoError(t, err)
-		var cancelResp JSApiStreamUpdateResponse
+		var cancelResp JSApiStreamCancelMoveResponse
 		require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+		require_Equal(t, cancelResp.Type, JSApiStreamCancelMoveResponseType)
 		require_True(t, cancelResp.Error == nil)
 
 		for _, sExpected := range streamPeerSrv {
@@ -4044,9 +4046,12 @@ func moveTestCancelMove(t *testing.T, ncsys *nats.Conn, account, stream string) 
 		if err != nil {
 			return err
 		}
-		var resp JSApiStreamUpdateResponse
+		var resp JSApiStreamCancelMoveResponse
 		if err := json.Unmarshal(rmsg.Data, &resp); err != nil {
 			return err
+		}
+		if resp.Type != JSApiStreamCancelMoveResponseType {
+			t.Fatalf("Expected response type %q, got %q", JSApiStreamCancelMoveResponseType, resp.Type)
 		}
 		if resp.Error != nil {
 			return fmt.Errorf("cancel move: %v", resp.Error)
@@ -4172,8 +4177,10 @@ func TestJetStreamSuperClusterStreamCancelMoveAPI(t *testing.T) {
 		t.Helper()
 		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCancelMoveT, stream), nil, 5*time.Second)
 		require_NoError(t, err)
-		var resp JSApiStreamUpdateResponse
+		var resp JSApiStreamCancelMoveResponse
 		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		// A cancel move must be answered as such, not as a stream update.
+		require_Equal(t, resp.Type, JSApiStreamCancelMoveResponseType)
 		return resp.Error
 	}
 
@@ -4553,8 +4560,9 @@ func TestJetStreamSuperClusterLegacyMoveCancelWithoutReconcile(t *testing.T) {
 	// Single-shot, the cancel must be accepted based on the legacy peer set alone.
 	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, globalAccountName, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
-	var cancelResp JSApiStreamUpdateResponse
+	var cancelResp JSApiStreamCancelMoveResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	require_Equal(t, cancelResp.Type, JSApiStreamCancelMoveResponseType)
 	require_True(t, cancelResp.Error == nil)
 
 	// The cancel must target the peer set the legacy move started from, both as the desired
@@ -4894,8 +4902,9 @@ func TestJetStreamSuperClusterReconcileWithoutMoveRecordsNoOrigin(t *testing.T) 
 	// and proposing a spurious assignment update.
 	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamCancelMoveT, globalAccountName, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
-	var cancelResp JSApiStreamUpdateResponse
+	var cancelResp JSApiStreamCancelMoveResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &cancelResp))
+	require_Equal(t, cancelResp.Type, JSApiStreamCancelMoveResponseType)
 	require_NotNil(t, cancelResp.Error)
 	require_Error(t, cancelResp.Error, NewJSStreamReconfigureNotInProgressError())
 }
