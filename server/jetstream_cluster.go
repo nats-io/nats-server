@@ -13389,8 +13389,13 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		RaftGroup: rgName,
 	}
 
-	id := s.Node()
-	if n != nil {
+	ourID := s.Node()
+	id := ourID
+	if n == nil {
+		// Desired state exists, but our Raft node hasn't started yet. We have no
+		// group state to name a leader from, so don't suppress ourselves as a replica.
+		id = _EMPTY_
+	} else {
 		ci.Leader = s.serverNameForNode(n.GroupLeader())
 		ci.LeaderSince = n.LeaderSince()
 		ci.SystemAcc = n.IsSystemAccount()
@@ -13466,6 +13471,10 @@ func (js *jetStream) clusterInfo(rg *raftGroup) *ClusterInfo {
 		// We know the peer is part of the assignment, but if we have a Raft node it
 		// wasn't reported as one of its peers, so it hasn't joined the group (yet).
 		p.Pending = n != nil
+		// Report ourselves current if there's no Raft node.
+		if n == nil && peer == ourID {
+			p.Current, p.Offline = true, false
+		}
 		ci.Replicas = append(ci.Replicas, p)
 	}
 	// Order the result based on the name so that we get something consistent
