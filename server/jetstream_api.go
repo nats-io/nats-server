@@ -578,6 +578,14 @@ type JSApiStreamUpdateResponse struct {
 
 const JSApiStreamUpdateResponseType = "io.nats.jetstream.api.v1.stream_update_response"
 
+// JSApiStreamCancelMoveResponse is the response to a cancel move request.
+type JSApiStreamCancelMoveResponse struct {
+	ApiResponse
+	*StreamInfo
+}
+
+const JSApiStreamCancelMoveResponseType = "io.nats.jetstream.api.v1.stream_cancel_move_response"
+
 // JSApiMsgDeleteRequest delete message request.
 type JSApiMsgDeleteRequest struct {
 	Seq     uint64 `json:"seq"`
@@ -2490,7 +2498,7 @@ func (s *Server) jsStreamCancelMoveRequest(_ *subscription, c *client, _ *Accoun
 
 	name := tokenAt(subject, 5)
 
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	var resp = JSApiStreamCancelMoveResponse{ApiResponse: ApiResponse{Type: JSApiStreamCancelMoveResponseType}}
 
 	// A move only exists in clustered mode.
 	if !s.JetStreamIsClustered() {
@@ -3341,7 +3349,7 @@ func (s *Server) jsLeaderServerStreamCancelMoveRequest(sub *subscription, c *cli
 		return
 	}
 
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
+	var resp = JSApiStreamCancelMoveResponse{ApiResponse: ApiResponse{Type: JSApiStreamCancelMoveResponseType}}
 	if errorOnRequiredApiLevel(hdr) {
 		resp.Error = NewJSRequiredApiLevelError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

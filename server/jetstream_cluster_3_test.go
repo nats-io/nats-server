@@ -12180,8 +12180,9 @@ func TestJetStreamClusterDesiredOriginRetentionCancelBackToInterest(t *testing.T
 	// under Limits, the consumer might have been scaled down already.
 	rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamCancelMoveT, "TEST"), nil, 5*time.Second)
 	require_NoError(t, err)
-	var resp JSApiStreamUpdateResponse
+	var resp JSApiStreamCancelMoveResponse
 	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	require_Equal(t, resp.Type, JSApiStreamCancelMoveResponseType)
 	require_True(t, resp.Error == nil)
 
 	require_True(t, ml == c.leader())
@@ -12196,6 +12197,25 @@ func TestJetStreamClusterDesiredOriginRetentionCancelBackToInterest(t *testing.T
 		return nil
 	})
 	require_NoError(t, membersAt(LimitsPolicy))
+
+	// A plain config update while the rollback is still pending must still answer as a stream update.
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	ucfg := si.Config
+	ucfg.MaxMsgs = 1_000_000
+	req, err := json.Marshal(ucfg)
+	require_NoError(t, err)
+	rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+	var uresp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &uresp))
+	require_Equal(t, uresp.Type, JSApiStreamUpdateResponseType)
+	require_True(t, uresp.Error == nil)
+	require_Equal(t, uresp.Config.MaxMsgs, 1_000_000)
+	retention, _, origin, pending = snapshot()
+	require_True(t, pending)
+	require_Equal(t, retention, InterestPolicy)
+	require_NotNil(t, origin)
 
 	// Unblock reconciling, the rollback must converge to Interest with the consumer at parity.
 	require_True(t, ml == c.leader())
