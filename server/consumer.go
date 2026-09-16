@@ -2377,9 +2377,7 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 	if dc := o.deliveryCount(seq); dc >= o.maxdc {
 		// We have hit our max deliveries for this sequence.
 		// Only send the advisory once.
-		if dc == o.maxdc {
-			o.notifyDeliveryExceeded(seq, dc)
-		}
+		o.notifyDeliveryExceeded(seq, o.rdc[seq]+1)
 		// Determine if we signal to start flow of messages again.
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			o.signalNewMessages()
@@ -4895,10 +4893,8 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		for seq = o.getNextToRedeliver(); seq > 0; seq = o.getNextToRedeliver() {
 			dc = o.incDeliveryCount(seq)
 			if o.maxdc > 0 && dc > o.maxdc {
-				// Only send once
-				if dc == o.maxdc+1 {
-					o.notifyDeliveryExceeded(seq, dc-1)
-				}
+				// Only send the advisory once.
+				o.notifyDeliveryExceeded(seq, dc-1)
 				// Make sure to remove from pending.
 				if p, ok := o.pending[seq]; ok && p != nil {
 					delete(o.pending, seq)
