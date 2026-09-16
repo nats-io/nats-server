@@ -8177,10 +8177,6 @@ func (o *consumer) isMigrating() bool {
 		return false
 	}
 
-	replicas, err := o.replica()
-	if err != nil {
-		return false
-	}
 	o.mu.RLock()
 	js, ca := o.js, o.ca
 	o.mu.RUnlock()
@@ -8195,6 +8191,16 @@ func (o *consumer) isMigrating() bool {
 	}
 	if ca.Group.Desired != nil {
 		return true
+	}
+	// Use the stream assignment, it carries the target config, while the running stream
+	// still reports the origin retention until the change is applied.
+	sa := js.streamAssignment(ca.Client.serviceAccount(), ca.Stream)
+	if sa == nil || sa.Config == nil {
+		return false
+	}
+	replicas := ca.targetReplicas(sa.Config)
+	if replicas == 0 {
+		return false
 	}
 	// Without desired state, more peers than replicas is a legacy move left to finish.
 	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
@@ -9833,6 +9839,19 @@ func (sa *streamAssignment) consumerHostedPeers() []string {
 	return hosted
 }
 
+// targetReplicas returns the replica count this consumer must converge to, which for
+// interest and workqueue retention is peer parity with the stream.
+func (ca *consumerAssignment) targetReplicas(scfg *StreamConfig) int {
+	if ca.Config == nil || scfg == nil {
+		return 0
+	}
+	// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
+	if scfg.Retention != LimitsPolicy {
+		return scfg.Replicas
+	}
+	return ca.Config.replicas(scfg)
+}
+
 // Remaps the stream's consumers onto its target peer set. Also reports if all consumers have
 // converged, meaning none need to be remapped and none are still moving toward their desired
 // peer set.
@@ -9845,11 +9864,7 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			continue
 		}
 		// Determine the desired replica count.
-		r := ca.Config.replicas(sa.Config)
-		// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
-		if sa.Config.Retention != LimitsPolicy {
-			r = sa.Config.Replicas
-		}
+		r := ca.targetReplicas(sa.Config)
 		consumerPeers := ca.Group.targetPeers()
 		target := r
 		var scaleDown bool
