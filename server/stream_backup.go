@@ -80,12 +80,8 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		if _, err := tw.Write(buf); err != nil {
-			return err
-		}
-		// Need to wait for flush here as the tar/s2 writer is handing off to a
-		// flow-controlled publisher, it's important that we handle backpressure.
-		return tw.Flush()
+		_, err := tw.Write(buf)
+		return err
 	}
 
 	writeStoreMsg := func(msg *StoreMsg) error {
@@ -245,6 +241,13 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 	// messages or from first/last sequence, which may not be possible
 	// during the rewrite of a large stream backup.
 	if err = writeGeneric(_EMPTY_, 0, 0, 0, 0, nil); err != nil {
+		errCh <- err
+		return
+	}
+
+	// Make sure final flush error reporting is propagated, as the
+	// close is in a defer.
+	if err = tw.Flush(); err != nil {
 		errCh <- err
 	}
 }
