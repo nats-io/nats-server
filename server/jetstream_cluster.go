@@ -221,6 +221,11 @@ type desiredRaftGroup struct {
 	// Move marks this desired state as retargeting placement.
 	Move bool `json:"move,omitempty"`
 
+	// CancelMove marks this desired state as a rollback to the recorded origin, proposed
+	// by a cancel move request. The assignment it is proposed with is responded to as a
+	// cancel move rather than a stream update.
+	CancelMove bool `json:"cancel_move,omitempty"`
+
 	// Removed are peers an operator peer-removed from this group. A group that
 	// can't reach quorum may only evict what's recorded here.
 	Removed []string `json:"removed,omitempty"`
@@ -6317,6 +6322,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	recovering := sa.recovering
 	hasResponded := sa.markResponded()
 	hadErr := sa.err != nil
+	// A cancel move is proposed as an update, but is answered with its own response type.
+	isCancelMove := desired != nil && desired.CancelMove
 	js.mu.RUnlock()
 
 	mset, err := acc.lookupStream(cfg.Name)
@@ -6403,15 +6410,23 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		js.mu.Lock()
 		s.Warnf("Stream update failed for '%s > %s': %v", sa.Client.serviceAccount(), sa.Config.Name, err)
 		sa.err = err
+		js.mu.Unlock()
+		apiErr := NewJSStreamGeneralError(err, Unless(err))
+
+		// A cancel move has nothing for the meta leader to act on, and it has its own
+		// response type, respond directly.
+		if isCancelMove {
+			resp := JSApiStreamCancelMoveResponse{ApiResponse: ApiResponse{Type: JSApiStreamCancelMoveResponseType, Error: apiErr}}
+			s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+			return
+		}
+
 		result := &streamAssignmentResult{
 			Account:  sa.Client.serviceAccount(),
 			Stream:   sa.Config.Name,
-			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType}},
+			Response: &JSApiStreamCreateResponse{ApiResponse: ApiResponse{Type: JSApiStreamCreateResponseType, Error: apiErr}},
 			Update:   true,
 		}
-		result.Response.Error = NewJSStreamGeneralError(err, Unless(err))
-		js.mu.Unlock()
-
 		// Send response to the metadata leader. They will forward to the user as needed.
 		s.sendInternalMsgLocked(streamAssignmentSubj, _EMPTY_, nil, result)
 		return
@@ -6447,11 +6462,10 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	}
 
 	// Send our response.
-	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}}
 	// Report the config as requested, the stream can still be running at its origin.
 	// Reading cfg without js.mu is safe, an assignment's config is never changed in place.
 	msetCfg := mset.config().atDesiredTarget(cfg)
-	resp.StreamInfo = &StreamInfo{
+	si := &StreamInfo{
 		Created:   mset.createdTime(),
 		State:     mset.state(),
 		Config:    *setDynamicStreamMetadata(&msetCfg),
@@ -6460,7 +6474,12 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		Sources:   mset.sourcesInfo(),
 		TimeStamp: time.Now().UTC(),
 	}
-
+	if isCancelMove {
+		var resp = JSApiStreamCancelMoveResponse{ApiResponse: ApiResponse{Type: JSApiStreamCancelMoveResponseType}, StreamInfo: si}
+		s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+		return
+	}
+	var resp = JSApiStreamUpdateResponse{ApiResponse: ApiResponse{Type: JSApiStreamUpdateResponseType}, StreamInfo: si}
 	s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
 }
 
@@ -8158,10 +8177,6 @@ func (o *consumer) isMigrating() bool {
 		return false
 	}
 
-	replicas, err := o.replica()
-	if err != nil {
-		return false
-	}
 	o.mu.RLock()
 	js, ca := o.js, o.ca
 	o.mu.RUnlock()
@@ -8176,6 +8191,16 @@ func (o *consumer) isMigrating() bool {
 	}
 	if ca.Group.Desired != nil {
 		return true
+	}
+	// Use the stream assignment, it carries the target config, while the running stream
+	// still reports the origin retention until the change is applied.
+	sa := js.streamAssignment(ca.Client.serviceAccount(), ca.Stream)
+	if sa == nil || sa.Config == nil {
+		return false
+	}
+	replicas := ca.targetReplicas(sa.Config)
+	if replicas == 0 {
+		return false
 	}
 	// Without desired state, more peers than replicas is a legacy move left to finish.
 	// Fewer is under-replicated, healed by the meta leader; migrating would never converge.
@@ -9814,6 +9839,19 @@ func (sa *streamAssignment) consumerHostedPeers() []string {
 	return hosted
 }
 
+// targetReplicas returns the replica count this consumer must converge to, which for
+// interest and workqueue retention is peer parity with the stream.
+func (ca *consumerAssignment) targetReplicas(scfg *StreamConfig) int {
+	if ca.Config == nil || scfg == nil {
+		return 0
+	}
+	// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
+	if scfg.Retention != LimitsPolicy {
+		return scfg.Replicas
+	}
+	return ca.Config.replicas(scfg)
+}
+
 // Remaps the stream's consumers onto its target peer set. Also reports if all consumers have
 // converged, meaning none need to be remapped and none are still moving toward their desired
 // peer set.
@@ -9826,11 +9864,7 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			continue
 		}
 		// Determine the desired replica count.
-		r := ca.Config.replicas(sa.Config)
-		// If stream is interest or workqueue policy always remaps since they require peer parity with stream.
-		if sa.Config.Retention != LimitsPolicy {
-			r = sa.Config.Replicas
-		}
+		r := ca.targetReplicas(sa.Config)
 		consumerPeers := ca.Group.targetPeers()
 		target := r
 		var scaleDown bool
@@ -10643,6 +10677,8 @@ func (s *Server) jsClusteredStreamCancelMoveLocked(osa *streamAssignment, accNam
 	csa.Group.Cluster = origin.Cluster
 	csa.Group = osa.Group.withDesired(csa.Group)
 	csa.Group.Desired.Move = moveInFlight
+	// Mark so the member that applies this responds as a cancel move, not a stream update.
+	csa.Group.Desired.CancelMove = true
 	// withDesired only carries over a prior origin, a legacy move has none yet.
 	// Record it, so the rollback reports the same target while it converges.
 	if csa.Group.Desired.Origin == nil {
@@ -10797,6 +10833,10 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 
 	// Make copy so to not change original.
 	rg := osa.copyGroup().Group
+	if rg.Desired != nil {
+		// Unset, since this is a stream update not a cancel move.
+		rg.Desired.CancelMove = false
+	}
 
 	// Reset notion of scaling up, if this was done in a previous update. Must be
 	// preserved while a migration is inflight, so peers that create their raft
