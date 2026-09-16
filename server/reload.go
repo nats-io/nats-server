@@ -2363,6 +2363,13 @@ func (s *Server) reloadAuthorization() {
 		}
 	}
 
+	// Install interest that arrived over routes for accounts that were
+	// not configured yet and that this reload just introduced. Routes were
+	// collected under the server lock above. Install is synchronized with
+	// route protocol processing through the route lock, and unsubs cancel
+	// held interest, so nothing stale is reintroduced.
+	s.installPendingRouteSubs(routes)
+
 	if res := s.AccountResolver(); res != nil {
 		res.Reload()
 	}
