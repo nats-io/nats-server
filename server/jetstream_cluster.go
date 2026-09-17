@@ -10908,6 +10908,12 @@ func (s *Server) jsClusteredStreamUpdateRequestLocked(ci *ClientInfo, acc *Accou
 			rg.Peers = peers
 			rg = osa.Group.withDesired(rg)
 		} else {
+			// The tier we're scaling down to must exist.
+			if _, _, _, err := acc.selectLimits(newCfg.Replicas); err != nil {
+				resp.Error = err
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			// Mark the group as scaling down, the current leader will be preserved.
 			rg.Peers = currentPeers
 			rg = osa.Group.withDesired(rg)

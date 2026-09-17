@@ -6706,6 +6706,35 @@ func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterScaleToMissingTier(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Only R1 and R3 tiers are defined, so R2 must not be allowed.
+	limits := map[string]JetStreamAccountLimits{
+		"R1": {MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+		"R3": {MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}
+	for _, s := range c.servers {
+		require_NoError(t, s.globalAccount().UpdateJetStreamLimits(limits))
+	}
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Scaling up into a missing tier is rejected.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "UP", Subjects: []string{"up"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "UP", Subjects: []string{"up"}, Replicas: 2})
+	require_Error(t, err, NewJSNoLimitsError())
+
+	// Scaling down into a missing tier must be rejected just the same.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "DOWN", Subjects: []string{"down"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "DOWN", Subjects: []string{"down"}, Replicas: 2})
+	require_Error(t, err, NewJSNoLimitsError())
+}
+
 func TestJetStreamClusterTieredReservationConsistency(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
