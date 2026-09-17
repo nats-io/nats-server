@@ -7443,9 +7443,12 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	disconnects := make([]chan error, 0)
 	for i := 1; i <= 5; i++ {
 		disconnectCh := make(chan error)
-		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			disconnectCh <- err
-		}))
+		// Reconnect quickly, a kicked client that retries the same server is rejected again.
+		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"),
+			nats.ReconnectWait(50*time.Millisecond), nats.ReconnectJitter(0, 0),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				disconnectCh <- err
+			}))
 		defer c.Close()
 		conns = append(conns, c)
 		disconnects = append(disconnects, disconnectCh)
