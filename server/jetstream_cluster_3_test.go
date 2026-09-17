@@ -5829,6 +5829,8 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	cl.WaitForShutdown()
 	cl = c.restartServer(cl)
 	c.waitOnServerCurrent(cl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
 
 	cib, err = js.ConsumerInfo("TEST", "r1")
 	require_NoError(t, err)
