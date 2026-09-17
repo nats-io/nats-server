@@ -65,3 +65,11 @@ while holding the Server lock, but the Server lock must not be acquired while
 holding eventIdsMu.
 
     Server -> eventIdsMu
+
+The "cmu" lock in the Account serializes claim updates for that account so that
+rebuilding its exports/imports cannot overlap with another update's validity checks.
+It must be acquired before the account lock, and must not be held while updating
+another account (which would take that account's locks in unknown order).
+
+    cmu -> Account
+    cmu -> client
