@@ -1816,6 +1816,95 @@ func TestLeafNodeHubWithGateways(t *testing.T) {
 	}
 }
 
+func TestLeafNodeGatewayDisconnectRemovesInterest(t *testing.T) {
+	for _, queue := range []string{"", "workers"} {
+		name := "plain"
+		if queue != "" {
+			name = "queue"
+		}
+		t.Run(name, func(t *testing.T) {
+			ro := testDefaultOptionsForGateway("REMOTE")
+			remote := RunServer(ro)
+			defer remote.Shutdown()
+
+			ho := testGatewayOptionsFromToWithServers(t, "HUB", "REMOTE", remote)
+			ho.Accounts = []*Account{NewAccount("SYS")}
+			ho.SystemAccount = "SYS"
+			ho.LeafNode.Host = "127.0.0.1"
+			ho.LeafNode.Port = -1
+			hub := RunServer(ho)
+			defer hub.Shutdown()
+
+			lu, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lo := DefaultOptions()
+			lo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{lu}}}
+			leaf := RunServer(lo)
+			defer leaf.Shutdown()
+			checkLeafNodeConnected(t, leaf)
+			checkLeafNodeConnected(t, hub)
+			waitForOutboundGateways(t, hub, 1, 2*time.Second)
+			waitForOutboundGateways(t, remote, 1, 2*time.Second)
+
+			const subject = "gateway.disconnect.interest"
+			checkLeafInterest := func(expected int) {
+				t.Helper()
+				checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+					r := leaf.globalAccount().sl.Match(subject)
+					n := len(r.psubs)
+					for _, subs := range r.qsubs {
+						n += len(subs)
+					}
+					if n != expected {
+						return fmt.Errorf("leaf interest for %q: got %d subscriptions, want %d", subject, n, expected)
+					}
+					return nil
+				})
+			}
+			nc := natsConnect(t, remote.ClientURL(), nats.NoReconnect())
+			defer nc.Close()
+			subscribe := func() *nats.Subscription {
+				if queue != "" {
+					return natsQueueSubSync(t, nc, subject, queue)
+				}
+				return natsSubSync(t, nc, subject)
+			}
+
+			// Establish that normal RS+/RS- propagation works on this leaf link.
+			sub := subscribe()
+			natsFlush(t, nc)
+			checkLeafInterest(1)
+			if err := sub.Unsubscribe(); err != nil {
+				t.Fatal(err)
+			}
+			natsFlush(t, nc)
+			checkLeafInterest(0)
+
+			subscribe()
+			natsFlush(t, nc)
+			checkLeafInterest(1)
+			gw := hub.getOutboundGatewayConnection("REMOTE")
+
+			// Drop the remote while its subscription is still advertised. The
+			// hub must withdraw that interest without an RS- from the remote.
+			remote.Shutdown()
+			waitForOutboundGateways(t, hub, 0, 2*time.Second)
+			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+				gw.mu.Lock()
+				defer gw.mu.Unlock()
+				if len(gw.subs) != 0 {
+					return fmt.Errorf("disconnected gateway still has %d subscriptions", len(gw.subs))
+				}
+				return nil
+			})
+			checkLeafNodeConnected(t, leaf)
+			checkLeafInterest(0)
+		})
+	}
+}
+
 func TestLeafNodeTmpClients(t *testing.T) {
 	ao := DefaultOptions()
 	ao.LeafNode.Host = "127.0.0.1"

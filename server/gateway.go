@@ -1829,7 +1829,8 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 		// Update number of totalQSubs for this gateway
 		qSubsRemoved := int64(0)
 		c.mu.Lock()
-		for _, sub := range c.subs {
+		subs := c.subs
+		for _, sub := range subs {
 			if sub.queue != nil {
 				qSubsRemoved++
 			}
@@ -1838,6 +1839,14 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 		c.mu.Unlock()
 		// Update total count of qsubs in remote gateways.
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
+
+		// Withdraw the interest advertised to leaf nodes by this connection.
+		// Keys are account/subject[/queue], separated by spaces. As with RS-,
+		// update leaf nodes only after releasing the gateway and client locks.
+		for key, sub := range subs {
+			accName, _, _ := strings.Cut(key, " ")
+			s.updateInterestForAccountOnGateway(accName, sub, -1)
+		}
 
 	} else {
 		var subsa [1024]*subscription
