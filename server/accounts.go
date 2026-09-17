@@ -66,6 +66,7 @@ type Account struct {
 	updated      time.Time
 	mu           sync.RWMutex
 	smu          sync.Mutex // serializes route interest updates
+	cmu          sync.Mutex // serializes claim updates
 	sl           *Sublist
 	ic           *client
 	sq           *sendq
@@ -3480,6 +3481,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	if a == nil {
 		return
 	}
+	// Rebuilding the exports below empties them, so must not overlap with the
+	// checks at the end that mark imports of other accounts invalid.
+	a.cmu.Lock()
 	s.Debugf("Updating account claims: %s/%s", a.Name, ac.Name)
 	a.checkExpiration(ac.Claims())
 
@@ -3689,6 +3693,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 		a.mu.Unlock()
 	}
+	// Resolving the imports below can update this same account again.
+	a.cmu.Unlock()
+
 	var incompleteImports []*jwt.Import
 	for _, i := range ac.Imports {
 		acc, err := s.lookupAccount(i.Account)
@@ -3730,6 +3737,8 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		}
 	}
+	a.cmu.Lock()
+
 	// Now let's apply any needed changes from import/export changes.
 	if !a.checkStreamImportsEqual(old) {
 		awcsti := map[string]struct{}{a.Name: {}}
@@ -4040,6 +4049,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		}
 	}
+
+	// Updating other accounts below takes their lock, so release ours first.
+	a.cmu.Unlock()
 
 	if _, ok := s.incompleteAccExporterMap.Load(old.Name); ok && refreshImportingAccounts {
 		s.incompleteAccExporterMap.Delete(old.Name)

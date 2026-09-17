@@ -2281,12 +2281,14 @@ func copyDir(t *testing.T, dst, src string) error {
 	srcFS := os.DirFS(src)
 	return fs.WalkDir(srcFS, ".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
+			// The entry is gone, don't include it in the copy.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
-		// A purge moves msgs to __msgs__ and removes that directory
-		// asynchronously. It is disposable and may disappear while walking a
-		// live store, so do not include it in the copy.
-		if d.IsDir() && d.Name() == purgeDir {
+		// Skip stream purge directories.
+		if d.IsDir() && (d.Name() == purgeDir || d.Name() == newMsgDir) {
 			return fs.SkipDir
 		}
 		// Atomic writes use .tmp files that are renamed into place when complete.
@@ -2302,6 +2304,10 @@ func copyDir(t *testing.T, dst, src string) error {
 		}
 		r, err := srcFS.Open(p)
 		if err != nil {
+			// The entry is gone, don't include it in the copy.
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		defer r.Close()

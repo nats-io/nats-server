@@ -15,7 +15,6 @@ package server
 
 import (
 	"bufio"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -7176,7 +7176,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 	// The main account will be importing from all other accounts.
 	maxAccounts := 100
-	for i := 0; i < maxAccounts; i++ {
+	for i := range maxAccounts {
 		name := fmt.Sprintf("secondary-%d", i)
 		accKP, acc, accClaim := NewJwtAccountClaim(name)
 
@@ -7234,6 +7234,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 	// Have a connection ready for each one of the accounts.
 	type namedSub struct {
 		name string
+		nc   *nats.Conn
 		sub  *nats.Subscription
 	}
 	subs := make(map[string]*namedSub)
@@ -7249,22 +7250,43 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 		sub, err := nc.SubscribeSync("city.>")
 		require_NoError(t, err)
-		subs[acc] = &namedSub{user.name, sub}
+		subs[acc] = &namedSub{user.name, nc, sub}
 	}
 
 	nc := natsConnect(t, s.ClientURL(), mainCreds, nats.ReconnectWait(15*time.Millisecond), nats.MaxReconnects(-1))
 	defer nc.Close()
 
+	conns := []*nats.Conn{nc}
+	for _, nsub := range subs {
+		conns = append(conns, nsub.nc)
+	}
+	// Wait for all clients to be reconnected and their subscriptions replayed.
+	waitForClients := func(t *testing.T) {
+		t.Helper()
+		for _, conn := range conns {
+			checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
+				if !conn.IsConnected() {
+					return fmt.Errorf("client %q not reconnected yet", conn.Opts.Name)
+				}
+				return nil
+			})
+			// Round-trip so the server has processed the replayed subscriptions.
+			require_NoError(t, conn.Flush())
+		}
+	}
+
+	// Tag every publish round with an increasing sequence.
+	var round atomic.Uint64
 	send := func(t *testing.T) {
 		t.Helper()
-		for i := 0; i < maxAccounts; i++ {
-			nc.Publish(fmt.Sprintf("city.%d-1.A4BDB048-69DC-4F10-916C-2B998249DC11", i), []byte(fmt.Sprintf("test:%d", i)))
+		r := round.Add(1)
+		for i := range maxAccounts {
+			nc.Publish(fmt.Sprintf("city.%d-1.A4BDB048-69DC-4F10-916C-2B998249DC11", i), []byte(strconv.FormatUint(r, 10)))
 		}
 		nc.Flush()
 	}
 
-	ctx, done := context.WithCancel(context.Background())
-	defer done()
+	ctx := t.Context()
 	go func() {
 		for range time.NewTicker(200 * time.Millisecond).C {
 			select {
@@ -7278,27 +7300,33 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 	receive := func(t *testing.T) {
 		t.Helper()
-		received := 0
+		// Only messages from a later round were published after the restart.
+		start := round.Load()
+		// One deadline for all accounts, an account that misses never recovers.
+		deadline := time.Now().Add(15 * time.Second)
+		var missed []string
 		for _, nsub := range subs {
-			// Drain first any pending messages.
-			pendingMsgs, _, _ := nsub.sub.Pending()
-			for i, _ := 0, 0; i < pendingMsgs; i++ {
-				nsub.sub.NextMsg(500 * time.Millisecond)
+			var received bool
+			for !received {
+				msg, err := nsub.sub.NextMsg(time.Until(deadline))
+				if err != nil {
+					break
+				}
+				// Skip messages from a previous round.
+				if r, err := strconv.ParseUint(string(msg.Data), 10, 64); err == nil && r > start {
+					received = true
+				}
 			}
-
-			_, err = nsub.sub.NextMsg(500 * time.Millisecond)
-			if err != nil {
-				t.Logf("WRN: Failed to receive message on account %q: %v", nsub.name, err)
-			} else {
-				received++
+			if !received {
+				missed = append(missed, nsub.name)
 			}
 		}
-		if received < (maxAccounts / 2) {
-			t.Fatalf("Too many missed messages after restart. Received %d", received)
+		if len(missed) > 0 {
+			t.Fatalf("Missed messages after restart on %d of %d accounts: %v", len(missed), maxAccounts, missed)
 		}
 	}
+	waitForClients(t)
 	receive(t)
-	time.Sleep(1 * time.Second)
 
 	restart := func(t *testing.T) *Server {
 		t.Helper()
@@ -7306,29 +7334,217 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 		s.WaitForShutdown()
 		s, _ = RunServerWithConfig(conf)
 
-		hctx, hcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer hcancel()
-		for range time.NewTicker(2 * time.Second).C {
-			select {
-			case <-hctx.Done():
-				t.Logf("WRN: Timed out waiting for healthz from %s", s)
-			default:
+		checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
+			if status := s.healthz(nil); status.StatusCode != 200 {
+				return fmt.Errorf("healthz not ready: %d - %s", status.StatusCode, status.Error)
 			}
-
-			status := s.healthz(nil)
-			if status.StatusCode == 200 {
-				return s
-			}
-		}
-		return nil
+			return nil
+		})
+		return s
 	}
 
 	// Takes a few restarts for issue to show up.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		s := restart(t)
 		defer s.Shutdown()
-		time.Sleep(2 * time.Second)
+		waitForClients(t)
 		receive(t)
+	}
+}
+
+func TestJWTConcurrentAccountUpdateKeepsImportsValid(t *testing.T) {
+	preload := make(map[string]string)
+	_, sysAcc, sysAccClaim := NewJwtAccountClaim("sys")
+	sysAccJWT, err := sysAccClaim.Encode(oKp)
+	require_NoError(t, err)
+	preload[sysAcc] = sysAccJWT
+
+	// All other accounts import from this account.
+	_, mainAcc, mainAccClaim := NewJwtAccountClaim("main")
+	mainAccClaim.Exports.Add(&jwt.Export{Type: jwt.Stream, Subject: "city.>"})
+
+	maxAccounts := 20
+	accounts := make([]string, 0, maxAccounts)
+	for i := range maxAccounts {
+		_, acc, accClaim := NewJwtAccountClaim(fmt.Sprintf("secondary-%d", i))
+		accClaim.Imports.Add(&jwt.Import{
+			Type:    jwt.Stream,
+			Subject: jwt.Subject(fmt.Sprintf("city.%d-1.*", i)),
+			Account: mainAcc,
+		})
+		accJWT, err := accClaim.Encode(oKp)
+		require_NoError(t, err)
+		preload[acc] = accJWT
+		accounts = append(accounts, acc)
+	}
+	mainAccJWT, err := mainAccClaim.Encode(oKp)
+	require_NoError(t, err)
+	preload[mainAcc] = mainAccJWT
+
+	resolverPreload, err := json.Marshal(preload)
+	require_NoError(t, err)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: %s
+	`, ojwt, sysAcc, string(resolverPreload))))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Load all accounts, setting up their imports.
+	for _, acc := range accounts {
+		_, err := s.LookupAccount(acc)
+		require_NoError(t, err)
+	}
+	main, err := s.LookupAccount(mainAcc)
+	require_NoError(t, err)
+
+	invalidImports := func() []string {
+		var invalid []string
+		for _, name := range accounts {
+			a, err := s.LookupAccount(name)
+			require_NoError(t, err)
+			a.mu.RLock()
+			for _, im := range a.imports.streams {
+				if im.invalid {
+					invalid = append(invalid, a.nameTag)
+				}
+			}
+			a.mu.RUnlock()
+		}
+		return invalid
+	}
+	require_Len(t, len(invalidImports()), 0)
+
+	// Concurrent updates of the exporting account must not invalidate imports.
+	accClaims, _, err := s.verifyAccountClaims(mainAccJWT)
+	require_NoError(t, err)
+	for range 50 {
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				s.UpdateAccountClaims(main, accClaims)
+			})
+		}
+		wg.Wait()
+		if invalid := invalidImports(); len(invalid) > 0 {
+			t.Fatalf("Imports invalidated after concurrent account update: %v", invalid)
+		}
+	}
+}
+
+func TestJWTConcurrentSystemAccountUpdateKeepsJSAPIImportValid(t *testing.T) {
+	preload := make(map[string]string)
+
+	// An expired account, so the system account importing from it stays
+	// incomplete and is updated again on every lookup.
+	_, expAcc, expAccClaim := NewJwtAccountClaim("expired")
+	expAccClaim.Exports.Add(&jwt.Export{Type: jwt.Stream, Subject: "expired.>"})
+	expAccClaim.Expires = time.Now().Add(-time.Hour).Unix()
+	expAccJWT, err := expAccClaim.Encode(oKp)
+	require_NoError(t, err)
+	preload[expAcc] = expAccJWT
+
+	// System account, importing from the expired account.
+	_, sysAcc, sysAccClaim := NewJwtAccountClaim("sys")
+	sysAccClaim.Imports.Add(&jwt.Import{
+		Type:    jwt.Stream,
+		Subject: "expired.>",
+		Account: expAcc,
+	})
+	sysAccJWT, err := sysAccClaim.Encode(oKp)
+	require_NoError(t, err)
+	preload[sysAcc] = sysAccJWT
+
+	// JetStream enabled accounts, each gets a $JS.API.> import from the system account.
+	maxAccounts := 20
+	accounts := make([]string, 0, maxAccounts)
+	for i := range maxAccounts {
+		_, acc, accClaim := NewJwtAccountClaim(fmt.Sprintf("acc-%d", i))
+		accClaim.Limits.JetStreamLimits = jwt.JetStreamLimits{
+			DiskStorage: jwt.NoLimit, MemoryStorage: jwt.NoLimit,
+		}
+		accJWT, err := accClaim.Encode(oKp)
+		require_NoError(t, err)
+		preload[acc] = accJWT
+		accounts = append(accounts, acc)
+	}
+
+	resolverPreload, err := json.Marshal(preload)
+	require_NoError(t, err)
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {store_dir: '%s'}
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: %s
+	`, t.TempDir(), ojwt, sysAcc, string(resolverPreload))))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	sacc, err := s.LookupAccount(sysAcc)
+	require_NoError(t, err)
+	for _, acc := range accounts {
+		_, err := s.LookupAccount(acc)
+		require_NoError(t, err)
+	}
+	sacc.mu.RLock()
+	incomplete := sacc.incomplete
+	sacc.mu.RUnlock()
+	require_True(t, incomplete)
+
+	// Accounts whose $JS.API.> import is missing or invalid.
+	badJSAPI := func() []string {
+		var bad []string
+		for _, name := range accounts {
+			a, err := s.LookupAccount(name)
+			require_NoError(t, err)
+			a.mu.RLock()
+			var found, invalid bool
+			for _, sis := range a.imports.services {
+				for _, si := range sis {
+					if si == nil || si.acc == nil || si.acc.Name != sysAcc {
+						continue
+					}
+					if si.from == jsAllAPI || si.to == jsAllAPI {
+						found = true
+						invalid = invalid || si.invalid
+					}
+				}
+			}
+			label := a.nameTag
+			a.mu.RUnlock()
+			if !found {
+				bad = append(bad, label+"(missing)")
+			} else if invalid {
+				bad = append(bad, label+"(invalid)")
+			}
+		}
+		return bad
+	}
+	if bad := badJSAPI(); len(bad) > 0 {
+		t.Fatalf("Before any update, $JS.API.> imports already bad: %v", bad)
+	}
+
+	sysClaims, _, err := s.verifyAccountClaims(sysAccJWT)
+	require_NoError(t, err)
+
+	// Concurrent updates of the system account must not invalidate the imports.
+	for round := range 200 {
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				s.UpdateAccountClaims(sacc, sysClaims)
+			})
+		}
+		wg.Wait()
+		if bad := badJSAPI(); len(bad) > 0 {
+			t.Fatalf("round %d: $JS.API.> imports bad for %d of %d accounts: %v",
+				round, len(bad), maxAccounts, bad)
+		}
 	}
 }
 
