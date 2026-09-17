@@ -15,7 +15,6 @@ package server
 
 import (
 	"bufio"
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -7176,7 +7176,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 	// The main account will be importing from all other accounts.
 	maxAccounts := 100
-	for i := 0; i < maxAccounts; i++ {
+	for i := range maxAccounts {
 		name := fmt.Sprintf("secondary-%d", i)
 		accKP, acc, accClaim := NewJwtAccountClaim(name)
 
@@ -7234,6 +7234,7 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 	// Have a connection ready for each one of the accounts.
 	type namedSub struct {
 		name string
+		nc   *nats.Conn
 		sub  *nats.Subscription
 	}
 	subs := make(map[string]*namedSub)
@@ -7249,22 +7250,43 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 		sub, err := nc.SubscribeSync("city.>")
 		require_NoError(t, err)
-		subs[acc] = &namedSub{user.name, sub}
+		subs[acc] = &namedSub{user.name, nc, sub}
 	}
 
 	nc := natsConnect(t, s.ClientURL(), mainCreds, nats.ReconnectWait(15*time.Millisecond), nats.MaxReconnects(-1))
 	defer nc.Close()
 
+	conns := []*nats.Conn{nc}
+	for _, nsub := range subs {
+		conns = append(conns, nsub.nc)
+	}
+	// Wait for all clients to be reconnected and their subscriptions replayed.
+	waitForClients := func(t *testing.T) {
+		t.Helper()
+		for _, conn := range conns {
+			checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
+				if !conn.IsConnected() {
+					return fmt.Errorf("client %q not reconnected yet", conn.Opts.Name)
+				}
+				return nil
+			})
+			// Round-trip so the server has processed the replayed subscriptions.
+			require_NoError(t, conn.Flush())
+		}
+	}
+
+	// Tag every publish round with an increasing sequence.
+	var round atomic.Uint64
 	send := func(t *testing.T) {
 		t.Helper()
-		for i := 0; i < maxAccounts; i++ {
-			nc.Publish(fmt.Sprintf("city.%d-1.A4BDB048-69DC-4F10-916C-2B998249DC11", i), []byte(fmt.Sprintf("test:%d", i)))
+		r := round.Add(1)
+		for i := range maxAccounts {
+			nc.Publish(fmt.Sprintf("city.%d-1.A4BDB048-69DC-4F10-916C-2B998249DC11", i), []byte(strconv.FormatUint(r, 10)))
 		}
 		nc.Flush()
 	}
 
-	ctx, done := context.WithCancel(context.Background())
-	defer done()
+	ctx := t.Context()
 	go func() {
 		for range time.NewTicker(200 * time.Millisecond).C {
 			select {
@@ -7278,27 +7300,33 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 
 	receive := func(t *testing.T) {
 		t.Helper()
-		received := 0
+		// Only messages from a later round were published after the restart.
+		start := round.Load()
+		// One deadline for all accounts, an account that misses never recovers.
+		deadline := time.Now().Add(15 * time.Second)
+		var missed []string
 		for _, nsub := range subs {
-			// Drain first any pending messages.
-			pendingMsgs, _, _ := nsub.sub.Pending()
-			for i, _ := 0, 0; i < pendingMsgs; i++ {
-				nsub.sub.NextMsg(500 * time.Millisecond)
+			var received bool
+			for !received {
+				msg, err := nsub.sub.NextMsg(time.Until(deadline))
+				if err != nil {
+					break
+				}
+				// Skip messages from a previous round.
+				if r, err := strconv.ParseUint(string(msg.Data), 10, 64); err == nil && r > start {
+					received = true
+				}
 			}
-
-			_, err = nsub.sub.NextMsg(500 * time.Millisecond)
-			if err != nil {
-				t.Logf("WRN: Failed to receive message on account %q: %v", nsub.name, err)
-			} else {
-				received++
+			if !received {
+				missed = append(missed, nsub.name)
 			}
 		}
-		if received < (maxAccounts / 2) {
-			t.Fatalf("Too many missed messages after restart. Received %d", received)
+		if len(missed) > 0 {
+			t.Fatalf("Missed messages after restart on %d of %d accounts: %v", len(missed), maxAccounts, missed)
 		}
 	}
+	waitForClients(t)
 	receive(t)
-	time.Sleep(1 * time.Second)
 
 	restart := func(t *testing.T) *Server {
 		t.Helper()
@@ -7306,28 +7334,20 @@ func TestJWTImportsOnServerRestartAndClientsReconnect(t *testing.T) {
 		s.WaitForShutdown()
 		s, _ = RunServerWithConfig(conf)
 
-		hctx, hcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer hcancel()
-		for range time.NewTicker(2 * time.Second).C {
-			select {
-			case <-hctx.Done():
-				t.Logf("WRN: Timed out waiting for healthz from %s", s)
-			default:
+		checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
+			if status := s.healthz(nil); status.StatusCode != 200 {
+				return fmt.Errorf("healthz not ready: %d - %s", status.StatusCode, status.Error)
 			}
-
-			status := s.healthz(nil)
-			if status.StatusCode == 200 {
-				return s
-			}
-		}
-		return nil
+			return nil
+		})
+		return s
 	}
 
 	// Takes a few restarts for issue to show up.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		s := restart(t)
 		defer s.Shutdown()
-		time.Sleep(2 * time.Second)
+		waitForClients(t)
 		receive(t)
 	}
 }
