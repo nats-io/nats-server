@@ -1331,6 +1331,14 @@ func TestAccountReqMonitoring(t *testing.T) {
 
 	// Test ping from within account, send extra message to check counters.
 	require_NoError(t, nc.Publish("foo", nil))
+	require_NoError(t, nc.Flush())
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if stats := acc.statz(); stats.Received.Msgs == 0 {
+			return fmt.Errorf("publish not accounted for yet")
+		}
+		return nil
+	})
+
 	ib := nc.NewRespInbox()
 	rSub, err = nc.SubscribeSync(ib)
 	require_NoError(t, err)
