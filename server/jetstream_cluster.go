@@ -8824,6 +8824,12 @@ func (s *Server) jsClusteredStreamUpdateRequest(ci *ClientInfo, acc *Account, su
 			rg.ScaleUp = true
 			rg.Peers = peers
 		} else {
+			// The tier we're scaling down to must exist.
+			if _, _, _, err := acc.selectLimits(newCfg.Replicas); err != nil {
+				resp.Error = err
+				s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
+				return
+			}
 			// We are deleting nodes here. We want to do our best to preserve the current leader.
 			// We have support now from above that guarantees we are in our own Go routine, so can
 			// ask for stream info from the stream leader to make sure we keep the leader in the new list.
