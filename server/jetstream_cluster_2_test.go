@@ -8244,7 +8244,8 @@ func TestJetStreamClusterMessageTTLCatchup(t *testing.T) {
 	node := mset.raftNode()
 	gname := node.Group()
 	require_NotNil(t, node)
-	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot(), false))
+	// Force, since the monitor routine could have an async snapshot in progress.
+	require_NoError(t, node.InstallSnapshot(mset.stateSnapshot(), true))
 	var state StreamState
 	node.(*raft).wal.FastState(&state)
 	require_Equal(t, state.Msgs, 0)
