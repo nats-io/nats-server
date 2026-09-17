@@ -16,6 +16,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -726,6 +727,777 @@ cluster: { name: clustL }
 			test(sLA.opts.Port, "clustL")
 		})
 	}
+}
+
+// checkSysLeafDenied verifies that the leaf connection bound to the system
+// account on s has the JS API denies merged in both directions, i.e. that
+// s itself treats the connection as isolated rather than relying on the
+// other end to hold back traffic.
+func checkSysLeafDenied(t *testing.T, s *Server) {
+	t.Helper()
+	sysAcc := s.SystemAccount()
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		var found, denied bool
+		s.mu.RLock()
+		for _, ln := range s.leafs {
+			ln.mu.Lock()
+			if ln.acc == sysAcc {
+				found = true
+				if ln.perms != nil && ln.perms.pub.deny != nil && ln.perms.sub.deny != nil {
+					rp := ln.perms.pub.deny.Match(jsAllAPI)
+					rs := ln.perms.sub.deny.Match(jsAllAPI)
+					denied = len(rp.psubs)+len(rp.qsubs) > 0 && len(rs.psubs)+len(rs.qsubs) > 0
+				}
+			}
+			ln.mu.Unlock()
+		}
+		s.mu.RUnlock()
+		if !found {
+			return fmt.Errorf("no system account leaf connection on %q", s.Name())
+		}
+		if !denied {
+			return fmt.Errorf("system account leaf connection on %q is missing JS API denies", s.Name())
+		}
+		return nil
+	})
+}
+
+// Config templates shared by the leaf node domain / system account tests
+// below. Hub slots: server name, store dir, optional cluster block.
+// Leaf slots: server name, JS domain, store dir, optional extension_hint
+// line, optional cluster block, remotes.
+const lnDomainHubTmpl = `
+listen: 127.0.0.1:-1
+server_name: %s
+accounts {
+	A { jetstream: enabled, users: [ { user: a, password: pwd } ] }
+	SYS { users: [ { user: s, password: pwd } ] }
+}
+system_account: SYS
+jetstream {
+	domain: hub
+	store_dir: '%s'
+	max_mem: 50Mb
+	max_file: 50Mb
+}
+%s
+leafnodes {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+}
+`
+
+const lnDomainLeafTmpl = `
+listen: 127.0.0.1:-1
+server_name: %s
+accounts {
+	A { jetstream: enabled, users: [ { user: a, password: pwd } ] }
+	SYS { users: [ { user: s, password: pwd } ] }
+}
+system_account: SYS
+jetstream {
+	domain: %s
+	store_dir: '%s'
+	max_mem: 50Mb
+	max_file: 50Mb
+	%s
+}
+%s
+leafnodes {
+	remotes [
+		%s
+	]
+}
+`
+
+// Like lnDomainLeafTmpl, but the server also runs its own leafnode listener so
+// further leaves can chain below it. Slots: server name, JS domain, store dir,
+// optional extension_hint line, remotes.
+const lnDomainLeafHubTmpl = `
+listen: 127.0.0.1:-1
+server_name: %s
+accounts {
+	A { jetstream: enabled, users: [ { user: a, password: pwd } ] }
+	SYS { users: [ { user: s, password: pwd } ] }
+}
+system_account: SYS
+jetstream {
+	domain: %s
+	store_dir: '%s'
+	max_mem: 50Mb
+	max_file: 50Mb
+	%s
+}
+leafnodes {
+	listen: 127.0.0.1:-1
+	no_advertise: true
+	remotes [
+		%s
+	]
+}
+`
+
+// lnDomainClusterBlock renders the cluster block for the templates above.
+func lnDomainClusterBlock(name string, listen, route int) string {
+	return fmt.Sprintf(`cluster {
+	name: %s
+	listen: 127.0.0.1:%d
+	routes = [nats-route://127.0.0.1:%d]
+	no_advertise: true
+}`, name, listen, route)
+}
+
+// lnDomainRemotes renders leafnode remotes pointing at lnPort, always binding
+// account A and, if shareSys is set, the system account as well.
+func lnDomainRemotes(lnPort int, shareSys bool) string {
+	remotes := fmt.Sprintf(`{ url: "nats://a:pwd@127.0.0.1:%d", account: A }`, lnPort)
+	if shareSys {
+		remotes += fmt.Sprintf("\n\t\t{ url: \"nats://s:pwd@127.0.0.1:%d\", account: SYS }", lnPort)
+	}
+	return remotes
+}
+
+// checkSysJSAPICross checks whether subject interest and messages on
+// $JS.API.> in the (shared) system account cross the leaf connection, probing
+// both directions. A control subject proves the link itself propagates
+// interest either way.
+func checkSysJSAPICross(t *testing.T, hub, leaf *Server, expectCross bool) {
+	t.Helper()
+	ncLeaf := natsConnect(t, fmt.Sprintf("nats://s:pwd@127.0.0.1:%d", leaf.opts.Port))
+	defer ncLeaf.Close()
+	ncHub := natsConnect(t, fmt.Sprintf("nats://s:pwd@127.0.0.1:%d", hub.opts.Port))
+	defer ncHub.Close()
+
+	// Leaf-side subscriptions probe the hub->leaf direction, hub-side
+	// subscriptions the leaf->hub direction.
+	ctlLeaf, err := ncLeaf.SubscribeSync("sysprobe.ctl.leaf")
+	require_NoError(t, err)
+	probeLeaf, err := ncLeaf.SubscribeSync("$JS.API.SYSPROBE.LEAF")
+	require_NoError(t, err)
+	require_NoError(t, ncLeaf.Flush())
+	ctlHub, err := ncHub.SubscribeSync("sysprobe.ctl.hub")
+	require_NoError(t, err)
+	probeHub, err := ncHub.SubscribeSync("$JS.API.SYSPROBE.HUB")
+	require_NoError(t, err)
+	require_NoError(t, ncHub.Flush())
+
+	// Wait until the control subject interest crossed the connection(s).
+	checkSubInterest(t, hub, "SYS", "sysprobe.ctl.leaf", 2*time.Second)
+	checkSubInterest(t, leaf, "SYS", "sysprobe.ctl.hub", 2*time.Second)
+
+	require_NoError(t, ncHub.Publish("sysprobe.ctl.leaf", nil))
+	require_NoError(t, ncHub.Publish("$JS.API.SYSPROBE.LEAF", nil))
+	require_NoError(t, ncHub.Flush())
+	require_NoError(t, ncLeaf.Publish("sysprobe.ctl.hub", nil))
+	require_NoError(t, ncLeaf.Publish("$JS.API.SYSPROBE.HUB", nil))
+	require_NoError(t, ncLeaf.Flush())
+
+	_, err = ctlLeaf.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	_, err = ctlHub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	for direction, probe := range map[string]*nats.Subscription{"hub->leaf": probeLeaf, "leaf->hub": probeHub} {
+		_, err = probe.NextMsg(500 * time.Millisecond)
+		if expectCross && err != nil {
+			t.Fatalf("Expected JS API traffic to cross %s, got %v", direction, err)
+		} else if !expectCross && err == nil {
+			t.Fatalf("Expected no JS API traffic to cross %s, but it did", direction)
+		}
+	}
+}
+
+// TestJetStreamLeafNodeDomainSysAccountPermutations verifies leaf node + JetStream
+// behavior for the permutations of same/different JS domain and shared/not-shared
+// system account between hub and leaf.
+func TestJetStreamLeafNodeDomainSysAccountPermutations(t *testing.T) {
+	const cport1, cport2 = 23320, 23321
+	const lport1, lport2 = 23330, 23331
+
+	startHub := func(t *testing.T) (*Server, *Server) {
+		t.Helper()
+		conf1 := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB1", t.TempDir(), lnDomainClusterBlock("HUB", cport1, cport2))))
+		h1, _ := RunServerWithConfig(conf1)
+		t.Cleanup(h1.Shutdown)
+		conf2 := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB2", t.TempDir(), lnDomainClusterBlock("HUB", cport2, cport1))))
+		h2, _ := RunServerWithConfig(conf2)
+		t.Cleanup(h2.Shutdown)
+		checkClusterFormed(t, h1, h2)
+		c := cluster{t: t, servers: []*Server{h1, h2}}
+		c.waitOnLeader()
+		return h1, h2
+	}
+	startLeaf := func(t *testing.T, hub *Server, domain string, shareSys bool, hint string) *Server {
+		t.Helper()
+		if hint != _EMPTY_ {
+			hint = fmt.Sprintf("extension_hint: %s", hint)
+		}
+		remotes := lnDomainRemotes(hub.opts.LeafNode.Port, shareSys)
+		conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafTmpl, "LEAF", domain, t.TempDir(), hint, _EMPTY_, remotes)))
+		s, _ := RunServerWithConfig(conf)
+		t.Cleanup(s.Shutdown)
+		return s
+	}
+
+	startHubSingle := func(t *testing.T) *Server {
+		t.Helper()
+		conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "SHUB", t.TempDir(), _EMPTY_)))
+		s, _ := RunServerWithConfig(conf)
+		t.Cleanup(s.Shutdown)
+		return s
+	}
+	startLeafCluster := func(t *testing.T, hub *Server, domain string, shareSys bool) (*Server, *Server) {
+		t.Helper()
+		remotes := lnDomainRemotes(hub.opts.LeafNode.Port, shareSys)
+		conf1 := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafTmpl, "LEAF1", domain, t.TempDir(), _EMPTY_, lnDomainClusterBlock("LEAF", lport1, lport2), remotes)))
+		l1, _ := RunServerWithConfig(conf1)
+		t.Cleanup(l1.Shutdown)
+		conf2 := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafTmpl, "LEAF2", domain, t.TempDir(), _EMPTY_, lnDomainClusterBlock("LEAF", lport2, lport1), remotes)))
+		l2, _ := RunServerWithConfig(conf2)
+		t.Cleanup(l2.Shutdown)
+		checkClusterFormed(t, l1, l2)
+		return l1, l2
+	}
+
+	// accountDomain asks the JS account info API and returns the reported domain.
+	accountDomain := func(t *testing.T, nc *nats.Conn) string {
+		t.Helper()
+		resp, err := nc.Request(JSApiAccountInfo, nil, 2*time.Second)
+		require_NoError(t, err)
+		var info JSApiAccountInfoResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &info))
+		require_True(t, info.Error == nil)
+		return info.Domain
+	}
+
+	// countJSAPIResponses sends a single account info request and counts how many
+	// servers answer it. More than one response means JS API cross-talk over the
+	// leaf node connection.
+	countJSAPIResponses := func(t *testing.T, nc *nats.Conn) int {
+		t.Helper()
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(inbox)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+		require_NoError(t, nc.PublishRequest(JSApiAccountInfo, inbox, nil))
+		require_NoError(t, nc.Flush())
+		time.Sleep(500 * time.Millisecond)
+		n, _, err := sub.Pending()
+		require_NoError(t, err)
+		return n
+	}
+
+	metaPeerCount := func(s *Server) int {
+		if js := s.getJetStream(); js != nil {
+			if mg := js.getMetaGroup(); mg != nil {
+				return len(mg.Peers())
+			}
+		}
+		return 0
+	}
+
+	t.Run("different-domain-different-sysacct", func(t *testing.T) {
+		h1, _ := startHub(t)
+		leaf := startLeaf(t, h1, "leaf", false, _EMPTY_)
+		checkLeafNodeConnectedCount(t, h1, 1)
+		checkLeafNodeConnectedCount(t, leaf, 1)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Each side serves its own domain.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "leaf")
+
+		// Both sides can create a stream with the same name: fully isolated.
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"leaf.foo"}})
+		require_NoError(t, err)
+
+		// A stream created on the leaf is not visible from the hub.
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		// Exactly one server answers a JS API request: no cross-talk.
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+
+		// Hub meta cluster does not contain the leaf, leaf runs standalone.
+		require_Equal(t, metaPeerCount(h1), 2)
+		require_Equal(t, metaPeerCount(leaf), 0)
+	})
+
+	t.Run("same-domain-same-sysacct-extension", func(t *testing.T) {
+		h1, h2 := startHub(t)
+		leaf := startLeaf(t, h1, "hub", true, jsWillExtend)
+		checkLeafNodeConnectedCount(t, h1, 2)
+		checkLeafNodeConnectedCount(t, leaf, 2)
+
+		// The leaf extends the hub's JS domain: it joins the meta cluster.
+		c := cluster{t: t, servers: []*Server{h1, h2}}
+		c.waitOnLeader()
+		c.waitOnPeerCount(3)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Both sides report the same domain.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "hub")
+
+		// A stream created via the leaf is visible from the hub: one JS domain.
+		_, err := jsLeaf.AddStream(&nats.StreamConfig{Name: "EXT", Subjects: []string{"ext.foo"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("EXT")
+		require_NoError(t, err)
+
+		// Exactly one response to JS API requests, even with multiple servers.
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+
+		// System account JS API traffic is expected to cross the leaf connection.
+		checkSysJSAPICross(t, h1, leaf, true)
+	})
+
+	t.Run("same-domain-different-sysacct", func(t *testing.T) {
+		h1, _ := startHub(t)
+		leaf := startLeaf(t, h1, "hub", false, _EMPTY_)
+		checkLeafNodeConnectedCount(t, h1, 1)
+		checkLeafNodeConnectedCount(t, leaf, 1)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Both claim the same domain name, but are two independent JS instances.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "hub")
+
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"leaf.foo"}})
+		require_NoError(t, err)
+
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		// Despite the same domain name, the automatic client JS API denies
+		// prevent duplicate answers over the leaf connection.
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+
+		require_Equal(t, metaPeerCount(h1), 2)
+		require_Equal(t, metaPeerCount(leaf), 0)
+	})
+
+	t.Run("different-domain-same-sysacct", func(t *testing.T) {
+		h1, _ := startHub(t)
+		leaf := startLeaf(t, h1, "leaf", true, _EMPTY_)
+		checkLeafNodeConnectedCount(t, h1, 2)
+		checkLeafNodeConnectedCount(t, leaf, 2)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Isolated domains, each side answers with its own.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "leaf")
+
+		// Streams stay local to each domain.
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"leaf.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+
+		// The leaf never joins the hub's meta cluster and runs standalone.
+		require_Equal(t, metaPeerCount(h1), 2)
+		require_Equal(t, metaPeerCount(leaf), 0)
+
+		// Crucially: JS API (meta) traffic on the shared system account must NOT
+		// cross the leaf connection since the domains differ.
+		checkSysJSAPICross(t, h1, leaf, false)
+
+		// Cross-domain access via the domain-prefixed API works through the
+		// shared user account: the hub client can address the leaf domain.
+		resp, err := ncHub.Request("$JS.leaf.API.INFO", nil, 2*time.Second)
+		require_NoError(t, err)
+		var info JSApiAccountInfoResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &info))
+		require_True(t, info.Error == nil)
+		require_Equal(t, info.Domain, "leaf")
+	})
+
+	// Misconfiguration: the leaf shares the system account and uses the same
+	// domain, but is a standalone server without "extension_hint: will_extend".
+	// It then does NOT extend the hub's JS domain but runs its own JetStream
+	// under the same domain name. Since a standalone JetStream server can not
+	// take part in a shared meta group, both sides must treat this connection
+	// as isolated and deny JS API traffic on the system account.
+	t.Run("same-domain-same-sysacct-standalone-no-hint", func(t *testing.T) {
+		h1, _ := startHub(t)
+		leaf := startLeaf(t, h1, "hub", true, _EMPTY_)
+		checkLeafNodeConnectedCount(t, h1, 2)
+		checkLeafNodeConnectedCount(t, leaf, 2)
+
+		ncHub, _ := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, _ := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// The leaf did not join the meta cluster: two JS instances, one domain name.
+		require_Equal(t, metaPeerCount(h1), 2)
+		require_Equal(t, metaPeerCount(leaf), 0)
+
+		// The connection is treated as isolated: JS API traffic on the shared
+		// system account does NOT cross the leaf connection.
+		checkSysJSAPICross(t, h1, leaf, false)
+
+		// Both ends must have merged the denies themselves: the leaf from its
+		// own local check, the hub from the CONNECT echo of the leaf's
+		// standalone state.
+		checkSysLeafDenied(t, leaf)
+		checkSysLeafDenied(t, h1)
+
+		// User account requests are wrapped in a service import on the local
+		// server, so they still get exactly one answer.
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+	})
+
+	// A clustered leaf has its own meta controller and CAN extend: same domain
+	// plus shared system account must still merge the meta groups (and needs no
+	// extension hint).
+	t.Run("clustered-leaf-same-domain-same-sysacct-extension", func(t *testing.T) {
+		h1, h2 := startHub(t)
+		l1, l2 := startLeafCluster(t, h1, "hub", true)
+		checkLeafNodeConnectedCount(t, h1, 4)
+		checkLeafNodeConnectedCount(t, l1, 2)
+		checkLeafNodeConnectedCount(t, l2, 2)
+
+		// Hub cluster (2) plus leaf cluster (2) form one meta group.
+		c := cluster{t: t, servers: []*Server{h1, h2}}
+		c.waitOnLeader()
+		c.waitOnPeerCount(4)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, l1, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "hub")
+
+		_, err := jsLeaf.AddStream(&nats.StreamConfig{Name: "EXT", Subjects: []string{"ext.foo"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("EXT")
+		require_NoError(t, err)
+
+		checkSysJSAPICross(t, h1, l1, true)
+	})
+
+	// Clustered leaf with its own domain sharing the system account: isolated,
+	// the leaf cluster keeps its own meta group.
+	t.Run("clustered-leaf-different-domain-same-sysacct", func(t *testing.T) {
+		h1, _ := startHub(t)
+		l1, l2 := startLeafCluster(t, h1, "leaf", true)
+		checkLeafNodeConnectedCount(t, h1, 4)
+
+		// The leaf cluster starts in observer mode (system account remote), and
+		// must recover to its own meta group once domains turn out to differ.
+		cl := cluster{t: t, servers: []*Server{l1, l2}}
+		cl.waitOnLeader()
+		cl.waitOnPeerCount(2)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, l1, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "leaf")
+
+		_, err := jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		require_Equal(t, metaPeerCount(h1), 2)
+
+		checkSysJSAPICross(t, h1, l1, false)
+	})
+
+	// A clustered leaf pointed at a standalone JetStream hub: the hub has no
+	// meta controller, so nothing can be extended even though domains match and
+	// the system account is shared. The hub advertises this, the leaf cluster
+	// must isolate (deny JS API on the system account), leave observer mode and
+	// elect its own meta leader instead of waiting forever for extension.
+	t.Run("clustered-leaf-same-domain-same-sysacct-standalone-hub", func(t *testing.T) {
+		hub := startHubSingle(t)
+		l1, l2 := startLeafCluster(t, hub, "hub", true)
+		checkLeafNodeConnectedCount(t, hub, 4)
+
+		cl := cluster{t: t, servers: []*Server{l1, l2}}
+		cl.waitOnLeader()
+		cl.waitOnPeerCount(2)
+
+		ncHub, jsHub := jsClientConnect(t, hub, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, l1, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Both sides are functional and independent, one domain name.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "hub")
+
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"leaf.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		// The standalone hub has no meta group, the leaf cluster has its own.
+		require_Equal(t, metaPeerCount(hub), 0)
+
+		// JS API traffic on the shared system account must not cross.
+		checkSysJSAPICross(t, hub, l1, false)
+
+		// Both ends must have merged the denies themselves: the hub from its
+		// own local check, the leaf from the hub's INFO.
+		checkSysLeafDenied(t, hub)
+		checkSysLeafDenied(t, l1)
+	})
+
+	// Both sides standalone, same domain, shared system account, no extension
+	// hint: neither side has a meta controller, so nothing can be extended in
+	// either direction. Both must isolate and stay independently functional.
+	t.Run("standalone-hub-standalone-leaf-no-hint", func(t *testing.T) {
+		hub := startHubSingle(t)
+		leaf := startLeaf(t, hub, "hub", true, _EMPTY_)
+		checkLeafNodeConnectedCount(t, hub, 2)
+		checkLeafNodeConnectedCount(t, leaf, 2)
+
+		ncHub, jsHub := jsClientConnect(t, hub, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncLeaf, jsLeaf := jsClientConnect(t, leaf, nats.UserInfo("a", "pwd"))
+		defer ncLeaf.Close()
+
+		// Two independent JS instances, one domain name, no meta groups at all.
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		require_Equal(t, accountDomain(t, ncLeaf), "hub")
+		require_Equal(t, metaPeerCount(hub), 0)
+		require_Equal(t, metaPeerCount(leaf), 0)
+
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "CLASH", Subjects: []string{"leaf.foo"}})
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("LEAFONLY")
+		require_Error(t, err, nats.ErrStreamNotFound)
+
+		require_Equal(t, countJSAPIResponses(t, ncHub), 1)
+		require_Equal(t, countJSAPIResponses(t, ncLeaf), 1)
+
+		checkSysJSAPICross(t, hub, leaf, false)
+		checkSysLeafDenied(t, hub)
+		checkSysLeafDenied(t, leaf)
+	})
+
+	// A standalone leaf soliciting a standalone hub WITH will_extend: the
+	// leaf runs a meta controller solely to join the hub's meta group, but
+	// the hub advertises that it can never produce a meta leader. A single
+	// server must not form a meta group of its own, so the leaf stays in
+	// observer mode without a leader and its JetStream remains unavailable
+	// until the configuration is corrected. The connection is still isolated
+	// in both directions.
+	t.Run("standalone-hub-standalone-leaf-will-extend", func(t *testing.T) {
+		hub := startHubSingle(t)
+		leaf := startLeaf(t, hub, "hub", true, jsWillExtend)
+		checkLeafNodeConnectedCount(t, hub, 2)
+		checkLeafNodeConnectedCount(t, leaf, 2)
+
+		// Isolation applies on both ends; this also proves the extension
+		// decision has been made on both sides before checking meta state.
+		checkSysLeafDenied(t, hub)
+		checkSysLeafDenied(t, leaf)
+		checkSysJSAPICross(t, hub, leaf, false)
+
+		// The leaf keeps its meta controller in observer mode, leaderless.
+		mg := leaf.getJetStream().getMetaGroup()
+		require_True(t, mg != nil)
+		require_True(t, mg.IsObserver())
+		require_Equal(t, mg.GroupLeader(), _EMPTY_)
+		require_Equal(t, metaPeerCount(hub), 0)
+
+		// The hub's JetStream works normally.
+		ncHub, jsHub := jsClientConnect(t, hub, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		require_Equal(t, accountDomain(t, ncHub), "hub")
+		_, err := jsHub.AddStream(&nats.StreamConfig{Name: "HUBSTREAM", Subjects: []string{"hub.foo"}})
+		require_NoError(t, err)
+
+		// The leaf's JetStream is unavailable: no meta leader can answer.
+		ncLeaf := natsConnect(t, fmt.Sprintf("nats://a:pwd@127.0.0.1:%d", leaf.opts.Port))
+		defer ncLeaf.Close()
+		jsLeaf, err := ncLeaf.JetStream(nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		_, err = jsLeaf.AddStream(&nats.StreamConfig{Name: "LEAFONLY", Subjects: []string{"leaf.only"}})
+		require_Error(t, err)
+	})
+
+	// A standalone will_extend server joins the upstream meta group, so it
+	// must keep advertising itself as extendable on its own leafnode listener:
+	// a leaf chained below it extends the domain THROUGH it and must not be
+	// told to isolate. This is the reason a standalone server soliciting
+	// extension reports extendable.
+	t.Run("chained-leaf-through-standalone-will-extend", func(t *testing.T) {
+		h1, h2 := startHub(t)
+		hint := fmt.Sprintf("extension_hint: %s", jsWillExtend)
+
+		// Middle: standalone will_extend server extending the hub's domain,
+		// with its own leafnode listener.
+		midConf := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafHubTmpl, "MID", "hub", t.TempDir(), hint,
+			lnDomainRemotes(h1.opts.LeafNode.Port, true))))
+		mid, _ := RunServerWithConfig(midConf)
+		t.Cleanup(mid.Shutdown)
+		checkLeafNodeConnectedCount(t, mid, 2)
+
+		c := cluster{t: t, servers: []*Server{h1, h2}}
+		c.waitOnLeader()
+		c.waitOnPeerCount(3)
+
+		// Bottom: another standalone will_extend leaf, chained below the
+		// middle server. It must extend through it and join the meta group.
+		bottom := startLeaf(t, mid, "hub", true, jsWillExtend)
+		checkLeafNodeConnectedCount(t, bottom, 2)
+		c.waitOnPeerCount(4)
+
+		ncHub, jsHub := jsClientConnect(t, h1, nats.UserInfo("a", "pwd"))
+		defer ncHub.Close()
+		ncBottom, jsBottom := jsClientConnect(t, bottom, nats.UserInfo("a", "pwd"))
+		defer ncBottom.Close()
+
+		require_Equal(t, accountDomain(t, ncBottom), "hub")
+
+		// A stream created via the bottom leaf is visible from the hub: one
+		// JS domain across both hops.
+		_, err := jsBottom.AddStream(&nats.StreamConfig{Name: "CHAINED", Subjects: []string{"chained.foo"}})
+		require_NoError(t, err)
+		_, err = jsHub.StreamInfo("CHAINED")
+		require_NoError(t, err)
+
+		// System account JS API traffic crosses both hops.
+		checkSysJSAPICross(t, h1, bottom, true)
+	})
+}
+
+// A leaf that boots with will_extend but NO system account remote
+// (standalone JS, no meta controller). A config reload then adds the system
+// account remote. Config-derived capability now claims extendable while the
+// runtime is still standalone.
+func TestJetStreamLeafNodeSysRemoteAddedByReloadNotExtended(t *testing.T) {
+	h1Conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB1", t.TempDir(), lnDomainClusterBlock("HUB", 23480, 23481))))
+	h1, _ := RunServerWithConfig(h1Conf)
+	defer h1.Shutdown()
+	h2Conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB2", t.TempDir(), lnDomainClusterBlock("HUB", 23481, 23480))))
+	h2, _ := RunServerWithConfig(h2Conf)
+	defer h2.Shutdown()
+	checkClusterFormed(t, h1, h2)
+	c := cluster{t: t, servers: []*Server{h1, h2}}
+	c.waitOnLeader()
+
+	sd := t.TempDir()
+	hint := fmt.Sprintf("extension_hint: %s", jsWillExtend)
+	lnPort := h1.opts.LeafNode.Port
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafTmpl, "LEAF", "hub", sd, hint, _EMPTY_, lnDomainRemotes(lnPort, false))))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+	checkLeafNodeConnectedCount(t, leaf, 1)
+
+	// Boot state: standalone JS, no meta controller.
+	require_True(t, leaf.getJetStream().getMetaGroup() == nil)
+
+	// Reload: add the system account remote.
+	reloadUpdateConfig(t, leaf, leafConf, fmt.Sprintf(lnDomainLeafTmpl, "LEAF", "hub", sd, hint, _EMPTY_, lnDomainRemotes(lnPort, true)))
+	checkLeafNodeConnectedCount(t, leaf, 2)
+
+	// Still no meta controller after the reload.
+	require_True(t, leaf.getJetStream().getMetaGroup() == nil)
+
+	// Check that sys account JS API traffic does NOT cross.
+	checkSysJSAPICross(t, h1, leaf, false)
+
+	// Both ends must have merged the denies themselves: the leaf from its
+	// runtime check, the hub from the CONNECT advertising the leaf's runtime
+	// state.
+	checkSysLeafDenied(t, leaf)
+	checkSysLeafDenied(t, h1)
+}
+
+// A chained middle server (standalone will_extend with its own leafnode
+// listener) boots extendable and joins the hub's meta group. A config reload
+// then removes the system account remote: the middle server can no longer
+// take part in the shared meta group and must stop advertising extendability
+// in its leafnode INFO, so a downstream leaf connecting AFTER the reload
+// isolates on its own side instead of waiting in observer mode for an
+// extension that can not happen.
+func TestJetStreamLeafNodeSysRemoteRemovedByReloadNotExtendable(t *testing.T) {
+	h1Conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB1", t.TempDir(), lnDomainClusterBlock("HUB", 23490, 23491))))
+	h1, _ := RunServerWithConfig(h1Conf)
+	defer h1.Shutdown()
+	h2Conf := createConfFile(t, []byte(fmt.Sprintf(lnDomainHubTmpl, "HUB2", t.TempDir(), lnDomainClusterBlock("HUB", 23491, 23490))))
+	h2, _ := RunServerWithConfig(h2Conf)
+	defer h2.Shutdown()
+	checkClusterFormed(t, h1, h2)
+	c := cluster{t: t, servers: []*Server{h1, h2}}
+	c.waitOnLeader()
+
+	// Middle: standalone will_extend server with its own leafnode listener,
+	// extending the hub's domain.
+	sd := t.TempDir()
+	hint := fmt.Sprintf("extension_hint: %s", jsWillExtend)
+	midConf := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafHubTmpl, "MID", "hub", sd, hint, lnDomainRemotes(h1.opts.LeafNode.Port, true))))
+	mid, _ := RunServerWithConfig(midConf)
+	defer mid.Shutdown()
+	checkLeafNodeConnectedCount(t, mid, 2)
+	c.waitOnPeerCount(3)
+
+	// Reload: remove the system account remote from the middle server.
+	reloadUpdateConfig(t, mid, midConf, fmt.Sprintf(lnDomainLeafHubTmpl, "MID", "hub", sd, hint, lnDomainRemotes(h1.opts.LeafNode.Port, false)))
+	checkLeafNodeConnectedCount(t, mid, 1)
+
+	// A downstream leaf soliciting the middle server after the reload must
+	// isolate on its own side, based on the refreshed INFO.
+	bottomConf := createConfFile(t, []byte(fmt.Sprintf(lnDomainLeafTmpl, "LEAF", "hub", t.TempDir(), hint, _EMPTY_, lnDomainRemotes(mid.opts.LeafNode.Port, true))))
+	bottom, _ := RunServerWithConfig(bottomConf)
+	defer bottom.Shutdown()
+	checkLeafNodeConnectedCount(t, bottom, 2)
+
+	checkSysLeafDenied(t, mid)
+	checkSysLeafDenied(t, bottom)
+	checkSysJSAPICross(t, mid, bottom, false)
 }
 
 func TestJetStreamLeafNodeCredsDenies(t *testing.T) {
