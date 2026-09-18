@@ -1198,6 +1198,28 @@ func TestClientSetPermissionsClearsStaleMsgDenyState(t *testing.T) {
 	require_True(t, c.mperms == nil)
 }
 
+func TestClientUpdateDefaultPermissionsRebuildsMsgDenyState(t *testing.T) {
+	permissions := &Permissions{
+		Subscribe: &SubjectPermission{
+			Allow: []string{"foo.>"},
+			Deny:  []string{"foo.secret"},
+		},
+	}
+	c := &client{
+		user: &NkeyUser{Permissions: permissions, defaultPerms: true},
+		subs: map[string]*subscription{
+			"1": {subject: []byte("foo.>")},
+		},
+	}
+	c.setPermissions(permissions)
+
+	updated := permissions.clone()
+	updated.Publish = &SubjectPermission{Allow: []string{"unused"}}
+	require_True(t, c.updateDefaultPermissions(updated))
+	require_NotNil(t, c.mperms)
+	require_True(t, c.checkDenySub("foo.secret", _EMPTY_))
+}
+
 func TestClientSetPermissionsPublishDenyQueueQualifierFailsClosed(t *testing.T) {
 	c := &client{srv: New(&Options{})}
 	c.setPermissions(&Permissions{

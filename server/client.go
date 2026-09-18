@@ -1087,6 +1087,13 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 	}
 	c.user.Permissions = perms.clone()
 	c.setPermissions(c.user.Permissions)
+	for _, sub := range c.subs {
+		if len(sub.queue) > 0 {
+			c.canSubscribe(string(sub.subject), string(sub.queue))
+		} else {
+			c.canSubscribe(string(sub.subject))
+		}
+	}
 	return true
 }
 
