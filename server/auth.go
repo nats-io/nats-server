@@ -661,6 +661,8 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		ok   bool
 		err  error
 		ao   bool // auth override
+		// Set if account registration failed, the connection is already closed.
+		regErr error
 	)
 
 	// Little helper that will log the error as a debug statement, set the auth error in
@@ -682,6 +684,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 	var proxyRequired bool
 	// Check if we have auth callouts enabled at the server level or in the bound account.
 	defer func() {
+		// Not an auth failure, skip the auth error event and auth callout.
+		if regErr != nil {
+			return
+		}
 		authErr := c.getAuthError()
 		if authErr == nil {
 			authErr = ErrAuthentication
@@ -1202,7 +1208,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 				return false
 			}
 		}
-		if err := c.RegisterNkeyUser(nkey); err != nil {
+		if regErr = c.RegisterNkeyUser(nkey); regErr != nil {
 			return false
 		}
 		return true
@@ -1222,7 +1228,9 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		// If we are authorized, register the user which will properly setup any permissions
 		// for pub/sub authorizations.
 		if ok {
-			c.RegisterUser(user)
+			if regErr = c.registerUser(user); regErr != nil {
+				return false
+			}
 		}
 		return ok
 	}
