@@ -986,6 +986,55 @@ func TestStreamImportLengthBug(t *testing.T) {
 	}
 }
 
+func TestStreamImportSubscribeDenyUsesMappedSubject(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			exporter {
+				users: [{user: publisher, password: pass}]
+				exports: [{stream: "foo.>"}]
+			}
+			importer {
+				users: [{
+					user: subscriber
+					password: pass
+					permissions: {
+						subscribe: {
+							allow: ["import.foo.>"]
+							deny: ["import.foo.secret"]
+						}
+					}
+				}]
+				imports: [{
+					stream: {account: exporter, subject: "foo.>"}
+					prefix: "import"
+				}]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	publisher := natsConnect(t, s.ClientURL(), nats.UserInfo("publisher", "pass"))
+	defer publisher.Close()
+	subscriber := natsConnect(t, s.ClientURL(), nats.UserInfo("subscriber", "pass"))
+	defer subscriber.Close()
+
+	plain := natsSubSync(t, subscriber, "import.foo.>")
+	queue := natsQueueSubSync(t, subscriber, "import.foo.>", "workers")
+	natsFlush(t, subscriber)
+
+	natsPub(t, publisher, "foo.secret", []byte("blocked"))
+	natsPub(t, publisher, "foo.public", []byte("allowed"))
+	natsFlush(t, publisher)
+
+	for _, sub := range []*nats.Subscription{plain, queue} {
+		msg := natsNexMsg(t, sub, time.Second)
+		require_Equal(t, msg.Subject, "import.foo.public")
+		require_Equal(t, string(msg.Data), "allowed")
+	}
+}
+
 func TestShadowSubsCleanupOnClientClose(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
