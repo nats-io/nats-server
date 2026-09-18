@@ -156,7 +156,7 @@ type Info struct {
 	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
 	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
 	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
-	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
+	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses the _GR_. prefix for mapped replies
 	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
 
 	// LeafNode Specific
@@ -298,7 +298,7 @@ type Server struct {
 	varzUpdateRouteURLs bool
 
 	// Keeps a sublist of subscriptions attached to leafnode connections
-	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
+	// for the _GR_.> subject so that a server can send back a mapped
 	// gateway reply.
 	gwLeafSubs *Sublist
 
