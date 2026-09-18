@@ -1573,11 +1573,11 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 
 	checkLeafNodeConnected(t, ln1)
 
-	// The deny is totally restrictive, but make sure that we still accept the $LDS, $GR and _GR_ go from LN1.
+	// The deny is totally restrictive, but make sure that we still accept the $LDS and _GR_ go from LN1.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		// We should have registered the 3 subs from the accepting leafnode.
-		if n := ln2.globalAccount().TotalSubs(); n != 9 {
-			return fmt.Errorf("Expected %d subs, got %v", 9, n)
+		// We should have registered the 2 subs from the accepting leafnode.
+		if n := ln2.globalAccount().TotalSubs(); n != 8 {
+			return fmt.Errorf("Expected %d subs, got %v", 8, n)
 		}
 		return nil
 	})

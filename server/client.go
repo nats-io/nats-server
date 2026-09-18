@@ -3983,7 +3983,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// Also this check captures if the original reply (c.pa.reply) is a GW routed
 	// reply (since it is known to be > minReplyLen). If that is the case, we need to
 	// track the binding between the routed reply and the reply set in the message
-	// header (which is c.pa.reply without the GNR routing prefix).
+	// header (which is c.pa.reply without the _GR_ routing prefix).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
 		if gwrply {
 			// Note that we keep track of the GW routed reply in the destination
@@ -4363,7 +4363,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
-	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
+	// Check that client (could be here with SYSTEM) is not publishing on reserved "_GR_" or legacy "$GR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
 		return false, true

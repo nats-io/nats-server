@@ -6181,7 +6181,7 @@ func TestGatewayLegacyGRPrefixReservedOnClientIngress(t *testing.T) {
 		}
 	}
 
-	legacy := string(sb.gateway.oldReplyPfx) + "foo"
+	legacy := oldGWReplyPrefix + "abcd.foo"
 	for _, subj := range []string{"foo", string(sb.gateway.replyPfx) + "foo", legacy} {
 		natsPub(t, nca, subj, []byte("msg"))
 		natsFlush(t, nca)
