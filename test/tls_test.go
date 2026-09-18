@@ -275,6 +275,83 @@ Loop:
 	}
 }
 
+func TestTLSClientCertificateOUTemplateBasedAuth(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "localhost:-1"
+		tls {
+			cert_file: "./configs/certs/tlsauth/server.pem"
+			key_file:  "./configs/certs/tlsauth/server-key.pem"
+			ca_file:   "./configs/certs/tlsauth/ca.pem"
+			verify_and_map: "{{ first .OrganizationalUnit }}"
+		}
+		authorization {
+			users [
+				{ user: "NATS.io", permissions: { publish: {allow: ["public.>"]}, subscribe: {allow: ["public.>"]} } }
+				{ user: "CNCF", permissions: { publish: {allow: [">"]}, subscribe: {allow: [">"]} } }
+			]
+		}
+	`))
+	srv, opts := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	nurl := fmt.Sprintf("tls://%s:%d", opts.Host, opts.Port)
+
+	errCh := make(chan error, 1)
+
+	// client.pem has subject "OU=NATS.io, CN=example.com", mapped by the
+	// template to the restricted "NATS.io" user.
+	nc1, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/tlsauth/client.pem", "./configs/certs/tlsauth/client-key.pem"),
+		nats.RootCAs("./configs/certs/tlsauth/ca.pem"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			errCh <- err
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc1.Close()
+
+	// client2.pem has subject "OU=CNCF, CN=example.com", mapped to the
+	// "CNCF" user which can publish/subscribe on '>'.
+	nc2, err := nats.Connect(nurl,
+		nats.ClientCert("./configs/certs/tlsauth/client2.pem", "./configs/certs/tlsauth/client2-key.pem"),
+		nats.RootCAs("./configs/certs/tlsauth/ca.pem"),
+	)
+	if err != nil {
+		t.Fatalf("Expected to connect, got %v", err)
+	}
+	defer nc2.Close()
+
+	sub, err := nc2.SubscribeSync(">")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc2.Flush()
+
+	if err := nc1.Publish("public.hello", []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	nc1.Flush()
+	if _, err := sub.NextMsg(1 * time.Second); err != nil {
+		t.Fatalf("Error during wait for next message: %s", err)
+	}
+
+	// Outside the "NATS.io" user's allowed subject: the publish itself
+	// succeeds, the violation arrives asynchronously on errCh.
+	if err := nc1.Publish("not.allowed", []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	nc1.Flush()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Expected a permissions violation error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out expecting a permissions violation error")
+	}
+}
+
 func TestTLSClientCertificateSANsBasedAuth(t *testing.T) {
 	// In this test we have 3 clients, one with permissions defined
 	// for SAN 'app.nats.dev', other for SAN 'app.nats.prod' and another

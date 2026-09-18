@@ -1964,6 +1964,136 @@ func TestLeafNodeTLSVerifyAndMap(t *testing.T) {
 	}
 }
 
+func TestLeafNodeTLSVerifyAndMapTemplate(t *testing.T) {
+	accName := "MyAccount"
+	acc := NewAccount(accName)
+	// Client cert subject is "OU=NATS.io, CN=example.com".
+	certUserName := "NATS.io"
+	users := []*User{{Username: certUserName, Account: acc}}
+
+	o := DefaultOptions()
+	o.Accounts = []*Account{acc}
+	o.Users = users
+	o.LeafNode.Host = "127.0.0.1"
+	o.LeafNode.Port = -1
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/server.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+		CaFile:   "../test/configs/certs/tlsauth/ca.pem",
+		Verify:   true,
+	}
+	tlsc, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating tls config: %v", err)
+	}
+	tmpl, err := parseCertIDMapTemplate("verify_and_map", "{{ first .OrganizationalUnit }}")
+	if err != nil {
+		t.Fatalf("Error parsing template: %v", err)
+	}
+	tc.CertMap = tmpl
+	o.LeafNode.TLSConfig = tlsc
+	o.LeafNode.TLSMap = true
+	o.LeafNode.tlsConfigOpts = tc
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	slo := DefaultOptions()
+	slo.Cluster.Name = "xyz"
+
+	sltlsc, err := GenTLSConfig(&TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/client.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+	})
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	sltlsc.InsecureSkipVerify = true
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", o.LeafNode.Host, o.LeafNode.Port))
+	slo.LeafNode.Remotes = []*RemoteLeafOpts{
+		{
+			TLSConfig: sltlsc,
+			URLs:      []*url.URL{u},
+		},
+	}
+	sl := RunServer(slo)
+	defer sl.Shutdown()
+
+	checkLeafNodeConnected(t, s)
+
+	var uname string
+	var accname string
+	s.mu.Lock()
+	for _, c := range s.leafs {
+		c.mu.Lock()
+		uname = c.opts.Username
+		if c.acc != nil {
+			accname = c.acc.GetName()
+		}
+		c.mu.Unlock()
+	}
+	s.mu.Unlock()
+	if uname != certUserName {
+		t.Fatalf("Expected username %q, got %q", certUserName, uname)
+	}
+	if accname != accName {
+		t.Fatalf("Expected account %q, got %v", accName, accname)
+	}
+}
+
+// A template that matches nothing evaluates to "", which must not
+// authenticate even against a blank-username leaf user (which is allowed).
+func TestLeafNodeTLSVerifyAndMapTemplateEmptyResult(t *testing.T) {
+	acc := NewAccount("MyAccount")
+
+	o := DefaultOptions()
+	o.Accounts = []*Account{acc}
+	o.LeafNode.Host = "127.0.0.1"
+	o.LeafNode.Port = -1
+	// Blank username, as omitting `user:` would leave behind.
+	o.LeafNode.Users = []*User{{Username: _EMPTY_, Account: acc}}
+	tc := &TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/server.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/server-key.pem",
+		CaFile:   "../test/configs/certs/tlsauth/ca.pem",
+		Verify:   true,
+	}
+	tlsc, err := GenTLSConfig(tc)
+	if err != nil {
+		t.Fatalf("Error creating tls config: %v", err)
+	}
+	// The client cert's OU is "NATS.io", so this falls through to "".
+	tmpl, err := parseCertIDMapTemplate("verify_and_map", `{{if has "nomatch" .OrganizationalUnit}}someuser{{end}}`)
+	if err != nil {
+		t.Fatalf("Error parsing template: %v", err)
+	}
+	tc.CertMap = tmpl
+	o.LeafNode.TLSConfig = tlsc
+	o.LeafNode.TLSMap = true
+	o.LeafNode.tlsConfigOpts = tc
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	slo := DefaultOptions()
+	slo.Cluster.Name = "xyz"
+	sltlsc, err := GenTLSConfig(&TLSConfigOpts{
+		CertFile: "../test/configs/certs/tlsauth/client.pem",
+		KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+	})
+	if err != nil {
+		t.Fatalf("Error generating tls config: %v", err)
+	}
+	sltlsc.InsecureSkipVerify = true
+	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", o.LeafNode.Host, o.LeafNode.Port))
+	slo.LeafNode.Remotes = []*RemoteLeafOpts{{TLSConfig: sltlsc, URLs: []*url.URL{u}}}
+	sl := RunServer(slo)
+	defer sl.Shutdown()
+
+	time.Sleep(500 * time.Millisecond)
+	if n := s.NumLeafNodes(); n != 0 {
+		t.Fatalf("Expected no leafnode to be authorized, got %d", n)
+	}
+}
+
 type chanLogger struct {
 	DummyLogger
 	triggerChan chan string
