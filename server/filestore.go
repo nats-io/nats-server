@@ -13914,6 +13914,12 @@ func (o *consumerFileStore) GetConfig() *ConsumerConfig {
 	return clone
 }
 
+func (o *consumerFileStore) setCreatedTime(created time.Time) {
+	o.mu.Lock()
+	o.cfg.Created = created
+	o.mu.Unlock()
+}
+
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
