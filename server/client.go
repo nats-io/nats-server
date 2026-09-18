@@ -1006,11 +1006,15 @@ func (c *client) applyAccountLimits() {
 // with the authenticated user. This is used to map
 // any permissions into the client and setup accounts.
 func (c *client) RegisterUser(user *User) {
+	c.registerUser(user)
+}
+
+func (c *client) registerUser(user *User) error {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
 			c.reportErrRegisterAccount(user.Account, err)
-			return
+			return err
 		}
 	}
 
@@ -1038,6 +1042,7 @@ func (c *client) RegisterUser(user *User) {
 	}
 
 	c.mu.Unlock()
+	return nil
 }
 
 // RegisterNkeyUser allows auth to call back into a new nkey
@@ -1591,8 +1596,9 @@ func (c *client) readLoop(pre []byte) {
 				// assigned messages and their "fsp" incremented, and need now to be
 				// decremented and their writeLoop signaled.
 				c.flushClients(0)
-				// handled inline
-				if err != ErrMaxPayload && err != ErrAuthentication {
+				// Handled inline, or the connection was already closed
+				// (e.g. account registration failure in processConnect).
+				if err != ErrMaxPayload && err != ErrAuthentication && err != ErrConnectionClosed {
 					c.Error(err)
 					c.closeConnection(ProtocolViolation)
 				}
@@ -2401,6 +2407,13 @@ func (c *client) processConnect(arg []byte) error {
 				if tooManyAccCons {
 					return ErrTooManyAccountConnections
 				}
+			}
+			// Account registration failures already sent the error and closed the connection.
+			c.mu.Lock()
+			closed := c.isClosed()
+			c.mu.Unlock()
+			if closed {
+				return ErrConnectionClosed
 			}
 			c.authViolation()
 			return ErrAuthentication
