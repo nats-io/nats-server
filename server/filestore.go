@@ -13437,6 +13437,12 @@ func (o *consumerFileStore) encodeState() ([]byte, error) {
 	return encodeConsumerState(state), nil
 }
 
+func (o *consumerFileStore) setCreatedTime(created time.Time) {
+	o.mu.Lock()
+	o.cfg.Created = created
+	o.mu.Unlock()
+}
+
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()

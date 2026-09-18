@@ -6871,6 +6871,53 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	}
 }
 
+func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer func() { s.Shutdown() }()
+
+	nc, js := jsClientConnect(t, s)
+	defer func() { nc.Close() }()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Storage: nats.FileStorage})
+	require_NoError(t, err)
+
+	ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DUR",
+		AckPolicy: nats.AckExplicitPolicy,
+		AckWait:   30 * time.Second,
+	})
+	require_NoError(t, err)
+	created := ci.Created
+
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	time.Sleep(10 * time.Millisecond)
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	ci, err = js.ConsumerInfo("TEST", "DUR")
+	require_NoError(t, err)
+	if !ci.Created.Equal(created) {
+		t.Fatalf("Expected created time %v after restart, got %v", created, ci.Created)
+	}
+
+	cfg := ci.Config
+	cfg.AckWait = 45 * time.Second
+	_, err = js.UpdateConsumer("TEST", &cfg)
+	require_NoError(t, err)
+	nc.Close()
+	s.Shutdown()
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	ci, err = js.ConsumerInfo("TEST", "DUR")
+	require_NoError(t, err)
+	if !ci.Created.Equal(created) {
+		t.Fatalf("Expected created time %v after restart and update, got %v", created, ci.Created)
+	}
+}
+
 func TestJetStreamDeleteMsg(t *testing.T) {
 	cases := []struct {
 		name    string

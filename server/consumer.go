@@ -2070,8 +2070,11 @@ func (o *consumer) createdTime() time.Time {
 // Internal to allow creation time to be restored.
 func (o *consumer) setCreatedTime(created time.Time) {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.created = created
-	o.mu.Unlock()
+	if fs, ok := o.store.(*consumerFileStore); ok {
+		fs.setCreatedTime(created)
+	}
 }
 
 // This will check for extended interest in a subject. If we have local interest we just return
