@@ -2570,7 +2570,6 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	// that have been augmented from the original subscription.
 	// TODO(dlc) - Should we lock this down more?
 	if applyGlobalRouting {
-		c.leaf.smap[oldGWReplyPrefix+"*.>"]++
 		c.leaf.smap[gwReplyPrefix+">"]++
 	}
 	// Detect loops by subscribing to a specific subject and checking
