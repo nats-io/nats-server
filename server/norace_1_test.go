@@ -3500,7 +3500,8 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 		t.Fatalf("Error looking up consumer %q", "q1")
 	}
 	node := o.raftNode().(*raft)
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+	// Higher than 10s for minSnapDelta.
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
 			return fmt.Errorf("Did not compact the raft memory WAL")
 		}
