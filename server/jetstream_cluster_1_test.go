@@ -4746,17 +4746,25 @@ func TestJetStreamClusterStreamPeerRemoveNoReplacementIsRejected(t *testing.T) {
 				require_NotNil(t, sa)
 				require_True(t, sa.Group.Desired == nil)
 				require_True(t, slices.Equal(sa.Group.Peers, peers))
+				require_True(t, sjs.cluster.inflightStreams[globalAccountName]["TEST"] == nil)
 			}
 			checkPeers()
 
 			// A meta leader change runs reconcilePeerAssignments, which must find
-			// nothing to heal.
+			// nothing to heal. The old leader keeps reporting itself as leader until
+			// its monitor goroutine processes the leader change, wait for a newer term.
+			term := ml.getJetStream().getMetaGroup().Term()
 			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
-			c.waitOnLeader()
-			ml = c.leader()
-			require_NotNil(t, ml)
-
-			time.Sleep(500 * time.Millisecond)
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				ml = c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				if nterm := ml.getJetStream().getMetaGroup().Term(); nterm <= term {
+					return fmt.Errorf("meta leader still in term %d", nterm)
+				}
+				return nil
+			})
 			checkPeers()
 
 			// The stream is untouched and still fully usable.
@@ -5466,17 +5474,25 @@ func TestJetStreamClusterConsumerPeerRemoveNoReplacementIsRejected(t *testing.T)
 				require_NotNil(t, ca)
 				require_True(t, ca.Group.Desired == nil)
 				require_True(t, slices.Equal(ca.Group.Peers, peers))
+				require_True(t, sjs.cluster.inflightConsumers[globalAccountName]["TEST"]["CONSUMER"] == nil)
 			}
 			checkPeers()
 
 			// A meta leader change runs reconcilePeerAssignments, which must find
-			// nothing to heal.
+			// nothing to heal. The old leader keeps reporting itself as leader until
+			// its monitor goroutine processes the leader change, wait for a newer term.
+			term := ml.getJetStream().getMetaGroup().Term()
 			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
-			c.waitOnLeader()
-			ml = c.leader()
-			require_NotNil(t, ml)
-
-			time.Sleep(500 * time.Millisecond)
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				ml = c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				if nterm := ml.getJetStream().getMetaGroup().Term(); nterm <= term {
+					return fmt.Errorf("meta leader still in term %d", nterm)
+				}
+				return nil
+			})
 			checkPeers()
 
 			// The consumer is untouched and still fully usable.
