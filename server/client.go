@@ -4324,10 +4324,8 @@ func isReservedReply(reply []byte) bool {
 	// Faster to check with string([:]) than byte-by-byte
 	if isJSAckSubject(reply) {
 		return true
-	} else if len(reply) > gwReplyPrefixLen && bytesToString(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
-		return true
 	}
-	return false
+	return hasGWRoutedReplyPrefix(reply)
 }
 
 // This will decide to call the client code or router code.
