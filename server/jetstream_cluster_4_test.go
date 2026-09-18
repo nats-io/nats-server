@@ -7600,37 +7600,43 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if entries, _ := rg.Size(); entries != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d entries)", entries)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				entries, _ := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				entries, _ := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if entries > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if entries, _ := rg.Size(); entries != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d entries)", entries)
 						}
 						return nil
 					})
-					entries, _ = cc.meta.Size()
-					require_Equal(t, entries, 0)
 					return
 				}
 			}
@@ -7660,37 +7666,43 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if _, size := rg.Size(); size != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d bytes)", size)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				_, size := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				_, size := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if size > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if _, size := rg.Size(); size != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d bytes)", size)
 						}
 						return nil
 					})
-					_, size = cc.meta.Size()
-					require_Equal(t, size, 0)
 					return
 				}
 			}
