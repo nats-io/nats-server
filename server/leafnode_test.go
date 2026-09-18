@@ -6421,7 +6421,12 @@ func TestLeafNodeSignatureCB(t *testing.T) {
 	sl.Shutdown()
 	// Now check what happens if the connection is closed while in the callback.
 	blockCh := make(chan struct{})
+	inCB := make(chan struct{}, 1)
 	remote.SignatureCB = func(nonce []byte) (string, []byte, error) {
+		select {
+		case inCB <- struct{}{}:
+		default:
+		}
 		<-blockCh
 		sig, err := kp.Sign(nonce)
 		return ujwt, sig, err
@@ -6432,6 +6437,13 @@ func TestLeafNodeSignatureCB(t *testing.T) {
 	// Recreate the logger so that we are sure not to have possible previous errors
 	slog = &captureErrorLogger{errCh: make(chan string, 10)}
 	sl.SetLogger(slog, false, false)
+
+	// Wait until we're in the callback.
+	select {
+	case <-inCB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Signature callback was not invoked")
+	}
 
 	// Get the leaf connection from the temp clients map and close it.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
