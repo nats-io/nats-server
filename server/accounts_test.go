@@ -14,10 +14,12 @@
 package server
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -3797,6 +3799,52 @@ func TestAccountMaxConnectionsDuringLameDuckMode(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("Expected LDM reconnect")
 		}
+	}
+}
+
+func TestAccountMaxConnectionsRejectsPipelinedOps(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        no_auth_user: user
+        accounts {
+                TEST {
+                        users = [ {user: user, password: pwd} ]
+                        limits {
+                                max_connections: 1
+                        }
+                }
+        }
+        `))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	// Observer takes the only slot.
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
+
+	// Raw client sends CONNECT with pipelined PUB in a single write.
+	c, err := net.Dial("tcp", s.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+	require_NoError(t, c.SetDeadline(time.Now().Add(2*time.Second)))
+	r := bufio.NewReader(c)
+	info, err := r.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(info, "INFO"))
+	_, err = c.Write([]byte("CONNECT {}\r\nPUB foo 2\r\nhi\r\n"))
+	require_NoError(t, err)
+
+	// Only the rejection error should come back before the server closes the connection.
+	l, err := r.ReadString('\n')
+	require_NoError(t, err)
+	require_Contains(t, l, ErrTooManyAccountConnections.Error())
+	_, err = r.ReadString('\n')
+	require_Error(t, err, io.EOF)
+
+	if m, err := sub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Pipelined PUB was delivered: %q", m.Data)
 	}
 }
 
