@@ -6133,6 +6133,66 @@ func TestGatewaySingleOutbound(t *testing.T) {
 	}
 }
 
+func TestGatewayLegacyGRPrefixReservedOnClientIngress(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.Users = []*User{{
+		Username:    "denied",
+		Password:    "pwd",
+		Permissions: &Permissions{Publish: &SubjectPermission{Deny: []string{"foo"}}},
+	}}
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+
+	ncb := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	subB := natsSubSync(t, ncb, "foo")
+	natsFlush(t, ncb)
+
+	errCh := make(chan string, 8)
+	nca := natsConnect(t, fmt.Sprintf("nats://denied:pwd@%s:%d", oa.Host, oa.Port),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { errCh <- err.Error() }))
+	defer nca.Close()
+	// Cluster B re-sends un-prefixed replies to gateways with interest, so
+	// also make sure nothing comes back to A.
+	subA := natsSubSync(t, nca, "foo")
+	natsFlush(t, nca)
+
+	expectViolation := func(what string) {
+		t.Helper()
+		select {
+		case e := <-errCh:
+			if !strings.Contains(e, "Permissions Violation") {
+				t.Fatalf("Unexpected error: %v", e)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Expected permissions violation for %s", what)
+		}
+		for _, sub := range []*nats.Subscription{subB, subA} {
+			if m, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+				t.Fatalf("Unexpected delivery on %q: %q", m.Subject, m.Data)
+			}
+		}
+	}
+
+	legacy := string(sb.gateway.oldReplyPfx) + "foo"
+	for _, subj := range []string{"foo", string(sb.gateway.replyPfx) + "foo", legacy} {
+		natsPub(t, nca, subj, []byte("msg"))
+		natsFlush(t, nca)
+		expectViolation("publish on " + subj)
+	}
+	// The legacy prefix must also be rejected as a reply subject.
+	natsPubReq(t, nca, "bar", legacy, []byte("req"))
+	natsFlush(t, nca)
+	expectViolation("reply on " + legacy)
+}
+
 func TestGatewayReplyMapTracking(t *testing.T) {
 	// Increase the recSubExp value on servers so we have time
 	// to check the replies mapping structures.

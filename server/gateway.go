@@ -2496,10 +2496,13 @@ func isGWRoutedSubjectAndIsOldPrefix(subj []byte) (bool, bool) {
 	return false, false
 }
 
-// Returns true if subject starts with "$GNR.". This is to check that
-// clients can't publish on this subject.
+// Returns true if subject starts with "_GR_." or the legacy "$GR." prefix.
+// This is to check that clients can't publish on these subjects.
 func hasGWRoutedReplyPrefix(subj []byte) bool {
-	return len(subj) > gwReplyPrefixLen && bytesToString(subj[:gwReplyPrefixLen]) == gwReplyPrefix
+	if len(subj) > gwReplyPrefixLen && bytesToString(subj[:gwReplyPrefixLen]) == gwReplyPrefix {
+		return true
+	}
+	return len(subj) > oldGWReplyPrefixLen && bytesToString(subj[:oldGWReplyPrefixLen]) == oldGWReplyPrefix
 }
 
 // Evaluates if the given reply should be mapped or not.
