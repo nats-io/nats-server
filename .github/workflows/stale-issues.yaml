@@ -19,3 +19,59 @@ jobs:
           days-before-stale: 56 # Mark stale after 8 weeks (56 days) of inactivity
           days-before-close: -1 # Disable auto-closing
           exempt-all-milestones: true # Any issue/PR within a milestone will be omitted
+
+  close-missing-signoffs:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      pull-requests: write
+
+    steps:
+      - name: Close PRs with Sign-offs failures older than 7 days
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const repo = context.repo;
+            const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const expiredSignoffs = async (sha) => {
+              const checks = await github.paginate(github.rest.checks.listForRef, {
+                ...repo,
+                ref: sha,
+                check_name: 'Sign-offs',
+                filter: 'all',
+                per_page: 100,
+              });
+              // Include pending runs so a rerun cannot leave an old failure eligible.
+              const latest = checks
+                .filter(check => check.app?.slug === 'github-actions')
+                .sort((a, b) => b.id - a.id)[0];
+              if (latest?.status === 'completed' && latest.conclusion === 'failure' &&
+                  Date.parse(latest.completed_at) <= cutoff) return latest.id;
+            };
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              ...repo, state: 'open', per_page: 100,
+            });
+            for (const pull of pulls) {
+              try {
+                const checkId = await expiredSignoffs(pull.head.sha);
+                if (!checkId) continue;
+
+                // Recheck before closing in case commits or check results changed.
+                const pr = { ...repo, pull_number: pull.number };
+                const { data: current } = await github.rest.pulls.get(pr);
+                if (current.state !== 'open' || current.head.sha !== pull.head.sha) continue;
+                if (await expiredSignoffs(current.head.sha) !== checkId) continue;
+
+                // Close before commenting so a failed comment cannot repeat daily.
+                await github.rest.pulls.update({ ...pr, state: 'closed' });
+                await github.rest.issues.createComment({
+                  ...repo,
+                  issue_number: pull.number,
+                  body: 'This PR has been automatically closed as missing sign-offs have not been corrected in the last 7 days. Please review the `CONTRIBUTING.md` guide for more information.',
+                });
+                core.info(`Closed PR #${pull.number}: Sign-offs has failed for at least 7 days.`);
+              } catch (err) {
+                core.warning(`Skipping PR #${pull.number}: ${err.message}`);
+              }
+            }
