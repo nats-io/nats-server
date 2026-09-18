@@ -1952,12 +1952,16 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
-	jsStreamCreate(t, nc, &StreamConfig{
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,
 		Storage:  FileStorage,
 	})
+	require_NoError(t, err)
 
 	// We'll try flipping the state a few times and then do some sanity
 	// checks to check that it took effect.
