@@ -31,6 +31,7 @@ import (
 var (
 	pdh                            = windows.NewLazySystemDLL("pdh.dll")
 	winPdhOpenQuery                = pdh.NewProc("PdhOpenQuery")
+	winPdhCloseQuery               = pdh.NewProc("PdhCloseQuery")
 	winPdhAddCounter               = pdh.NewProc("PdhAddCounterW")
 	winPdhCollectQueryData         = pdh.NewProc("PdhCollectQueryData")
 	winPdhGetFormattedCounterValue = pdh.NewProc("PdhGetFormattedCounterValue")
@@ -42,7 +43,7 @@ func init() {
 		panic(err)
 	}
 	for _, p := range []*windows.LazyProc{
-		winPdhOpenQuery, winPdhAddCounter, winPdhCollectQueryData,
+		winPdhOpenQuery, winPdhCloseQuery, winPdhAddCounter, winPdhCollectQueryData,
 		winPdhGetFormattedCounterValue, winPdhGetFormattedCounterArray,
 	} {
 		if err := p.Find(); err != nil {
@@ -121,6 +122,12 @@ func pdhOpenQuery(datasrc *uint16, userdata uint32, query *PDH_HQUERY) error {
 	return nil
 }
 
+func pdhCloseQuery(hQuery PDH_HQUERY) {
+	if hQuery != 0 {
+		winPdhCloseQuery.Call(uintptr(hQuery))
+	}
+}
+
 func pdhCollectQueryData(hQuery PDH_HQUERY) error {
 	r0, _, _ := winPdhCollectQueryData.Call(uintptr(hQuery))
 	if r0 != 0 {
@@ -182,6 +189,12 @@ func getProcessImageName() (name string) {
 
 // initialize our counters
 func initCounters() (err error) {
+	defer func() {
+		if err != nil {
+			pdhCloseQuery(pcHandle)
+			pcHandle = 0
+		}
+	}()
 
 	processPid = os.Getpid()
 	// require an addressible nil pointer
