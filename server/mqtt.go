@@ -297,6 +297,8 @@ type mqttJSA struct {
 	domain    string // Domain or possibly empty. This is added to session subject.
 	domainSet bool   // covers if domain was set, even to empty
 	timeout   time.Duration
+	// JS API delete subjects, by stream.
+	deleteSubjs map[string]string
 }
 
 type mqttJSPubMsg struct {
@@ -1330,6 +1332,10 @@ func (s *Server) mqttCreateAccountSessionManager(acc *Account, quitCh chan struc
 	} else if d := s.getOpts().JetStreamDomain; d != _EMPTY_ {
 		as.domainTk = d + "."
 	}
+	as.jsa.deleteSubjs = make(map[string]string)
+	for _, stream := range []string{mqttSessStreamName, mqttRetainedMsgsStreamName, mqttQoS2IncomingMsgsStreamName} {
+		as.jsa.deleteSubjs[stream] = as.jsa.prefixDomain(fmt.Sprintf(JSApiMsgDeleteT, stream))
+	}
 	if as.jsa.domainSet {
 		s.Noticef("Creating MQTT streams/consumers with replicas %v for account %q in domain %q", replicas, accName, as.jsa.domain)
 	} else {
@@ -2031,12 +2037,24 @@ func (jsa *mqttJSA) loadSessionMsg(domainTk, cidHash string) (*StoredMsg, error)
 	return jsa.loadLastMsgFor(mqttSessStreamName, subject)
 }
 
+func (jsa *mqttJSA) deleteSubject(stream string) string {
+	if subj, ok := jsa.deleteSubjs[stream]; ok {
+		return subj
+	}
+	return jsa.prefixDomain(fmt.Sprintf(JSApiMsgDeleteT, stream))
+}
+
+// JSApiMsgDeleteRequest{Seq: seq, NoErase: true} without the encoder.
+func mqttDeleteMsgRequest(seq uint64) []byte {
+	req := make([]byte, 0, 44) // 7 + 20 digits at most + 17
+	req = append(req, `{"seq":`...)
+	req = strconv.AppendUint(req, seq, 10)
+	return append(req, `,"no_erase":true}`...)
+}
+
 // Deletes seq from stream and waits for the reply.
 func (jsa *mqttJSA) deleteMsg(stream string, seq uint64) error {
-	dreq := JSApiMsgDeleteRequest{Seq: seq, NoErase: true}
-	req, _ := json.Marshal(dreq)
-	subj := jsa.prefixDomain(fmt.Sprintf(JSApiMsgDeleteT, stream))
-	dmi, err := jsa.newRequest(mqttJSAMsgDelete, subj, 0, req)
+	dmi, err := jsa.newRequest(mqttJSAMsgDelete, jsa.deleteSubject(stream), 0, mqttDeleteMsgRequest(seq))
 	if err != nil {
 		return err
 	}
@@ -2047,12 +2065,10 @@ func (jsa *mqttJSA) deleteMsg(stream string, seq uint64) error {
 // Like deleteMsg without waiting: fire and forget with an empty reply,
 // otherwise the caller registers reply in jsa.replies.
 func (jsa *mqttJSA) deleteMsgAsync(stream string, seq uint64, reply string) {
-	dreq := JSApiMsgDeleteRequest{Seq: seq, NoErase: true}
-	req, _ := json.Marshal(dreq)
 	jsa.sendq.push(&mqttJSPubMsg{
-		subj:  jsa.prefixDomain(fmt.Sprintf(JSApiMsgDeleteT, stream)),
+		subj:  jsa.deleteSubject(stream),
 		reply: reply,
-		msg:   req,
+		msg:   mqttDeleteMsgRequest(seq),
 	})
 }
 

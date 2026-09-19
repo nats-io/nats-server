@@ -10769,3 +10769,14 @@ func TestMQTTQoS2RetransmitWhileHeldStoresOnce(t *testing.T) {
 	testMQTTCheckPubMsgNoAck(t, mcs, msr, "foo", mqttPubQos1, []byte("m"))
 	testMQTTExpectNothing(t, msr)
 }
+
+// The hand-built delete request must stay what the encoder would produce.
+func TestMQTTDeleteMsgRequestEncoding(t *testing.T) {
+	for _, seq := range []uint64{0, 1, 42, 1 << 63, ^uint64(0)} {
+		expected, err := json.Marshal(JSApiMsgDeleteRequest{Seq: seq, NoErase: true})
+		require_NoError(t, err)
+		if got := mqttDeleteMsgRequest(seq); !bytes.Equal(got, expected) {
+			t.Fatalf("seq %v: got %s, expected %s", seq, got, expected)
+		}
+	}
+}
