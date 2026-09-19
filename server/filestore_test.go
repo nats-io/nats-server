@@ -16639,3 +16639,179 @@ func TestFileStoreStopWaitsForInflightSync(t *testing.T) {
 	fs.syncMu.Unlock()
 	require_NoError(t, <-deleteDone)
 }
+
+func TestFileStoreCompactionPreservesConcurrentBlockSelection(t *testing.T) {
+	for _, blocks := range []int{2, 64} {
+		t.Run(fmt.Sprintf("blocks=%d", blocks), func(t *testing.T) {
+			msg := []byte("hello")
+			fs, err := newFileStore(
+				FileStoreConfig{
+					StoreDir: t.TempDir(), BlockSize: 100 * fileStoreMsgSize("foo", nil, msg),
+					CacheExpire: time.Hour, SyncInterval: time.Hour,
+				},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage, Retention: WorkQueuePolicy},
+			)
+			require_NoError(t, err)
+			defer fs.Stop()
+			for i := 1; i <= blocks*100; i++ {
+				seq, _, err := fs.StoreMsg("foo", nil, msg, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, uint64(i))
+			}
+			// Preserve an old pending message and an unread tail in the first block.
+			// The small block size avoids inline compaction during these removals.
+			for seq := uint64(2); seq <= 70; seq++ {
+				removed, err := fs.RemoveMsg(seq)
+				require_NoError(t, err)
+				require_True(t, removed)
+			}
+			require_NoError(t, fs.FlushAllPending())
+			sm, _, err := fs.LoadNextMsg("", false, 71, nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, uint64(71))
+
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			resume := func() { once.Do(func() { close(release) }) }
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			mb.mu.Lock()
+			mb.compactTestHook = func() {
+				close(entered)
+				<-release
+			}
+			mb.mu.Unlock()
+			fs.mu.RUnlock()
+			go func() { fs.syncBlocks(); close(done) }()
+			defer func() { resume(); <-done }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("compaction did not reach its first live record")
+			}
+
+			// Exercise both linear and binary selection while compaction holds mb.mu.
+			// LoadNextMsg uses this selector under fs.mu.RLock, without mb.mu.
+			fs.mu.RLock()
+			_, selected := fs.selectMsgBlockWithIndex(71)
+			fs.mu.RUnlock()
+			if selected != mb {
+				t.Error("compaction made block selection skip the unread tail")
+				if selected != nil {
+					sm, _, err := fs.LoadNextMsg("", false, 71, nil)
+					require_NoError(t, err)
+					t.Logf("read starting at 71 returned %d", sm.seq)
+				}
+			}
+			resume()
+			<-done
+			mb.mu.Lock()
+			mb.compactTestHook = nil
+			mb.mu.Unlock()
+			sm, _, err = fs.LoadNextMsg("", false, 71, nil)
+			require_NoError(t, err)
+			require_Equal(t, sm.seq, uint64(71))
+			for seq := uint64(71); seq <= 100; seq++ {
+				_, err := fs.LoadMsg(seq, nil)
+				require_NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestFileStoreCompactionPreservesRedelivery(t *testing.T) {
+	for _, blocks := range []int{2, 64} {
+		t.Run(fmt.Sprintf("blocks=%d", blocks), func(t *testing.T) {
+			msg := []byte("hello")
+			fs, err := newFileStore(
+				FileStoreConfig{
+					StoreDir: t.TempDir(), BlockSize: 100 * fileStoreMsgSize("foo", nil, msg),
+					CacheExpire: time.Hour, SyncInterval: time.Hour,
+				},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage, Retention: WorkQueuePolicy},
+			)
+			require_NoError(t, err)
+			defer fs.Stop()
+			for i := 1; i <= blocks*100; i++ {
+				_, _, err := fs.StoreMsg("foo", nil, msg, 0)
+				require_NoError(t, err)
+			}
+			// Keep an isolated pending record behind the compactor's first live record.
+			for seq := uint64(2); seq <= 100; seq++ {
+				if seq == 71 {
+					continue
+				}
+				removed, err := fs.RemoveMsg(seq)
+				require_NoError(t, err)
+				require_True(t, removed)
+			}
+			require_NoError(t, fs.FlushAllPending())
+			_, err = fs.LoadMsg(71, nil)
+			require_NoError(t, err)
+
+			o := &consumer{
+				srv:       &Server{opts: &Options{}},
+				mset:      &stream{store: fs},
+				cfg:       ConsumerConfig{AckPolicy: AckExplicit},
+				retention: WorkQueuePolicy,
+				sseq:      uint64(blocks*100 + 1),
+				dseq:      2,
+				asflr:     70,
+				maxdc:     10,
+				pending:   map[uint64]*Pending{71: {Sequence: 1, Timestamp: time.Now().Add(-time.Minute).UnixNano()}},
+			}
+			o.addToRedeliverQueue(71)
+
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			resume := func() { once.Do(func() { close(release) }) }
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			mb.mu.Lock()
+			mb.compactTestHook = func() {
+				close(entered)
+				<-release
+			}
+			mb.mu.Unlock()
+			fs.mu.RUnlock()
+			go func() { fs.syncBlocks(); close(done) }()
+			defer func() { resume(); <-done }()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("compaction did not reach its first live record")
+			}
+
+			fs.mu.RLock()
+			_, selected := fs.selectMsgBlockWithIndex(71)
+			fs.mu.RUnlock()
+			// A correct selection waits for mb.mu; let compaction finish in that case.
+			// A wrong selection must exercise the consumer's missing-message path first.
+			if selected == mb {
+				resume()
+			}
+			o.mu.Lock()
+			pmsg, dc, readErr := o.getNextMsg()
+			_, pending := o.pending[71]
+			_, retry := o.rdc[71]
+			floor := o.asflr
+			o.mu.Unlock()
+			resume()
+			<-done
+			mb.mu.Lock()
+			mb.compactTestHook = nil
+			mb.mu.Unlock()
+			var delivered uint64
+			if pmsg != nil {
+				delivered = pmsg.seq
+				pmsg.returnToPool()
+			}
+			_, err = fs.LoadMsg(71, nil)
+			require_NoError(t, err)
+			if readErr != nil || delivered != 71 || dc != 2 || !pending || !retry || floor != 70 {
+				t.Fatalf("retained redelivery lost: seq=%d deliveries=%d error=%v pending=%v retry=%v ack_floor=%d",
+					delivered, dc, readErr, pending, retry, floor)
+			}
+		})
+	}
+}
