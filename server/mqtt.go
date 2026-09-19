@@ -3036,7 +3036,8 @@ func mqttEncodeRetainedMessage(rm *mqttRetainedMsg) (natsMsg []byte, headerLen i
 		l += len(rm.Msg)
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, l))
+	// +LEN_CR_LF: sendJSAPIrequests appends the CRLF in place.
+	buf := bytes.NewBuffer(make([]byte, 0, l+LEN_CR_LF))
 
 	buf.WriteString(hdrLine)
 
@@ -4433,7 +4434,8 @@ func mqttComputeNatsMsgSize(pp *mqttPublish, encodePP bool) int {
 func mqttNewDeliverableMessage(pp *mqttPublish, encodePP bool) (natsMsg []byte, headerLen int) {
 	size := mqttComputeNatsMsgSize(pp, encodePP)
 
-	buf := bytes.NewBuffer(make([]byte, 0, size))
+	// +LEN_CR_LF: sendJSAPIrequests appends the CRLF in place.
+	buf := bytes.NewBuffer(make([]byte, 0, size+LEN_CR_LF))
 
 	qos := mqttGetQoS(pp.flags)
 
