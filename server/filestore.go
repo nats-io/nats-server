@@ -6494,6 +6494,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	var le = binary.LittleEndian
 	var firstSet bool
 	var last uint64
+	var lastTime int64
 	var msgs uint64
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -6545,9 +6546,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 					atomic.StoreUint64(&mb.first.seq, seq)
 				}
 				if seq >= last {
-					last = seq
-					atomic.StoreUint64(&mb.last.seq, last)
-					mb.last.ts = ts
+					last, lastTime = seq, ts
 				}
 			}
 		}
@@ -6587,6 +6586,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	sync := mb.fs.syncAlways.Load() || mb.fs.syncOnFlush.Load()
 	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
+	}
+
+	// Block selection reads last.seq without mb.mu, so publish it only
+	// after the replacement file is installed.
+	if msgs > 0 {
+		atomic.StoreUint64(&mb.last.seq, last)
+		mb.last.ts = lastTime
 	}
 
 	// Make sure to sync if we have not done so yet

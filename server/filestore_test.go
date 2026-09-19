@@ -16639,3 +16639,135 @@ func TestFileStoreStopWaitsForInflightSync(t *testing.T) {
 	fs.syncMu.Unlock()
 	require_NoError(t, <-deleteDone)
 }
+
+func testFileStoreConcurrentCompaction(t *testing.T, read func(*fileStore, uint64) error) {
+	t.Helper()
+	for _, blocks := range []int{2, 64} {
+		t.Run(fmt.Sprintf("blocks=%d", blocks), func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{
+					StoreDir: t.TempDir(), BlockSize: 1024 * 1024,
+					CacheExpire: time.Hour, SyncInterval: time.Hour,
+				},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage, Retention: WorkQueuePolicy},
+			)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// A populated first block gives readers time to overlap the compaction scan.
+			const seq = 4096
+			for range seq {
+				_, _, err := fs.StoreMsg("foo", nil, []byte("hello"), 0)
+				require_NoError(t, err)
+			}
+			for i := 1; i < blocks; i++ {
+				fs.mu.Lock()
+				_, err := fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+				require_NoError(t, err)
+			}
+			removed, err := fs.RemoveMsg(2)
+			require_NoError(t, err)
+			require_True(t, removed)
+			require_NoError(t, fs.FlushAllPending())
+			require_Equal(t, fs.numMsgBlocks(), blocks)
+			require_NoError(t, read(fs, seq))
+
+			var stop atomic.Bool
+			var reads atomic.Uint64
+			var wg sync.WaitGroup
+			errs := make(chan error, 1)
+			for range 4 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for !stop.Load() {
+						if err := read(fs, seq); err != nil {
+							select {
+							case errs <- err:
+							default:
+							}
+							return
+						}
+						reads.Add(1)
+						runtime.Gosched()
+					}
+				}()
+			}
+			defer func() { stop.Store(true); wg.Wait() }()
+
+			mb := fs.getFirstBlock()
+			for range 25 {
+				// Match syncBlocks' shared store lock and exclusive block lock.
+				fs.mu.RLock()
+				mb.mu.Lock()
+				err := mb.compact()
+				mb.mu.Unlock()
+				fs.mu.RUnlock()
+				require_NoError(t, err)
+				runtime.Gosched()
+			}
+			stop.Store(true)
+			wg.Wait()
+			_, err = fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
+			select {
+			case err := <-errs:
+				t.Fatal(err)
+			default:
+			}
+			require_True(t, reads.Load() > 0)
+			require_NoError(t, read(fs, seq))
+		})
+	}
+}
+
+func TestFileStoreCompactionPreservesConcurrentBlockSelection(t *testing.T) {
+	testFileStoreConcurrentCompaction(t, func(fs *fileStore, seq uint64) error {
+		sm, _, err := fs.LoadNextMsg("", false, seq, nil)
+		if err != nil {
+			return err
+		}
+		if sm.seq != seq {
+			return fmt.Errorf("read starting at %d returned %d", seq, sm.seq)
+		}
+		return nil
+	})
+}
+
+func TestFileStoreCompactionPreservesRedelivery(t *testing.T) {
+	testFileStoreConcurrentCompaction(t, func(fs *fileStore, seq uint64) error {
+		var state StreamState
+		fs.FastState(&state)
+		o := &consumer{
+			srv:       &Server{opts: &Options{}},
+			mset:      &stream{store: fs},
+			cfg:       ConsumerConfig{AckPolicy: AckExplicit},
+			retention: WorkQueuePolicy,
+			sseq:      state.LastSeq + 1,
+			dseq:      2,
+			asflr:     seq - 1,
+			maxdc:     10,
+			pending:   map[uint64]*Pending{seq: {Sequence: 1, Timestamp: time.Now().Add(-time.Minute).UnixNano()}},
+		}
+		o.addToRedeliverQueue(seq)
+		o.mu.Lock()
+		pmsg, dc, err := o.getNextMsg()
+		_, pending := o.pending[seq]
+		_, retry := o.rdc[seq]
+		floor := o.asflr
+		o.mu.Unlock()
+		var delivered uint64
+		if pmsg != nil {
+			delivered = pmsg.seq
+			pmsg.returnToPool()
+		}
+		if err != nil || delivered != seq || dc != 2 || !pending || !retry || floor != seq-1 {
+			return fmt.Errorf("retained redelivery lost: seq=%d deliveries=%d error=%v pending=%v retry=%v ack_floor=%d",
+				delivered, dc, err, pending, retry, floor)
+		}
+		return nil
+	})
+}
