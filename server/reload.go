@@ -1548,6 +1548,21 @@ func (s *Server) reloadOptions(curOpts, newOpts *Options) error {
 	ctx := reloadContext{oldClusterPerms: curOpts.Cluster.Permissions}
 	s.setOpts(newOpts)
 	s.applyOptions(&ctx, changed)
+
+	// Install held route subscriptions for newly added accounts.
+	var routes []*client
+	s.mu.Lock()
+	for _, conns := range s.routes {
+		for _, route := range conns {
+			if route != nil {
+				routes = append(routes, route)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if len(routes) > 0 {
+		s.installPendingRouteSubs(routes)
+	}
 	return nil
 }
 
