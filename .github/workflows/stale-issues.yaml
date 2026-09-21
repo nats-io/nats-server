@@ -34,15 +34,25 @@ jobs:
     steps:
       - name: Close PRs with uncorrected sign-offs or no recent activity
         uses: actions/github-script@v8
+        env:
+          SIGNOFF_DAYS: ${{ vars.PR_SIGNOFF_DAYS || '7' }}
+          DRAFT_DAYS: ${{ vars.PR_DRAFT_DAYS || '14' }}
+          INACTIVE_DAYS: ${{ vars.PR_INACTIVE_DAYS || '90' }}
         with:
           script: |
             const repo = context.repo;
 
             // How long each situation is tolerated before the PR is closed.
             const DAY = 24 * 60 * 60 * 1000;
-            const SIGNOFF_DAYS = 7;   // Failed Sign-offs check not corrected
-            const DRAFT_DAYS = 14;    // Draft PRs with no activity
-            const INACTIVE_DAYS = 90; // Non-draft PRs with no activity
+            const SIGNOFF_DAYS = Number(process.env.SIGNOFF_DAYS);   // Failed Sign-offs check not corrected
+            const DRAFT_DAYS = Number(process.env.DRAFT_DAYS);       // Draft PRs with no activity
+            const INACTIVE_DAYS = Number(process.env.INACTIVE_DAYS); // Non-draft PRs with no activity
+
+            for (const [name, days] of Object.entries({ SIGNOFF_DAYS, DRAFT_DAYS, INACTIVE_DAYS })) {
+              if (!process.env[name].trim() || !Number.isSafeInteger(days) || days < 0) {
+                throw new Error(`${name} must be a non-negative integer`);
+              }
+            }
 
             const REOPEN = 'Please comment here if you would like the team to re-open this PR so that you can continue with it.';
             const MESSAGES = {
