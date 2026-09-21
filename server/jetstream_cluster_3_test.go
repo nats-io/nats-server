@@ -8303,6 +8303,56 @@ func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterConcurrentR1ConsumerUpdatesAllRespond(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	// Send many concurrent, identical create-or-update requests for the R1 consumer.
+	req, err := json.Marshal(CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{Name: "C", AckPolicy: AckExplicit, Replicas: 1},
+		Action: ActionCreateOrUpdate,
+	})
+	require_NoError(t, err)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, "TEST") + ".C"
+
+	const requests = 100
+	subs := make([]*nats.Subscription, 0, requests)
+	for range requests {
+		sub, err := nc.SubscribeSync(nats.NewInbox())
+		require_NoError(t, err)
+		subs = append(subs, sub)
+	}
+	for _, sub := range subs {
+		require_NoError(t, nc.PublishRequest(subject, sub.Subject, req))
+	}
+	require_NoError(t, nc.Flush())
+
+	for i, sub := range subs {
+		msg, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			t.Fatalf("Request %d did not receive a response: %v", i, err)
+		}
+		var resp JSApiConsumerCreateResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_NotNil(t, resp.ConsumerInfo)
+	}
+}
+
 func TestJetStreamClusterStreamRaftGroupChangesWhenMovingToOrOffR1(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
