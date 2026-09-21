@@ -1083,11 +1083,26 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 		c.perms = nil
 		c.mperms = nil
 		c.darray = nil
+		c.replies = nil
 		return true
 	}
+	var responsePermissionsUnchanged bool
+	if c.user.Permissions != nil {
+		responsePermissionsUnchanged = sameResponsePermissions(c.user.Permissions.Response, perms.Response)
+	}
+	replies := c.replies
 	c.user.Permissions = perms.clone()
 	c.setPermissions(c.user.Permissions)
+	if responsePermissionsUnchanged {
+		c.replies = replies
+	} else if c.user.Permissions.Response == nil {
+		c.replies = nil
+	}
 	return true
+}
+
+func sameResponsePermissions(current, updated *ResponsePermission) bool {
+	return current != nil && updated != nil && *current == *updated
 }
 
 func splitSubjectQueue(sq string) ([]byte, []byte, error) {
