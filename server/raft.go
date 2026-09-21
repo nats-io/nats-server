@@ -4858,6 +4858,11 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.commit = ae.pindex
 			n.resetInitializing()
 
+			// Unset the membership change, it's already contained in the snapshot's peer state.
+			if n.membChange != nil && n.membChange.index <= n.commit {
+				n.membChange = nil
+			}
+
 			if !hadPreviousSnapshot {
 				// If the first snapshot we install is received from another server, then we immediately signal
 				// to the upper-layer it can coalesce catchup entries.
