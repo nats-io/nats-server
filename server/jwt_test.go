@@ -6562,6 +6562,105 @@ func TestJWTMappings(t *testing.T) {
 	test("foo2", "bar2", true)
 }
 
+func TestClaimValidateRejectsBadMappings(t *testing.T) {
+	_, aPub := createKey(t)
+
+	t.Run("duplicate destination", func(t *testing.T) {
+		claim := jwt.NewAccountClaims(aPub)
+		claim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{
+			"foo": {
+				{Subject: "dup", Weight: 50},
+				{Subject: "dup", Weight: 50},
+			},
+		}
+		err := claimValidate(claim)
+		require_Error(t, err)
+		require_True(t, strings.Contains(err.Error(), "duplicate entry"))
+	})
+
+	t.Run("invalid transform token", func(t *testing.T) {
+		claim := jwt.NewAccountClaims(aPub)
+		claim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{
+			"foo.*": {{Subject: "bar.$2"}},
+		}
+		err := claimValidate(claim)
+		require_Error(t, err)
+	})
+
+	// Empty dest short-circuits ValidateMapping/NewSubjectTransform; src must
+	// still be rejected to match AddWeightedMappings' IsValidSubject(src).
+	t.Run("invalid src with empty dest", func(t *testing.T) {
+		claim := jwt.NewAccountClaims(aPub)
+		claim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{
+			"foo..bar": {{Subject: ""}},
+		}
+		err := claimValidate(claim)
+		require_Error(t, err)
+		require_True(t, strings.Contains(err.Error(), "foo..bar"))
+	})
+
+	t.Run("valid mapping still accepted", func(t *testing.T) {
+		claim := jwt.NewAccountClaims(aPub)
+		claim.AddMapping("foo", jwt.WeightedMapping{Subject: "bar"})
+		require_NoError(t, claimValidate(claim))
+	})
+}
+
+func TestJWTMappingsRejectInvalidAndPreserveExisting(t *testing.T) {
+	sysKp, syspub := createKey(t)
+	sysJwt := encodeClaim(t, jwt.NewAccountClaims(syspub), syspub)
+	sysCreds := newUser(t, sysKp)
+
+	aKp, aPub := createKey(t)
+	aClaim := jwt.NewAccountClaims(aPub)
+	aClaim.AddMapping("foo", jwt.WeightedMapping{Subject: "bar1"})
+	aJwtGood := encodeClaim(t, aClaim, aPub)
+
+	// Duplicate destination: jwt.Validate allows this, AddWeightedMappings does not.
+	aClaim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{
+		"foo": {
+			{Subject: "dup", Weight: 50},
+			{Subject: "dup", Weight: 50},
+		},
+	}
+	aJwtDup := encodeClaim(t, aClaim, aPub)
+
+	// Invalid transform token $2 with only one wildcard capture.
+	aClaim.Mappings = map[jwt.Subject][]jwt.WeightedMapping{
+		"foo.*": {{Subject: "bar.$2"}},
+	}
+	aJwtBadTransform := encodeClaim(t, aClaim, aPub)
+
+	dirSrv := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: full
+			dir: '%s'
+		}
+    `, ojwt, syspub, dirSrv)))
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+	updateJwt(t, srv.ClientURL(), sysCreds, sysJwt, 1)
+
+	require_Len(t, 1, updateJwt(t, srv.ClientURL(), sysCreds, aJwtGood, 1))
+
+	// Bad pushes must fail validation (passCnt == 0) and leave foo->bar1 intact.
+	require_Len(t, 0, updateJwt(t, srv.ClientURL(), sysCreds, aJwtDup, 1))
+	require_Len(t, 0, updateJwt(t, srv.ClientURL(), sysCreds, aJwtBadTransform, 1))
+
+	nc := natsConnect(t, srv.ClientURL(), createUserCreds(t, srv, aKp))
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("bar1")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+	require_NoError(t, nc.Publish("foo", nil))
+	_, err = sub.NextMsg(500 * time.Millisecond)
+	require_NoError(t, err)
+}
+
 func TestJWTOperatorPinnedAccounts(t *testing.T) {
 	kps, pubs, jwts := [4]nkeys.KeyPair{}, [4]string{}, [4]string{}
 	for i := 0; i < 4; i++ {
