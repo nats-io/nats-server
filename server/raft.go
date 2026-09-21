@@ -3991,7 +3991,9 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 
 			// We are done with this membership change
-			n.membChange = nil
+			if n.membChange != nil && n.membChange.index == index {
+				n.membChange = nil
+			}
 
 		case EntryRemovePeer:
 			peer := string(e.Data)
@@ -4012,7 +4014,9 @@ func (n *raft) applyCommit(index uint64) error {
 			committed = append(committed, e)
 
 			// We are done with this membership change
-			n.membChange = nil
+			if n.membChange != nil && n.membChange.index == index {
+				n.membChange = nil
+			}
 
 			// If this is us and we are the leader signal the caller
 			// to attempt to stepdown.

@@ -9272,3 +9272,52 @@ func TestNRGCatchupSnapshotClearsCoveredMembershipChange(t *testing.T) {
 	n.switchToLeader()
 	require_NoError(t, n.ProposeRemovePeer(nats0))
 }
+
+func TestNRGApplyEarlierMembershipChangeKeepsLaterInflight(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	peer := "yrzKKRBu"  // "nats-1"
+	n.Lock()
+	n.addPeer(nats0)
+	n.Unlock()
+	require_Len(t, len(n.peers), 2)
+
+	// Store AddPeer at index 1 and RemovePeer of the same peer at index 2, both uncommitted,
+	// like a node that is caught up through a scale up followed by a scale down.
+	aeAddPeer := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{newEntry(EntryAddPeer, []byte(peer))}})
+	aeRemovePeer := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{newEntry(EntryRemovePeer, []byte(peer))}})
+	n.processAppendEntry(aeAddPeer, n.aesub)
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_NotNil(t, n.membChange)
+	require_Equal(t, n.membChange.index, 2)
+	_, ok := n.peers[peer]
+	require_False(t, ok)
+
+	// The leader commits index 1 only. The peer is a committed member now,
+	// but its removal at index 2 is still inflight.
+	aeCommit := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 1, pindex: 2, entries: nil})
+	n.processAppendEntry(aeCommit, n.aesub)
+	require_Equal(t, n.commit, 1)
+	_, ok = n.peers[peer]
+	require_True(t, ok)
+	require_True(t, n.MembershipChangeInProgress())
+	require_NotNil(t, n.membChange)
+	require_Equal(t, n.membChange.index, 2)
+	require_Equal(t, n.membChange.peer, peer)
+
+	// We win an election and commit index 2 ourselves. The removal is real, not
+	// reverted, and must be applied.
+	n.term = 2
+	n.switchToLeader()
+	n.Lock()
+	err := n.applyCommit(2)
+	n.Unlock()
+	require_NoError(t, err)
+	_, ok = n.peers[peer]
+	require_False(t, ok)
+	require_Equal(t, n.csz, 2)
+	require_True(t, n.membChange == nil)
+}
