@@ -10790,20 +10790,13 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			}
 
 			// We will write to a new file and mv/rename it in case of failure.
-			mfn := filepath.Join(smb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, smb.index))
-			fs.dios.acquire()
-			err = os.WriteFile(mfn, nbuf, defaultFilePerms)
-			fs.dios.release()
+			sync := fs.syncAlways.Load()
+			err = writeAtomically(fs.dios, smb.mfn, nbuf, defaultFilePerms, sync)
 			if err != nil {
-				_ = os.Remove(mfn)
 				smb.mu.Unlock()
 				return purged, bytes, err
 			}
-			if err = os.Rename(mfn, smb.mfn); err != nil {
-				_ = os.Remove(mfn)
-				smb.mu.Unlock()
-				return purged, bytes, err
-			}
+			smb.needSync = !sync
 
 			// Make sure to remove fss state.
 			smb.fss = nil

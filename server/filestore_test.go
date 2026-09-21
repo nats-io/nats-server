@@ -12720,6 +12720,39 @@ func TestFileStoreCompactRewritesFileWithSwap(t *testing.T) {
 	require_Equal(t, mbcache.idx[0], 0)
 }
 
+func TestFileStoreCompactSync(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: defaultMediumBlockSize, SyncAlways: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "WAL", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Fill one block past the compact threshold
+	mb := fs.getFirstBlock()
+	msg := make([]byte, 256*1024)
+	var seq, rbytes uint64
+	for rbytes <= compactMinimum {
+		seq, _, err = fs.StoreMsg(_EMPTY_, nil, msg, 0)
+		require_NoError(t, err)
+		mb.mu.RLock()
+		rbytes = mb.rbytes
+		mb.mu.RUnlock()
+	}
+	fs.syncBlocks()
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	// Compact to seq so that a new block is written, containing only the last entry.
+	// Verify that with SyncAlways the new block file does not need sync.
+	purged, err := fs.Compact(seq)
+	require_NoError(t, err)
+	require_Equal(t, purged, seq-1)
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	require_LessThan(t, mb.rbytes, rbytes)
+	require_False(t, mb.needSync)
+}
+
 func TestFileStoreIndexCacheBufIdxMismatch(t *testing.T) {
 	const (
 		KindTruncateFull = iota
