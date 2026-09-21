@@ -2324,8 +2324,16 @@ func TestJetStreamAccountResolverNoFetchIfNotMember(t *testing.T) {
 	s := c.leader()
 	js := s.getJetStream()
 	ci := &ClientInfo{Cluster: "R3S", Account: aPub}
-	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}}
-	sa := &streamAssignment{Client: ci, Config: cfg}
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 2}
+	// Place the stream on the other servers, so this server is not a member.
+	var peers []string
+	for _, srv := range c.servers {
+		if srv != s {
+			peers = append(peers, srv.NodeName())
+		}
+	}
+	rg := &raftGroup{Name: "TEST", Storage: cfg.Storage, Peers: peers}
+	sa := &streamAssignment{Client: ci, Config: cfg, Group: rg}
 	start := time.Now()
 	// Simulate some meta operations where this server is not a member.
 	// The server should not fetch the account from the resolver.
