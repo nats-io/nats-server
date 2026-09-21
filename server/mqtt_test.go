@@ -10410,7 +10410,7 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 		jsa := &mqttJSA{timeout: time.Second}
 		pipe := &mqttAckPipeline{
 			jsa:    jsa,
-			q:      make(chan mqttPipelined, 4),
+			q:      make(chan *mqttPipelined, 4),
 			quitCh: make(chan struct{}),
 		}
 
@@ -10419,8 +10419,9 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 			// The readLoop side: register, admit until rejected.
 			defer close(done)
 			for n := 0; ; n++ {
-				ack := &mqttPipelinedPubAck{pi: uint16(n%0xFFFF + 1), reply: fmt.Sprintf("reply.%d", n), done: make(chan error, 1)}
-				jsa.replies.Store(ack.reply, func(any) {})
+				ack := newMQTTPipelined(mqttPacketPubAck, uint16(n%0xFFFF+1))
+				ack.storeReply = fmt.Sprintf("reply.%d", n)
+				jsa.replies.Store(ack.storeReply, func(any) {})
 				if err := pipe.push(ack); err != nil {
 					return
 				}
@@ -10431,8 +10432,8 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 		// concurrently with the pushes, as the connection-close handler
 		// does.
 		for j := 0; j < i%4; j++ {
-			ack := (<-pipe.q).(*mqttPipelinedPubAck)
-			jsa.replies.Delete(ack.reply)
+			ack := <-pipe.q
+			jsa.replies.Delete(ack.storeReply)
 		}
 		pipe.shutdown()
 		<-done
@@ -10449,16 +10450,17 @@ func TestMQTTQoS1PubAckPipelineShutdownRace(t *testing.T) {
 	jsa := &mqttJSA{timeout: time.Second}
 	pipe := &mqttAckPipeline{
 		jsa:    jsa,
-		q:      make(chan mqttPipelined, 4),
+		q:      make(chan *mqttPipelined, 4),
 		quitCh: make(chan struct{}),
 	}
 	pipe.shutdown()
-	ack := &mqttPipelinedPubAck{pi: 1, reply: "reply.stopped", done: make(chan error, 1)}
-	jsa.replies.Store(ack.reply, func(any) {})
+	ack := newMQTTPipelined(mqttPacketPubAck, 1)
+	ack.storeReply = "reply.stopped"
+	jsa.replies.Store(ack.storeReply, func(any) {})
 	if err := pipe.push(ack); err != errMQTTAckPipelineStopped {
 		t.Fatalf("Expected errMQTTAckPipelineStopped, got %v", err)
 	}
-	if _, ok := jsa.replies.Load(ack.reply); ok {
+	if _, ok := jsa.replies.Load(ack.storeReply); ok {
 		t.Fatal("reply registration not cleaned up on rejected push")
 	}
 	if n := len(pipe.q); n != 0 {
