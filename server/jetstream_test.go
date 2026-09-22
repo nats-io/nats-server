@@ -12696,8 +12696,10 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 		}
 	})
 
-	// The storage has to be MemoryStorage to show the issue
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket", Storage: nats.MemoryStorage})
+	// The storage has to be MemoryStorage to show the issue.
+	// History must cover all revisions, otherwise a Put can evict the
+	// previous revision of the key before the watchers have received it.
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket", Storage: nats.MemoryStorage, History: 64})
 	require_NoError(t, err)
 
 	w1, err := kv.WatchAll()
@@ -12706,36 +12708,49 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 	w2, err := kv.WatchAll(nats.MetaOnly())
 	require_NoError(t, err)
 
-	kv.Put("key1", []byte("aaa"))
-	kv.Put("key1", []byte("aab"))
-	kv.Put("key2", []byte("zza"))
-	kv.Put("key2", []byte("zzb"))
-	kv.Delete("key1")
-	kv.Delete("key2")
-	kv.Put("key1", []byte("aac"))
-	kv.Put("key2", []byte("zzc"))
-	kv.Delete("key1")
-	kv.Delete("key2")
-	kv.Purge("key1")
-	kv.Purge("key2")
+	_, err = kv.Put("key1", []byte("aaa"))
+	require_NoError(t, err)
+	_, err = kv.Put("key1", []byte("aab"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zza"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zzb"))
+	require_NoError(t, err)
+	require_NoError(t, kv.Delete("key1"))
+	require_NoError(t, kv.Delete("key2"))
+	_, err = kv.Put("key1", []byte("aac"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zzc"))
+	require_NoError(t, err)
+	require_NoError(t, kv.Delete("key1"))
+	require_NoError(t, kv.Delete("key2"))
 
-	checkUpdates := func(updates <-chan nats.KeyValueEntry) {
+	checkUpdates := func(updates <-chan nats.KeyValueEntry, expected int) {
 		t.Helper()
 		count := 0
 		for {
 			select {
 			case <-updates:
 				count++
-				if count == 13 {
+				if count == expected {
 					return
 				}
-			case <-time.After(time.Second):
-				t.Fatal("Did not receive all updates")
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive all updates, got %d of %d", count, expected)
 			}
 		}
 	}
-	checkUpdates(w1.Updates())
-	checkUpdates(w2.Updates())
+	// Both watchers must have received the initial marker and the 10 updates
+	// before purging, since a purge removes any not-yet-delivered messages
+	// for that key from the stream.
+	checkUpdates(w1.Updates(), 11)
+	checkUpdates(w2.Updates(), 11)
+
+	require_NoError(t, kv.Purge("key1"))
+	require_NoError(t, kv.Purge("key2"))
+
+	checkUpdates(w1.Updates(), 2)
+	checkUpdates(w2.Updates(), 2)
 
 	select {
 	case e := <-errCh:
