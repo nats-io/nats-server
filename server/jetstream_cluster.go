@@ -5243,8 +5243,20 @@ func (js *jetStream) setMigrationStatus(rg *raftGroup, status *DesiredClusterInf
 		return
 	}
 	js.mu.Lock()
-	defer js.mu.Unlock()
+	prev := rg.migration
 	rg.migration = status
+	js.mu.Unlock()
+	// Log the transitions. What the group leader is doing to converge, or what it's
+	// waiting on, is otherwise only visible through cluster info, and a migration
+	// that stalls with the leader alive leaves no trace in the logs.
+	if s := js.srv; s != nil {
+		switch {
+		case status == nil && prev != nil:
+			s.Debugf("Migration of group %q settled, was: %s", rg.Name, prev.Description)
+		case status != nil && (prev == nil || prev.Type != status.Type || prev.Description != status.Description):
+			s.Debugf("Migration of group %q: %s", rg.Name, status.Description)
+		}
+	}
 }
 
 // Determine if we are migrating
