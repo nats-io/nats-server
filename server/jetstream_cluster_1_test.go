@@ -6457,6 +6457,68 @@ func TestJetStreamClusterCrossAccountMirrorsAndSources(t *testing.T) {
 
 }
 
+// https://github.com/nats-io/nats-server/issues/8630
+func TestJetStreamClusterCrossAccountMirrorsAndSourcesFlowControlStalled(t *testing.T) {
+	fcImport := `{ service: {account: JS, subject: "$JS.FC.>" }}`
+	require_True(t, strings.Contains(jsClusterMirrorSourceImportsTempl, fcImport))
+
+	for _, test := range []struct {
+		name  string
+		templ string
+		stall bool
+	}{
+		{"with FC import", jsClusterMirrorSourceImportsTempl, false},
+		{"without FC import", strings.Replace(jsClusterMirrorSourceImportsTempl, fcImport, "", 1), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterWithTemplate(t, test.templ, "C1", 3)
+			defer c.shutdown()
+
+			s := c.randomServer()
+			nc, js := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2})
+			require_NoError(t, err)
+
+			// Publish enough bytes so the first delivery burst triggers a flow control request.
+			toSend := 3000
+			for range toSend {
+				_, err = js.Publish("TEST", make([]byte, 1024))
+				require_NoError(t, err)
+			}
+
+			nc2, js2 := jsClientConnect(t, s)
+			defer nc2.Close()
+
+			ext := &nats.ExternalStream{APIPrefix: "RI.JS.API", DeliverPrefix: "RI.DELIVER.SYNC"}
+			_, err = js2.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "TEST", External: ext}})
+			require_NoError(t, err)
+			_, err = js2.AddStream(&nats.StreamConfig{Name: "S", Sources: []*nats.StreamSource{{Name: "TEST", External: ext}}})
+			require_NoError(t, err)
+
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				for _, name := range []string{"M", "S"} {
+					si, err := js2.StreamInfo(name)
+					require_NoError(t, err)
+					ssi := si.Mirror
+					if name == "S" {
+						ssi = si.Sources[0]
+					}
+					if !test.stall {
+						if ssi.Error != nil || si.State.Msgs != uint64(toSend) {
+							return fmt.Errorf("%s: err=%v, msgs=%d", name, ssi.Error, si.State.Msgs)
+						}
+					} else if ssi.Error == nil || ssi.Error.ErrorCode != nats.ErrorCode(JSSourceConsumerFlowControlStalledErr) || si.State.Msgs >= uint64(toSend) {
+						return fmt.Errorf("%s: expected stalled error, err=%v, msgs=%d", name, ssi.Error, si.State.Msgs)
+					}
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, jsClusterMirrorSourceImportsTempl, "C1", 3)
 	defer c.shutdown()
