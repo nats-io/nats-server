@@ -3677,31 +3677,8 @@ func (mset *stream) skipMsgs(start, end uint64) error {
 		mset.lseq = end
 		return nil
 	}
-
-	// Must only be enabled once every peer in the cluster supports receiving
-	// deleteRangeOp in the normal apply path; older peers panic on unknown ops.
-	if mset.srv.getOpts().getFeatureFlag(FeatureFlagJsRaftDeleteRange) {
-		return node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
-	}
-
-	var entries []*Entry
-	for seq := start; seq <= end; seq++ {
-		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
-		// So a single message does not get too big.
-		if len(entries) > 10_000 {
-			if err := node.ProposeMulti(mset.term, entries); err != nil {
-				return err
-			}
-			// We need to re-create `entries` because there is a reference
-			// to it in the node's pae map.
-			entries = entries[:0]
-		}
-	}
-	// Send all at once.
-	if len(entries) > 0 {
-		return node.ProposeMulti(mset.term, entries)
-	}
-	return nil
+	// Send a single deleteRangeOp for the full range.
+	return node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
 }
 
 const (
