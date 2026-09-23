@@ -637,19 +637,27 @@ type stream struct {
 
 	// TODO(dlc) - Hide everything below behind two pointers.
 	// Clustered mode.
-	sa        *streamAssignment       // What the meta controller uses to assign streams to peers.
-	node      RaftNode                // Our RAFT node for the stream's group.
-	catchup   atomic.Bool             // Used to signal we are in catchup mode.
-	catchups  map[string]*catchupPeer // Peers being caught up out of band, see catchupPeer.
-	syncSub   *subscription           // Internal subscription for sync messages (on "$JSC.SYNC").
-	infoSub   *subscription           // Internal subscription for stream info requests.
-	clMu      sync.Mutex              // The mutex for clseq and clfs.
-	clseq     uint64                  // The current last seq being proposed to the NRG layer.
-	clfs      uint64                  // The count (offset) of the number of failed NRG sequences used to compute clseq.
-	lqsent    time.Time               // The time at which the last lost quorum advisory was sent. Used to rate limit.
-	uch       chan struct{}           // The channel to signal updates to the monitor routine.
-	inMonitor bool                    // True if the monitor routine has been started.
-	werr      error                   // If a write error was encountered, and if so what error.
+	sa       *streamAssignment       // What the meta controller uses to assign streams to peers.
+	node     RaftNode                // Our RAFT node for the stream's group.
+	catchup  atomic.Bool             // Used to signal we are in catchup mode.
+	catchups map[string]*catchupPeer // Peers being caught up out of band, see catchupPeer.
+	syncSub  *subscription           // Internal subscription for sync messages (on "$JSC.SYNC").
+	infoSub  *subscription           // Internal subscription for stream info requests.
+	clMu     sync.Mutex              // The mutex for clseq and clfs.
+
+	// Writes go through the Raft log if we have a node, unless localWrites is set. It's set while
+	// switching between local and replicated writes, the node exists then but writes are local.
+	// Both are only changed while holding isolateMu, mu and clMu, so reading under mu or clMu is enough.
+	localWrites   bool
+	finalizeLocal bool          // Set once a local R1 was assigned, the monitor switches to local writes and removes the node.
+	switching     atomic.Bool   // While switching to local writes, new writes wait for switchedCh.
+	switchedCh    chan struct{} // Closed once switching is done.
+	clseq         uint64        // The current last seq being proposed to the NRG layer.
+	clfs          uint64        // The count (offset) of the number of failed NRG sequences used to compute clseq.
+	lqsent        time.Time     // The time at which the last lost quorum advisory was sent. Used to rate limit.
+	uch           chan struct{} // The channel to signal updates to the monitor routine.
+	inMonitor     bool          // True if the monitor routine has been started.
+	werr          error         // If a write error was encountered, and if so what error.
 
 	inflight                    map[string]*inflightSubjectRunningTotal // Inflight message sizes per subject.
 	inflightTransform           map[uint64]string                       // Inflight message's optional transformed subject.
@@ -1306,8 +1314,18 @@ func (mset *stream) setStreamAssignment(sa *streamAssignment) {
 		return
 	}
 
-	// Set our node.
-	mset.node = node
+	// Set our node. Keep it while the monitor switches to local writes after a
+	// local R1 was assigned, it removes the node once done. Proposals check the
+	// write mode under clMu, so only take it if we're changing it.
+	keep := node == nil && mset.finalizeLocal && mset.node != nil
+	if !keep && (mset.node != node || (node == nil && mset.localWrites)) {
+		mset.clMu.Lock()
+		if node == nil {
+			mset.localWrites = false
+		}
+		mset.node = node
+		mset.clMu.Unlock()
+	}
 
 	// Stop catching up peers if they're no longer part of the group.
 	for peer := range mset.catchups {
@@ -1397,7 +1415,7 @@ func (mset *stream) IsLeader() bool {
 
 // Lock should be held.
 func (mset *stream) isLeader() bool {
-	if mset.isClustered() {
+	if mset.isClustered() && !mset.localWrites {
 		return mset.node.Leader()
 	}
 	return true
@@ -1409,7 +1427,7 @@ func (mset *stream) isLeader() bool {
 // May be used to respond to clients after a leader change, when applying entries from a former leader.
 // Lock should be held.
 func (mset *stream) isLeaderNodeState() bool {
-	if mset.isClustered() {
+	if mset.isClustered() && !mset.localWrites {
 		return mset.node.State() == Leader
 	}
 	return true
@@ -3589,21 +3607,23 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	}
 
 	s, js, stype := mset.srv, mset.js, mset.cfg.Storage
-	node, term := mset.node, mset.term
 	mset.mu.Unlock()
 
 	var err error
-	if node != nil {
-		if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
-			err = ErrMsgTooLarge
-		} else if js.limitsExceeded(stype) {
-			s.resourcesExceededError(stype)
-			err = ApiErrors[JSInsufficientResourcesErr]
-		} else {
-			err = node.Propose(term, encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true))
+	for {
+		if mset.replicatedWrites() {
+			if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
+				err = ErrMsgTooLarge
+			} else if js.limitsExceeded(stype) {
+				s.resourcesExceededError(stype)
+				err = ApiErrors[JSInsufficientResourcesErr]
+			} else if err = mset.proposeReplicated(encodeStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, true), true); err == errStreamLocal {
+				continue
+			}
+		} else if err = mset.processJetStreamMsgWithBatch(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, true, nil, false, true); err == errStreamClustered {
+			continue
 		}
-	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, m.hdr, m.msg, sseq-1, ts, nil, true, true)
+		break
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "no space left") {
@@ -3669,8 +3689,8 @@ func (mset *stream) retryMirrorConsumer() error {
 // Lock should be held.
 func (mset *stream) skipMsgs(start, end uint64) error {
 	node, store := mset.node, mset.store
-	// If we are not clustered we can short circuit now with store.SkipMsgs
-	if node == nil {
+	// If writes are local we can short circuit now with store.SkipMsgs
+	if !mset.replicatedWritesLocked() {
 		if err := store.SkipMsgs(start, end-start+1); err != nil {
 			return err
 		}
@@ -4770,8 +4790,8 @@ func (mset *stream) sendFlowControlReply(reply string, hdr []byte) {
 // handleFlowControl will properly handle flow control messages for both R==1 and R>1.
 // Lock should be held.
 func (mset *stream) handleFlowControl(m *inMsg, dseq, sseq uint64) {
-	// If we are clustered we will send the flow control message through the replication stack.
-	if mset.isClustered() {
+	// If writes are replicated we will send the flow control message through the replication stack.
+	if mset.replicatedWritesLocked() {
 		// Append the current delivery and stream sequences, to be sent after replication.
 		m.hdr = genHeader(m.hdr, JSLastConsumerSeq, strconv.FormatUint(dseq, 10))
 		m.hdr = genHeader(m.hdr, JSLastStreamSeq, strconv.FormatUint(sseq, 10))
@@ -4902,7 +4922,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	}
 	// Receiving messages means we are not stalled on flow control.
 	mset.clearStalledFlowControl(si)
-	node, ident := mset.node, si.ident
+	ident := si.ident
 	mset.mu.Unlock()
 
 	hdr, msg := m.hdr, m.msg
@@ -4933,13 +4953,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 		}
 	}
 
-	var err error
-	// If we are clustered we need to propose this message to the underlying raft group.
-	if node != nil {
-		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
-	} else {
-		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true, true)
-	}
+	// Stores it, or proposes it if writes are replicated.
+	err := mset.processInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
 	if err != nil {
 		s := mset.srv
 		if strings.Contains(err.Error(), "no space left") {
@@ -5505,25 +5520,23 @@ func (mset *stream) setupStore(fsCfg *FileStoreConfig, recovering bool) error {
 	// This will fire the callback but we do not require the lock since md will be 0 here.
 	mset.store.RegisterStorageUpdates(mset.storeUpdates)
 	mset.store.RegisterStorageRemoveMsg(func(seq uint64) {
-		if mset.IsClustered() {
-			mset.mu.RLock()
+		err := errStreamLocal
+		mset.mu.RLock()
+		if mset.replicatedWritesLocked() {
+			err = nil
 			if mset.isLeader() {
 				md := streamMsgDelete{Seq: seq, NoErase: true, Stream: mset.cfg.Name}
-				mset.node.Propose(mset.term, encodeMsgDelete(&md))
+				err = mset.proposeReplicatedLocked(encodeMsgDelete(&md), false)
 			}
-			mset.mu.RUnlock()
-		} else {
+		}
+		mset.mu.RUnlock()
+		if err == errStreamLocal {
 			mset.removeMsg(seq)
 		}
 	})
 	mset.store.RegisterProcessJetStreamMsg(func(im *inMsg) {
-		if mset.IsClustered() {
-			if mset.IsLeader() {
-				mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, true)
-			}
-		} else {
-			mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, true, true)
-		}
+		// Only the leader proposes, a follower gets a not leader error.
+		mset.processInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, true)
 	})
 	mset.mu.Unlock()
 
@@ -6447,21 +6460,108 @@ var (
 	errInvalidMsgHandler = errors.New("undefined message handler")
 	errStreamMismatch    = errors.New("expected stream does not match")
 	errMsgTTLDisabled    = errors.New("message TTL disabled")
+	errStreamClustered   = errors.New("stream is clustered")
+	errStreamLocal       = errors.New("stream writes locally")
+	errStreamSwitching   = errors.New("stream is switching between local and replicated writes")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
 // needIsolation should be false only if the caller already holds isolateMu
 // across a whole atomic batch; mset.mu must NOT be held by the caller.
 func (mset *stream) processJetStreamMsg(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool) error {
-	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation, nil, false)
+	// Without lseq and ts this isn't a replicated entry, but an inbound message.
+	if lseq == 0 && ts == 0 {
+		return mset.processInboundMsg(subject, reply, hdr, msg, mt, sourced)
+	}
+	return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, lseq, ts, mt, sourced, needIsolation, nil, false, false)
 }
 
-func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool, fastBatch *FastBatch, deferResponse bool) (retErr error) {
+// processInboundMsg stores an inbound message, or proposes it if writes are replicated.
+// The path taking it checks the write mode under its own lock, and if it changed in
+// the meantime, we retry through the other one.
+func (mset *stream) processInboundMsg(subject, reply string, hdr, msg []byte, mt *msgTrace, sourced bool) error {
+	for {
+		if mset.replicatedWrites() {
+			err := mset.processClusteredInboundMsg(subject, reply, hdr, msg, mt, sourced)
+			if err == errStreamSwitching {
+				mset.waitForSwitch()
+				continue
+			} else if err != errStreamLocal {
+				return err
+			}
+		} else if err := mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, sourced, true, nil, false, true); err != errStreamClustered {
+			return err
+		}
+	}
+}
+
+// replicatedWrites returns whether writes go through the Raft log.
+func (mset *stream) replicatedWrites() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.replicatedWritesLocked()
+}
+
+// Lock (mu or clMu) should be held.
+func (mset *stream) replicatedWritesLocked() bool {
+	return mset.node != nil && !mset.localWrites
+}
+
+// waitForSwitch waits for a switch to local writes to be done.
+func (mset *stream) waitForSwitch() {
+	mset.mu.RLock()
+	ch, qch := mset.switchedCh, mset.qch
+	mset.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ch:
+	case <-qch:
+	}
+}
+
+// proposeReplicated proposes an entry of our own if writes are replicated, or returns
+// errStreamLocal if they're local, the caller should then apply it locally instead.
+// Only inbound messages wait for a switch to local writes to be done. Our own entries
+// can still be proposed, the switch rechecks everything was applied under clMu.
+// Lock should not be held.
+func (mset *stream) proposeReplicated(entry []byte, waitForSwitch bool) error {
+	for {
+		mset.mu.RLock()
+		err := mset.proposeReplicatedLocked(entry, waitForSwitch)
+		mset.mu.RUnlock()
+		if err == errStreamSwitching {
+			mset.waitForSwitch()
+			continue
+		}
+		return err
+	}
+}
+
+// Lock (mu, read or write) should be held.
+func (mset *stream) proposeReplicatedLocked(entry []byte, waitForSwitch bool) error {
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	if !mset.replicatedWritesLocked() {
+		return errStreamLocal
+	} else if waitForSwitch && mset.switching.Load() {
+		return errStreamSwitching
+	}
+	return mset.node.Propose(mset.term, entry)
+}
+
+// If local is set and writes are replicated, nothing is processed and
+// errStreamClustered is returned, the message needs to be proposed instead.
+func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg []byte, lseq uint64, ts int64, mt *msgTrace, sourced bool, needIsolation bool, fastBatch *FastBatch, deferResponse bool, local bool) (retErr error) {
 	if mt != nil && !deferResponse {
 		// Only the leader/standalone will have mt!=nil. On exit, send the
 		// message trace event.
 		defer func() {
-			mt.sendEventFromJetStream(retErr)
+			// If redirected to be proposed, the event is sent from there.
+			if retErr != errStreamClustered {
+				mt.sendEventFromJetStream(retErr)
+			}
 		}()
 	}
 
@@ -6482,6 +6582,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	s, store := mset.srv, mset.store
 
 	traceOnly := mt.traceOnly()
+	if local && !traceOnly && mset.replicatedWritesLocked() {
+		return errStreamClustered
+	}
 	bumpCLFS := func() {
 		// Do not bump if tracing and not doing message delivery.
 		if traceOnly {
@@ -6515,7 +6618,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	allowRollupPurge := mset.cfg.AllowRollup && !mset.cfg.DenyPurge
 	// Snapshot if we are the leader and if we can respond.
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
-	isClustered, isMirror := mset.isClustered(), mset.cfg.Mirror != nil
+	// A local write is standalone, even if we have a node while switching.
+	isClustered, isMirror := !local && mset.isClustered(), mset.cfg.Mirror != nil
 	canConsistencyCheck := !isClustered || traceOnly
 	canRespond := doAck && len(reply) > 0 && isLeader
 	outq := mset.outq
@@ -7608,14 +7712,27 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		commit = true
 	}
 
-	// If not clustered, the commit message runs the consistency checks and
+	// If writes are local, the commit message runs the consistency checks and
 	// commits straight to the store below, so hold the isolation lock across
-	// that whole section.
-	if !isClustered && commit {
+	// that whole section. The write mode decides, and it's checked under the
+	// stream lock, which is held until the commit is stored or proposed. A batch
+	// staged in one mode is committed in the mode we're in now.
+	var isolated bool
+	if commit {
 		mset.isolateMu.Lock()
-		defer mset.isolateMu.Unlock()
+		isolated = true
+		defer func() {
+			if isolated {
+				mset.isolateMu.Unlock()
+			}
+		}()
 	}
 	mset.mu.Lock()
+	isClustered, node = mset.replicatedWritesLocked(), mset.node
+	if isolated && isClustered {
+		mset.isolateMu.Unlock()
+		isolated = false
+	}
 	if mset.batches == nil {
 		mset.batches = &batching{}
 	}
@@ -7948,7 +8065,7 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 			}
 			// If errored, assume all subsequent calls will fail too (for example, store is closed).
 			// Don't clean up the batch so that a restart can try to recover it.
-			if err = mset.processJetStreamMsgWithBatch(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false, nil, deferResponse); err != nil {
+			if err = mset.processJetStreamMsgWithBatch(bsubj, _reply, bhdr, bmsg, 0, 0, mt, false, false, nil, deferResponse, true); err != nil {
 				return err
 			}
 		}
@@ -8093,7 +8210,21 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		return respondError(NewJSBatchPublishInvalidBatchIDError())
 	}
 
+	// The write mode decides whether it's stored or proposed, check it under the stream
+	// lock, which is held until clMu is. A local write holds the isolation lock across
+	// storing it, which the switch takes too.
+	isolated := true
+	mset.isolateMu.Lock()
+	defer func() {
+		if isolated {
+			mset.isolateMu.Unlock()
+		}
+	}()
 	mset.mu.Lock()
+	if isClustered, node = mset.replicatedWritesLocked(), mset.node; isClustered {
+		mset.isolateMu.Unlock()
+		isolated = false
+	}
 	if mset.batches == nil {
 		mset.batches = &batching{}
 	}
@@ -8332,7 +8463,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	batches.mu.Unlock()
 	if !isClustered {
 		mset.clMu.Unlock()
-		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, true, batch, false)
+		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, false, batch, false, true)
 	}
 	err = commitSingleMsg(diff, mset, subject, reply, hdr, msg, name, jsa, mt, node, term, r, lseq)
 	mset.clMu.Unlock()
@@ -8629,20 +8760,21 @@ func (mset *stream) internalLoop() {
 			c.flushClients(0)
 			outq.recycle(&pms)
 		case <-msgs.ch:
-			// This can possibly change now so needs to be checked here.
-			isClustered := mset.IsClustered()
+			// While switching to local writes, leave them queued, in order. The switch
+			// signals the queue once done. Keep serving acks and gets meanwhile.
+			if mset.switching.Load() {
+				continue
+			}
 			ims := msgs.pop()
 			for _, im := range ims {
-				// If we are clustered we need to propose this message to the underlying raft group.
 				if batch, err := getFastBatch(im.rply, im.hdr); batch != nil || err {
 					mset.processJetStreamFastBatchMsg(batch, im.subj, im.rply, im.hdr, im.msg, im.mt)
 					batch.returnToPool()
 				} else if batchId := getBatchId(im.hdr); batchId != _EMPTY_ {
 					mset.processJetStreamAtomicBatchMsg(batchId, im.subj, im.rply, im.hdr, im.msg, im.mt)
-				} else if isClustered {
-					mset.processClusteredInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				} else {
-					mset.processJetStreamMsg(im.subj, im.rply, im.hdr, im.msg, 0, 0, im.mt, false, true)
+					// Stores it, or proposes it if writes are replicated.
+					mset.processInboundMsg(im.subj, im.rply, im.hdr, im.msg, im.mt, false)
 				}
 				im.returnToPool()
 			}
@@ -9379,7 +9511,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 		return false
 	}
 
-	if !mset.isClustered() {
+	if !mset.replicatedWritesLocked() {
 		mset.mu.Unlock()
 		// If we are here we should attempt to remove.
 		if _, err := store.RemoveMsg(seq); err == ErrStoreEOF {

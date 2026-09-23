@@ -11163,3 +11163,568 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 		}
 	}
 }
+
+func TestJetStreamClusterInboundMsgQueuedWhileR1IsProposedAfterScaleUp(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil, nats.MsgId("A"))
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if mset, err := s.globalAccount().lookupStream("TEST"); err != nil {
+				return err
+			} else if mset.state().Msgs != 1 {
+				return fmt.Errorf("server %s not caught up", s.Name())
+			}
+		}
+		return nil
+	})
+
+	// Messages queued while the stream was R1 are processed as such, the stream
+	// has been scaled up since. A retry must be deduplicated, a new message
+	// replicated, neither stored directly.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	hdr := func(id string) []byte { return genHeader(nil, JSMsgId, id) }
+	err = mset.processJetStreamMsg("foo", _EMPTY_, hdr("A"), nil, 0, 0, nil, false, true)
+	require_True(t, err == nil || err == errMsgIdDuplicate)
+	require_NoError(t, mset.processJetStreamMsg("foo", _EMPTY_, hdr("B"), nil, 0, 0, nil, false, true))
+
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			if state := mset.state(); state.Msgs != 2 || state.LastSeq != 2 {
+				return fmt.Errorf("server %s has %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterAtomicBatchCommitRacingScaleUpGoesThroughLog(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Replicas: 1, AllowAtomicPublish: true, Storage: FileStorage})
+	require_NoError(t, err)
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	batchMsg := func(seq uint64, commit bool) *nats.Msg {
+		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+		if commit {
+			m.Header.Set("Nats-Batch-Commit", "1")
+		}
+		return m
+	}
+	// Stage the batch while R1.
+	for seq := uint64(1); seq <= 2; seq++ {
+		_, err = nc.RequestMsg(batchMsg(seq, false), time.Second)
+		require_NoError(t, err)
+	}
+
+	// The commit decides it's R1, then waits to store the batch.
+	mset.isolateMu.Lock()
+	commitErr := make(chan error, 1)
+	go func() {
+		_, err := nc.RequestMsg(batchMsg(3, true), 5*time.Second)
+		commitErr <- err
+	}()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if mset.msgs.len() > 0 {
+			return errors.New("commit not picked up yet")
+		}
+		return nil
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Meanwhile the stream is scaled up and gets its Raft node.
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Replicas: 3, AllowAtomicPublish: true, Storage: FileStorage}
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), req))
+	// And has snapshotted the store and added its peers, before the commit stores.
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		n := mset.raftNode()
+		if n == nil {
+			return errors.New("no raft node yet")
+		}
+		if n.NeedSnapshot() || len(n.Peers()) != 3 {
+			return errors.New("not scaled up yet")
+		}
+		return nil
+	})
+	mset.isolateMu.Unlock()
+	require_NoError(t, <-commitErr)
+
+	// Whatever got stored must be on every replica once scaled up.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		if len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("expected 2 replicas, got %d", len(si.Cluster.Replicas))
+		}
+		for _, r := range si.Cluster.Replicas {
+			if !r.Current {
+				return fmt.Errorf("replica %s not current", r.Name)
+			}
+		}
+		return nil
+	})
+	var states []string
+	var last uint64
+	consistent := true
+	for i, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		state := mset.state()
+		states = append(states, fmt.Sprintf("%s: %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq))
+		if i > 0 && state.LastSeq != last {
+			consistent = false
+		}
+		last = state.LastSeq
+	}
+	if !consistent {
+		t.Fatalf("replicas diverged: %v", states)
+	}
+}
+
+func TestJetStreamClusterScaleDownToR1WithUnappliedEntries(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for i := range 5 {
+		_, err = js.Publish("foo", nil, nats.MsgId(fmt.Sprintf("M%d", i)))
+		require_NoError(t, err)
+	}
+	// The replica we scale down to.
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	c.waitOnStreamCurrent(rs, globalAccountName, "TEST")
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	n := mset.raftNode()
+	pindex, _, _ := n.Progress()
+
+	// Committed but not applied on it, its monitor is busy.
+	mset.isolateMu.Lock()
+	for i := range 3 {
+		_, err = js.Publish("foo", nil, nats.MsgId(fmt.Sprintf("P%d", i)))
+		require_NoError(t, err)
+	}
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if _, commit, _ := n.Progress(); commit < pindex+3 {
+			return errors.New("not committed yet")
+		}
+		return nil
+	})
+
+	// The meta layer applies the scale down to R1, remapping to an R1 group as
+	// the migration does once it's down to a single peer.
+	sjs := rs.getJetStream()
+	sjs.mu.Lock()
+	osa := sjs.streamAssignment(globalAccountName, "TEST")
+	sa := osa.copyGroup()
+	sa.Config = osa.Config.clone()
+	sa.Config.Replicas = 1
+	sa.Group.Name = "S-R1F-scaledn"
+	sa.Group.Peers = []string{n.ID()}
+	sa.Group.Desired = nil
+	sa.consumers = osa.consumers
+	sjs.cluster.streams[globalAccountName]["TEST"] = sa
+	sjs.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		sjs.processClusterUpdateStream(rs.globalAccount(), osa, sa)
+		close(done)
+	}()
+
+	// The meta apply path mustn't wait on the stream's writes.
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Errorf("meta apply blocked on the stream's isolation lock")
+	}
+	mset.isolateMu.Unlock()
+	<-done
+	// The stream's monitor drains the log and removes the node.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if mset.raftNode() != nil {
+			return errors.New("still has a raft node")
+		}
+		return nil
+	})
+
+	// Everything committed must have been applied before going local.
+	if state := mset.state(); state.Msgs != 8 || state.LastSeq != 8 {
+		t.Errorf("committed entries not applied: %d msgs, last %d", state.Msgs, state.LastSeq)
+	}
+	hdr := func(id string) []byte { return genHeader(nil, JSMsgId, id) }
+	// A retry of one of those is a duplicate.
+	if err := mset.processJetStreamMsg("foo", _EMPTY_, hdr("P2"), nil, 0, 0, nil, false, true); err != errMsgIdDuplicate {
+		t.Errorf("retry of a committed message: %v", err)
+	}
+	// And a new message continues the sequence.
+	require_NoError(t, mset.processJetStreamMsg("foo", _EMPTY_, hdr("N0"), nil, 0, 0, nil, false, true))
+	if state := mset.state(); state.LastSeq != 9 {
+		t.Errorf("new message stored at %d, expected 9", state.LastSeq)
+	}
+}
+
+func TestJetStreamClusterMirrorMsgRacingScaleUpGoesThroughLog(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "O", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "O"}, Replicas: 1})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	ml := c.streamLeader(globalAccountName, "M")
+	mset, err := ml.globalAccount().lookupStream("M")
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 5 {
+			return fmt.Errorf("mirror has %d msgs", state.Msgs)
+		}
+		return nil
+	})
+
+	// The mirror decides it's R1, then waits to store the message.
+	mset.isolateMu.Lock()
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	mset.mu.RLock()
+	mirror := mset.mirror
+	mset.mu.RUnlock()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if mirror.msgs.len() > 0 || mset.state().Msgs != 5 {
+			return errors.New("mirror message not picked up yet")
+		}
+		return nil
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Meanwhile the mirror is scaled up, snapshotted and has added its peers.
+	cfg := &StreamConfig{Name: "M", Mirror: &StreamSource{Name: "O"}, Replicas: 3, Storage: FileStorage}
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiStreamUpdateT, "M"), req))
+	checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+		n := mset.raftNode()
+		if n == nil {
+			return errors.New("no raft node yet")
+		}
+		if n.NeedSnapshot() || len(n.Peers()) != 3 {
+			return errors.New("not scaled up yet")
+		}
+		return nil
+	})
+	mset.isolateMu.Unlock()
+
+	// Whatever got stored must be on every replica.
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		var states []string
+		var last uint64
+		consistent := true
+		for i, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("M")
+			if err != nil {
+				return err
+			}
+			state := mset.state()
+			states = append(states, fmt.Sprintf("%s: %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq))
+			if i > 0 && state.LastSeq != last {
+				consistent = false
+			}
+			last = state.LastSeq
+		}
+		if !consistent || last != 6 {
+			return fmt.Errorf("replicas: %v", states)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterSourceMsgRacingScaleDownToR1(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "O", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S", Sources: []*nats.StreamSource{{Name: "O"}}, Replicas: 3})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sl := c.streamLeader(globalAccountName, "S")
+	mset, err := sl.globalAccount().lookupStream("S")
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 5 {
+			return fmt.Errorf("source stream has %d msgs", state.Msgs)
+		}
+		return nil
+	})
+	n := mset.raftNode()
+
+	// The sourced message decides it's replicated, then waits to be proposed.
+	mset.clMu.Lock()
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if mset.smsgs.len() > 0 {
+			return errors.New("sourced message not picked up yet")
+		}
+		return nil
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	// Meanwhile the meta layer applies the scale down to R1 on this server,
+	// remapping to an R1 group as the migration does once it's down to it.
+	sjs := sl.getJetStream()
+	sjs.mu.Lock()
+	osa := sjs.streamAssignment(globalAccountName, "S")
+	sa := osa.copyGroup()
+	sa.Config = osa.Config.clone()
+	sa.Config.Replicas = 1
+	sa.Group.Name = "S-R1F-scaledn"
+	sa.Group.Peers = []string{n.ID()}
+	sa.Group.Desired = nil
+	sa.consumers = osa.consumers
+	sjs.cluster.streams[globalAccountName]["S"] = sa
+	sjs.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		sjs.processClusterUpdateStream(sl.globalAccount(), osa, sa)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Errorf("meta apply blocked on the sourced message")
+	}
+	mset.clMu.Unlock()
+	<-done
+	// The stream's monitor drains the log and removes the node.
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if mset.raftNode() != nil {
+			return errors.New("still has a raft node")
+		}
+		return nil
+	})
+
+	// The sourced message must end up stored once, locally.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 6 || state.LastSeq != 6 {
+			return fmt.Errorf("%d msgs, last %d", state.Msgs, state.LastSeq)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterScaleUpAndDownUnderLoadKeepsEveryAckedMsg(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1, Duplicates: time.Minute})
+	require_NoError(t, err)
+
+	// Publish continuously, retrying each message with the same ID until it's acked.
+	var acked atomic.Uint64
+	stop := make(chan struct{})
+	pubDone := make(chan error, 1)
+	go func() {
+		pnc, pjs := jsClientConnect(t, c.randomServer())
+		defer pnc.Close()
+		for i := 1; ; i++ {
+			select {
+			case <-stop:
+				pubDone <- nil
+				return
+			default:
+			}
+			id := strconv.Itoa(i)
+			for {
+				pa, err := pjs.Publish("foo", []byte(id), nats.MsgId(id), nats.AckWait(250*time.Millisecond))
+				if err == nil {
+					if pa.Sequence != uint64(i) {
+						pubDone <- fmt.Errorf("message %d acked at sequence %d (duplicate: %v)", i, pa.Sequence, pa.Duplicate)
+						return
+					}
+					acked.Store(uint64(i))
+					break
+				}
+				select {
+				case <-stop:
+					pubDone <- nil
+					return
+				default:
+				}
+			}
+		}
+	}()
+
+	waitForScale := func(replicas int) {
+		t.Helper()
+		checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if len(si.Cluster.Replicas) != replicas-1 {
+				return fmt.Errorf("expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+			}
+			for _, r := range si.Cluster.Replicas {
+				if !r.Current {
+					return fmt.Errorf("replica %s not current", r.Name)
+				}
+			}
+			if replicas == 1 {
+				for _, s := range c.servers {
+					if mset, err := s.globalAccount().lookupStream("TEST"); err == nil && mset.raftNode() != nil {
+						return fmt.Errorf("server %s still has a raft node", s.Name())
+					}
+				}
+			}
+			return nil
+		})
+	}
+	waitForAcks := func() {
+		t.Helper()
+		start := acked.Load()
+		checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+			if acked.Load() < start+20 {
+				return errors.New("publishes not progressing")
+			}
+			return nil
+		})
+	}
+
+	for range 3 {
+		waitForAcks()
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3, Duplicates: time.Minute})
+		require_NoError(t, err)
+		waitForScale(3)
+		waitForAcks()
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1, Duplicates: time.Minute})
+		require_NoError(t, err)
+		waitForScale(1)
+	}
+	waitForAcks()
+	close(stop)
+	require_NoError(t, <-pubDone)
+
+	// Every acked message is stored exactly once, in order.
+	last := acked.Load()
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	state := mset.state()
+	if state.Msgs < last || state.LastSeq != state.Msgs || state.NumDeleted != 0 {
+		t.Fatalf("acked %d, stream state %+v", last, state)
+	}
+	var smv StoreMsg
+	for seq := uint64(1); seq <= state.LastSeq; seq++ {
+		sm, err := mset.store.LoadMsg(seq, &smv)
+		require_NoError(t, err)
+		require_Equal(t, string(sm.msg), strconv.FormatUint(seq, 10))
+	}
+}
+
+func TestJetStreamClusterAtomicBatchStagedReplicatedCommittedAfterScaleDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, _ := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo.>"}, Replicas: 3, AllowAtomicPublish: true, Storage: FileStorage}
+	_, err := jsStreamCreate(t, nc, cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	batchMsg := func(seq uint64, commit bool) *nats.Msg {
+		m := nats.NewMsg(fmt.Sprintf("foo.%d", seq))
+		m.Header.Set("Nats-Batch-Id", "uuid")
+		m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
+		if commit {
+			m.Header.Set("Nats-Batch-Commit", "1")
+		}
+		return m
+	}
+	// Stage the batch while replicated.
+	for seq := uint64(1); seq <= 2; seq++ {
+		_, err = nc.RequestMsg(batchMsg(seq, false), time.Second)
+		require_NoError(t, err)
+	}
+
+	// Scale down to R1, the stream switches to local writes.
+	cfg.Replicas = 1
+	_, err = jsStreamUpdate(t, nc, cfg)
+	require_NoError(t, err)
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if mset, err := s.globalAccount().lookupStream("TEST"); err == nil && mset.raftNode() != nil {
+				return fmt.Errorf("server %s still has a raft node", s.Name())
+			}
+		}
+		return nil
+	})
+
+	// The commit stores the batch staged while replicated.
+	rmsg, err := nc.RequestMsg(batchMsg(3, true), 2*time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	if pubAck.Error != nil {
+		t.Fatalf("commit failed: %v", pubAck.Error)
+	}
+	require_Equal(t, pubAck.Sequence, 3)
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	if state := mset.state(); state.Msgs != 3 {
+		t.Fatalf("expected 3 msgs, got %d", state.Msgs)
+	}
+}

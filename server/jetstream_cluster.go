@@ -4212,6 +4212,13 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 
 	qch, mqch, lch, aq, uch := n.QuitC(), mset.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), mset.updateC()
 
+	// Don't leave writes waiting on a switch to local writes we won't finish.
+	defer func() {
+		if mset != nil {
+			mset.abortSwitch()
+		}
+	}()
+
 	s.Debugf("Starting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 	defer s.Debugf("Exiting stream monitor for '%s > %s' [%s]", sa.Client.serviceAccount(), sa.Config.Name, n.Group())
 
@@ -4645,6 +4652,16 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				doSnapshot(false)
 			}
 
+			// A switch to local writes waits for what's proposed to be applied, check again.
+			if mset != nil && mset.switching.Load() {
+				if js.finalizeStreamLocal(mset, n) {
+					return
+				}
+				if mmt != nil {
+					resetMigrationMonitoring(migrateFastCheckInterval)
+				}
+			}
+
 		case lc := <-lch:
 			// Not a change in leadership, just a nudge about a newly observed peer.
 			if lc.nudge {
@@ -4657,6 +4674,14 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			stopListeningForPositions()
 			// Process our leader change.
 			js.processStreamLeaderChange(mset, isLeader, lc.term)
+			// A migration's switch to local writes is only for the leader.
+			if !isLeader && mset != nil {
+				mset.mu.Lock()
+				if !mset.finalizeLocal {
+					mset.endSwitchLocked()
+				}
+				mset.mu.Unlock()
+			}
 
 			if isLeader {
 				if mset != nil && n != nil && sendSnapshot && !isRecovering {
@@ -4765,6 +4790,10 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
+			}
+			// A local R1 was assigned, switch to local writes and remove our node.
+			if js.finalizeStreamLocal(mset, n) {
+				return
 			}
 		case <-posCh:
 			var update bool
@@ -5028,20 +5057,37 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		}
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
-	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	// Also when growing from one after a restart, our store can hold writes our log doesn't.
-	needSnapshot := n.NeedSnapshot()
+	// A switch to local writes for a scale down to R1 is abandoned if that's no longer where we're going.
+	if mset.switching.Load() && (replicas != 1 || len(current) != 1) {
+		mset.abortSwitch()
+	}
 	members := peerIDs(n.Peers())
-	growing := len(members) == 1 && slices.ContainsFunc(desiredPeers, func(p string) bool { return !slices.Contains(members, p) })
-	if needSnapshot || (growing && !n.SnapshotInCurrentTerm()) {
+	soleMember := len(members) == 1
+	growing := soleMember && slices.ContainsFunc(desiredPeers, func(p string) bool { return !slices.Contains(members, p) })
+	mset.mu.RLock()
+	localWrites := mset.localWrites
+	mset.mu.RUnlock()
+	if localWrites {
+		// Writes are local since the scale up from R1 started, switch them to the log before
+		// growing. The switch snapshots the store, new peers catch up to every local write.
+		if growing {
+			if err := mset.switchToReplicated(n); err != nil {
+				if errors.Is(err, ErrStoreClosed) {
+					return mstat(MigrationStatusUnavailable, "shutting down")
+				}
+				return mstat(MigrationStatusSnapshot, "waiting to switch to replicated writes").withErr(err)
+			}
+		}
+	} else if n.NeedSnapshot() || (soleMember && !n.SnapshotInCurrentTerm()) {
+		// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
+		// Also when growing from one after a restart, our store can hold writes our log doesn't.
 		if err := mset.flushAllPending(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
 			}
 			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		// Best effort when growing, nothing may have been applied since the last snapshot.
-		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil && (needSnapshot || !errors.Is(err, errNoSnapAvailable)) {
+		if err := n.ReplaceSnapshot(mset.stateSnapshot()); err != nil {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
 		// The snapshot is installed, continue right away so new peers can be added
@@ -5239,6 +5285,11 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	// Before publishing a stable R1 assignment, make the store independently durable
 	// because applying the assignment will remove the Raft node and its WAL.
 	if peersMatch && len(current) == 1 {
+		// Switch to local writes first, once everything proposed was applied. The meta
+		// layer only records the R1 assignment after we report below.
+		if replicas == 1 && !mset.switchToLocal(n) {
+			return mstat(MigrationStatusCatchup, "waiting for the log to be applied before switching to local writes")
+		}
 		if err := mset.flushForScaleDown(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
@@ -6067,19 +6118,11 @@ func (s *Server) replicas(node RaftNode) []*PeerInfo {
 }
 
 // Process a leader change for the clustered stream.
-func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term uint64) {
-	if mset == nil {
-		return
-	}
-	sa := mset.streamAssignment()
-	if sa == nil {
-		return
-	}
-
-	// Acquire clMu before ddMu so any inflight proposals finish first, and we can
-	// clean up if they added new dedupe IDs.
-	mset.clMu.Lock()
-
+// clearClusteredWriteStateLocked clears what's only kept while proposing: in-flight dedupe
+// IDs, in-flight subject state, counters and clseq. On a leader change, or when writes
+// switch to local.
+// clMu should be held.
+func (mset *stream) clearClusteredWriteStateLocked() {
 	// Clear inflight dedupe IDs, where seq=0.
 	mset.ddMu.Lock()
 	var removed int
@@ -6116,6 +6159,173 @@ func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term
 	if mset.clseq > 0 {
 		mset.clseq = 0
 	}
+}
+
+// switchToReplicated switches writes from local to the Raft log, before a group we're
+// the only member of grows. The store is snapshotted under the isolation lock, so the
+// snapshot holds every local write, and new peers catch up to all of it.
+func (mset *stream) switchToReplicated(n RaftNode) error {
+	mset.isolateMu.Lock()
+	defer mset.isolateMu.Unlock()
+	if err := mset.flushAllPending(); err != nil {
+		return err
+	}
+	if err := n.ReplaceSnapshot(mset.stateSnapshot()); err != nil {
+		return err
+	}
+	mset.mu.Lock()
+	mset.clMu.Lock()
+	mset.localWrites = false
+	mset.clMu.Unlock()
+	// Answer catchup requests of the peers we're adding, in case a switch to a local R1 stopped this.
+	mset.startClusterSubs()
+	mset.mu.Unlock()
+	return nil
+}
+
+// switchToLocal switches a group we're the only member of to run as a local R1: writes
+// go to the store directly once everything proposed was applied, and we stop answering catchup
+// requests. Inbound writes are held meanwhile. It doesn't block, the apply path needs to make
+// progress, so it's called again until it returns true. Only once it did can the meta layer be
+// asked to finalize a local R1 assignment.
+func (mset *stream) switchToLocal(n RaftNode) bool {
+	mset.mu.Lock()
+	if mset.localWrites || mset.node == nil {
+		mset.mu.Unlock()
+		return true
+	}
+	if !mset.switching.Load() {
+		mset.switchedCh = make(chan struct{})
+		mset.switching.Store(true)
+	}
+	mset.mu.Unlock()
+
+	// Anything that decided to propose before we started switching is done once we get clMu.
+	mset.clMu.Lock()
+	mset.clMu.Unlock()
+	if !raftLogApplied(n) {
+		return false
+	}
+
+	mset.isolateMu.Lock()
+	defer mset.isolateMu.Unlock()
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.clMu.Lock()
+	// Our own proposals don't wait for the switch, check again.
+	switched := raftLogApplied(n)
+	if switched {
+		mset.localWrites = true
+		mset.clearClusteredWriteStateLocked()
+	}
+	mset.clMu.Unlock()
+	if switched {
+		// We run as a local R1 now, there are no peers to catch up.
+		mset.stopClusterSubs()
+		mset.clearAllCatchupPeers()
+		mset.endSwitchLocked()
+	}
+	return switched
+}
+
+// raftLogApplied returns whether everything committed is applied, and for a leader,
+// everything proposed is committed.
+func raftLogApplied(n RaftNode) bool {
+	pindex, commit, applied := n.Progress()
+	return applied >= commit && (!n.Leader() || commit >= pindex)
+}
+
+// endSwitchLocked ends a switch to local writes, done or abandoned, and releases what waited.
+// Lock should be held.
+func (mset *stream) endSwitchLocked() {
+	if !mset.switching.Load() {
+		return
+	}
+	mset.switching.Store(false)
+	if mset.switchedCh != nil {
+		close(mset.switchedCh)
+		mset.switchedCh = nil
+	}
+	// Wake the internal loop for the inbound messages it left queued.
+	if mset.msgs != nil {
+		select {
+		case mset.msgs.ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// abortSwitch abandons a switch to local writes.
+func (mset *stream) abortSwitch() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.endSwitchLocked()
+}
+
+// startLocalWrites keeps writes local once we get a node for a scale up from R1,
+// until the migration switches them to the log.
+func (mset *stream) startLocalWrites() {
+	mset.mu.Lock()
+	defer mset.mu.Unlock()
+	mset.clMu.Lock()
+	defer mset.clMu.Unlock()
+	if mset.node == nil {
+		mset.localWrites = true
+	}
+}
+
+// setFinalizeLocal has the monitor switch to local writes and remove our node, after the
+// meta layer assigned a local R1. The meta layer doesn't wait for it.
+func (mset *stream) setFinalizeLocal() {
+	mset.mu.Lock()
+	mset.finalizeLocal = true
+	mset.mu.Unlock()
+	mset.signalUpdate()
+}
+
+// finalizeStreamLocal switches to local writes and removes our node once a local R1 was
+// assigned. Returns true once done, the monitor then exits.
+func (js *jetStream) finalizeStreamLocal(mset *stream, n RaftNode) bool {
+	mset.mu.RLock()
+	finalize := mset.finalizeLocal
+	mset.mu.RUnlock()
+	if !finalize || !mset.switchToLocal(n) {
+		return false
+	}
+	mset.mu.Lock()
+	mset.clMu.Lock()
+	mset.node, mset.localWrites, mset.finalizeLocal = nil, false, false
+	mset.clMu.Unlock()
+	// Stop responding to sync requests, and clear catchup state.
+	mset.stopClusterSubs()
+	mset.clearAllCatchupPeers()
+	mset.mu.Unlock()
+	// We're the local R1 now, we might not have been the leader.
+	js.processStreamLeaderChange(mset, true, 0)
+	n.Delete()
+	return true
+}
+
+// isFinalizingLocal returns whether the monitor still switches to local writes after a local R1 was assigned.
+func (mset *stream) isFinalizingLocal() bool {
+	mset.mu.RLock()
+	defer mset.mu.RUnlock()
+	return mset.finalizeLocal
+}
+
+func (js *jetStream) processStreamLeaderChange(mset *stream, isLeader bool, term uint64) {
+	if mset == nil {
+		return
+	}
+	sa := mset.streamAssignment()
+	if sa == nil {
+		return
+	}
+
+	// Acquire clMu before ddMu so any inflight proposals finish first, and we can
+	// clean up if they added new dedupe IDs.
+	mset.clMu.Lock()
+	mset.clearClusteredWriteStateLocked()
 	mset.clMu.Unlock()
 
 	js.mu.RLock()
@@ -6664,13 +6874,19 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 	mset, err := acc.lookupStream(cfg.Name)
 	if err == nil && mset != nil {
+		// A local R1 was assigned while we still have a node. The monitor switches to local
+		// writes once everything proposed was applied, then removes the node. We don't wait.
+		toLocal := numReplicas == 1 && desired == nil && wasRunning && mset.isMonitorRunning()
+
 		// Make sure we have not had a new group assigned to us.
 		if osa.Group.Name != sa.Group.Name {
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
-			mset.removeNode()
-			mset.stopMonitoring()
-			alreadyRunning, needsNode = false, true
+			if !toLocal {
+				mset.removeNode()
+				mset.stopMonitoring()
+				alreadyRunning, needsNode = false, true
+			}
 			// Make sure to clear from original.
 			js.mu.Lock()
 			osa.Group.node = nil
@@ -6679,6 +6895,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 		if !alreadyRunning && (numReplicas > 1 || desired != nil) {
 			if needsNode {
+				// Scaling up from a local R1, writes stay local until the migration
+				// snapshots the store and switches them to the log.
+				if !wasRunning && desired != nil {
+					mset.startLocalWrites()
+				}
 				// Must run before startClusterSubs reads mset.sa.Sync.
 				mset.setStreamAssignment(sa)
 
@@ -6713,6 +6934,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			if !started {
 				mset.monitorWg.Done()
 			}
+		} else if toLocal {
+			mset.setFinalizeLocal()
 		} else if numReplicas == 1 && desired == nil && wasRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
 			mset.removeNode()
@@ -6775,7 +6998,8 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	isLeader := mset.IsLeader()
 
 	// If the stream is scaled down, there is a chance we weren't already the leader.
-	if isLeader && numReplicas == 1 && desired == nil && wasClustered {
+	// Unless the monitor still switches to local writes, it does this once done.
+	if isLeader && numReplicas == 1 && desired == nil && wasClustered && !mset.isFinalizingLocal() {
 		js.processStreamLeaderChange(mset, true, 0)
 	}
 
@@ -11422,16 +11646,15 @@ func (s *Server) jsClusteredStreamPurgeRequest(
 		return
 	}
 
-	if n := sa.Group.node; n != nil {
-		sp := encodeStreamPurge(&streamPurge{Stream: stream, LastSeq: mset.state().LastSeq, Subject: subject, Reply: reply, Client: ci, Request: preq})
-		js.mu.Unlock()
-		mset.mu.RLock()
-		term := mset.term
-		mset.mu.RUnlock()
-		n.Propose(term, sp)
-		return
-	}
+	hasNode := sa.Group.node != nil
 	js.mu.Unlock()
+	if hasNode {
+		sp := encodeStreamPurge(&streamPurge{Stream: stream, LastSeq: mset.state().LastSeq, Subject: subject, Reply: reply, Client: ci, Request: preq})
+		// Purge locally if writes are local while switching.
+		if err := mset.proposeReplicated(sp, false); err != errStreamLocal {
+			return
+		}
+	}
 
 	var resp = JSApiStreamPurgeResponse{ApiResponse: ApiResponse{Type: JSApiStreamPurgeResponseType}}
 	purged, err := mset.purge(preq)
@@ -12086,16 +12309,15 @@ func (s *Server) jsClusteredMsgDeleteRequest(ci *ClientInfo, acc *Account, mset 
 	}
 
 	// Check for single replica items.
-	if n := sa.Group.node; n != nil {
-		md := encodeMsgDelete(&streamMsgDelete{Seq: req.Seq, NoErase: req.NoErase, Stream: stream, Subject: subject, Reply: reply, Client: ci})
-		js.mu.Unlock()
-		mset.mu.RLock()
-		term := mset.term
-		mset.mu.RUnlock()
-		n.Propose(term, md)
-		return
-	}
+	hasNode := sa.Group.node != nil
 	js.mu.Unlock()
+	if hasNode && mset != nil {
+		md := encodeMsgDelete(&streamMsgDelete{Seq: req.Seq, NoErase: req.NoErase, Stream: stream, Subject: subject, Reply: reply, Client: ci})
+		// Delete locally if writes are local while switching.
+		if err := mset.proposeReplicated(md, false); err != errStreamLocal {
+			return
+		}
+	}
 
 	if mset == nil {
 		return
@@ -12943,7 +13165,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
 	s, js, jsa, st, r, tierName, outq, node, term := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node, mset.term
-	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
+	maxMsgSize, lseq, replicated := int(mset.cfg.MaxMsgSize), mset.lseq, mset.replicatedWritesLocked()
 	isLeader, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
 
 	// Apply the input subject transform if any
@@ -12957,12 +13179,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	}
 	mset.mu.RUnlock()
 
-	// This should not happen but possible now that we allow scale up, and scale down where this could trigger.
-	//
-	// We also invoke this in clustering mode for message tracing when not
+	// We invoke this in clustering mode for message tracing when not
 	// performing message delivery.
-	if node == nil || mt.traceOnly() {
-		return mset.processJetStreamMsg(subject, reply, hdr, msg, 0, 0, mt, sourced, true)
+	if mt.traceOnly() {
+		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, sourced, true, nil, false, false)
+	}
+	// Writes are local, the caller needs to store it instead.
+	if !replicated {
+		return errStreamLocal
 	}
 
 	// If message tracing (with message delivery), we will need to send the
@@ -12971,7 +13195,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	// invoked by the leader (from applyStreamEntries).
 	if mt != nil {
 		defer func() {
-			if retErr != nil {
+			if retErr != nil && retErr != errStreamLocal && retErr != errStreamSwitching {
 				mt.sendEventFromJetStream(retErr)
 			}
 		}()
@@ -13040,6 +13264,14 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	mset.clMu.Lock()
 	if mset.clseq == 0 || mset.clseq < lseq+mset.clfs {
 		lseq = recalculateClusteredSeq(mset, true)
+	}
+	// The write mode only changes while holding clMu, check it again right before proposing.
+	if !mset.replicatedWritesLocked() {
+		mset.clMu.Unlock()
+		return errStreamLocal
+	} else if mset.switching.Load() {
+		mset.clMu.Unlock()
+		return errStreamSwitching
 	}
 
 	var (
