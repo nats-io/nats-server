@@ -3987,6 +3987,109 @@ func TestJetStreamSnapshotNotificationRegistrationError(t *testing.T) {
 	}
 }
 
+func TestJetStreamSnapshotDirectRestore(t *testing.T) {
+	for _, domain := range []string{"", "DOMAIN"} {
+		t.Run(fmt.Sprintf("domain=%s", domain), func(t *testing.T) {
+			domainToken := domain
+			if domainToken == "" {
+				domainToken = "_"
+			}
+			restoreSubject := fmt.Sprintf("$JS.SNAPSHOT.RESTORE.%s.%s.SOURCE.>", domainToken, getHash("DESTINATION"))
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+				listen: "127.0.0.1:-1"
+				jetstream: {store_dir: %q, domain: %q}
+				accounts {
+					SOURCE {
+						jetstream: enabled
+						users: [{user: source, password: password}]
+						imports: [{service: {account: DESTINATION, subject: %q}}]
+					}
+					DESTINATION {
+						jetstream: enabled
+						users: [{user: destination, password: password}]
+						exports: [{service: %q, accounts: [SOURCE]}]
+					}
+				}
+			`, t.TempDir(), domain, restoreSubject, restoreSubject)))
+
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s, nats.UserInfo("source", "password"))
+			defer nc.Close()
+
+			dnc, _ := jsClientConnect(t, s, nats.UserInfo("destination", "password"))
+			defer dnc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name: "SOURCE", Subjects: []string{"source"}, Storage: nats.FileStorage,
+			})
+			require_NoError(t, err)
+
+			for range 4 {
+				payload := make([]byte, 4096)
+				_, err := crand.Read(payload)
+				require_NoError(t, err)
+				_, err = js.Publish("source", payload)
+				require_NoError(t, err)
+			}
+
+			// Use stream info to describe the stream for the snapshot restore request.
+			// This is effectively the "pivot" step, as we have to call restore before
+			// calling backup.
+			rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamInfoT, "SOURCE"), nil, time.Second)
+			require_NoError(t, err)
+			var info JSApiStreamInfoResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &info))
+			require_True(t, info.Error == nil)
+
+			cfg := info.Config
+			req, err := json.Marshal(&JSApiStreamRestoreRequest{Config: cfg, State: info.State})
+			require_NoError(t, err)
+
+			rmsg, err = dnc.Request(fmt.Sprintf(JSApiStreamRestoreT, cfg.Name), req, time.Second)
+			require_NoError(t, err)
+
+			var restore JSApiStreamRestoreResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &restore))
+			require_True(t, restore.Error == nil)
+			require_True(t, IsValidLiteralSubject(restore.DeliverSubject))
+
+			req, err = json.Marshal(&JSApiStreamSnapshotRequest{
+				DeliverSubject: restore.DeliverSubject,
+				ChunkSize:      1024,
+				WindowSize:     1024,
+			})
+			require_NoError(t, err)
+
+			rmsg, err = nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "SOURCE"), req, time.Second)
+			require_NoError(t, err)
+
+			var snapshot JSApiStreamSnapshotResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &snapshot))
+			require_True(t, snapshot.Error == nil)
+
+			checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+				rmsg, err := dnc.Request(fmt.Sprintf(JSApiStreamInfoT, cfg.Name), nil, time.Second)
+				if err != nil {
+					return err
+				}
+				var restored JSApiStreamInfoResponse
+				if err := json.Unmarshal(rmsg.Data, &restored); err != nil {
+					return err
+				}
+				if restored.Error != nil {
+					return restored.Error
+				}
+				if restored.StreamInfo == nil || !reflect.DeepEqual(restored.State, *snapshot.State) {
+					return fmt.Errorf("destination stream state has not converged to the snapshot state: %+v", restored.StreamInfo)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestJetStreamSnapshotsAPI(t *testing.T) {
 	lopts := DefaultTestOptions
 	lopts.ServerName = "LS"

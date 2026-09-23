@@ -169,7 +169,7 @@ const (
 
 	// For snapshots and restores. The ack will have additional tokens.
 	jsSnapshotAckT    = "$JS.SNAPSHOT.ACK.%s.%s"
-	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s"
+	jsRestoreDeliverT = "$JS.SNAPSHOT.RESTORE.%s.%s.%s.%s"
 
 	// JSApiStreamRemovePeer is the endpoint to remove a peer from a clustered stream and its consumers.
 	// Will return JSON response.
@@ -4449,7 +4449,11 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 	})
 
 	// Create our internal subscription to accept the snapshot.
-	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, streamName, nuid.Next())
+	restoreDomain := domain
+	if restoreDomain == _EMPTY_ {
+		restoreDomain = "_"
+	}
+	restoreSubj := fmt.Sprintf(jsRestoreDeliverT, restoreDomain, getHash(acc.Name), streamName, nuid.Next())
 
 	type result struct {
 		err   error
@@ -4524,6 +4528,8 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 			setResult(fmt.Errorf("restore for stream '%s > %s' requires reply subject for each chunk", acc.Name, streamName), reply)
 			return
 		}
+		// Service imports can add headers, which are not part of the snapshot data.
+		_, msg = c.msgParts(msg)
 		// Account client messages have \r\n on end. This is an error.
 		if len(msg) < LEN_CR_LF {
 			sub.client.processUnsub(sub.sid)
@@ -4918,7 +4924,8 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 	ackTimer := time.NewTimer(snapshotAckTimeout)
 	defer stopAndClearTimer(&ackTimer)
 	// index only incremented when a chunk is actually being sent.
-	for index := 1; ; {
+	index := 1
+	for {
 		select {
 		case <-slots:
 			// A slot has become available.
@@ -4948,7 +4955,8 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 		chunk := chunk[:n]
 		if err != nil {
 			if n > 0 {
-				mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, chunk, nil, 0))
+				mset.outq.send(newJSPubMsg(reply, _EMPTY_, fmt.Sprintf("%s.%d.%d", ackSubj, n, index), nil, chunk, nil, 0))
+				index++
 			}
 			select {
 			case err, ok := <-errCh:
@@ -4970,7 +4978,8 @@ func (s *Server) streamSnapshot(acc *Account, mset *stream, sr *SnapshotResult, 
 	}
 
 done:
-	mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+	// Restore requires a reply subject on the terminal message as well as data chunks.
+	mset.outq.send(newJSPubMsg(reply, _EMPTY_, fmt.Sprintf("%s.0.%d", ackSubj, index), hdr, nil, nil, 0))
 	return snapshotErr
 }
 
