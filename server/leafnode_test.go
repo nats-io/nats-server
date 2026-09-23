@@ -12162,28 +12162,38 @@ func TestLeafNodeConfigureWriteTimeoutPolicy(t *testing.T) {
 		"Close":   WriteTimeoutPolicyClose,
 	} {
 		t.Run(name, func(t *testing.T) {
-			o1 := testDefaultOptionsForGateway("B")
-			o1.Gateway.WriteTimeout = policy
-			s1 := runGatewayServer(o1)
+			o1 := DefaultOptions()
+			o1.LeafNode.Host = "127.0.0.1"
+			o1.LeafNode.Port = -1
+			o1.LeafNode.WriteTimeout = policy
+			s1 := RunServer(o1)
 			defer s1.Shutdown()
 
-			o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
-			s2 := runGatewayServer(o2)
+			s1URL, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o1.LeafNode.Port))
+			require_NoError(t, err)
+			o2 := DefaultOptions()
+			o2.Cluster.Name = "leaf"
+			o2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{s1URL}}}
+			o2.LeafNode.WriteTimeout = policy
+			s2 := RunServer(o2)
 			defer s2.Shutdown()
 
-			waitForOutboundGateways(t, s2, 1, time.Second)
-			waitForInboundGateways(t, s1, 1, time.Second)
-			waitForOutboundGateways(t, s1, 1, time.Second)
-
-			s1.mu.RLock()
-			defer s1.mu.RUnlock()
-
-			for _, r := range s1.leafs {
-				if policy == WriteTimeoutPolicyDefault {
-					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
-				} else {
-					require_Equal(t, r.out.wtp, policy)
-				}
+			for side, s := range map[string]*Server{"accepting": s1, "soliciting": s2} {
+				t.Run(side, func(t *testing.T) {
+					checkLeafNodeConnected(t, s)
+					s.mu.RLock()
+					defer s.mu.RUnlock()
+					require_Len(t, len(s.leafs), 1)
+					for _, leaf := range s.leafs {
+						leaf.mu.Lock()
+						defer leaf.mu.Unlock()
+						if policy == WriteTimeoutPolicyDefault {
+							require_Equal(t, leaf.out.wtp, WriteTimeoutPolicyRetry)
+						} else {
+							require_Equal(t, leaf.out.wtp, policy)
+						}
+					}
+				})
 			}
 		})
 	}
