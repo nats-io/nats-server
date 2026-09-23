@@ -4653,6 +4653,60 @@ func TestClientFlushOutboundWriteTimeoutPolicy(t *testing.T) {
 	}
 }
 
+func TestFlushOutboundS2CompressionPartialWritePendingBytes(t *testing.T) {
+	for _, queueMore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queue_more=%v", queueMore), func(t *testing.T) {
+			s := &Server{opts: DefaultOptions()}
+			fakeConn := &testConnPartialWriteTimeout{maxWrite: 10}
+			c := &client{srv: s, nc: fakeConn, kind: LEAF}
+			c.initClient()
+			c.out.cw = s2.NewWriter(nil, s2.WriterConcurrency(1))
+
+			payload := bytes.Repeat([]byte("payload"), 1000)
+			expected := bytes.Clone(payload)
+
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.queueOutbound(payload)
+			c.flushOutbound()
+
+			// A partial timeout must keep the connection open and retain the
+			// unwritten compressed bytes in the pending-byte count.
+			require_False(t, c.isClosed())
+			require_True(t, c.flags.isSet(isSlowConsumer))
+			var remaining int64
+			for _, buf := range c.out.wnb {
+				remaining += int64(len(buf))
+			}
+			require_True(t, remaining > 0)
+			require_Equal(t, c.out.pb, remaining)
+
+			// Retry both with and without new data to compress. Previously,
+			// the leftover compressed bytes were subtracted a second time.
+			if queueMore {
+				more := []byte("PING\r\n")
+				c.queueOutbound(more)
+				expected = append(expected, more...)
+			}
+			fakeConn.maxWrite = 0
+			c.flushOutbound()
+
+			if c.out.pb < 0 {
+				t.Fatalf("Pending bytes went negative after compressed write recovery: %d", c.out.pb)
+			}
+			require_Equal(t, c.out.pb, int64(0))
+			require_Len(t, len(c.out.wnb), 0)
+			require_Len(t, len(c.out.nb), 0)
+			require_False(t, c.isClosed())
+			require_False(t, c.flags.isSet(isSlowConsumer))
+
+			got, err := io.ReadAll(s2.NewReader(bytes.NewReader(fakeConn.buf.Bytes())))
+			require_NoError(t, err)
+			require_True(t, bytes.Equal(got, expected))
+		})
+	}
+}
+
 func TestFlushOutboundS2CompressionPoolBufferRecycling(t *testing.T) {
 	opts := DefaultOptions()
 	s := &Server{opts: opts}
