@@ -6494,6 +6494,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	var le = binary.LittleEndian
 	var firstSet bool
 	var last uint64
+	var lastTime int64
 	var msgs uint64
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -6545,9 +6546,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 					atomic.StoreUint64(&mb.first.seq, seq)
 				}
 				if seq >= last {
-					last = seq
-					atomic.StoreUint64(&mb.last.seq, last)
-					mb.last.ts = ts
+					last, lastTime = seq, ts
 				}
 			}
 		}
@@ -6587,6 +6586,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	sync := mb.fs.syncAlways.Load() || mb.fs.syncOnFlush.Load()
 	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
+	}
+
+	// Block selection reads last.seq without mb.mu, so publish it only
+	// after the replacement file is installed.
+	if msgs > 0 {
+		atomic.StoreUint64(&mb.last.seq, last)
+		mb.last.ts = lastTime
 	}
 
 	// Make sure to sync if we have not done so yet
@@ -11022,20 +11028,13 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			}
 
 			// We will write to a new file and mv/rename it in case of failure.
-			mfn := filepath.Join(smb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, smb.index))
-			fs.dios.acquire()
-			err = os.WriteFile(mfn, nbuf, defaultFilePerms)
-			fs.dios.release()
+			sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
+			err = writeAtomically(fs.dios, smb.mfn, nbuf, defaultFilePerms, sync)
 			if err != nil {
-				_ = os.Remove(mfn)
 				smb.mu.Unlock()
 				return purged, bytes, err
 			}
-			if err = os.Rename(mfn, smb.mfn); err != nil {
-				_ = os.Remove(mfn)
-				smb.mu.Unlock()
-				return purged, bytes, err
-			}
+			smb.needSync = !sync
 
 			// Make sure to remove fss state.
 			smb.fss = nil
@@ -13912,6 +13911,12 @@ func (o *consumerFileStore) GetConfig() *ConsumerConfig {
 	clone := o.cfg.clone()
 	clone.Name = o.name
 	return clone
+}
+
+func (o *consumerFileStore) setCreatedTime(created time.Time) {
+	o.mu.Lock()
+	o.cfg.Created = created
+	o.mu.Unlock()
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {

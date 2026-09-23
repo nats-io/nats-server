@@ -713,6 +713,8 @@ type sourceInfo struct {
 	lag   uint64              // 0 or number of messages pending (as last reported by the consumer) - 1.
 	err   *ApiError           // The API error that caused the last consumer setup to fail.
 	fails int                 // The number of times trying to setup the consumer failed.
+	fcid  string              // The last flow control reply subject the consumer reported being stalled on.
+	fcsc  int                 // Consecutive heartbeats reporting the same stalled flow control reply subject.
 	last  atomic.Int64        // Time the consumer was created or of last message it received.
 	lreq  time.Time           // The last time setupMirrorConsumer/setupSourceConsumer was called.
 	qch   chan struct{}       // Quit channel.
@@ -3498,7 +3500,9 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 				needsRetry = true
 			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
-				mset.outq.sendMsg(string(fcReply), nil)
+				mset.processStalledFlowControl(mset.mirror, string(fcReply))
+			} else {
+				mset.clearStalledFlowControl(mset.mirror)
 			}
 		}
 		mset.mu.Unlock()
@@ -3555,6 +3559,8 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	} else {
 		mset.mirror.lag = pending - 1
 	}
+	// Receiving messages means we are not stalled on flow control.
+	mset.clearStalledFlowControl(mset.mirror)
 
 	// Check if we allow mirror direct here. If so check they we have mostly caught up.
 	// The reason we do not require 0 is if the source is active we may always be slightly behind.
@@ -3671,31 +3677,8 @@ func (mset *stream) skipMsgs(start, end uint64) error {
 		mset.lseq = end
 		return nil
 	}
-
-	// Must only be enabled once every peer in the cluster supports receiving
-	// deleteRangeOp in the normal apply path; older peers panic on unknown ops.
-	if mset.srv.getOpts().getFeatureFlag(FeatureFlagJsRaftDeleteRange) {
-		return node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
-	}
-
-	var entries []*Entry
-	for seq := start; seq <= end; seq++ {
-		entries = append(entries, newEntry(EntryNormal, encodeStreamMsg(_EMPTY_, _EMPTY_, nil, nil, seq-1, 0, false)))
-		// So a single message does not get too big.
-		if len(entries) > 10_000 {
-			if err := node.ProposeMulti(mset.term, entries); err != nil {
-				return err
-			}
-			// We need to re-create `entries` because there is a reference
-			// to it in the node's pae map.
-			entries = entries[:0]
-		}
-	}
-	// Send all at once.
-	if len(entries) > 0 {
-		return node.ProposeMulti(mset.term, entries)
-	}
-	return nil
+	// Send a single deleteRangeOp for the full range.
+	return node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
 }
 
 const (
@@ -4125,6 +4108,7 @@ func (mset *stream) setupMirrorConsumer() error {
 			// Capture consumer name.
 			mirror.cname = ccr.ConsumerInfo.Name
 			mirror.dseq = 0
+			mirror.fcid, mirror.fcsc = _EMPTY_, 0
 			mirror.sseq = max(ccr.ConsumerInfo.Delivered.Stream, state.LastSeq)
 			mirror.qch = make(chan struct{})
 			mirror.wg.Add(1)
@@ -4636,6 +4620,7 @@ func (mset *stream) trySetupSourceConsumer(iname string, seq uint64, startTime t
 
 				// Do not set si.sseq to seq here. si.sseq will be set in processInboundSourceMsg
 				si.dseq = 0
+				si.fcid, si.fcsc = _EMPTY_, 0
 				si.qch = make(chan struct{})
 				// Set the last seen as now so that we don't fail at the first check.
 				si.last.Store(time.Now().UnixNano())
@@ -4798,6 +4783,43 @@ func (mset *stream) handleFlowControl(m *inMsg, dseq, sseq uint64) {
 	}
 }
 
+// Number of consecutive heartbeats reporting the same stalled flow control reply
+// before we consider our replies to not be reaching the consumer.
+const sourceFCStalledThreshold = 3
+
+// processStalledFlowControl sends the flow control reply the consumer reports being stalled on.
+// If it keeps reporting the same one, our replies are not reaching it, so report an error.
+// Lock should be held.
+func (mset *stream) processStalledFlowControl(si *sourceInfo, fcReply string) {
+	if fcReply != si.fcid {
+		si.fcid, si.fcsc = fcReply, 0
+	}
+	si.fcsc++
+	// Warn exactly once per stall.
+	if si.fcsc == sourceFCStalledThreshold {
+		si.err = NewJSSourceConsumerFlowControlStalledError()
+		kind := "source"
+		if si == mset.mirror {
+			kind = "mirror"
+		}
+		mset.srv.Warnf("JetStream stream '%s > %s' %s '%s' is stalled on flow control, replies are not reaching the consumer",
+			mset.acc.Name, mset.cfg.Name, kind, si.name)
+	}
+	mset.outq.sendMsg(fcReply, nil)
+}
+
+// clearStalledFlowControl resets stalled flow control tracking once the consumer is no longer stalled.
+// Lock should be held.
+func (mset *stream) clearStalledFlowControl(si *sourceInfo) {
+	if si.fcid == _EMPTY_ {
+		return
+	}
+	si.fcid, si.fcsc = _EMPTY_, 0
+	if si.err != nil && si.err.ErrCode == uint16(JSSourceConsumerFlowControlStalledErr) {
+		si.err = nil
+	}
+}
+
 // processInboundSourceMsg handles processing other stream messages bound for this stream.
 func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	mset.mu.Lock()
@@ -4830,7 +4852,9 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 				mset.retrySourceConsumerAtSeq(si.iname, si.sseq+1)
 			} else if fcReply := sliceHeader(JSConsumerStalled, m.hdr); len(fcReply) > 0 {
 				// Other side thinks we are stalled, so send flow control reply.
-				mset.outq.sendMsg(string(fcReply), nil)
+				mset.processStalledFlowControl(si, string(fcReply))
+			} else {
+				mset.clearStalledFlowControl(si)
 			}
 		}
 		mset.mu.Unlock()
@@ -4876,6 +4900,8 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	} else {
 		si.lag = pending - 1
 	}
+	// Receiving messages means we are not stalled on flow control.
+	mset.clearStalledFlowControl(si)
 	node, ident := mset.node, si.ident
 	mset.mu.Unlock()
 

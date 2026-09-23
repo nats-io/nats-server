@@ -7404,6 +7404,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			// Force response in case we think this is an update.
 			if !js.isMetaRecovering() && isConfigUpdate {
 				ca.clearResponded()
+				o.setConsumerAssignment(ca)
 			}
 			cca := o.consumerAssignment()
 			// Perform the leader change in a goroutine, otherwise we could block meta operations.

@@ -8303,6 +8303,56 @@ func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterConcurrentR1ConsumerUpdatesAllRespond(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	// Send many concurrent, identical create-or-update requests for the R1 consumer.
+	req, err := json.Marshal(CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{Name: "C", AckPolicy: AckExplicit, Replicas: 1},
+		Action: ActionCreateOrUpdate,
+	})
+	require_NoError(t, err)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, "TEST") + ".C"
+
+	const requests = 100
+	subs := make([]*nats.Subscription, 0, requests)
+	for range requests {
+		sub, err := nc.SubscribeSync(nats.NewInbox())
+		require_NoError(t, err)
+		subs = append(subs, sub)
+	}
+	for _, sub := range subs {
+		require_NoError(t, nc.PublishRequest(subject, sub.Subject, req))
+	}
+	require_NoError(t, nc.Flush())
+
+	for i, sub := range subs {
+		msg, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			t.Fatalf("Request %d did not receive a response: %v", i, err)
+		}
+		var resp JSApiConsumerCreateResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_NotNil(t, resp.ConsumerInfo)
+	}
+}
+
 func TestJetStreamClusterStreamRaftGroupChangesWhenMovingToOrOffR1(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R5S", 5)
 	defer c.shutdown()
@@ -11010,88 +11060,70 @@ func TestJetStreamClusterProposeFailureDoesNotDriftClseq(t *testing.T) {
 }
 
 func TestJetStreamClusterSkipMsgsRaftDeleteRange(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		title := "Disabled"
-		if enabled {
-			title = "Enabled"
-		}
-		t.Run(title, func(t *testing.T) {
-			c := createJetStreamClusterExplicit(t, "R3S", 3)
-			defer c.shutdown()
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
 
-			for _, s := range c.servers {
-				s.optsMu.Lock()
-				s.opts.FeatureFlags = map[string]bool{FeatureFlagJsRaftDeleteRange: enabled}
-				s.optsMu.Unlock()
-			}
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
 
-			nc, js := jsClientConnect(t, c.randomServer())
-			defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
 
-			_, err := js.AddStream(&nats.StreamConfig{
-				Name:     "TEST",
-				Subjects: []string{"foo"},
-				Replicas: 3,
-			})
-			require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
 
-			_, err = js.Publish("foo", nil)
-			require_NoError(t, err)
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
 
-			sl := c.streamLeader(globalAccountName, "TEST")
-			mset, err := sl.globalAccount().lookupStream("TEST")
-			require_NoError(t, err)
-
-			// Enabled uses a huge gap to assert the O(1) apply path; disabled
-			// lowers it so the O(n) per-seq path finishes in a reasonable time.
-			gap := uint64(100_000_000)
-			if !enabled {
-				gap = uint64(50_000)
-			}
-			start := time.Now()
-			mset.mu.Lock()
-			err = mset.skipMsgs(2, gap)
-			mset.mu.Unlock()
-			require_NoError(t, err)
-			if elapsed := time.Since(start); elapsed > 2*time.Second {
-				t.Fatalf("Expected to skip msgs in <2s but got %v", elapsed)
-			}
-
-			// Wait for the skip to be applied on the leader before publishing,
-			// since the clustered paths are async.
-			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-				mset.mu.RLock()
-				lseq := mset.lseq
-				mset.mu.RUnlock()
-				if lseq < gap {
-					return fmt.Errorf("leader lseq=%d, want >=%d", lseq, gap)
-				}
-				return nil
-			})
-
-			// After the skip, publish one more live message so we have a
-			// message at LastSeq to compare against.
-			_, err = js.Publish("foo", nil)
-			require_NoError(t, err)
-			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-				for _, s := range c.servers {
-					mset, err = s.globalAccount().lookupStream("TEST")
-					if err != nil {
-						return err
-					}
-					var state StreamState
-					mset.store.FastState(&state)
-					if state.LastSeq != gap+1 {
-						return fmt.Errorf("server %s LastSeq=%d, want %d", s.Name(), state.LastSeq, gap+1)
-					}
-					if state.Msgs != 2 {
-						return fmt.Errorf("server %s Msgs=%d, want 2", s.Name(), state.Msgs)
-					}
-				}
-				return nil
-			})
-		})
+	// Use a huge gap to assert the O(1) apply path.
+	gap := uint64(100_000_000)
+	start := time.Now()
+	mset.mu.Lock()
+	err = mset.skipMsgs(2, gap)
+	mset.mu.Unlock()
+	require_NoError(t, err)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Expected to skip msgs in <2s but got %v", elapsed)
 	}
+
+	// Wait for the skip to be applied on the leader before publishing,
+	// since the clustered paths are async.
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		mset.mu.RLock()
+		lseq := mset.lseq
+		mset.mu.RUnlock()
+		if lseq < gap {
+			return fmt.Errorf("leader lseq=%d, want >=%d", lseq, gap)
+		}
+		return nil
+	})
+
+	// After the skip, publish one more live message so we have a
+	// message at LastSeq to compare against.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err = s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			var state StreamState
+			mset.store.FastState(&state)
+			if state.LastSeq != gap+1 {
+				return fmt.Errorf("server %s LastSeq=%d, want %d", s.Name(), state.LastSeq, gap+1)
+			}
+			if state.Msgs != 2 {
+				return fmt.Errorf("server %s Msgs=%d, want 2", s.Name(), state.Msgs)
+			}
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterApplyDeleteRangeOpIdempotent(t *testing.T) {

@@ -4746,17 +4746,25 @@ func TestJetStreamClusterStreamPeerRemoveNoReplacementIsRejected(t *testing.T) {
 				require_NotNil(t, sa)
 				require_True(t, sa.Group.Desired == nil)
 				require_True(t, slices.Equal(sa.Group.Peers, peers))
+				require_True(t, sjs.cluster.inflightStreams[globalAccountName]["TEST"] == nil)
 			}
 			checkPeers()
 
 			// A meta leader change runs reconcilePeerAssignments, which must find
-			// nothing to heal.
+			// nothing to heal. The old leader keeps reporting itself as leader until
+			// its monitor goroutine processes the leader change, wait for a newer term.
+			term := ml.getJetStream().getMetaGroup().Term()
 			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
-			c.waitOnLeader()
-			ml = c.leader()
-			require_NotNil(t, ml)
-
-			time.Sleep(500 * time.Millisecond)
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				ml = c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				if nterm := ml.getJetStream().getMetaGroup().Term(); nterm <= term {
+					return fmt.Errorf("meta leader still in term %d", nterm)
+				}
+				return nil
+			})
 			checkPeers()
 
 			// The stream is untouched and still fully usable.
@@ -5466,17 +5474,25 @@ func TestJetStreamClusterConsumerPeerRemoveNoReplacementIsRejected(t *testing.T)
 				require_NotNil(t, ca)
 				require_True(t, ca.Group.Desired == nil)
 				require_True(t, slices.Equal(ca.Group.Peers, peers))
+				require_True(t, sjs.cluster.inflightConsumers[globalAccountName]["TEST"]["CONSUMER"] == nil)
 			}
 			checkPeers()
 
 			// A meta leader change runs reconcilePeerAssignments, which must find
-			// nothing to heal.
+			// nothing to heal. The old leader keeps reporting itself as leader until
+			// its monitor goroutine processes the leader change, wait for a newer term.
+			term := ml.getJetStream().getMetaGroup().Term()
 			require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
-			c.waitOnLeader()
-			ml = c.leader()
-			require_NotNil(t, ml)
-
-			time.Sleep(500 * time.Millisecond)
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				ml = c.leader()
+				if ml == nil {
+					return errors.New("no meta leader")
+				}
+				if nterm := ml.getJetStream().getMetaGroup().Term(); nterm <= term {
+					return fmt.Errorf("meta leader still in term %d", nterm)
+				}
+				return nil
+			})
 			checkPeers()
 
 			// The consumer is untouched and still fully usable.
@@ -8364,6 +8380,68 @@ func TestJetStreamClusterCrossAccountMirrorsAndSources(t *testing.T) {
 		return nil
 	})
 
+}
+
+// https://github.com/nats-io/nats-server/issues/8630
+func TestJetStreamClusterCrossAccountMirrorsAndSourcesFlowControlStalled(t *testing.T) {
+	fcImport := `{ service: {account: JS, subject: "$JS.FC.>" }}`
+	require_True(t, strings.Contains(jsClusterMirrorSourceImportsTempl, fcImport))
+
+	for _, test := range []struct {
+		name  string
+		templ string
+		stall bool
+	}{
+		{"with FC import", jsClusterMirrorSourceImportsTempl, false},
+		{"without FC import", strings.Replace(jsClusterMirrorSourceImportsTempl, fcImport, "", 1), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := createJetStreamClusterWithTemplate(t, test.templ, "C1", 3)
+			defer c.shutdown()
+
+			s := c.randomServer()
+			nc, js := jsClientConnect(t, s, nats.UserInfo("rip", "pass"))
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 2})
+			require_NoError(t, err)
+
+			// Publish enough bytes so the first delivery burst triggers a flow control request.
+			toSend := 3000
+			for range toSend {
+				_, err = js.Publish("TEST", make([]byte, 1024))
+				require_NoError(t, err)
+			}
+
+			nc2, js2 := jsClientConnect(t, s)
+			defer nc2.Close()
+
+			ext := &nats.ExternalStream{APIPrefix: "RI.JS.API", DeliverPrefix: "RI.DELIVER.SYNC"}
+			_, err = js2.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "TEST", External: ext}})
+			require_NoError(t, err)
+			_, err = js2.AddStream(&nats.StreamConfig{Name: "S", Sources: []*nats.StreamSource{{Name: "TEST", External: ext}}})
+			require_NoError(t, err)
+
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				for _, name := range []string{"M", "S"} {
+					si, err := js2.StreamInfo(name)
+					require_NoError(t, err)
+					ssi := si.Mirror
+					if name == "S" {
+						ssi = si.Sources[0]
+					}
+					if !test.stall {
+						if ssi.Error != nil || si.State.Msgs != uint64(toSend) {
+							return fmt.Errorf("%s: err=%v, msgs=%d", name, ssi.Error, si.State.Msgs)
+						}
+					} else if ssi.Error == nil || ssi.Error.ErrorCode != nats.ErrorCode(JSSourceConsumerFlowControlStalledErr) || si.State.Msgs >= uint64(toSend) {
+						return fmt.Errorf("%s: expected stalled error, err=%v, msgs=%d", name, ssi.Error, si.State.Msgs)
+					}
+				}
+				return nil
+			})
+		})
+	}
 }
 
 func TestJetStreamClusterFailMirrorsAndSources(t *testing.T) {

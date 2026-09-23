@@ -1220,6 +1220,26 @@ func TestClientUpdateDefaultPermissionsRebuildsMsgDenyState(t *testing.T) {
 	require_True(t, c.checkDenySub("foo.secret", _EMPTY_))
 }
 
+func TestClientUpdateDefaultPermissionsPreservesReplyGrants(t *testing.T) {
+	response := &ResponsePermission{MaxMsgs: 1, Expires: time.Second}
+	permissions := &Permissions{
+		Subscribe: &SubjectPermission{Allow: []string{"service"}},
+		Response:  response,
+	}
+	c := &client{user: &NkeyUser{Permissions: permissions, defaultPerms: true}}
+	c.setPermissions(permissions)
+	c.replies["reply.pending"] = &resp{t: time.Now()}
+
+	updated := permissions.clone()
+	updated.Subscribe.Allow = append(updated.Subscribe.Allow, "extra")
+	require_True(t, c.updateDefaultPermissions(updated))
+	require_NotNil(t, c.replies["reply.pending"])
+
+	updated.Response = nil
+	require_True(t, c.updateDefaultPermissions(updated))
+	require_Len(t, len(c.replies), 0)
+}
+
 func TestClientSetPermissionsPublishDenyQueueQualifierFailsClosed(t *testing.T) {
 	c := &client{srv: New(&Options{})}
 	c.setPermissions(&Permissions{
