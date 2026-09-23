@@ -35,6 +35,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/sll"
 	"github.com/nats-io/nuid"
 	"golang.org/x/time/rate"
 )
@@ -487,7 +488,7 @@ type consumer struct {
 	pending           map[uint64]*Pending
 	ptmr              *time.Timer
 	ptmrEnd           time.Time
-	rdq               []uint64
+	rdq               sll.List[uint64]
 	rdqi              avl.SequenceSet
 	rdc               map[uint64]uint64
 	replies           map[uint64]string
@@ -1720,7 +1721,7 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 	// Make sure to clear out any re-deliver queues
 	o.stopAndClearPtmr()
 	o.rdc = nil
-	o.rdq = nil
+	o.rdq.Empty()
 	o.rdqi.Empty()
 	o.pending = nil
 	o.rsm = nil
@@ -1796,7 +1797,7 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 		mset.mu.RUnlock()
 
 		o.mu.Lock()
-		o.rdq = nil
+		o.rdq.Empty()
 		o.rdqi.Empty()
 
 		// Restore our saved state.
@@ -3000,7 +3001,7 @@ func (o *consumer) resetLocalStartingSeq(seq uint64) bool {
 		recalcPending = false
 	}
 	o.pending, o.rdc = nil, nil
-	o.rdq = nil
+	o.rdq.Empty()
 	o.rdqi.Empty()
 	o.sseq, o.dseq = seq, 1
 	o.adflr, o.asflr = o.dseq-1, o.sseq-1
@@ -4763,7 +4764,7 @@ func (o *consumer) processNextMsgRequest(reply string, msg []byte) {
 
 	// If the request is for noWait and we have pending requests already, check if we have room.
 	if noWait {
-		msgsPending := o.numPending() + uint64(len(o.rdq))
+		msgsPending := o.numPending() + uint64(o.rdq.Len())
 		// If no pending at all, decide what to do with request.
 		// If no expires was set then fail.
 		if msgsPending == 0 && expires.IsZero() {
@@ -6058,27 +6059,25 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 
 // Lock should be held.
 func (o *consumer) addToRedeliverQueue(seqs ...uint64) {
-	o.rdq = append(o.rdq, seqs...)
 	for _, seq := range seqs {
+		o.rdq.PushBack(seq)
 		o.rdqi.Insert(seq)
 	}
 }
 
 // Lock should be held.
 func (o *consumer) hasRedeliveries() bool {
-	return len(o.rdq) > 0
+	return o.rdq.Len() > 0
 }
 
 func (o *consumer) getNextToRedeliver() uint64 {
-	if len(o.rdq) == 0 {
+	seq, ok := o.rdq.PopFront()
+	if !ok {
 		return 0
 	}
-	seq := o.rdq[0]
-	if len(o.rdq) == 1 {
-		o.rdq = nil
+	if o.rdq.Len() == 0 {
 		o.rdqi.Empty()
 	} else {
-		o.rdq = append(o.rdq[:0], o.rdq[1:]...)
 		o.rdqi.Delete(seq)
 	}
 	return seq
@@ -6097,17 +6096,13 @@ func (o *consumer) removeFromRedeliverQueue(seq uint64) bool {
 	if !o.onRedeliverQueue(seq) {
 		return false
 	}
-	for i, rseq := range o.rdq {
-		if rseq == seq {
-			if len(o.rdq) == 1 {
-				o.rdq = nil
-				o.rdqi.Empty()
-			} else {
-				o.rdq = append(o.rdq[:i], o.rdq[i+1:]...)
-				o.rdqi.Delete(seq)
-			}
-			return true
+	if o.rdq.Remove(seq) {
+		if o.rdq.Len() == 0 {
+			o.rdqi.Empty()
+		} else {
+			o.rdqi.Delete(seq)
 		}
+		return true
 	}
 	return false
 }
@@ -6215,7 +6210,7 @@ func (o *consumer) checkPending() {
 	} else {
 		// Make sure to stop timer and clear out any re delivery queues
 		o.stopAndClearPtmr()
-		o.rdq = nil
+		o.rdq.Empty()
 		o.rdqi.Empty()
 		o.pending = nil
 		// Mimic behavior in processAckMsg when pending is empty.
@@ -6674,11 +6669,11 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	}
 
 	// We need to remove all those being queued for redelivery under o.rdq
-	if len(o.rdq) > 0 {
-		rdq := o.rdq
-		o.rdq = nil
+	if o.rdq.Len() > 0 {
 		o.rdqi.Empty()
-		for _, sseq := range rdq {
+		// Visit each original entry once, appending retained entries at the tail.
+		for n := o.rdq.Len(); n > 0; n-- {
+			sseq, _ := o.rdq.PopFront()
 			if sseq >= o.sseq {
 				o.addToRedeliverQueue(sseq)
 			}

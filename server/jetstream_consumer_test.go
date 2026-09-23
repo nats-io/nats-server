@@ -3190,8 +3190,8 @@ func TestJetStreamConsumerMessageDeletedDuringRedelivery(t *testing.T) {
 
 			// Now empty the redelivery queue and reset the pending state.
 			o.mu.Lock()
-			for _, seq := range o.rdq {
-				o.removeFromRedeliverQueue(seq)
+			for o.hasRedeliveries() {
+				o.getNextToRedeliver()
 			}
 			o.pending = make(map[uint64]*Pending)
 			o.pending[2] = &Pending{}
