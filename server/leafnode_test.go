@@ -13234,3 +13234,50 @@ func TestLeafNodePermsWithImportSubjectTransformGatewayRouted(t *testing.T) {
 		})
 	}
 }
+
+func TestLeafNodeAccountLeafListReleasesClosedConnections(t *testing.T) {
+	o := DefaultOptions()
+	o.LeafNode.Host = "127.0.0.1"
+	o.LeafNode.Port = -1
+	hub := RunServer(o)
+	defer hub.Shutdown()
+
+	acc := hub.globalAccount()
+	checkLeafList := func(n int) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
+			acc.lmu.RLock()
+			defer acc.lmu.RUnlock()
+			if l := len(acc.lleafs); l != n {
+				return fmt.Errorf("expected %d leafnodes, got %d", n, l)
+			}
+			return nil
+		})
+	}
+
+	u := &url.URL{Scheme: "nats", Host: fmt.Sprintf("127.0.0.1:%d", o.LeafNode.Port)}
+	var leafs []*Server
+	for i := 0; i < 4; i++ {
+		lo := DefaultOptions()
+		lo.Cluster.Name = "edge"
+		lo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+		l := RunServer(lo)
+		defer l.Shutdown()
+		leafs = append(leafs, l)
+		checkLeafList(i + 1)
+	}
+
+	leafs[0].Shutdown()
+	leafs[0].WaitForShutdown()
+	checkLeafList(3)
+
+	leafs[3].Shutdown()
+	leafs[3].WaitForShutdown()
+	checkLeafList(2)
+
+	acc.lmu.RLock()
+	defer acc.lmu.RUnlock()
+	for _, c := range acc.lleafs[len(acc.lleafs):cap(acc.lleafs)] {
+		require_True(t, c == nil)
+	}
+}
