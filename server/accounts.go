@@ -1128,6 +1128,7 @@ func (a *Account) removeLeafNode(c *client) {
 	for i, l := range a.lleafs {
 		if l == c {
 			a.lleafs[i] = a.lleafs[ll-1]
+			a.lleafs[ll-1] = nil
 			if ll == 1 {
 				a.lleafs = nil
 			} else {
