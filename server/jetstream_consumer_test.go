@@ -3818,7 +3818,12 @@ func TestJetStreamConsumerAckAck(t *testing.T) {
 }
 
 func TestJetStreamConsumerAckV1NameWithPercent(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: false}
+	s := RunServer(&opts)
 	defer s.Shutdown()
 
 	mname := "TE%ST"
@@ -3865,7 +3870,6 @@ func TestJetStreamConsumerAckV2NameWithPercent(t *testing.T) {
 	opts.JetStream = true
 	opts.JetStreamDomain = "hu%b"
 	opts.StoreDir = t.TempDir()
-	opts.FeatureFlags = map[string]bool{FeatureFlagJsAckFormatV2: true}
 	s := RunServer(&opts)
 	defer s.Shutdown()
 
