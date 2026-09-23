@@ -5078,6 +5078,15 @@ func TestNRGSendSnapshotInstallsSnapshot(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	// Provide peer vote interest so the isolation guard permits campaigning.
+	// This test drives the leadership transitions directly.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	_, err = nc.SubscribeSync(n.vsubj)
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
 	nats0 := "S1Nunr6R" // "nats-0"
 	nats1 := "yrzKKRBu" // "nats-1"
 
@@ -7162,6 +7171,14 @@ func TestNRGDontSwitchToCandidateWithInflightSelfMembershipChange(t *testing.T) 
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
+	// Provide peer vote interest so only membership state prevents campaigning.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	_, err = nc.SubscribeSync(n.vsubj)
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
 	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
 
 	nats0 := "S1Nunr6R" // "nats-0"
@@ -7217,6 +7234,14 @@ func TestNRGDontSwitchToCandidateWithInflightSelfMembershipChange(t *testing.T) 
 func TestNRGDontSwitchToCandidateAsManagedNodeOutsidePeerSet(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
+
+	// Provide peer vote interest so only membership state prevents campaigning.
+	nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer nc.Close()
+	_, err = nc.SubscribeSync(n.vsubj)
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
 
 	nats0 := "S1Nunr6R" // "nats-0"
 
@@ -8368,7 +8393,9 @@ func TestNRGPartitionedPeerRemove(t *testing.T) {
 	hub, rg := c.createMockMemRaftGroup("MOCK", 2, newStateAdder)
 	defer hub.healPartitions()
 
-	leader := rg.waitOnLeader().node()
+	leaderSM := rg.waitOnLeader()
+	require_NotNil(t, leaderSM)
+	leader := leaderSM.node()
 	require_Equal(t, leader.ClusterSize(), 2)
 	require_Equal(t, len(rg.followers()), 1)
 	follower := rg.followers()[0].node()
@@ -8418,6 +8445,71 @@ func TestNRGPartitionedPeerRemove(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestNRGIsolatedNodeDoesNotCampaign(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	hub, rg := c.createMockMemRaftGroup("MOCK", 3, newStateAdder)
+	defer hub.healPartitions()
+
+	leader := rg.waitOnLeader()
+	require_NotNil(t, leader)
+	isolated := rg.followers()[0].node().(*raft)
+	require_NotEqual(t, isolated.ID(), leader.node().ID())
+	require_False(t, isolated.Leader())
+	require_Equal(t, isolated.State(), Follower)
+	leaderTerm := leader.node().Term()
+	require_Equal(t, isolated.Term(), leaderTerm)
+	hub.partition(isolated.ID(), 1)
+
+	var requests atomic.Int64
+	hub.setAfterMsgHook(func(subject, reply string, msg []byte) {
+		if subject != isolated.vsubj {
+			return
+		}
+		vr := decodeVoteRequest(msg, reply)
+		if vr != nil && vr.candidate == isolated.ID() {
+			requests.Add(1)
+		}
+	})
+
+	initialTerm := isolated.Term()
+	require_NoError(t, isolated.CampaignImmediately())
+	isolated.RLock()
+	campaignReset := isolated.etlr
+	isolated.RUnlock()
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		isolated.RLock()
+		retried := isolated.etlr.After(campaignReset)
+		isolated.RUnlock()
+		if !retried {
+			return errors.New("isolated node has not handled its campaign timeout")
+		}
+		return nil
+	})
+	require_Equal(t, isolated.State(), Follower)
+	require_Equal(t, isolated.Term(), initialTerm)
+	require_Equal(t, requests.Load(), int64(0))
+
+	// Heal the node and have the current leader contact it. Since the isolated
+	// node never campaigned, it should rejoin as a follower in the same term.
+	hub.heal(isolated.ID())
+	leader.node().(*raft).sendHeartbeat()
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if isolated.GroupLeader() != leader.node().ID() {
+			return errors.New("healed node has not recognized the current leader")
+		}
+		return nil
+	})
+	require_True(t, leader.node().Leader())
+	require_Equal(t, leader.node().Term(), leaderTerm)
+	require_Equal(t, isolated.State(), Follower)
+	require_Equal(t, isolated.Term(), leaderTerm)
+
+	leader.(*stateAdder).proposeDelta(1)
+	rg.waitOnTotal(t, 1)
 }
 
 func TestNRGPeerAddAndPartitionLeader(t *testing.T) {

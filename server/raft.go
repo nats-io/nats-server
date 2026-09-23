@@ -5917,6 +5917,27 @@ func (n *raft) switchToCandidate() {
 		return
 	}
 
+	// If not enough other nodes will hear our campaign, don't bother initiating it.
+	// It is possible that the partition will end and we will hear the current leader
+	// again and continue participating in the current term without another election.
+	// A single-node group can elect itself without any peer interest, which is
+	// needed to expand a group.
+	// NOTE: The metalayer in a supercluster always has a gateway connection and so
+	// this check does nothing for the _meta_ group in that case, this is known.
+	if n.qn > 1 && !n.t.SufficientInterest(n.vsubj, n.qn) {
+		n.debug("Not switching to candidate, not enough online peers to vote")
+		if n.State() == Candidate {
+			// Term was already bumped by an existing candidacy that was happening
+			// before the partition, which we now can't undo. However we can step
+			// down to follower to stop the runloop from re-entering runAsCandidate.
+			n.switchToFollowerLocked(noLeader)
+		} else {
+			n.updateLeader(noLeader)
+		}
+		n.resetElect(minElectionTimeout)
+		return
+	}
+
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
 	} else {
