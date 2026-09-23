@@ -1097,6 +1097,13 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 	} else if c.user.Permissions.Response == nil {
 		c.replies = nil
 	}
+	for _, sub := range c.subs {
+		if len(sub.queue) > 0 {
+			c.canSubscribe(string(sub.subject), string(sub.queue))
+		} else {
+			c.canSubscribe(string(sub.subject))
+		}
+	}
 	return true
 }
 
