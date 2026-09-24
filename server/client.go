@@ -4951,6 +4951,9 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	if shouldReturn || (checkJS && si.se != nil && si.se.acc == c.srv.SystemAccount()) {
 		return false
 	}
+	if !si.implicit && subjectHasWildcard(si.from) && acc.hasImplicitServiceImportForSubject(siAcc, string(c.pa.subject)) {
+		return false
+	}
 
 	mt, traceOnly := c.isMsgTraceEnabled()
 
