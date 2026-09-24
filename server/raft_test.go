@@ -3986,38 +3986,38 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	}
 
 	// Untracked peers of managed groups are observed when we hear from them.
-	require_True(t, n.LastHeardFromPeer("B").IsZero())
+	require_True(t, n.LastHeardFromFollower("B").IsZero())
 	require_NoError(t, n.trackPeer("B"))
-	require_False(t, n.LastHeardFromPeer("B").IsZero())
+	require_False(t, n.LastHeardFromFollower("B").IsZero())
 
 	// We're not the leader, so there's nothing to nudge about. Only the leader
 	// can act on a newly observed peer by adding it to the group.
 	requireNoSignal()
 
 	// Members are tracked through their own peer state.
-	require_True(t, n.LastHeardFromPeer("A").IsZero())
+	require_True(t, n.LastHeardFromFollower("A").IsZero())
 	require_NoError(t, n.trackPeer("A"))
-	require_False(t, n.LastHeardFromPeer("A").IsZero())
+	require_False(t, n.LastHeardFromFollower("A").IsZero())
 
 	// Once the peer becomes a member, the observed entry is cleaned up.
 	require_Len(t, len(n.observed), 1)
 	n.peers["B"] = &lps{}
 	require_NoError(t, n.trackPeer("B"))
 	require_Len(t, len(n.observed), 0)
-	require_False(t, n.LastHeardFromPeer("B").IsZero())
+	require_False(t, n.LastHeardFromFollower("B").IsZero())
 
 	// Removed peers are still observed, as otherwise a peer that's removed
 	// and re-added shortly after will stall until the timer expires.
 	n.removed = map[string]time.Time{"C": time.Now()}
 	require_NoError(t, n.trackPeer("C"))
-	require_False(t, n.LastHeardFromPeer("C").IsZero())
+	require_False(t, n.LastHeardFromFollower("C").IsZero())
 	requireNoSignal()
 
 	// As leader, first contact with a peer we hadn't observed yet nudges the
 	// upper layer, so it can check right away if this unblocks adding the peer.
 	n.leaderState.Store(true)
 	require_NoError(t, n.trackPeer("D"))
-	require_False(t, n.LastHeardFromPeer("D").IsZero())
+	require_False(t, n.LastHeardFromFollower("D").IsZero())
 	requireNudge()
 
 	// Only first contact nudges, we'd otherwise signal for every response.
@@ -4041,12 +4041,12 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 		t.Fatalf("Expected the pending leader change to be preserved")
 	}
 	// The peer is still observed, even though the nudge was dropped.
-	require_False(t, n.LastHeardFromPeer("E").IsZero())
+	require_False(t, n.LastHeardFromFollower("E").IsZero())
 
 	// Stepping down stops the nudges, we can't act on them anymore.
 	n.leaderState.Store(false)
 	require_NoError(t, n.trackPeer("F"))
-	require_False(t, n.LastHeardFromPeer("F").IsZero())
+	require_False(t, n.LastHeardFromFollower("F").IsZero())
 	requireNoSignal()
 }
 
@@ -4080,7 +4080,7 @@ func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
 	require_NoError(t, n.trackPeer(nats1))
 	require_Equal(t, n.prop.len(), 0)
 	require_Len(t, len(n.observed), 1)
-	require_False(t, n.LastHeardFromPeer(nats1).IsZero())
+	require_False(t, n.LastHeardFromFollower(nats1).IsZero())
 }
 
 func TestNRGInitializeAndScaleUp(t *testing.T) {
@@ -4598,6 +4598,56 @@ func TestNRGLeaderCatchupHandling(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, ae.pterm, 1)
 	require_Equal(t, ae.pindex, 2)
+}
+
+func TestNRGSnapshotOnlyCatchupNotCaughtUpUntilConfirmed(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+	for i := range uint64(3) {
+		ae := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: min(i, 1), pindex: i, entries: entries})
+		n.processAppendEntry(ae, n.aesub)
+	}
+	require_Equal(t, n.pindex, 3)
+
+	// Switching to leader stores a peer state entry at index 4.
+	n.term = 1
+	n.switchToLeader()
+	require_Equal(t, n.pindex, 4)
+
+	// Fully compact the log, so catchup only requires sending the snapshot.
+	n.Lock()
+	n.commit = n.pindex
+	n.Unlock()
+	n.Applied(4)
+	require_NoError(t, n.InstallSnapshot(nil, false))
+	var state StreamState
+	n.wal.FastState(&state)
+	require_Equal(t, state.Msgs, 0)
+
+	// The follower was fully caught up.
+	n.Lock()
+	n.peers[nats1] = &lps{ts: time.Now(), li: 4}
+	n.Unlock()
+	require_True(t, n.IsFollowerCaughtUp(nats1))
+
+	// But lost its state and requests a catchup, which only sends the snapshot.
+	n.catchupFollower(newAppendEntryResponse(0, 0, nats1, false))
+	n.RLock()
+	_, ok := n.progress[nats1]
+	n.RUnlock()
+	require_False(t, ok)
+	require_False(t, n.IsFollowerCaughtUp(nats1))
+
+	// Only caught up once the follower confirms it has the snapshot.
+	n.processAppendEntryResponse(newAppendEntryResponse(1, 4, nats1, true))
+	require_True(t, n.IsFollowerCaughtUp(nats1))
 }
 
 func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
@@ -7877,7 +7927,7 @@ func TestNRGReset(t *testing.T) {
 
 	// Add another peer in addition to ourselves.
 	other := nats1
-	n.peers[other] = &lps{time.Time{}, 0}
+	n.peers[other] = &lps{}
 	n.adjustClusterSizeAndQuorum()
 	n.updateLeader(other)
 
