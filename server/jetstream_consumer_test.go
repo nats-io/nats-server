@@ -10476,6 +10476,17 @@ func TestJetStreamConsumerPullNoWaitBatchLargerThanPending(t *testing.T) {
 			_, err := js.Publish("foo", []byte("OK"))
 			require_NoError(t, err)
 		}
+		// Replication is async, so wait for the consumer to show them as pending.
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			ci, err := js.ConsumerInfo("TEST", "C")
+			if err != nil {
+				return err
+			}
+			if ci.NumPending != 5 {
+				return fmt.Errorf("expected 5 pending, got %d", ci.NumPending)
+			}
+			return nil
+		})
 
 		sub := sendRequest(t, nc, "rply", req)
 		defer sub.Unsubscribe()
