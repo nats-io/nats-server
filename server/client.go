@@ -2416,8 +2416,11 @@ func (c *client) processConnect(arg []byte) error {
 		// A second CONNECT may move the client into a different account via
 		// checkAuthentication. Drop any previously-registered subscriptions
 		// from the current account first so they don't leak in that account's
-		// sublist after the client switches.
+		// sublist after the client switches. Also, clear any cached sublist
+		// results before switching accounts.
 		if !firstConnect {
+			c.in.genid = 0
+			c.in.results = nil
 			c.clearAccountSubs(false)
 		}
 
