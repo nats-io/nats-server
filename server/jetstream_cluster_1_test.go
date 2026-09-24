@@ -12992,6 +12992,74 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateConsumerRemoved(t
 		return nil
 	})
 }
+
+func TestJetStreamClusterMetaCatchupRespondsToStagedRequests(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	// All assets are R1 on rs, so rs responds for them.
+	rs := c.randomNonLeader()
+	tags := []string{rs.Name()}
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	for _, name := range []string{"TEST", "OLD"} {
+		_, err := js.AddStream(&nats.StreamConfig{Name: name, Placement: &nats.Placement{Tags: tags}})
+		require_NoError(t, err)
+	}
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "OLD"})
+	require_NoError(t, err)
+
+	// Put rs in a catchup to an unreachable index, so it ignores new entries. Once stalled for 2s,
+	// the leader's next heartbeat makes rs request a real catchup, which delivers the requests below.
+	meta := rs.getJetStream().getMetaGroup().(*raft)
+	meta.Lock()
+	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.Unlock()
+
+	sub := natsSubSync(t, nc, "reply")
+	for _, r := range []struct {
+		subj string
+		req  any
+	}{
+		{fmt.Sprintf(JSApiStreamCreateT, "NEW"), &StreamConfig{Name: "NEW", Storage: FileStorage, Placement: &Placement{Tags: tags}}},
+		{fmt.Sprintf(JSApiDurableCreateT, "TEST", "NEW"), &CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "NEW"}}},
+		{fmt.Sprintf(JSApiStreamDeleteT, "OLD"), nil},
+		{fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "OLD"), nil},
+	} {
+		var b []byte
+		if r.req != nil {
+			b, err = json.Marshal(r.req)
+			require_NoError(t, err)
+		}
+		require_NoError(t, nc.PublishRequest(r.subj, "reply", b))
+	}
+
+	// Wait for the meta leader to apply all requests, so they're all part of the catchup.
+	mjs := c.leader().getJetStream()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		if mjs.streamAssignment(globalAccountName, "NEW") == nil ||
+			mjs.consumerAssignment(globalAccountName, "TEST", "NEW") == nil ||
+			mjs.streamAssignment(globalAccountName, "OLD") != nil ||
+			mjs.consumerAssignment(globalAccountName, "TEST", "OLD") != nil {
+			return errors.New("not applied yet")
+		}
+		return nil
+	})
+
+	for range 4 {
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		var resp ApiResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+	}
+}
+
 func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 	test := func(t *testing.T, newStream bool) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
