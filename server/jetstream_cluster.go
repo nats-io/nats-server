@@ -10383,8 +10383,21 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		id    string
 		avail uint64
 		off   bool
+		lag   bool
 		ha    int
 		ns    int
+	}
+	// Prefer online servers to offline ones, and caught up servers to lagging ones.
+	cmpAvailability := func(i, j wn) int {
+		rank := func(n wn) int {
+			if n.off {
+				return 2
+			} else if n.lag {
+				return 1
+			}
+			return 0
+		}
+		return cmp.Compare(rank(i), rank(j))
 	}
 
 	var nodes []wn
@@ -10572,7 +10585,7 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 			}
 		}
 		// Add to our list of potential nodes.
-		nodes = append(nodes, wn{p.ID, available, ni.offline, ha, pa.streams})
+		nodes = append(nodes, wn{p.ID, available, ni.offline, !cc.meta.IsFollowerCaughtUp(p.ID), ha, pa.streams})
 		if !ni.offline {
 			onlinePeers++
 		}
@@ -10593,13 +10606,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	}
 	// Sort based on available from most to least, breaking ties by number of total streams assigned to the peer.
 	slices.SortFunc(nodes, func(i, j wn) int {
-		// Prefer online servers to offline ones.
-		if i.off != j.off {
-			if i.off {
-				return 1
-			} else {
-				return -1
-			}
+		if c := cmpAvailability(i, j); c != 0 {
+			return c
 		}
 		if i.avail == j.avail {
 			return cmp.Compare(i.ns, j.ns)
@@ -10609,13 +10617,8 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 	// If we are placing a replicated stream, let's sort based on HAAssets, as that is more important to balance.
 	if cfg.Replicas > 1 {
 		slices.SortStableFunc(nodes, func(i, j wn) int {
-			// Prefer online servers to offline ones.
-			if i.off != j.off {
-				if i.off {
-					return 1
-				} else {
-					return -1
-				}
+			if c := cmpAvailability(i, j); c != 0 {
+				return c
 			}
 			return cmp.Compare(i.ha, j.ha)
 		})
@@ -11499,7 +11502,7 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	// Prefer the candidate we've heard from most recently.
 	add, last := _EMPTY_, time.Time{}
 	for _, peer := range candidates {
-		if ts := n.LastHeardFromPeer(peer); online(peer) && heard(ts) && ts.After(last) {
+		if ts := n.LastHeardFromFollower(peer); online(peer) && heard(ts) && ts.After(last) {
 			add, last = peer, ts
 		}
 	}
@@ -12075,6 +12078,14 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 		}
 		// First shuffle the active peers and then select to account for replica = 1.
 		rand.Shuffle(len(active), func(i, j int) { active[i], active[j] = active[j], active[i] })
+		// Prefer caught up peers, since lagging ones would respond late.
+		n := 0
+		for i, peer := range active {
+			if cc.meta.IsFollowerCaughtUp(peer) {
+				active[i], active[n] = active[n], active[i]
+				n++
+			}
+		}
 		peers = active[:replicas]
 	}
 	storage := sa.Config.Storage
