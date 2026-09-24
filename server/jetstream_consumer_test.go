@@ -13818,3 +13818,63 @@ func TestJetStreamConsumerDeliveryCountUnderflow(t *testing.T) {
 	_, present := o.rdc[1]
 	require_False(t, present)
 }
+
+func TestJetStreamConsumerR1CreateAndDeleteAppliedTogetherBothRespond(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	// The R1 consumer is on rs, so rs responds for it.
+	rs := c.randomNonLeader()
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Placement: &nats.Placement{Tags: []string{rs.Name()}}})
+	require_NoError(t, err)
+
+	// Pause rs's meta applies, so the create and delete are applied right after each other.
+	meta := rs.getJetStream().getMetaGroup().(*raft)
+	require_NoError(t, meta.PauseApply())
+
+	mjs := c.leader().getJetStream()
+	waitApplied := func(assigned bool) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			mjs.mu.RLock()
+			defer mjs.mu.RUnlock()
+			if (mjs.consumerAssignment(globalAccountName, "TEST", "C") != nil) != assigned {
+				return errors.New("not applied on meta leader")
+			}
+			return nil
+		})
+	}
+	sub := natsSubSync(t, nc, "reply")
+	req, err := json.Marshal(&CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "C"}})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiDurableCreateT, "TEST", "C"), "reply", req))
+	waitApplied(true)
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "C"), "reply", nil))
+	waitApplied(false)
+
+	// Only resume once rs knows both are committed.
+	_, lcommit, _ := mjs.getMetaGroup().Progress()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		meta.RLock()
+		defer meta.RUnlock()
+		if meta.hcommit < lcommit {
+			return errors.New("not committed yet")
+		}
+		return nil
+	})
+	meta.ResumeApply()
+
+	for _, typ := range []string{JSApiConsumerCreateResponseType, JSApiConsumerDeleteResponseType} {
+		msg, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		var resp ApiResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, typ)
+		require_True(t, resp.Error == nil)
+	}
+}
