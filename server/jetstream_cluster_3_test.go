@@ -1262,15 +1262,13 @@ func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	exceededErrs := []error{errors.New("system limit reached"), errors.New("no suitable peers")}
-
 	// Should fail.
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST-3",
 		Subjects: []string{"baz"},
 		Replicas: 3,
 	})
-	require_Error(t, err, exceededErrs...)
+	require_Error(t, err, errors.New("no suitable peers"))
 }
 
 func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
@@ -4099,9 +4097,8 @@ func TestJetStreamClusterChangeClusterAfterStreamCreate(t *testing.T) {
 	require_NoError(t, err)
 }
 
-// The consumer info() call does not take into account whether a consumer
-// is a leader or not, so results would be very different when asking servers
-// that housed consumer followers vs leaders.
+// Delivered/AckFloor are replicated, so Jsz for followers must report the same
+// values as the leader once the followers have applied the updates.
 func TestJetStreamClusterConsumerInfoForJszForFollowers(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "NATS", 3)
 	defer c.shutdown()
@@ -4116,7 +4113,7 @@ func TestJetStreamClusterConsumerInfoForJszForFollowers(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		sendStreamMsg(t, nc, "foo", "HELLO")
 	}
 
@@ -4128,25 +4125,29 @@ func TestJetStreamClusterConsumerInfoForJszForFollowers(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, len(msgs) == fetch)
 	for _, m := range msgs[:ack] {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
-	// Let acks propagate.
-	time.Sleep(100 * time.Millisecond)
-
-	for _, s := range c.servers {
-		jsz, err := s.Jsz(&JSzOptions{Accounts: true, Consumer: true})
-		require_NoError(t, err)
-		require_True(t, len(jsz.AccountDetails) == 1)
-		require_True(t, len(jsz.AccountDetails[0].Streams) == 1)
-		require_True(t, len(jsz.AccountDetails[0].Streams[0].Consumer) == 1)
-		consumer := jsz.AccountDetails[0].Streams[0].Consumer[0]
-		if consumer.Delivered.Consumer != uint64(fetch) || consumer.Delivered.Stream != uint64(fetch) {
-			t.Fatalf("Incorrect delivered for %v: %+v", s, consumer.Delivered)
+	// Let deliveries and acks propagate to the followers.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			jsz, err := s.Jsz(&JSzOptions{Accounts: true, Consumer: true})
+			if err != nil {
+				return err
+			}
+			if len(jsz.AccountDetails) != 1 || len(jsz.AccountDetails[0].Streams) != 1 ||
+				len(jsz.AccountDetails[0].Streams[0].Consumer) != 1 {
+				return fmt.Errorf("consumer not found for %v", s)
+			}
+			consumer := jsz.AccountDetails[0].Streams[0].Consumer[0]
+			if consumer.Delivered.Consumer != uint64(fetch) || consumer.Delivered.Stream != uint64(fetch) {
+				return fmt.Errorf("incorrect delivered for %v: %+v", s, consumer.Delivered)
+			}
+			if consumer.AckFloor.Consumer != uint64(ack) || consumer.AckFloor.Stream != uint64(ack) {
+				return fmt.Errorf("incorrect ackfloor for %v: %+v", s, consumer.AckFloor)
+			}
 		}
-		if consumer.AckFloor.Consumer != uint64(ack) || consumer.AckFloor.Stream != uint64(ack) {
-			t.Fatalf("Incorrect ackfloor for %v: %+v", s, consumer.AckFloor)
-		}
-	}
+		return nil
+	})
 }
 
 // Make sure that stopping a stream shutdowns down it's raft node.
@@ -4463,7 +4464,7 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 
 	// Now create the cloud and make sure we are connected.
 	// Cloud
-	c := createJetStreamCluster(t, cloudTmpl, "CLOUD", _EMPTY_, 3, 22020, false)
+	c := createJetStreamCluster(t, cloudTmpl, "CLOUD", _EMPTY_, 3, 22020, true)
 	defer c.shutdown()
 
 	var lnTmpl = `
@@ -4573,7 +4574,7 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 	defer nc.Close()
 
 	num := 10
-	for i := 0; i < num; i++ {
+	for i := range num {
 		err := nc.Publish("F.EU.DATA", []byte(fmt.Sprintf("MSG-%d", i)))
 		require_NoError(t, err)
 	}
@@ -4596,8 +4597,12 @@ func TestJetStreamClusterLeafnodePlusDaisyChainSetup(t *testing.T) {
 		Replicas: 3,
 	})
 	require_NoError(t, err)
+	// Only the stream leader subscribes, wait for its interest to propagate.
+	for _, s := range c.servers {
+		checkSubInterest(t, s, "F", "TEST.0", 2*time.Second)
+	}
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		sendStreamMsg(t, nc, fmt.Sprintf("TEST.%d", i), "OK")
 	}
 

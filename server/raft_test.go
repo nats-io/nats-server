@@ -6083,8 +6083,9 @@ func TestNRGLeaderResurrectsRemovedPeers(t *testing.T) {
 
 	// Remove one follower
 	require_NoError(t, leader.node().ProposeRemovePeer(followers[0].node().ID()))
+	// The leader drops the peer when proposing, but only persists it once committed.
 	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if peers := leader.node().Peers(); len(peers) == 2 {
+		if n := leader.node(); len(n.Peers()) == 2 && !n.MembershipChangeInProgress() {
 			return nil
 		}
 		return errors.New("membership still in progress")
