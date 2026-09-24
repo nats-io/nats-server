@@ -481,6 +481,7 @@ type streamAssignment struct {
 	consumers   map[string]*consumerAssignment
 	responded   atomic.Bool // copied via clone() to satisfy go vet's noCopy check
 	recovering  bool
+	catchup     bool // First seen via meta catchup, the raft group still needs empty-log protection.
 	reassigning bool // i.e. due to placement issues, lack of resources, etc.
 	resetting   bool // i.e. there was an error, and we're stopping and starting the stream
 	err         error
@@ -517,6 +518,7 @@ func (sa *streamAssignment) clone() *streamAssignment {
 		Restore:     sa.Restore,
 		consumers:   sa.consumers,
 		recovering:  sa.recovering,
+		catchup:     sa.catchup,
 		reassigning: sa.reassigning,
 		resetting:   sa.resetting,
 		err:         sa.err,
@@ -604,6 +606,7 @@ type consumerAssignment struct {
 	// Internal
 	responded   atomic.Bool // copied via clone() to satisfy go vet's noCopy check
 	recovering  bool
+	catchup     bool // First seen via meta catchup, the raft group still needs empty-log protection.
 	err         error
 	unsupported *unsupportedConsumerAssignment
 }
@@ -651,6 +654,7 @@ func (ca *consumerAssignment) clone() *consumerAssignment {
 		Reply:       ca.Reply,
 		State:       ca.State,
 		recovering:  ca.recovering,
+		catchup:     ca.catchup,
 		err:         ca.err,
 		unsupported: ca.unsupported,
 	}
@@ -3016,6 +3020,17 @@ func (js *jetStream) setStreamAssignmentRecovering(sa *streamAssignment) {
 	}
 }
 
+// setStreamAssignmentCatchup keeps the empty-log protection for an assignment first seen via
+// meta catchup, while leaving its reply intact so it can still be responded to.
+func (js *jetStream) setStreamAssignmentCatchup(sa *streamAssignment) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	sa.catchup = true
+	if sa.Group != nil && sa.Group.Desired == nil {
+		sa.Group.ScaleUp = false
+	}
+}
+
 // Called on recovery to make sure we do not process like original.
 func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 	js.mu.Lock()
@@ -3029,6 +3044,17 @@ func (js *jetStream) setConsumerAssignmentRecovering(ca *consumerAssignment) {
 		if ca.Group.Desired == nil {
 			ca.Group.ScaleUp = false
 		}
+	}
+}
+
+// setConsumerAssignmentCatchup keeps the empty-log protection for an assignment first seen via
+// meta catchup, while leaving its reply intact so it can still be responded to.
+func (js *jetStream) setConsumerAssignmentCatchup(ca *consumerAssignment) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	ca.catchup = true
+	if ca.Group != nil && ca.Group.Desired == nil {
+		ca.Group.ScaleUp = false
 	}
 }
 
@@ -3632,6 +3658,8 @@ func (ca *consumerAssignment) recoveryKey() string {
 func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bool, bool, error) {
 	var didSnap bool
 	isRecovering := ru != nil
+	// Unlike startup recovery, catchup entries are seen for the first time.
+	isCatchup := isRecovering && !js.isMetaRecovering()
 
 	for _, e := range entries {
 		// If we received a lower-level catchup entry, mark that we're recovering.
@@ -3698,7 +3726,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentRecovering(sa)
+					if isCatchup {
+						js.setStreamAssignmentCatchup(sa)
+					} else {
+						js.setStreamAssignmentRecovering(sa)
+					}
 					ru.addStream(sa)
 				} else {
 					js.processStreamAssignment(sa)
@@ -3710,7 +3742,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentRecovering(sa)
+					if isCatchup {
+						js.setStreamAssignmentCatchup(sa)
+					} else {
+						js.setStreamAssignmentRecovering(sa)
+					}
 					ru.removeStream(sa)
 				} else {
 					js.processStreamRemoval(sa)
@@ -3722,7 +3758,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentRecovering(ca)
+					if isCatchup {
+						js.setConsumerAssignmentCatchup(ca)
+					} else {
+						js.setConsumerAssignmentRecovering(ca)
+					}
 					ru.addOrUpdateConsumer(ca)
 				} else {
 					js.processConsumerAssignment(ca)
@@ -3734,7 +3774,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentRecovering(ca)
+					if isCatchup {
+						js.setConsumerAssignmentCatchup(ca)
+					} else {
+						js.setConsumerAssignmentRecovering(ca)
+					}
 					ru.addOrUpdateConsumer(ca)
 				} else {
 					js.processConsumerAssignment(ca)
@@ -3746,7 +3790,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setConsumerAssignmentRecovering(ca)
+					if isCatchup {
+						js.setConsumerAssignmentCatchup(ca)
+					} else {
+						js.setConsumerAssignmentRecovering(ca)
+					}
 					ru.removeConsumer(ca)
 				} else {
 					js.processConsumerRemoval(ca)
@@ -3758,7 +3806,11 @@ func (js *jetStream) applyMetaEntries(entries []*Entry, ru *recoveryUpdates) (bo
 					return isRecovering, didSnap, err
 				}
 				if isRecovering {
-					js.setStreamAssignmentRecovering(sa)
+					if isCatchup {
+						js.setStreamAssignmentCatchup(sa)
+					} else {
+						js.setStreamAssignmentRecovering(sa)
+					}
 					ru.updateStream(sa)
 				} else {
 					js.processUpdateStreamAssignment(sa)
@@ -6517,7 +6569,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 	needsNode := rg.node == nil
 	storage, cfg := sa.Config.Storage, sa.Config
 	newCfg := cfg.atDesiredOrigin(rg)
-	recovering := sa.recovering
+	recovering, raftRecovering := sa.recovering, sa.recovering || sa.catchup
 	hasResponded := sa.markResponded()
 	hadErr := sa.err != nil
 	// A cancel move is proposed as an update, but is answered with its own response type.
@@ -6550,7 +6602,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 				mset.startClusterSubs()
 				mset.mu.Unlock()
 
-				js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
+				js.createRaftGroup(acc.GetName(), rg, raftRecovering, storage, pprofLabels{
 					"type":    "stream",
 					"account": mset.accName(),
 					"stream":  mset.name(),
@@ -6694,12 +6746,12 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 	newCfg := sa.Config.atDesiredOrigin(rg)
 	storage := sa.Config.Storage
 	restore := sa.Restore
-	recovering := sa.recovering
+	raftRecovering := sa.recovering || sa.catchup
 	hadErr := sa.err != nil
 	js.mu.RUnlock()
 
 	// Process the raft group and make sure it's running if needed.
-	_, err := js.createRaftGroup(acc.GetName(), rg, recovering, storage, pprofLabels{
+	_, err := js.createRaftGroup(acc.GetName(), rg, raftRecovering, storage, pprofLabels{
 		"type":    "stream",
 		"account": acc.Name,
 		"stream":  sa.Config.Name,
@@ -7341,7 +7393,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	rg := ca.Group
 	alreadyRunning := rg != nil && rg.node != nil
 	accName, stream, consumer := ca.Client.serviceAccount(), ca.Stream, ca.Name
-	recovering := ca.recovering
+	raftRecovering := ca.recovering || ca.catchup
 	js.mu.RUnlock()
 
 	acc, err := s.LookupAccount(accName)
@@ -7391,7 +7443,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		storage = MemoryStorage
 	}
 	// No-op if R1.
-	js.createRaftGroup(accName, rg, recovering, storage, pprofLabels{
+	js.createRaftGroup(accName, rg, raftRecovering, storage, pprofLabels{
 		"type":     "consumer",
 		"account":  mset.accName(),
 		"stream":   ca.Stream,
