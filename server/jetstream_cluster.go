@@ -5929,12 +5929,17 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	accStreams := cc.streams[accName]
 	needDelete := accStreams != nil && accStreams[stream] != nil
 	if needDelete {
-		if osa := accStreams[stream]; osa != nil && osa.unsupported != nil {
+		osa := accStreams[stream]
+		if osa.unsupported != nil {
 			osa.unsupported.closeInfoSub(js.srv)
 			// Remember we used to be unsupported, just so we can send a successful delete response.
 			if sa.unsupported == nil {
 				sa.unsupported = osa.unsupported
 			}
+		}
+		// Carry over the running node, the decoded assignment doesn't have it.
+		if sa.Group != nil && osa.Group != nil {
+			sa.Group.node = osa.Group.node
 		}
 		delete(accStreams, stream)
 		if len(accStreams) == 0 {
@@ -6241,6 +6246,8 @@ func (js *jetStream) processConsumerRemoval(ca *consumerAssignment) {
 				if ca.unsupported == nil {
 					ca.unsupported = oca.unsupported
 				}
+				// Carry over the running node, the decoded assignment doesn't have it.
+				ca.Group.node = oca.Group.node
 			}
 		}
 	}
@@ -6651,6 +6658,11 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLea
 	if acc, _ = s.LookupAccount(ca.Client.serviceAccount()); acc != nil {
 		if mset, _ := acc.lookupStream(ca.Stream); mset != nil {
 			if o := mset.lookupConsumer(ca.Name); o != nil {
+				// An R1 consumer processes its leader change in a goroutine, which responds to its create.
+				// Wait for it, otherwise the consumer is already stopped and the create gets no response.
+				if node == nil {
+					o.stopMonitoring()
+				}
 				err = o.stopWithFlags(true, false, true, wasLeader)
 				stopped = true
 			}
