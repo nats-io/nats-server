@@ -8434,6 +8434,37 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error publishing retained message to JS directly: %v", err)
 	}
+	// The MQTT retained message is stored async from the test's perspective.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		si, err := js.StreamInfo(mqttRetainedMsgsStreamName)
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != 2 {
+			return fmt.Errorf("expected 2 retained messages stored, got %d", si.State.Msgs)
+		}
+		return nil
+	})
+
+	// Retained messages are loaded into (and removed from) the in-memory map async.
+	checkRetained := func(s *Server, n int) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			sm := &s.mqtt.sessmgr
+			sm.mu.RLock()
+			as := sm.sessions[globalAccountName]
+			sm.mu.RUnlock()
+			if as == nil {
+				return errors.New("no account session manager")
+			}
+			as.mu.RLock()
+			defer as.mu.RUnlock()
+			if size := as.retmsgs.Size(); size != n {
+				return fmt.Errorf("expected %d retained messages, got %d", n, size)
+			}
+			return nil
+		})
+	}
 
 	// Restart the server to see that it picks up both retained messages on restart.
 	s.Shutdown()
@@ -8444,6 +8475,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	checkRetained(s, 2)
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	for i := 0; i < 2; i++ {
 		b, pl := testMQTTReadPacket(t, r)
@@ -8467,6 +8499,7 @@ func TestMQTTDecodeRetainedMessage(t *testing.T) {
 	testMQTTFlush(t, mc, nil, r)
 	testMQTTDisconnect(t, mc, nil)
 	mc.Close()
+	checkRetained(s, 0)
 
 	// Connect again, subscribe, and check that we get nothing.
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
