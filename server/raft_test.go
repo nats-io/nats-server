@@ -4047,6 +4047,56 @@ func TestNRGLeaderCatchupHandling(t *testing.T) {
 	require_Equal(t, ae.pindex, 2)
 }
 
+func TestNRGSnapshotOnlyCatchupNotCaughtUpUntilConfirmed(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+	for i := range uint64(3) {
+		ae := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: min(i, 1), pindex: i, entries: entries})
+		n.processAppendEntry(ae, n.aesub)
+	}
+	require_Equal(t, n.pindex, 3)
+
+	// Switching to leader stores a peer state entry at index 4.
+	n.term = 1
+	n.switchToLeader()
+	require_Equal(t, n.pindex, 4)
+
+	// Fully compact the log, so catchup only requires sending the snapshot.
+	n.Lock()
+	n.commit = n.pindex
+	n.Unlock()
+	n.Applied(4)
+	require_NoError(t, n.InstallSnapshot(nil, false))
+	var state StreamState
+	n.wal.FastState(&state)
+	require_Equal(t, state.Msgs, 0)
+
+	// The follower was fully caught up.
+	n.Lock()
+	n.peers[nats1] = &lps{ts: time.Now(), li: 4}
+	n.Unlock()
+	require_True(t, n.IsFollowerCaughtUp(nats1))
+
+	// But lost its state and requests a catchup, which only sends the snapshot.
+	n.catchupFollower(newAppendEntryResponse(0, 0, nats1, false))
+	n.RLock()
+	_, ok := n.progress[nats1]
+	n.RUnlock()
+	require_False(t, ok)
+	require_False(t, n.IsFollowerCaughtUp(nats1))
+
+	// Only caught up once the follower confirms it has the snapshot.
+	n.processAppendEntryResponse(newAppendEntryResponse(1, 4, nats1, true))
+	require_True(t, n.IsFollowerCaughtUp(nats1))
+}
+
 func TestNRGNewEntriesFromOldLeaderResetsWALDuringCatchup(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
@@ -7196,7 +7246,7 @@ func TestNRGReset(t *testing.T) {
 
 	// Add another peer in addition to ourselves.
 	other := nats1
-	n.peers[other] = &lps{time.Time{}, 0}
+	n.peers[other] = &lps{}
 	n.adjustClusterSizeAndQuorum()
 	n.updateLeader(other)
 

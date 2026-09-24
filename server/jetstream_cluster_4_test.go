@@ -9370,3 +9370,53 @@ func TestJetStreamClusterSourcingConsumerMoveDoesNotReset(t *testing.T) {
 	sourced(20)
 	require_Equal(t, consumerInfo().Delivered.Consumer, 20)
 }
+
+func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// Have the meta leader believe it's catching up rs.
+	ml, rs := c.leader(), c.randomNonLeader()
+	meta := ml.getJetStream().getMetaGroup().(*raft)
+	rsID := rs.getJetStream().getMetaGroup().ID()
+	meta.Lock()
+	meta.peers[rsID].ci = math.MaxUint64
+	meta.Unlock()
+	require_False(t, meta.IsFollowerCaughtUp(rsID))
+
+	// Responses come from the stream/consumer leader, the meta leader might not have applied the assignment yet.
+	isMember := func(ci *nats.ClusterInfo) bool {
+		if ci.Leader == rs.Name() {
+			return true
+		}
+		return slices.ContainsFunc(ci.Replicas, func(pi *nats.PeerInfo) bool { return pi.Name == rs.Name() })
+	}
+	for i := range 10 {
+		// R1 streams and consumers aren't placed on the peer that's catching up.
+		name := fmt.Sprintf("S%d", i)
+		si, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name}, Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(si.Cluster))
+		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(ci.Cluster))
+	}
+
+	// But it's not ruled out.
+	si, err := js.AddStream(&nats.StreamConfig{Name: "PINNED", Subjects: []string{"pinned"}, Replicas: 1,
+		Placement: &nats.Placement{Tags: []string{"server:" + rs.Name()}}})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
+	si, err = js.AddStream(&nats.StreamConfig{Name: "R3", Subjects: []string{"r3"}, Replicas: 3})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
+}
