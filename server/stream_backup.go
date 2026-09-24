@@ -36,7 +36,10 @@ type SnapshotConsumerState struct {
 
 // Create a snapshot of this stream and its consumer's state along with messages.
 // sa is passed in when the stream is clustered, so we can find child consumer assignments.
-func (js *jetStream) CreateStreamSnapshotV2(store StreamStore, deadline time.Duration, includeConsumers bool, sa *streamAssignment) (*SnapshotResult, error) {
+func (js *jetStream) CreateStreamSnapshotV2(store StreamStore, deadline time.Duration, includeConsumers bool, sa *streamAssignment, fseq, lseq uint64) (*SnapshotResult, error) {
+	if lseq != 0 && fseq > lseq {
+		return nil, errors.New("snapshot first sequence exceeds last sequence")
+	}
 	pr, pw := net.Pipe()
 
 	// Set a write deadline here to protect ourselves.
@@ -50,13 +53,13 @@ func (js *jetStream) CreateStreamSnapshotV2(store StreamStore, deadline time.Dur
 
 	// Stream in separate Go routine.
 	errCh := make(chan error, 1)
-	go js.streamSnapshotV2(store, &state, pw, includeConsumers, sa, errCh)
+	go js.streamSnapshotV2(store, &state, pw, includeConsumers, sa, errCh, fseq, lseq)
 
 	return &SnapshotResult{pr, state, errCh}, nil
 }
 
 // Stream our snapshot through S2 compression and the custom archive format.
-func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w io.WriteCloser, includeConsumers bool, sa *streamAssignment, errCh chan error) {
+func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w io.WriteCloser, includeConsumers bool, sa *streamAssignment, errCh chan error, fseq, lseq uint64) {
 	defer close(errCh)
 	defer w.Close()
 
@@ -96,18 +99,23 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 	}
 
 	writeConsumerMsg := func(scs SnapshotConsumerState) error {
+		// Optionally bound last sequence if needed.
+		blseq := state.LastSeq
+		if lseq > 0 {
+			blseq = min(blseq, lseq)
+		}
 		// Bound the consumer state to the stream snapshot. Consumer sequence
 		// numbers are left intact since filtered consumers do not have a
 		// one-to-one mapping between consumer and stream sequences.
-		scs.Delivered.Stream = min(scs.Delivered.Stream, state.LastSeq)
-		scs.AckFloor.Stream = min(scs.AckFloor.Stream, state.LastSeq)
+		scs.Delivered.Stream = min(scs.Delivered.Stream, blseq)
+		scs.AckFloor.Stream = min(scs.AckFloor.Stream, blseq)
 		for seq := range scs.Pending {
-			if seq > state.LastSeq {
+			if seq > blseq {
 				delete(scs.Pending, seq)
 			}
 		}
 		for seq := range scs.Redelivered {
-			if seq > state.LastSeq {
+			if seq > blseq {
 				delete(scs.Redelivered, seq)
 			}
 		}
@@ -130,6 +138,10 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 	var consumerAssignments map[string]*consumerAssignment
 	var consumerStores []ConsumerStore
 	var streamState = *state
+	streamState.FirstSeq = max(streamState.FirstSeq, fseq)
+	if lseq > 0 {
+		streamState.LastSeq = min(streamState.LastSeq, lseq)
+	}
 	if !includeConsumers {
 		streamState.Consumers = 0
 	} else if clustered {
@@ -216,8 +228,15 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 		}
 	}
 
+	// Optionally allow bounding the first and last sequences, where
+	// 0 means unbounded.
+	fseq = max(fseq, state.FirstSeq, 1)
+	if lseq <= 0 || lseq > state.LastSeq {
+		lseq = state.LastSeq
+	}
+
 	var sm StoreMsg
-	for seq := state.FirstSeq - 1; seq < state.LastSeq; {
+	for seq := fseq - 1; seq < lseq; {
 		if _, seq, err = store.LoadNextMsg(fwcs, true, seq+1, &sm); err != nil {
 			if err == ErrStoreEOF {
 				break
@@ -227,7 +246,7 @@ func (js *jetStream) streamSnapshotV2(store StreamStore, state *StreamState, w i
 		}
 		// Concurrent deletions and publishes can move the next available
 		// message beyond the snapshot's original sequence range.
-		if seq > state.LastSeq {
+		if seq > lseq {
 			break
 		}
 		if err = writeStoreMsg(&sm); err != nil {

@@ -617,6 +617,10 @@ type JSApiStreamSnapshotRequest struct {
 	WindowSize int `json:"window_size,omitempty"`
 	// Check all message's checksums prior to snapshot.
 	CheckMsgs bool `json:"jsck,omitempty"`
+	// Inclusive message sequence bounds, useful for e.g. incremental backups.
+	// Zero means unbounded. Stream and consumer metadata is included in full.
+	FirstSeq uint64 `json:"first_seq,omitzero"`
+	LastSeq  uint64 `json:"last_seq,omitzero"`
 }
 
 // JSApiStreamSnapshotResponse is the direct response to the snapshot request.
@@ -4783,7 +4787,7 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 
 		start := time.Now().UTC()
 
-		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers)
+		sr, err := mset.snapshot(0, req.CheckMsgs, !req.NoConsumers, req.FirstSeq, req.LastSeq)
 		if err != nil {
 			s.Warnf("Snapshot of stream '%s > %s' failed: %v", mset.jsa.account.Name, mset.name(), err)
 			resp.Error = NewJSStreamSnapshotError(err, Unless(err))

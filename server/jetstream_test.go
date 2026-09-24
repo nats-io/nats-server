@@ -3462,7 +3462,9 @@ func TestJetStreamSnapshotV2ClampsConsumerStateToStream(t *testing.T) {
 	require_NoError(t, err)
 	defer mset.delete()
 
-	require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("one"), 1, time.Now().UnixNano(), 0, false))
+	for seq := uint64(1); seq <= 5; seq++ {
+		require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("message"), seq, time.Now().UnixNano(), 0, false))
+	}
 
 	o, err := mset.addConsumer(&ConsumerConfig{
 		Name:      "C",
@@ -3473,53 +3475,76 @@ func TestJetStreamSnapshotV2ClampsConsumerStateToStream(t *testing.T) {
 
 	var streamState StreamState
 	mset.store.FastState(&streamState)
-	require_Equal(t, streamState.LastSeq, uint64(1))
+	require_Equal(t, streamState.LastSeq, uint64(5))
 
 	o.mu.Lock()
 	err = o.setStoreState(&ConsumerState{
-		Delivered: SequencePair{Consumer: 3, Stream: 3},
-		AckFloor:  SequencePair{Consumer: 2, Stream: 2},
+		Delivered: SequencePair{Consumer: 6, Stream: 6},
+		AckFloor:  SequencePair{Consumer: 3, Stream: 3},
 		Pending: map[uint64]*Pending{
-			3: {Sequence: 3, Timestamp: time.Now().UnixNano()},
+			4: {Sequence: 4, Timestamp: time.Now().UnixNano()},
+			5: {Sequence: 5, Timestamp: time.Now().UnixNano()},
+			6: {Sequence: 6, Timestamp: time.Now().UnixNano()},
 		},
-		Redelivered: map[uint64]uint64{1: 2, 3: 2},
+		Redelivered: map[uint64]uint64{4: 2, 5: 3, 6: 4},
 	})
 	o.mu.Unlock()
 	require_NoError(t, err)
 
-	pr, pw := net.Pipe()
-	defer pr.Close()
-	errCh := make(chan error, 1)
-	go mset.js.streamSnapshotV2(mset.store, &streamState, pw, true, nil, errCh)
+	for _, test := range []struct {
+		name                string
+		last                uint64
+		delivered, ackFloor uint64
+		pending             []uint64
+	}{
+		{name: "unbounded", delivered: 5, ackFloor: 3, pending: []uint64{4, 5}},
+		{name: "below_stream_end", last: 4, delivered: 4, ackFloor: 3, pending: []uint64{4}},
+		{name: "below_ack_floor", last: 2, delivered: 2, ackFloor: 2},
+		{name: "at_stream_end", last: 5, delivered: 5, ackFloor: 3, pending: []uint64{4, 5}},
+		{name: "above_stream_end", last: 100, delivered: 5, ackFloor: 3, pending: []uint64{4, 5}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pr, pw := net.Pipe()
+			defer pr.Close()
+			errCh := make(chan error, 1)
+			go mset.js.streamSnapshotV2(mset.store, &streamState, pw, true, nil, errCh, 0, test.last)
 
-	dec := s2.NewReader(pr)
-	r := archive.NewReader(dec)
+			dec := s2.NewReader(pr)
+			r := archive.NewReader(dec)
 
-	hdr, err := r.Next()
-	require_NoError(t, err)
-	require_Equal(t, hdr.Name, "state.json")
-	_, err = io.ReadAll(r)
-	require_NoError(t, err)
+			hdr, err := r.Next()
+			require_NoError(t, err)
+			require_Equal(t, hdr.Name, "state.json")
+			_, err = io.ReadAll(r)
+			require_NoError(t, err)
 
-	hdr, err = r.Next()
-	require_NoError(t, err)
-	require_Equal(t, hdr.Name, "consumers/C")
-	buf, err := io.ReadAll(r)
-	require_NoError(t, err)
+			hdr, err = r.Next()
+			require_NoError(t, err)
+			require_Equal(t, hdr.Name, "consumers/C")
+			buf, err := io.ReadAll(r)
+			require_NoError(t, err)
 
-	var snapshot SnapshotConsumerState
-	require_NoError(t, json.Unmarshal(buf, &snapshot))
-	require_Equal(t, snapshot.Delivered, SequencePair{Consumer: 3, Stream: 1})
-	require_Equal(t, snapshot.AckFloor, SequencePair{Consumer: 2, Stream: 1})
-	require_Equal(t, len(snapshot.Pending), 0)
-	require_Equal(t, len(snapshot.Redelivered), 1)
-	dc, ok := snapshot.Redelivered[1]
-	require_True(t, ok)
-	require_Equal(t, dc, uint64(2))
+			var snapshot SnapshotConsumerState
+			require_NoError(t, json.Unmarshal(buf, &snapshot))
+			// Stream sequences are clamped, but consumer sequences stay intact.
+			require_Equal(t, snapshot.Delivered, SequencePair{Consumer: 6, Stream: test.delivered})
+			require_Equal(t, snapshot.AckFloor, SequencePair{Consumer: 3, Stream: test.ackFloor})
+			require_Equal(t, len(snapshot.Pending), len(test.pending))
+			require_Equal(t, len(snapshot.Redelivered), len(test.pending))
+			for _, seq := range test.pending {
+				pending, ok := snapshot.Pending[seq]
+				require_True(t, ok)
+				require_Equal(t, pending.Sequence, seq)
+				dc, ok := snapshot.Redelivered[seq]
+				require_True(t, ok)
+				require_Equal(t, dc, seq-2)
+			}
 
-	_, err = io.Copy(io.Discard, dec)
-	require_NoError(t, err)
-	require_NoError(t, <-errCh)
+			_, err = io.Copy(io.Discard, dec)
+			require_NoError(t, err)
+			require_NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestJetStreamSnapshotV2RestoreAtAccountReservationLimit(t *testing.T) {
@@ -4389,6 +4414,115 @@ func TestJetStreamSnapshotsAPIArchiveMessageLayout(t *testing.T) {
 	gotBody, err := io.ReadAll(r)
 	require_NoError(t, err)
 	require_True(t, bytes.Equal(body, gotBody))
+}
+
+func TestJetStreamSnapshotSequenceBounds(t *testing.T) {
+	for _, storage := range []nats.StorageType{nats.MemoryStorage, nats.FileStorage} {
+		t.Run(storage.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: storage})
+			require_NoError(t, err)
+			for seq := 1; seq <= 10; seq++ {
+				_, err := js.Publish("foo", fmt.Appendf(nil, "message %d", seq))
+				require_NoError(t, err)
+			}
+			require_NoError(t, js.DeleteMsg("TEST", 1))
+			require_NoError(t, js.DeleteMsg("TEST", 5))
+
+			for _, test := range []struct {
+				name        string
+				first, last uint64
+				want        []uint64
+				invalid     bool
+			}{
+				{name: "unbounded", want: []uint64{2, 3, 4, 6, 7, 8, 9, 10}},
+				{name: "inclusive", first: 3, last: 7, want: []uint64{3, 4, 6, 7}},
+				{name: "first_only", first: 7, want: []uint64{7, 8, 9, 10}},
+				{name: "last_only", last: 3, want: []uint64{2, 3}},
+				{name: "single_message", first: 6, last: 6, want: []uint64{6}},
+				{name: "deleted_message", first: 5, last: 5},
+				{name: "deleted_first", first: 5, last: 7, want: []uint64{6, 7}},
+				{name: "deleted_last", first: 3, last: 5, want: []uint64{3, 4}},
+				{name: "clamped", first: 1, last: 100, want: []uint64{2, 3, 4, 6, 7, 8, 9, 10}},
+				{name: "before_stream", last: 1},
+				{name: "after_stream", first: 11},
+				{name: "maximum_sequence", first: math.MaxUint64},
+				{name: "reversed", first: 7, last: 3, invalid: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					inbox := nats.NewInbox()
+					sub, err := nc.SubscribeSync(inbox)
+					require_NoError(t, err)
+					defer sub.Unsubscribe()
+					req, err := json.Marshal(&JSApiStreamSnapshotRequest{
+						DeliverSubject: inbox,
+						NoConsumers:    true,
+						FirstSeq:       test.first,
+						LastSeq:        test.last,
+					})
+					require_NoError(t, err)
+					msg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "TEST"), req, 5*time.Second)
+					require_NoError(t, err)
+					var resp JSApiStreamSnapshotResponse
+					require_NoError(t, json.Unmarshal(msg.Data, &resp))
+					if test.invalid {
+						require_True(t, resp.Error != nil)
+						require_Equal(t, resp.Error.Description, "snapshot failed: snapshot first sequence exceeds last sequence")
+						return
+					}
+					require_True(t, resp.Error == nil)
+
+					var snapshot bytes.Buffer
+					for {
+						chunk, err := sub.NextMsg(5 * time.Second)
+						require_NoError(t, err)
+						if chunk.Reply != _EMPTY_ {
+							require_NoError(t, chunk.Respond(nil))
+						}
+						if len(chunk.Data) == 0 {
+							break
+						}
+						snapshot.Write(chunk.Data)
+					}
+
+					r := archive.NewReader(s2.NewReader(&snapshot))
+					hdr, err := r.Next()
+					require_NoError(t, err)
+					require_Equal(t, hdr.Name, "state.json")
+					var state StreamState
+					require_NoError(t, json.NewDecoder(r).Decode(&state))
+					// The archived sequence range reflects the requested bounds.
+					require_Equal(t, state.FirstSeq, max(uint64(2), test.first))
+					last := uint64(10)
+					if test.last > 0 {
+						last = min(last, test.last)
+					}
+					require_Equal(t, state.LastSeq, last)
+					require_Equal(t, state.Msgs, uint64(8))
+					var got []uint64
+					for {
+						hdr, err := r.Next()
+						require_NoError(t, err)
+						if hdr.Sequence == 0 {
+							require_Equal(t, hdr.Name, _EMPTY_)
+							break
+						}
+						got = append(got, hdr.Sequence)
+						payload, err := io.ReadAll(r)
+						require_NoError(t, err)
+						require_Equal(t, string(payload), fmt.Sprintf("message %d", hdr.Sequence))
+					}
+					if !reflect.DeepEqual(got, test.want) {
+						t.Fatalf("snapshot sequences: got %v, want %v", got, test.want)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestJetStreamSnapshotWithDeletedLastSeq(t *testing.T) {
@@ -11739,7 +11873,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 			mset, err := acc.lookupStream("TEST")
 			require_NoError(t, err)
 			scfg := mset.config()
-			sr, err := mset.snapshot(5*time.Second, false, true)
+			sr, err := mset.snapshot(5*time.Second, false, true, 0, 0)
 			if err != nil {
 				t.Fatalf("Error getting snapshot: %v", err)
 			}

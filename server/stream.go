@@ -9421,7 +9421,7 @@ func (mset *stream) ackMsg(o *consumer, seq uint64) bool {
 }
 
 // Snapshot creates a snapshot for the stream and possibly consumers.
-func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers bool) (*SnapshotResult, error) {
+func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers bool, firstSeq, lastSeq uint64) (*SnapshotResult, error) {
 	if mset.closed.Load() {
 		return nil, errStreamClosed
 	}
@@ -9432,7 +9432,7 @@ func (mset *stream) snapshot(deadline time.Duration, checkMsgs, includeConsumers
 	// freshly loaded cache entry is first read. Corrupt records therefore make
 	// LoadNextMsg fail and abort the snapshot instead of silently entering the
 	// backup.
-	return mset.js.CreateStreamSnapshotV2(store, deadline, includeConsumers, mset.streamAssignment())
+	return mset.js.CreateStreamSnapshotV2(store, deadline, includeConsumers, mset.streamAssignment(), firstSeq, lastSeq)
 }
 
 const snapsDir = "__snapshots__"
