@@ -1262,15 +1262,13 @@ func TestJetStreamClusterHAssetsEnforcement(t *testing.T) {
 	})
 	require_NoError(t, err)
 
-	exceededErrs := []error{errors.New("system limit reached"), errors.New("no suitable peers")}
-
 	// Should fail.
 	_, err = js.AddStream(&nats.StreamConfig{
 		Name:     "TEST-3",
 		Subjects: []string{"baz"},
 		Replicas: 3,
 	})
-	require_Error(t, err, exceededErrs...)
+	require_Error(t, err, errors.New("no suitable peers"))
 }
 
 func TestJetStreamClusterInterestStreamConsumer(t *testing.T) {
