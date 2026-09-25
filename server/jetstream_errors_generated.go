@@ -470,6 +470,9 @@ const (
 	// JSSnapshotDeliverSubjectInvalidErr deliver subject not valid
 	JSSnapshotDeliverSubjectInvalidErr ErrorIdentifier = 10015
 
+	// JSSourceConsumerFlowControlStalledErr stream source consumer stalled on flow control
+	JSSourceConsumerFlowControlStalledErr ErrorIdentifier = 10228
+
 	// JSSourceConsumerRequiresAckFCErr stream source consumer requires flow control ack policy
 	JSSourceConsumerRequiresAckFCErr ErrorIdentifier = 10217
 
@@ -829,6 +832,7 @@ var (
 		JSRestoreSubscribeFailedErrF:                 {Code: 500, ErrCode: 10042, Description: "JetStream unable to subscribe to restore snapshot {subject}: {err}"},
 		JSSequenceNotFoundErrF:                       {Code: 400, ErrCode: 10043, Description: "sequence {seq} not found"},
 		JSSnapshotDeliverSubjectInvalidErr:           {Code: 400, ErrCode: 10015, Description: "deliver subject not valid"},
+		JSSourceConsumerFlowControlStalledErr:        {Code: 500, ErrCode: 10228, Description: "stream source consumer stalled on flow control"},
 		JSSourceConsumerRequiresAckFCErr:             {Code: 400, ErrCode: 10217, Description: "stream source consumer requires flow control ack policy"},
 		JSSourceConsumerSetupFailedErrF:              {Code: 500, ErrCode: 10045, Description: "{err}"},
 		JSSourceDuplicateDetected:                    {Code: 400, ErrCode: 10140, Description: "duplicate source configuration detected"},
@@ -2607,6 +2611,16 @@ func NewJSSnapshotDeliverSubjectInvalidError(opts ...ErrorOption) *ApiError {
 	}
 
 	return ApiErrors[JSSnapshotDeliverSubjectInvalidErr]
+}
+
+// NewJSSourceConsumerFlowControlStalledError creates a new JSSourceConsumerFlowControlStalledErr error: "stream source consumer stalled on flow control"
+func NewJSSourceConsumerFlowControlStalledError(opts ...ErrorOption) *ApiError {
+	eopts := parseOpts(opts)
+	if ae, ok := eopts.err.(*ApiError); ok {
+		return ae
+	}
+
+	return ApiErrors[JSSourceConsumerFlowControlStalledErr]
 }
 
 // NewJSSourceConsumerRequiresAckFCError creates a new JSSourceConsumerRequiresAckFCErr error: "stream source consumer requires flow control ack policy"

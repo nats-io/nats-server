@@ -5829,6 +5829,8 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	cl.WaitForShutdown()
 	cl = c.restartServer(cl)
 	c.waitOnServerCurrent(cl)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "r1")
 
 	cib, err = js.ConsumerInfo("TEST", "r1")
 	require_NoError(t, err)
@@ -5843,6 +5845,193 @@ func TestJetStreamClusterConsumerMaxDeliveryNumAckPendingBug(t *testing.T) {
 	// re-fires every advisory exactly as a follower-promoted leader would.
 	time.Sleep(500 * time.Millisecond)
 	requireAdvisoriesCount("r1", r1Adv, 10, "after server restart")
+}
+
+// https://github.com/nats-io/nats-server/issues/7148
+func TestJetStreamClusterConsumerMaxDeliveryLoweredRedeliveredAdvisory(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// send 10 msgs, exactly what we pull, so no new deliveries remain after the
+	// pending ones are expired.
+	for i := 0; i < 10; i++ {
+		_, err := js.Publish("foo", []byte("ok"))
+		require_NoError(t, err)
+	}
+
+	subscribeAdvisoriesCount := func(consumer string) *atomic.Int64 {
+		t.Helper()
+		var count atomic.Int64
+		subj := fmt.Sprintf("%s.%s.%s", JSAdvisoryConsumerMaxDeliveryExceedPre, "TEST", consumer)
+		sub, err := nc.Subscribe(subj, func(*nats.Msg) { count.Add(1) })
+		require_NoError(t, err)
+		t.Cleanup(func() { sub.Unsubscribe() })
+		require_NoError(t, nc.Flush())
+		return &count
+	}
+	requireAdvisoriesCount := func(consumer string, count *atomic.Int64, want int64, when string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if got := count.Load(); got != want {
+				return fmt.Errorf("%s consumer expected %d advisories %s, got %d", consumer, want, when, got)
+			}
+			return nil
+		})
+	}
+
+	// File based.
+	redeliveredAdv := subscribeAdvisoriesCount("redelivered")
+	sub, err := js.PullSubscribe("foo", "redelivered",
+		nats.ManualAck(),
+		// Start with unlimited MaxDeliver so redeliveries can grow the count.
+		nats.MaxDeliver(-1),
+		// Keep AckWait long enough that messages are expired through getNextMsg on
+		// redelivery rather than through the AckWait expiry path.
+		nats.AckWait(30*time.Second),
+		nats.MaxAckPending(10),
+	)
+	require_NoError(t, err)
+
+	// Two NAK rounds push the delivery count past what a later MaxDeliver of 1
+	// would allow.
+	for i := 0; i < 2; i++ {
+		msgs, err := sub.Fetch(10)
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+		for _, m := range msgs {
+			require_NoError(t, m.Nak())
+		}
+	}
+
+	// Lower MaxDeliver well below the current delivery count.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "redelivered",
+		FilterSubject: "foo",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    1,
+		AckWait:       30 * time.Second,
+		MaxAckPending: 10,
+	})
+	require_NoError(t, err)
+
+	// The next pull runs getNextMsg over the redelivery queue, which expires the
+	// messages since they have hit MaxDeliver.
+	_, err = sub.Fetch(10, nats.MaxWait(500*time.Millisecond))
+	require_Error(t, err, nats.ErrTimeout)
+	requireAdvisoriesCount("redelivered", redeliveredAdv, 10, "before stepdown")
+
+	// Make sure followers will have exact same state.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "redelivered"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "redelivered")
+
+	// Give the new leader a settle window. setLeader calls checkPending
+	// synchronously, but the apply goroutine may run a few ms later.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("redelivered", redeliveredAdv, 10, "after stepdown")
+}
+
+// https://github.com/nats-io/nats-server/issues/7148
+func TestJetStreamClusterConsumerMaxDeliveryLoweredAckWaitAdvisory(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"*"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	// send 50 msgs
+	for i := 0; i < 50; i++ {
+		_, err := js.Publish("foo", []byte("ok"))
+		require_NoError(t, err)
+	}
+
+	subscribeAdvisoriesCount := func(consumer string) *atomic.Int64 {
+		t.Helper()
+		var count atomic.Int64
+		subj := fmt.Sprintf("%s.%s.%s", JSAdvisoryConsumerMaxDeliveryExceedPre, "TEST", consumer)
+		sub, err := nc.Subscribe(subj, func(*nats.Msg) { count.Add(1) })
+		require_NoError(t, err)
+		t.Cleanup(func() { sub.Unsubscribe() })
+		require_NoError(t, nc.Flush())
+		return &count
+	}
+	requireAdvisoriesCount := func(consumer string, count *atomic.Int64, want int64, when string) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			if got := count.Load(); got != want {
+				return fmt.Errorf("%s consumer expected %d advisories %s, got %d", consumer, want, when, got)
+			}
+			return nil
+		})
+	}
+
+	// File based.
+	ackWaitAdv := subscribeAdvisoriesCount("ackwait")
+	sub, err := js.PullSubscribe("foo", "ackwait",
+		nats.ManualAck(),
+		// Start with unlimited MaxDeliver so redeliveries can grow the count.
+		nats.MaxDeliver(-1),
+		nats.AckWait(2*time.Second),
+		nats.MaxAckPending(10),
+	)
+	require_NoError(t, err)
+
+	// Two NAK rounds raise the delivery count, then a final pull leaves the
+	// messages on pending, not on the redelivery queue, so that the AckWait
+	// expiry path rather than getNextMsg evaluates them.
+	for i := 0; i < 2; i++ {
+		msgs, err := sub.Fetch(10)
+		require_NoError(t, err)
+		require_Equal(t, len(msgs), 10)
+		for _, m := range msgs {
+			require_NoError(t, m.Nak())
+		}
+	}
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Equal(t, len(msgs), 10)
+
+	// Lower MaxDeliver before the AckWait for the final delivery expires.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{
+		Durable:       "ackwait",
+		FilterSubject: "foo",
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxDeliver:    1,
+		AckWait:       2 * time.Second,
+		MaxAckPending: 10,
+	})
+	require_NoError(t, err)
+
+	// Let the pending messages expire via checkPending -> hasMaxDeliveries.
+	time.Sleep(2500 * time.Millisecond)
+	requireAdvisoriesCount("ackwait", ackWaitAdv, 10, "before stepdown")
+
+	// Make sure followers will have exact same state.
+	_, err = nc.Request(fmt.Sprintf(JSApiConsumerLeaderStepDownT, "TEST", "ackwait"), nil, time.Second)
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "ackwait")
+
+	// Give the new leader a settle window. setLeader calls checkPending
+	// synchronously, but the apply goroutine may run a few ms later.
+	time.Sleep(500 * time.Millisecond)
+	requireAdvisoriesCount("ackwait", ackWaitAdv, 10, "after stepdown")
 }
 
 func TestJetStreamClusterConsumerDefaultsFromStream(t *testing.T) {
@@ -6793,6 +6982,35 @@ func TestJetStreamClusterAccountFileStoreLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJetStreamClusterScaleToMissingTier(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Only R1 and R3 tiers are defined, so R2 must not be allowed.
+	limits := map[string]JetStreamAccountLimits{
+		"R1": {MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+		"R3": {MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}
+	for _, s := range c.servers {
+		require_NoError(t, s.globalAccount().UpdateJetStreamLimits(limits))
+	}
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Scaling up into a missing tier is rejected.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "UP", Subjects: []string{"up"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "UP", Subjects: []string{"up"}, Replicas: 2})
+	require_Error(t, err, NewJSNoLimitsError())
+
+	// Scaling down into a missing tier must be rejected just the same.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "DOWN", Subjects: []string{"down"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "DOWN", Subjects: []string{"down"}, Replicas: 2})
+	require_Error(t, err, NewJSNoLimitsError())
 }
 
 func TestJetStreamClusterTieredReservationConsistency(t *testing.T) {
@@ -8161,6 +8379,56 @@ func TestJetStreamClusterLostConsumerAfterInflightConsumerUpdate(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterConcurrentR1ConsumerUpdatesAllRespond(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	// Send many concurrent, identical create-or-update requests for the R1 consumer.
+	req, err := json.Marshal(CreateConsumerRequest{
+		Stream: "TEST",
+		Config: ConsumerConfig{Name: "C", AckPolicy: AckExplicit, Replicas: 1},
+		Action: ActionCreateOrUpdate,
+	})
+	require_NoError(t, err)
+	subject := fmt.Sprintf(JSApiConsumerCreateT, "TEST") + ".C"
+
+	const requests = 100
+	subs := make([]*nats.Subscription, 0, requests)
+	for range requests {
+		sub, err := nc.SubscribeSync(nats.NewInbox())
+		require_NoError(t, err)
+		subs = append(subs, sub)
+	}
+	for _, sub := range subs {
+		require_NoError(t, nc.PublishRequest(subject, sub.Subject, req))
+	}
+	require_NoError(t, nc.Flush())
+
+	for i, sub := range subs {
+		msg, err := sub.NextMsg(2 * time.Second)
+		if err != nil {
+			t.Fatalf("Request %d did not receive a response: %v", i, err)
+		}
+		var resp JSApiConsumerCreateResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		require_NotNil(t, resp.ConsumerInfo)
+	}
 }
 
 func TestJetStreamClusterStreamRaftGroupChangesWhenMovingToOrOffR1(t *testing.T) {

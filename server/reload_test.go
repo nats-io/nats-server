@@ -7622,3 +7622,76 @@ func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
 	require_Equal(t, cfg.MaxStore, 512*1024*1024)
 
 }
+
+// https://github.com/nats-io/nats-server/issues/8606
+func TestConfigReloadDoesNotDisconnectJWTClientSendingNkey(t *testing.T) {
+	var err error
+	preload := make(map[string]string)
+
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uJwt, err := jwt.NewUserClaims(uPub).Encode(aKP)
+	require_NoError(t, err)
+
+	content := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: %s
+	`, ojwt, sysPub, preloadConfig)
+
+	s, _, _ := runReloadServerWithContent(t, []byte(content))
+	defer s.Shutdown()
+
+	acc, err := s.LookupAccount(aPub)
+	require_NoError(t, err)
+
+	c, cr, l := newClientForServer(s)
+	defer c.close()
+
+	var info nonceInfo
+	require_NoError(t, json.Unmarshal([]byte(l[5:]), &info))
+	require_True(t, info.Nonce != _EMPTY_)
+
+	sigraw, err := uKP.Sign([]byte(info.Nonce))
+	require_NoError(t, err)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+	// Send the nkey along with the JWT, like nats.js' jwtAuthenticator does.
+	// The Go client does not allow sending both.
+	c.parseAsync(fmt.Sprintf("CONNECT {\"jwt\":%q,\"nkey\":%q,\"sig\":%q,\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", uJwt, uPub, sig))
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "+OK"))
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "PONG"))
+	checkClientsCount(t, s, 1)
+	require_Equal(t, c.acc, acc)
+
+	// Reloading the same configuration must be a no-op for this client.
+	require_NoError(t, s.Reload())
+
+	// The client must not have been disconnected by the reload, nor have been
+	// considered as having moved to a different account.
+	checkClientsCount(t, s, 1)
+	require_Equal(t, c.acc, acc)
+	c.parseAsync("PING\r\n")
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "PONG"))
+}

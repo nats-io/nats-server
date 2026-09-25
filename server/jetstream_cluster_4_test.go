@@ -7443,9 +7443,12 @@ func TestJetStreamClusterAccountMaxConnectionsReconnect(t *testing.T) {
 	disconnects := make([]chan error, 0)
 	for i := 1; i <= 5; i++ {
 		disconnectCh := make(chan error)
-		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"), nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			disconnectCh <- err
-		}))
+		// Reconnect quickly, a kicked client that retries the same server is rejected again.
+		c, _ := jsClientConnect(t, c.servers[0], nats.UserInfo("js", "js"),
+			nats.ReconnectWait(50*time.Millisecond), nats.ReconnectJitter(0, 0),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				disconnectCh <- err
+			}))
 		defer c.Close()
 		conns = append(conns, c)
 		disconnects = append(disconnects, disconnectCh)
@@ -7597,37 +7600,43 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if entries, _ := rg.Size(); entries != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d entries)", entries)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				entries, _ := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				entries, _ := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if entries > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if entries, _ := rg.Size(); entries != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d entries)", entries)
 						}
 						return nil
 					})
-					entries, _ = cc.meta.Size()
-					require_Equal(t, entries, 0)
 					return
 				}
 			}
@@ -7657,37 +7666,43 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if _, size := rg.Size(); size != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d bytes)", size)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				_, size := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				_, size := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if size > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if _, size := rg.Size(); size != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d bytes)", size)
 						}
 						return nil
 					})
-					_, size = cc.meta.Size()
-					require_Equal(t, size, 0)
 					return
 				}
 			}
@@ -9354,4 +9369,54 @@ func TestJetStreamClusterSourcingConsumerMoveDoesNotReset(t *testing.T) {
 	}
 	sourced(20)
 	require_Equal(t, consumerInfo().Delivered.Consumer, 20)
+}
+
+func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// Have the meta leader believe it's catching up rs.
+	ml, rs := c.leader(), c.randomNonLeader()
+	meta := ml.getJetStream().getMetaGroup().(*raft)
+	rsID := rs.getJetStream().getMetaGroup().ID()
+	meta.Lock()
+	meta.peers[rsID].ci = math.MaxUint64
+	meta.Unlock()
+	require_False(t, meta.IsFollowerCaughtUp(rsID))
+
+	// Responses come from the stream/consumer leader, the meta leader might not have applied the assignment yet.
+	isMember := func(ci *nats.ClusterInfo) bool {
+		if ci.Leader == rs.Name() {
+			return true
+		}
+		return slices.ContainsFunc(ci.Replicas, func(pi *nats.PeerInfo) bool { return pi.Name == rs.Name() })
+	}
+	for i := range 10 {
+		// R1 streams and consumers aren't placed on the peer that's catching up.
+		name := fmt.Sprintf("S%d", i)
+		si, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name}, Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(si.Cluster))
+		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(ci.Cluster))
+	}
+
+	// But it's not ruled out.
+	si, err := js.AddStream(&nats.StreamConfig{Name: "PINNED", Subjects: []string{"pinned"}, Replicas: 1,
+		Placement: &nats.Placement{Tags: []string{"server:" + rs.Name()}}})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
+	si, err = js.AddStream(&nats.StreamConfig{Name: "R3", Subjects: []string{"r3"}, Replicas: 3})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
 }
