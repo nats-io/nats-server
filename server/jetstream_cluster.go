@@ -5155,15 +5155,22 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		//   current. We use this where we only need them to have the data.
 		// - copiesAfterRemoval: whether we have sufficient copies of the data after
 		//   having removed the peer, so it's tallied without it.
+		// - laggingDesired: desired peers that might be live but are still catching up.
 		var currentDesired []string
-		var caughtUpDesired, copiesAfterRemoval int
+		var caughtUpDesired, copiesAfterRemoval, laggingDesired int
+		leaderSince := n.LeaderSince()
 		for _, p := range actual {
+			desired := slices.Contains(desiredPeers, p.ID)
 			// A peer only counts once it told us its store holds the stream, being current
 			// on the log is not enough.
-			if p.ID != ourPeerId && (slices.Contains(catchups, p.ID) || !positions.isCaughtUp(p.ID)) {
+			caughtUp := p.ID == ourPeerId || (!slices.Contains(catchups, p.ID) && positions.isCaughtUp(p.ID))
+			if desired && mightBeLivePeer(p, ourPeerId, leaderSince) && (!caughtUp || !n.IsFollowerCaughtUp(p.ID)) {
+				laggingDesired++
+			}
+			if !caughtUp {
 				continue
 			}
-			if slices.Contains(desiredPeers, p.ID) {
+			if desired {
 				caughtUpDesired++
 				if p.Current {
 					currentDesired = append(currentDesired, p.ID)
@@ -5177,7 +5184,8 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		// We only need to weigh the peers we're keeping, we already have Raft quorum, or
 		// we couldn't have grown the group to get here. Peers outside the desired set are
 		// on their way out, and we don't want them to block us.
-		if caughtUpDesired < quorum {
+		// Wait while a desired peer is catching up, but down ones don't block us.
+		if caughtUpDesired < quorum || laggingDesired > 0 {
 			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
 		}
 		// Backstop for peers that are neither catching up nor caught up, they're down or
@@ -8511,6 +8519,13 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		if !s.canRemovePeer(ourPeerId, remove, actual) {
 			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
 		}
+		leaderSince := n.LeaderSince()
+		for _, p := range actual {
+			// Wait while a desired peer is catching up, but down ones don't block us.
+			if slices.Contains(desiredPeers, p.ID) && mightBeLivePeer(p, ourPeerId, leaderSince) && !n.IsFollowerCaughtUp(p.ID) {
+				return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
+			}
+		}
 		if remove == ourPeerId {
 			err := n.StepDown()
 			return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
@@ -11579,18 +11594,27 @@ func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining
 // voters; we always count ourselves. This is the removal counterpart to the
 // quorum check in selectPeerToAdd.
 func (s *Server) canRemovePeer(ourPeerId, remove string, actual []*Peer) bool {
-	cutoff := time.Now().Add(-hbInterval * 3)
 	var voters int
 	for _, p := range actual {
 		if p.ID == remove {
 			continue
 		}
-		heard := p.ID == ourPeerId || (!p.Last.IsZero() && p.Last.After(cutoff))
-		if p.Current && heard {
+		if p.Current && isLivePeer(p, ourPeerId) {
 			voters++
 		}
 	}
 	return voters >= (len(actual)-1)/2+1
+}
+
+// isLivePeer reports whether we've heard from the peer recently, we always count ourselves.
+func isLivePeer(p *Peer, ourPeerId string) bool {
+	return p.ID == ourPeerId || withinLiveWindow(p.Last)
+}
+
+// mightBeLivePeer reports whether a peer can't be considered down yet.
+// A new leader must first get a chance to hear from it.
+func mightBeLivePeer(p *Peer, ourPeerId string, leaderSince *time.Time) bool {
+	return isLivePeer(p, ourPeerId) || leaderSince == nil || withinLiveWindow(*leaderSince)
 }
 
 // selectPeerToAdd picks the peer from candidates that is most preferable to
@@ -11602,8 +11626,6 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	if len(candidates) == 0 {
 		return _EMPTY_
 	}
-	cutoff := time.Now().Add(-hbInterval * 3)
-	heard := func(ts time.Time) bool { return !ts.IsZero() && ts.After(cutoff) }
 	online := func(peer string) bool {
 		si, ok := s.nodeToInfo.Load(peer)
 		return ok && si != nil && !si.(nodeInfo).offline
@@ -11611,7 +11633,7 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	// Prefer the candidate we've heard from most recently.
 	add, last := _EMPTY_, time.Time{}
 	for _, peer := range candidates {
-		if ts := n.LastHeardFromFollower(peer); online(peer) && heard(ts) && ts.After(last) {
+		if ts := n.LastHeardFromFollower(peer); online(peer) && withinLiveWindow(ts) && ts.After(last) {
 			add, last = peer, ts
 		}
 	}
@@ -11622,7 +11644,7 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	// still reach quorum after the group has grown.
 	live := 0
 	for _, p := range current {
-		if p.ID == ourPeerId || (online(p.ID) && heard(p.Last)) {
+		if p.ID == ourPeerId || (online(p.ID) && withinLiveWindow(p.Last)) {
 			live++
 		}
 	}
