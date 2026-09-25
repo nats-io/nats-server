@@ -493,6 +493,61 @@ func TestMonitorConnz(t *testing.T) {
 	}
 }
 
+func TestMonitorConnzTimestampsUTC(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	nc := createClientConnSubscribeAndPublish(t, s)
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	client := s.getClient(cid)
+	if client == nil {
+		t.Fatalf("Expected to find client %d", cid)
+	}
+	nonUTC := time.FixedZone("UTC-7", -7*60*60)
+	setNonUTC := func() {
+		client.mu.Lock()
+		client.start = client.start.In(nonUTC)
+		client.last = client.last.In(nonUTC)
+		client.mu.Unlock()
+	}
+	setNonUTC()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	checkUTC := func(name string, timestamp time.Time) {
+		t.Helper()
+		if timestamp.Location() != time.UTC {
+			t.Fatalf("Expected %s to use UTC, got %s", name, timestamp.Location())
+		}
+	}
+	checkConn := func(ci *ConnInfo, closed bool) {
+		t.Helper()
+		checkUTC("start", ci.Start)
+		checkUTC("last activity", ci.LastActivity)
+		if closed {
+			if ci.Stop == nil {
+				t.Fatal("Expected stop time for closed connection")
+			}
+			checkUTC("stop", *ci.Stop)
+		}
+	}
+
+	for mode := 0; mode < 2; mode++ {
+		c := pollConnz(t, s, mode, url+"connz", nil)
+		require_Len(t, len(c.Conns), 1)
+		checkConn(c.Conns[0], false)
+	}
+
+	setNonUTC()
+	nc.Close()
+	checkClosedConns(t, s, 1, time.Second)
+	for mode := 0; mode < 2; mode++ {
+		c := pollConnz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
+		require_Len(t, len(c.Conns), 1)
+		checkConn(c.Conns[0], true)
+	}
+}
+
 func TestMonitorConnzBadParams(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
