@@ -604,7 +604,8 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 					break
 				}
 				n.pterm, n.pindex = ae.pterm, ae.pindex
-				if ae.commit > 0 && ae.commit > n.commit {
+				// A learner never commits, see votingMemberLocked.
+				if ae.commit > 0 && ae.commit > n.commit && n.votingMemberLocked() {
 					n.commit = ae.commit
 				}
 			}
@@ -1445,7 +1446,7 @@ func (n *raft) ResumeApply() {
 	n.resetElectionTimeout()
 
 	// Run catchup..
-	if n.hcommit > n.commit {
+	if n.hcommit > n.commit && n.votingMemberLocked() {
 		n.debug("Resuming %d replays", n.hcommit+1-n.commit)
 		for index := n.commit + 1; index <= n.hcommit; index++ {
 			if err := n.applyCommit(index); err != nil {
@@ -2003,9 +2004,6 @@ func (n *raft) setupLastSnapshot() error {
 	// Compact the WAL when we're done if needed.
 	n.pindex = snap.lastIndex
 	n.pterm = snap.lastTerm
-	// Explicitly only set commit, and not applied.
-	// Applied will move up when the snapshot is actually applied.
-	n.commit = snap.lastIndex
 	n.papplied = snap.lastIndex
 	// Restore the peerState
 	ps, err := decodePeerState(snap.peerstate)
@@ -2015,7 +2013,14 @@ func (n *raft) setupLastSnapshot() error {
 	n.processPeerState(ps)
 	n.extSt = ps.domainExt
 
-	n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	if n.votingMemberLocked() {
+		// Only set commit, applied moves up once the snapshot is applied.
+		n.commit = snap.lastIndex
+		n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	} else {
+		// Learner: installed but not applied until we are a member.
+		n.debug("Not a member of the group, not applying snapshot [%d:%d]", snap.lastTerm, snap.lastIndex)
+	}
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		return err
@@ -4139,6 +4144,16 @@ func (n *raft) trackPeer(peer string) error {
 	return nil
 }
 
+// votingMemberLocked reports whether we are a member.
+// A learner doesn't commit until its EntryAddPeer entry is stored.
+// Lock should be held.
+func (n *raft) votingMemberLocked() bool {
+	if !n.managed || n.peers[n.id] != nil {
+		return true
+	}
+	return n.membChange != nil && n.membChange.peer == n.id
+}
+
 // LastHeardFromFollower returns when we last heard from the given peer, even if
 // it's not in our peer set yet. Zero if we never heard from it. The upper
 // layer uses this to judge if a meta-assigned peer is up before adding it.
@@ -4696,6 +4711,33 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 		}
 	}
 
+	// A learner's log is never compacted, so on overrun catch up from the snapshot again.
+	if sub != nil && !n.votingMemberLocked() && n.pindex > n.papplied &&
+		n.overrun(n.pindex-n.papplied, pauseQuorumThreshold, pauseQuorumBytes) {
+		var state StreamState
+		n.wal.FastState(&state)
+		n.warn("Learner overrun, truncating to snapshot %d and requesting catchup, WAL size %s", n.papplied, friendlyBytes(state.Bytes))
+		n.overrunCount++
+		n.cancelCatchup()
+		if snap, err := n.loadLastSnapshot(); err == nil && snap.lastIndex == n.papplied {
+			n.truncateWAL(snap.lastTerm, snap.lastIndex)
+		} else {
+			// No usable snapshot, start over.
+			if n.snapfile != _EMPTY_ {
+				os.Remove(n.snapfile)
+				n.snapfile = _EMPTY_
+			}
+			n.papplied = 0
+			n.resetWAL()
+		}
+		inbox := n.createCatchup(ae)
+		ar := newAppendEntryResponse(n.pterm, n.pindex, n.id, false)
+		n.Unlock()
+		n.sendRPC(ae.reply, inbox, ar.encode(arbuf))
+		arPool.Put(ar)
+		return
+	}
+
 	if ae.pterm != n.pterm || ae.pindex != n.pindex {
 		// Check if this is a lower or equal index than what we were expecting.
 		if ae.pindex <= n.pindex {
@@ -4816,13 +4858,19 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 			n.pindex = ae.pindex
 			n.pterm = ae.pterm
-			n.commit = ae.pindex
 			n.resetInitializing()
 
 			// Unset the membership change, it's already contained in the snapshot's peer state.
-			if n.membChange != nil && n.membChange.index <= n.commit {
+			if n.membChange != nil && n.membChange.index <= ae.pindex {
 				n.membChange = nil
 			}
+			if !n.votingMemberLocked() {
+				// Learner: installed but not applied until we are a member.
+				n.debug("Not a member of the group, not applying leader snapshot [%d:%d]", ae.pterm, ae.pindex)
+				n.Unlock()
+				return
+			}
+			n.commit = ae.pindex
 
 			if !hadPreviousSnapshot {
 				// If the first snapshot we install is received from another server, then we immediately signal
@@ -4925,7 +4973,41 @@ CONTINUE:
 	aeReply := ae.reply
 
 	// Apply anything we need here.
-	if aeCommit > n.commit {
+	if !n.votingMemberLocked() {
+		// Learner: store only, see votingMemberLocked.
+		if aeCommit > n.commit {
+			n.debug("Not a member of the group, not applying %d", aeCommit)
+		}
+	} else if n.managed && n.papplied > n.commit {
+		// A leader snapshot was installed while we were a learner, apply it first.
+		snap, err := n.loadLastSnapshot()
+		if err == nil && snap.lastIndex != n.papplied {
+			err = fmt.Errorf("snapshot index mismatch: %d != %d", snap.lastIndex, n.papplied)
+		}
+		if err != nil {
+			// The log was compacted up to the snapshot, start over.
+			n.warn("Could not load leader snapshot installed while not a member, requesting a new one: %v", err)
+			n.cancelCatchup()
+			if n.snapfile != _EMPTY_ {
+				os.Remove(n.snapfile)
+				n.snapfile = _EMPTY_
+			}
+			n.papplied = 0
+			n.resetWAL()
+			inbox := n.createCatchup(ae)
+			ar := newAppendEntryResponse(0, 0, n.id, false)
+			n.Unlock()
+			n.sendRPC(aeReply, inbox, ar.encode(arbuf))
+			arPool.Put(ar)
+			return
+		}
+		n.debug("Applying leader snapshot [%d:%d] installed while not a member", snap.lastTerm, snap.lastIndex)
+		n.commit = snap.lastIndex
+		// Let the upper layer coalesce what follows.
+		n.sendCatchupSignal()
+		n.apply.push(newCommittedEntry(n.commit, []*Entry{{EntrySnapshot, snap.data}}))
+	}
+	if aeCommit > n.commit && n.votingMemberLocked() {
 		// If we're catching up, we might need to signal that it's okay to potentially coalesce entries from here.
 		if catchingUp {
 			n.sendCatchupSignal()
@@ -5682,6 +5764,11 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
+
+	// In a managed group a scale up peer doesn't vote, and nobody votes for a candidate outside the peer set.
+	if n.managed && (n.scaleUp || n.peers[vr.candidate] == nil) {
+		voteOk = false
+	}
 
 	// If we have an empty log, but are initializing.
 	if voteOk && vresp.empty && n.initializing {
