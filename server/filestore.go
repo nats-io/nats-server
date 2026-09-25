@@ -6494,6 +6494,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	var le = binary.LittleEndian
 	var firstSet bool
 	var last uint64
+	var lastTime int64
 	var msgs uint64
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -6545,9 +6546,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 					atomic.StoreUint64(&mb.first.seq, seq)
 				}
 				if seq >= last {
-					last = seq
-					atomic.StoreUint64(&mb.last.seq, last)
-					mb.last.ts = ts
+					last, lastTime = seq, ts
 				}
 			}
 		}
@@ -6587,6 +6586,13 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	sync := mb.fs.syncAlways.Load() || mb.fs.syncOnFlush.Load()
 	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
+	}
+
+	// Block selection reads last.seq without mb.mu, so publish it only
+	// after the replacement file is installed.
+	if msgs > 0 {
+		atomic.StoreUint64(&mb.last.seq, last)
+		mb.last.ts = lastTime
 	}
 
 	// Make sure to sync if we have not done so yet
@@ -7363,7 +7369,17 @@ func (fs *fileStore) expireMsgs() {
 	// Remove messages collected by THW.
 	if !sdmEnabled {
 		for _, rm := range rmSeqs {
-			fs.removeMsg(rm.Seq, false, false, false)
+			removed, err := fs.removeMsg(rm.Seq, false, false, false)
+			// The message may already be gone, removed out of band by a purge, a rollup,
+			// a compact or a truncate, none of which consult the THW. Drop the entry in
+			// that case, otherwise it is collected again on every pass forever. A genuine
+			// removal failure (write error, closed store) keeps the entry so it is retried.
+			if !removed && (err == nil || err == ErrStoreMsgNotFound || err == ErrStoreEOF) {
+				fs.ttls.Remove(rm.Seq, rm.Expires)
+				// The removal that orphaned the entry may already have been flushed, so
+				// mark the state dirty or the pruned wheel never reaches thw.db.
+				fs.dirty++
+			}
 		}
 	} else {
 		// THW is unordered, so must sort by sequence and must not be holding the lock.
@@ -7386,6 +7402,7 @@ func (fs *fileStore) expireMsgs() {
 			sm, _ = fs.msgForSeqLocked(rm.Seq, &smv, false)
 			if sm == nil {
 				fs.ttls.Remove(rm.Seq, rm.Expires)
+				fs.dirty++
 				fs.mu.Unlock()
 				continue
 			}
@@ -11011,20 +11028,13 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			}
 
 			// We will write to a new file and mv/rename it in case of failure.
-			mfn := filepath.Join(smb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, smb.index))
-			fs.dios.acquire()
-			err = os.WriteFile(mfn, nbuf, defaultFilePerms)
-			fs.dios.release()
+			sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
+			err = writeAtomically(fs.dios, smb.mfn, nbuf, defaultFilePerms, sync)
 			if err != nil {
-				_ = os.Remove(mfn)
 				smb.mu.Unlock()
 				return purged, bytes, err
 			}
-			if err = os.Rename(mfn, smb.mfn); err != nil {
-				_ = os.Remove(mfn)
-				smb.mu.Unlock()
-				return purged, bytes, err
-			}
+			smb.needSync = !sync
 
 			// Make sure to remove fss state.
 			smb.fss = nil
@@ -13901,6 +13911,12 @@ func (o *consumerFileStore) GetConfig() *ConsumerConfig {
 	clone := o.cfg.clone()
 	clone.Name = o.name
 	return clone
+}
+
+func (o *consumerFileStore) setCreatedTime(created time.Time) {
+	o.mu.Lock()
+	o.cfg.Created = created
+	o.mu.Unlock()
 }
 
 func (o *consumerFileStore) UpdateConfig(cfg *ConsumerConfig) error {

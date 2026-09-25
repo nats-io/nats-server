@@ -625,6 +625,86 @@ func TestMonitorConnzWithCID(t *testing.T) {
 	}
 }
 
+func TestMonitorConnzWithCIDAndAccountFilter(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		http: "127.0.0.1:-1"
+		system_account: SYS
+		accounts {
+			A { users = [{ user: a, password: a }] }
+			B { users = [{ user: b, password: b }] }
+			SYS { users = [{ user: sys, password: sys }] }
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncA, err := nats.Connect(s.ClientURL(), nats.UserInfo("a", "a"))
+	require_NoError(t, err)
+	defer ncA.Close()
+	ncB, err := nats.Connect(s.ClientURL(), nats.UserInfo("b", "b"))
+	require_NoError(t, err)
+	defer ncB.Close()
+
+	cidA, err := ncA.GetClientID()
+	require_NoError(t, err)
+	cidB, err := ncB.GetClientID()
+	require_NoError(t, err)
+
+	checkConns := func(t *testing.T, c *Connz, expected int, cid uint64) {
+		t.Helper()
+		require_Len(t, len(c.Conns), expected)
+		require_Equal(t, c.NumConns, expected)
+		if expected > 0 {
+			require_Equal(t, c.Conns[0].Cid, cid)
+		}
+	}
+
+	for _, state := range []ConnState{ConnOpen, ConnAll} {
+		// Selecting a CID that belongs to the filtered account must work.
+		c, err := s.Connz(&ConnzOptions{Account: "A", CID: cidA, State: state})
+		require_NoError(t, err)
+		checkConns(t, c, 1, cidA)
+
+		// Selecting a CID from another account must not leak that connection.
+		c, err = s.Connz(&ConnzOptions{Account: "A", CID: cidB, State: state})
+		require_NoError(t, err)
+		checkConns(t, c, 0, 0)
+
+		// The user filter must also apply when selecting by CID.
+		c, err = s.Connz(&ConnzOptions{User: "b", CID: cidA, State: state})
+		require_NoError(t, err)
+		checkConns(t, c, 0, 0)
+		c, err = s.Connz(&ConnzOptions{User: "a", CID: cidA, State: state})
+		require_NoError(t, err)
+		checkConns(t, c, 1, cidA)
+
+		// Same for the MQTT client ID filter.
+		c, err = s.Connz(&ConnzOptions{MQTTClient: "nope", CID: cidA, State: state})
+		require_NoError(t, err)
+		checkConns(t, c, 0, 0)
+	}
+
+	// An account user can request its own account's CONNZ through the system
+	// import. It must not be able to see other accounts' connections by CID.
+	sysReq := func(t *testing.T, nc *nats.Conn, cid uint64) *Connz {
+		t.Helper()
+		req, err := json.Marshal(&ConnzOptions{CID: cid})
+		require_NoError(t, err)
+		resp, err := nc.Request("$SYS.REQ.ACCOUNT.PING.CONNZ", req, time.Second)
+		require_NoError(t, err)
+		var r ServerAPIConnzResponse
+		require_NoError(t, json.Unmarshal(resp.Data, &r))
+		require_True(t, r.Error == nil)
+		require_True(t, r.Data != nil)
+		return r.Data
+	}
+	checkConns(t, sysReq(t, ncA, cidA), 1, cidA)
+	checkConns(t, sysReq(t, ncA, cidB), 0, 0)
+	checkConns(t, sysReq(t, ncB, cidB), 1, cidB)
+	checkConns(t, sysReq(t, ncB, cidA), 0, 0)
+}
+
 // Helper to map to connection name
 func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)

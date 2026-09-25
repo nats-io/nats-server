@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"math/rand/v2"
@@ -6308,72 +6309,659 @@ func TestJetStreamClusterParallelCreateRaftGroupHighConcurrency(t *testing.T) {
 	require_False(t, sentinelLeft)
 }
 
-func TestJetStreamClusterParallelCreateRaftGroupHAAssetsLimit(t *testing.T) {
+func TestJetStreamClusterParallelCreateMaxHAAssetsLimit(t *testing.T) {
 	const maxAssets = 2
 	tmpl := strings.Replace(jsClusterTempl, "store_dir:", fmt.Sprintf("limits: {max_ha_assets: %d}, store_dir:", maxAssets), 1)
 	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
 	defer c.shutdown()
 
-	ml := c.leader()
-	sjs := ml.getJetStream()
-	cc := sjs.cluster
-	require_NotNil(t, cc)
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
 
-	acc, err := ml.lookupAccount(globalAccountName)
-	require_NoError(t, err)
-
-	metaPeers := cc.meta.Peers()
-	require_Len(t, len(metaPeers), 3)
-	peers := make([]string, 0, len(metaPeers))
-	for _, p := range metaPeers {
-		peers = append(peers, p.ID)
-	}
-
+	// Concurrent creates must account for inflight assignments, not only applied ones.
 	const N = 8
 	var (
-		ready sync.WaitGroup
-		start = make(chan struct{})
-		done  sync.WaitGroup
-		mu    sync.Mutex
-		nodes []RaftNode
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		created atomic.Int32
 	)
-	ready.Add(N)
-	done.Add(N)
 	for i := range N {
-		rg := &raftGroup{
-			Name:    fmt.Sprintf("RG-%d", i),
-			Storage: FileStorage,
-			Peers:   slices.Clone(peers),
-			Cluster: "R3S",
-		}
-		go func() {
-			defer done.Done()
-			ready.Done()
+		wg.Go(func() {
 			<-start
-			n, _ := sjs.createRaftGroup(acc.GetName(), rg, false, FileStorage, pprofLabels{})
-			if n != nil {
-				mu.Lock()
-				nodes = append(nodes, n)
-				mu.Unlock()
+			if _, err := js.AddStream(&nats.StreamConfig{Name: fmt.Sprintf("S%d", i), Replicas: 3}); err == nil {
+				created.Add(1)
 			}
-		}()
+		})
 	}
-	ready.Wait()
 	close(start)
-	done.Wait()
+	wg.Wait()
+	require_Equal(t, created.Load(), maxAssets)
+}
 
-	defer func() {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, n := range nodes {
-			n.Stop()
+func TestJetStreamClusterMaxHAAssetsAccounting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	peers := func(s *Server) map[string]peerAssets {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		return maps.Clone(sjs.cluster.peerAssets)
+	}
+	requireCounts := func(streams, ha int) {
+		t.Helper()
+		ml := c.leader()
+		pa := peers(ml)
+		for _, s := range c.servers {
+			require_Equal(t, pa[s.NodeName()], peerAssets{streams, ha})
 		}
-	}()
+		// Only kept on the meta leader.
+		for _, s := range c.servers {
+			if s != ml {
+				require_Len(t, len(peers(s)), 0)
+			}
+		}
+	}
 
-	mu.Lock()
-	got := len(nodes)
-	mu.Unlock()
-	require_True(t, got <= maxAssets)
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+	requireCounts(1, 1)
+	// Inherits the stream's replicas.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	requireCounts(1, 2)
+	// R1 consumers are not HA.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+	requireCounts(1, 2)
+
+	// Rebuilt on the new meta leader.
+	ml := c.leader()
+	want := peers(ml)
+	require_NoError(t, ml.getJetStream().getMetaGroup().StepDown())
+	// The stepdown is async, wait for another server to take over.
+	var ml2 *Server
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if ml2 = c.leader(); ml2 == nil || ml2 == ml || ml.JetStreamIsLeader() {
+			return errors.New("waiting on new meta leader")
+		}
+		return nil
+	})
+	got := peers(ml2)
+	require_True(t, maps.Equal(got, want))
+	requireCounts(1, 2)
+
+	// Scaling the stream down also frees up its inherited consumer.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Replicas: 1})
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		pa := peers(c.leader())
+		if len(pa) != 1 {
+			return fmt.Errorf("expected 1 stream peer, got %v", pa)
+		}
+		for _, v := range pa {
+			if v != (peerAssets{streams: 1}) {
+				return fmt.Errorf("expected no HA assets, got %v", pa)
+			}
+		}
+		return nil
+	})
+
+	// Deleting the stream implicitly deletes its consumers.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+	require_NoError(t, js.DeleteStream("TEST"))
+	requireCounts(0, 0)
+}
+
+func TestJetStreamClusterMaxHAAssetsTracking(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+	for _, name := range []string{"C", "C2"} {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+
+	sjs := c.leader().getJetStream()
+	sjs.mu.Lock()
+	defer sjs.mu.Unlock()
+	cc := sjs.cluster
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	ca := sa.consumers["C"]
+	require_NotNil(t, ca)
+	requireCounts := func(peers []string, want peerAssets) {
+		t.Helper()
+		for _, peer := range peers {
+			require_Equal(t, cc.peerAssets[peer], want)
+		}
+	}
+	origin := sa.Group.Peers
+	requireCounts(origin, peerAssets{streams: 1, ha: 3})
+
+	// Moving the stream reserves its destination and frees up its source as soon as it's proposed.
+	// The consumers stay counted on their own peers, until they're remapped onto the stream's peers.
+	dest := []string{"A", "B", "C"}
+	nsa := sa.copyGroup()
+	nsa.Group = sa.Group.withDesired(&raftGroup{Name: sa.Group.Name, Peers: dest, Storage: sa.Group.Storage, Cluster: sa.Group.Cluster})
+	nsa.Group.Desired.Move = true
+	cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	requireCounts(origin, peerAssets{ha: 2})
+	requireCounts(dest, peerAssets{streams: 1, ha: 1})
+	// Moving it would also bring along its consumers.
+	require_Equal(t, cc.streamHACost(globalAccountName, sa.Config), 3)
+
+	// Reverting restores the counts.
+	cc.trackInflightStreamProposal(globalAccountName, sa, false)
+	requireCounts(origin, peerAssets{streams: 1, ha: 3})
+	requireCounts(dest, peerAssets{})
+
+	// An inflight consumer update, before deleting the stream.
+	cc.trackInflightConsumerProposal(globalAccountName, "TEST", ca.copyGroup(), false)
+	requireCounts(origin, peerAssets{streams: 1, ha: 3})
+
+	// Deleting the stream also drops its consumers, including inflight ones.
+	cc.trackInflightStreamProposal(globalAccountName, sa, true)
+	requireCounts(origin, peerAssets{})
+	for _, name := range []string{"C", "C2"} {
+		require_True(t, sjs.consumerAssignmentOrInflight(globalAccountName, "TEST", name) == nil)
+	}
+	require_Equal(t, cc.streamHACost(globalAccountName, sa.Config), 1)
+
+	// Recreating it while the delete is inflight doesn't bring back the applied or inflight consumers.
+	cc.trackInflightStreamProposal(globalAccountName, sa.copyGroup(), false)
+	requireCounts(origin, peerAssets{streams: 1, ha: 1})
+	require_Equal(t, cc.streamHACost(globalAccountName, sa.Config), 1)
+
+	// A consumer with the same name is a new one, instead of replacing the stale applied one.
+	cc.trackInflightConsumerProposal(globalAccountName, "TEST", ca.copyGroup(), false)
+	requireCounts(origin, peerAssets{streams: 1, ha: 2})
+
+	// A stream created and deleted inflight, its consumer applying in between is still deleted.
+	cfg := *sa.Config
+	cfg.Name = "NEW"
+	csa := sa.copyGroup()
+	csa.Config = &cfg
+	cca := ca.copyGroup()
+	cca.Stream = "NEW"
+	cc.trackInflightStreamProposal(globalAccountName, csa, false)
+	cc.trackInflightConsumerProposal(globalAccountName, "NEW", cca, false)
+	cc.trackInflightStreamProposal(globalAccountName, csa, true)
+	cc.streams[globalAccountName]["NEW"] = csa
+	cc.removeInflightStreamProposal(globalAccountName, "NEW")
+	csa.consumers = map[string]*consumerAssignment{cca.Name: cca}
+	cc.removeInflightConsumerProposal(globalAccountName, "NEW", cca.Name)
+	require_True(t, sjs.consumerAssignmentOrInflight(globalAccountName, "NEW", cca.Name) == nil)
+
+	// Also when recreating it, until the delete is applied.
+	cc.trackInflightStreamProposal(globalAccountName, csa.copyGroup(), false)
+	require_True(t, sjs.consumerAssignmentOrInflight(globalAccountName, "NEW", cca.Name) == nil)
+	delete(cc.streams[globalAccountName], "NEW")
+	cc.removeInflightStreamProposal(globalAccountName, "NEW")
+	require_True(t, sjs.consumerAssignmentOrInflight(globalAccountName, "NEW", cca.Name) == nil)
+}
+
+func TestJetStreamClusterMaxHAAssetsRetentionChange(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Every server holds 1 HA asset, R1 consumers are not HA on a limits stream.
+	cfg := &nats.StreamConfig{Name: "TEST", Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	for _, name := range []string{"C1", "C2"} {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+		require_NoError(t, err)
+	}
+
+	// Interest streams remap their consumers onto the stream's peers, both R1 consumers would become HA.
+	cfg.Retention = nats.InterestPolicy
+	_, err = js.UpdateStream(cfg)
+	require_Error(t, err, NewJSInsufficientResourcesError())
+
+	// Only one consumer becomes HA, which fits.
+	require_NoError(t, js.DeleteConsumer("TEST", "C2"))
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		sjs := c.leader().getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		for _, s := range c.servers {
+			if pa := sjs.cluster.peerAssets[s.NodeName()]; pa != (peerAssets{streams: 1, ha: 2}) {
+				return fmt.Errorf("expected 2 HA assets for %s, got %v", s.NodeName(), pa)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMaxHAAssetsRetentionChangeReserved(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	ml := c.leader()
+	sjs := ml.getJetStream()
+	sjs.mu.Lock()
+	cc := sjs.cluster
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	ca := sa.consumers["C"]
+	require_NotNil(t, ca)
+	require_Len(t, len(ca.Group.Peers), 1)
+	requireCounts := func(want peerAssets) {
+		t.Helper()
+		for _, peer := range sa.Group.Peers {
+			require_Equal(t, cc.peerAssets[peer], want)
+		}
+	}
+	requireCounts(peerAssets{streams: 1, ha: 1})
+
+	// The retention change reserves the consumer on all the stream's peers as soon as it's proposed,
+	// before the consumer is remapped. The stream's peers are now at the limit.
+	cfg := *sa.Config
+	cfg.Retention = InterestPolicy
+	nsa := sa.copyGroup()
+	nsa.Config = &cfg
+	nsa.Group = nsa.Group.withRetentionChange(sa, cfg.Retention)
+	cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	requireCounts(peerAssets{streams: 1, ha: 2})
+	sjs.mu.Unlock()
+
+	// Scaling up the consumer to the stream's replicas adds nothing, since it's already counted.
+	creq := &CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "C", AckPolicy: AckExplicit, Replicas: 3}, Action: ActionUpdate}
+	msg, err := json.Marshal(creq)
+	require_NoError(t, err)
+	ci := &ClientInfo{Account: globalAccountName, Cluster: "R3S"}
+	ml.jsClusteredConsumerRequest(ci, ml.globalAccount(), JSApiDurableCreateT, _EMPTY_, nil, msg, creq)
+	sjs.mu.Lock()
+	defer sjs.mu.Unlock()
+	nca := sjs.consumerAssignmentOrInflight(globalAccountName, "TEST", "C")
+	require_NotNil(t, nca)
+	require_Equal(t, nca.Config.Replicas, 3)
+	requireCounts(peerAssets{streams: 1, ha: 2})
+
+	// Reverting the consumer and the stream restores the counts.
+	cc.trackInflightConsumerProposal(globalAccountName, "TEST", ca, false)
+	requireCounts(peerAssets{streams: 1, ha: 2})
+	cc.trackInflightStreamProposal(globalAccountName, sa, false)
+	requireCounts(peerAssets{streams: 1, ha: 1})
+}
+
+func TestJetStreamClusterMaxHAAssetsScaleUp(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 3}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Every server holds 2 HA assets.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S1", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// R1 assets are not limited.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Scaling up would add the stream and its inherited consumer, 2 HA assets per server.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, Replicas: 3})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+
+	// An R1 consumer isn't HA on a limits stream, but interest streams remap it onto the stream's peers.
+	require_NoError(t, js.DeleteConsumer("S2", "C2"))
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, Replicas: 3, Retention: nats.InterestPolicy})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+
+	// Only the stream becomes HA, which fits.
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, Replicas: 3})
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		ml := c.leader()
+		sjs := ml.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		if sa := sjs.streamAssignment(globalAccountName, "S2"); sa == nil || len(sa.Group.Peers) != 3 || sa.Group.Desired != nil {
+			return errors.New("scale up not converged yet")
+		}
+		return nil
+	})
+
+	// Can't add another HA consumer, but R1 consumers are fine.
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "C4", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	// Scaling up the R1 consumer is also limited.
+	_, err = js.UpdateConsumer("S2", &nats.ConsumerConfig{Durable: "C4", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+}
+
+func TestJetStreamClusterMaxHAAssetsR1MoveNotLimited(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 1}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R3S", 3, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Every server is at the limit.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S1", Subjects: []string{"s1"}, Replicas: 3})
+	require_NoError(t, err)
+	si, err := js.AddStream(&nats.StreamConfig{Name: "S2", Subjects: []string{"s2"}, Replicas: 1})
+	require_NoError(t, err)
+	origin := si.Cluster.Leader
+	_, err = js.AddConsumer("S2", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	const numMsgs = 10
+	for range numMsgs {
+		_, err = js.Publish("s2", nil)
+		require_NoError(t, err)
+	}
+
+	ncsys, err := nats.Connect(c.randomServer().ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+	require_NoError(t, err)
+	defer ncsys.Close()
+
+	// Moving an R1 stream and its consumer temporarily uses Raft groups, but those aren't HA assets.
+	moveReq, err := json.Marshal(&JSApiMetaServerStreamMoveRequest{Server: origin})
+	require_NoError(t, err)
+	rmsg, err := ncsys.Request(fmt.Sprintf(JSApiServerStreamMoveT, globalAccountName, "S2"), moveReq, 5*time.Second)
+	require_NoError(t, err)
+	var moveResp JSApiStreamUpdateResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &moveResp))
+	require_True(t, moveResp.Error == nil)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("S2")
+		if err != nil {
+			return err
+		}
+		if si.Cluster.Leader == _EMPTY_ || si.Cluster.Leader == origin || len(si.Cluster.Replicas) > 0 {
+			return fmt.Errorf("move not completed yet: %+v", si.Cluster)
+		}
+		ci, err := js.ConsumerInfo("S2", "DUR")
+		if err != nil {
+			return err
+		}
+		if ci.Cluster.Leader != si.Cluster.Leader || len(ci.Cluster.Replicas) > 0 {
+			return fmt.Errorf("consumer move not completed yet: %+v", ci.Cluster)
+		}
+		return nil
+	})
+
+	// The consumer is still usable.
+	sub, err := js.PullSubscribe("s2", "DUR")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs, nats.MaxWait(2*time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), numMsgs)
+
+	// Only the R3 stream counts as an HA asset.
+	sjs := c.leader().getJetStream()
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	for _, s := range c.servers {
+		require_Equal(t, sjs.cluster.peerAssets[s.NodeName()].ha, 1)
+	}
+}
+
+func TestJetStreamClusterMaxHAAssetsConsumerStackedScaleUp(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R5S", 5, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// Every server holds 1 HA asset.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 5})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1})
+	require_NoError(t, err)
+
+	// Simulate an inflight R1 -> R3 scale up, which is counted on its desired peers.
+	sjs := c.leader().getJetStream()
+	sjs.mu.Lock()
+	cc := sjs.cluster
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	ca := sa.consumers["C"]
+	require_NotNil(t, ca)
+	desired := []string{ca.Group.Peers[0]}
+	var spare []string
+	for _, peer := range sa.Group.Peers {
+		if slices.Contains(desired, peer) {
+			continue
+		} else if len(desired) < 3 {
+			desired = append(desired, peer)
+		} else {
+			spare = append(spare, peer)
+		}
+	}
+	nca := ca.copyGroup()
+	ncfg := *ca.Config
+	ncfg.Replicas = 3
+	nca.Config = &ncfg
+	nca.Group = ca.Group.withDesired(&raftGroup{Name: ca.Group.Name, Peers: desired, Storage: ca.Group.Storage, Cluster: ca.Group.Cluster})
+	cc.trackConsumerAssets(globalAccountName, "TEST", nca, false)
+	sa.consumers["C"] = nca
+	for _, peer := range desired {
+		require_Equal(t, cc.peerAssets[peer].ha, 2)
+	}
+	// One of the peers that's not part of the inflight scale up is at the limit.
+	cc.adjustPeerAssets(spare[:1], 0, 1)
+	sjs.mu.Unlock()
+
+	// Stacking a scale up to R5 is limited by the peers that gain the consumer.
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 5})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+
+	// But not by the peers of the inflight scale up, which already count the consumer.
+	sjs.mu.Lock()
+	cc.adjustPeerAssets(spare[:1], 0, -1)
+	sjs.mu.Unlock()
+	_, err = js.UpdateConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 5})
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterMaxHAAssetsPlacementMoveOverlap(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+	tags := map[string]string{"S-1": "a", "S-2": "a, b", "S-3": "a, b", "S-4": "b"}
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R4S", 4, func(serverName, _, _, conf string) string {
+		return fmt.Sprintf("%s\nserver_tags: [%s]", conf, tags[serverName])
+	})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// The stream and its inherited consumer put every tagged 'a' server at the limit.
+	cfg := &nats.StreamConfig{Name: "TEST", Replicas: 3, Placement: &nats.Placement{Tags: []string{"a"}}}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// Moving onto the tagged 'b' servers keeps two of its peers, which don't gain any HA assets.
+	cfg.Placement.Tags = []string{"b"}
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+
+	want := []string{c.serverByName("S-2").NodeName(), c.serverByName("S-3").NodeName(), c.serverByName("S-4").NodeName()}
+	slices.Sort(want)
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		sjs := c.leader().getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group.Desired != nil {
+			return errors.New("move not converged yet")
+		}
+		peers := slices.Sorted(slices.Values(sa.Group.Peers))
+		if !slices.Equal(peers, want) {
+			return fmt.Errorf("expected peers %v, got %v", want, peers)
+		}
+		return nil
+	})
+
+	// An interest stream on the tagged 'a' servers.
+	require_NoError(t, js.DeleteStream("TEST"))
+	_, err = js.AddStream(&nats.StreamConfig{Name: "INTEREST", Replicas: 3, Retention: nats.InterestPolicy, Placement: &nats.Placement{Tags: []string{"a"}}})
+	require_NoError(t, err)
+
+	// Simulate an inflight move onto the tagged 'b' servers, which is counted on its desired peers.
+	sjs := c.leader().getJetStream()
+	sjs.mu.Lock()
+	cc := sjs.cluster
+	sa := sjs.streamAssignment(globalAccountName, "INTEREST")
+	require_NotNil(t, sa)
+	nsa := sa.copyGroup()
+	nsa.Group = sa.Group.withDesired(&raftGroup{Name: sa.Group.Name, Peers: want, Storage: sa.Group.Storage, Cluster: sa.Group.Cluster})
+	cc.trackStreamAssets(globalAccountName, nsa, false)
+	sa.Group = nsa.Group
+	s1, s4 := c.serverByName("S-1").NodeName(), c.serverByName("S-4").NodeName()
+	require_Equal(t, cc.peerAssets[s1].ha, 0)
+	require_Equal(t, cc.peerAssets[s4].ha, 1)
+	// The move's destination, not part of the stream's current peers, is at the limit.
+	cc.adjustPeerAssets([]string{s4}, 0, 1)
+	sjs.mu.Unlock()
+
+	// A new consumer is placed on the stream's current peers, but is counted on its desired peers.
+	_, err = js.AddConsumer("INTEREST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err, NewJSInsufficientResourcesError())
+
+	sjs.mu.Lock()
+	cc.adjustPeerAssets([]string{s4}, 0, -1)
+	sjs.mu.Unlock()
+	_, err = js.AddConsumer("INTEREST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+}
+
+func TestJetStreamClusterMaxHAAssetsLoweredBelowExisting(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	// The stream and its consumers put 3 HA assets on every server.
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for _, name := range []string{"C1", "C2"} {
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+	}
+	nc.Close()
+
+	// Lower the limit below the existing HA assets.
+	c.stopAll()
+	for _, o := range c.opts {
+		b, err := os.ReadFile(o.ConfigFile)
+		require_NoError(t, err)
+		conf := strings.Replace(string(b), "store_dir:", "limits: {max_ha_assets: 2}, store_dir:", 1)
+		require_NoError(t, os.WriteFile(o.ConfigFile, []byte(conf), defaultFilePerms))
+	}
+	c.restartAll()
+	c.waitOnClusterReady()
+	for _, s := range c.servers {
+		require_Equal(t, s.getOpts().JetStreamLimits.MaxHAAssets, 2)
+	}
+
+	// Existing assets must all come up, even though they exceed the limit.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C1")
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C2")
+	nc, js = jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// But new assets are limited.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "OTHER", Subjects: []string{"bar"}, Replicas: 3})
+	require_Error(t, err, errors.New("no suitable peers"))
+}
+
+func TestJetStreamClusterMaxHAAssetsPeerRemoveIgnoresLimit(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", "limits: {max_ha_assets: 1}, store_dir:", 1)
+	c := createJetStreamClusterWithTemplateAndModHook(t, tmpl, "R4S", 4, nil)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Replicas: 3})
+	require_NoError(t, err)
+	toRemove := si.Cluster.Replicas[0].Name
+
+	// Mark the only server not hosting the stream as being at the limit.
+	var spare *Server
+	sjs := c.leader().getJetStream()
+	sjs.mu.Lock()
+	sa := sjs.streamAssignment(globalAccountName, "TEST")
+	for _, s := range c.servers {
+		if !slices.Contains(sa.Group.Peers, s.NodeName()) {
+			spare = s
+			sjs.cluster.adjustPeerAssets([]string{s.NodeName()}, 0, 1)
+		}
+	}
+	sjs.mu.Unlock()
+	require_NotNil(t, spare)
+
+	// User-requested placement is limited.
+	_, err = js.AddStream(&nats.StreamConfig{Name: "OTHER", Subjects: []string{"other"}, Replicas: 3})
+	require_Error(t, err, errors.New("no suitable peers"))
+
+	// But a peer-remove is a system-level repair, which ignores the limit.
+	resp, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), []byte(`{"peer":"`+toRemove+`"}`), time.Second)
+	require_NoError(t, err)
+	var rpResp JSApiStreamRemovePeerResponse
+	require_NoError(t, json.Unmarshal(resp.Data, &rpResp))
+	require_True(t, rpResp.Success)
+
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		si, err := js.StreamInfo("TEST")
+		if err != nil {
+			return err
+		}
+		peers := []string{si.Cluster.Leader}
+		for _, r := range si.Cluster.Replicas {
+			peers = append(peers, r.Name)
+		}
+		if len(peers) != 3 || slices.Contains(peers, toRemove) || !slices.Contains(peers, spare.Name()) {
+			return fmt.Errorf("peer not replaced yet: %v", peers)
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterSubjectDeleteMarkersMinimumTTL(t *testing.T) {
@@ -7600,37 +8188,43 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if entries, _ := rg.Size(); entries != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d entries)", entries)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				entries, _ := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				entries, _ := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if entries > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if entries, _ := rg.Size(); entries != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d entries)", entries)
 						}
 						return nil
 					})
-					entries, _ = cc.meta.Size()
-					require_Equal(t, entries, 0)
 					return
 				}
 			}
@@ -7660,37 +8254,43 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 			_, cc := leader.getJetStreamCluster()
 			rg := cc.meta.(*raft)
 
+			// Kicking the leader change channel is the easiest way to
+			// trick monitorCluster() into calling doSnapshot().
+			kick := func() {
+				select {
+				case rg.leadc <- leadChange{isLeader: true, term: rg.Term()}:
+				default:
+				}
+			}
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				if _, size := rg.Size(); size != 0 {
+					kick()
+					return fmt.Errorf("meta log not compacted yet (%d bytes)", size)
+				}
+				return nil
+			})
+
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
 			for i := range math.MaxInt {
-				rg.RLock()
-				papplied := rg.papplied
-				rg.RUnlock()
-
 				jsStreamCreate(t, nc, &StreamConfig{
 					Name:     fmt.Sprintf("test_%d", i),
 					Subjects: []string{fmt.Sprintf("test.%d", i)},
 					Storage:  MemoryStorage,
 				})
 
-				// Kicking the leader change channel is the easiest way to
-				// trick monitorCluster() into calling doSnapshot().
-				_, size := cc.meta.Size()
-				cc.meta.(*raft).leadc <- leadChange{isLeader: true, term: cc.meta.Term()}
+				_, size := rg.Size()
+				kick()
 
 				// Should we have compacted on this iteration?
 				if size > thresh {
-					checkFor(t, time.Second, 5*time.Millisecond, func() error {
-						rg.RLock()
-						npapplied := rg.papplied
-						rg.RUnlock()
-						if npapplied <= papplied {
-							return fmt.Errorf("haven't snapshotted yet (%d <= %d)", npapplied, papplied)
+					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+						if _, size := rg.Size(); size != 0 {
+							kick()
+							return fmt.Errorf("haven't compacted yet (%d bytes)", size)
 						}
 						return nil
 					})
-					_, size = cc.meta.Size()
-					require_Equal(t, size, 0)
 					return
 				}
 			}
@@ -9978,4 +10578,54 @@ func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	pos.asked = time.Now().Add(-migratePosAskInterval)
 	pos.request(mset, globalAccountName, "TEST")
 	require_True(t, pos.asked.After(second))
+}
+
+func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [server:%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// Have the meta leader believe it's catching up rs.
+	ml, rs := c.leader(), c.randomNonLeader()
+	meta := ml.getJetStream().getMetaGroup().(*raft)
+	rsID := rs.getJetStream().getMetaGroup().ID()
+	meta.Lock()
+	meta.peers[rsID].ci = math.MaxUint64
+	meta.Unlock()
+	require_False(t, meta.IsFollowerCaughtUp(rsID))
+
+	// Responses come from the stream/consumer leader, the meta leader might not have applied the assignment yet.
+	isMember := func(ci *nats.ClusterInfo) bool {
+		if ci.Leader == rs.Name() {
+			return true
+		}
+		return slices.ContainsFunc(ci.Replicas, func(pi *nats.PeerInfo) bool { return pi.Name == rs.Name() })
+	}
+	for i := range 10 {
+		// R1 streams and consumers aren't placed on the peer that's catching up.
+		name := fmt.Sprintf("S%d", i)
+		si, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name}, Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(si.Cluster))
+		ci, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), Replicas: 1})
+		require_NoError(t, err)
+		require_False(t, isMember(ci.Cluster))
+	}
+
+	// But it's not ruled out.
+	si, err := js.AddStream(&nats.StreamConfig{Name: "PINNED", Subjects: []string{"pinned"}, Replicas: 1,
+		Placement: &nats.Placement{Tags: []string{"server:" + rs.Name()}}})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
+	si, err = js.AddStream(&nats.StreamConfig{Name: "R3", Subjects: []string{"r3"}, Replicas: 3})
+	require_NoError(t, err)
+	require_True(t, isMember(si.Cluster))
 }

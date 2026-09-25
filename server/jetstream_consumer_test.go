@@ -10472,6 +10472,17 @@ func TestJetStreamConsumerPullNoWaitBatchLargerThanPending(t *testing.T) {
 			_, err := js.Publish("foo", []byte("OK"))
 			require_NoError(t, err)
 		}
+		// Replication is async, so wait for the consumer to show them as pending.
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			ci, err := js.ConsumerInfo("TEST", "C")
+			if err != nil {
+				return err
+			}
+			if ci.NumPending != 5 {
+				return fmt.Errorf("expected 5 pending, got %d", ci.NumPending)
+			}
+			return nil
+		})
 
 		sub := sendRequest(t, nc, "rply", req)
 		defer sub.Unsubscribe()
@@ -11207,6 +11218,83 @@ func TestJetStreamConsumerMaxDeliverUnderflow(t *testing.T) {
 	maxdc = o.maxdc
 	o.mu.RUnlock()
 	require_Equal(t, maxdc, 0)
+}
+
+func TestJetStreamConsumerMaxDeliverAdvisoryCount(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	deliveries := make(chan uint64, 1)
+	advSub, err := nc.Subscribe(
+		fmt.Sprintf("%s.TEST.CONSUMER", JSAdvisoryConsumerMaxDeliveryExceedPre),
+		func(m *nats.Msg) {
+			var adv JSConsumerDeliveryExceededAdvisory
+			if json.Unmarshal(m.Data, &adv) == nil {
+				deliveries <- adv.Deliveries
+			}
+		})
+	require_NoError(t, err)
+	defer advSub.Unsubscribe()
+	require_NoError(t, nc.Flush())
+
+	cfg := &nats.ConsumerConfig{
+		Durable:    "CONSUMER",
+		AckPolicy:  nats.AckExplicitPolicy,
+		AckWait:    30 * time.Second,
+		MaxDeliver: -1,
+	}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("foo", "CONSUMER", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Deliver the message three times: two NAK rounds plus a final delivery left
+	// pending, so it has been delivered 3 times.
+	for i := 0; i < 2; i++ {
+		msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+		require_NoError(t, err)
+		require_Len(t, len(msgs), 1)
+		require_NoError(t, msgs[0].Nak())
+	}
+	msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 1)
+	meta, err := msgs[0].Metadata()
+	require_NoError(t, err)
+	sseq := meta.Sequence.Stream
+
+	// Lower MaxDeliver below the number of deliveries made, then drive the AckWait
+	// expiry path (hasMaxDeliveries) directly.
+	cfg.MaxDeliver = 1
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	o.mu.Lock()
+	exceeded := o.hasMaxDeliveries(sseq)
+	o.mu.Unlock()
+	require_True(t, exceeded)
+
+	select {
+	case dc := <-deliveries:
+		require_Equal(t, dc, uint64(3))
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the delivery exceeded advisory")
+	}
 }
 
 // https://github.com/nats-io/nats-server/issues/7457
@@ -13729,4 +13817,64 @@ func TestJetStreamConsumerDeliveryCountUnderflow(t *testing.T) {
 	require_Equal(t, o.deliveryCount(1), 1)
 	_, present := o.rdc[1]
 	require_False(t, present)
+}
+
+func TestJetStreamConsumerR1CreateAndDeleteAppliedTogetherBothRespond(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	// The R1 consumer is on rs, so rs responds for it.
+	rs := c.randomNonLeader()
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Placement: &nats.Placement{Tags: []string{rs.Name()}}})
+	require_NoError(t, err)
+
+	// Pause rs's meta applies, so the create and delete are applied right after each other.
+	meta := rs.getJetStream().getMetaGroup().(*raft)
+	require_NoError(t, meta.PauseApply())
+
+	mjs := c.leader().getJetStream()
+	waitApplied := func(assigned bool) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			mjs.mu.RLock()
+			defer mjs.mu.RUnlock()
+			if (mjs.consumerAssignment(globalAccountName, "TEST", "C") != nil) != assigned {
+				return errors.New("not applied on meta leader")
+			}
+			return nil
+		})
+	}
+	sub := natsSubSync(t, nc, "reply")
+	req, err := json.Marshal(&CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "C"}})
+	require_NoError(t, err)
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiDurableCreateT, "TEST", "C"), "reply", req))
+	waitApplied(true)
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "C"), "reply", nil))
+	waitApplied(false)
+
+	// Only resume once rs knows both are committed.
+	_, lcommit, _ := mjs.getMetaGroup().Progress()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		meta.RLock()
+		defer meta.RUnlock()
+		if meta.hcommit < lcommit {
+			return errors.New("not committed yet")
+		}
+		return nil
+	})
+	meta.ResumeApply()
+
+	for _, typ := range []string{JSApiConsumerCreateResponseType, JSApiConsumerDeleteResponseType} {
+		msg, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		var resp ApiResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_Equal(t, resp.Type, typ)
+		require_True(t, resp.Error == nil)
+	}
 }
