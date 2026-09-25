@@ -7065,6 +7065,8 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 				sa.unsupported = osa.unsupported
 			}
 		}
+		// Carry over the consumers only the stored assignment knows.
+		sa.consumers = osa.consumers
 		// Carry over the running node, the decoded assignment doesn't have it.
 		if sa.Group != nil && osa.Group != nil {
 			sa.Group.node = osa.Group.node
@@ -7143,16 +7145,12 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	// 2) node was nil (and couldn't be deleted)
 	if !stopped || node == nil {
 		if sacc := s.SystemAccount(); sacc != nil {
-			saccName := sacc.GetName()
-			os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, sa.Group.Name))
+			js.deleteRaftGroupStore(sacc, sa.Group.Name)
 			// cleanup dependent consumer groups
 			if !stopped {
 				for _, ca := range sa.consumers {
 					// Make sure we cleanup any possible running nodes for the consumers.
-					if isMember && ca.Group != nil && ca.Group.node != nil {
-						ca.Group.node.Delete()
-					}
-					os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, ca.Group.Name))
+					js.deleteRaftGroupStore(sacc, ca.Group.Name)
 				}
 			}
 		}
@@ -7812,6 +7810,15 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	}
 }
 
+// deleteRaftGroupStore removes a Raft group's store, through its node if still running.
+func (js *jetStream) deleteRaftGroupStore(sacc *Account, group string) {
+	if n := js.srv.lookupRaftNode(group); n != nil {
+		n.Delete()
+		return
+	}
+	os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, group))
+}
+
 func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLeader bool) {
 	if ca == nil {
 		return
@@ -7857,7 +7864,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLea
 	// 2) node was nil (and couldn't be deleted)
 	if !stopped || node == nil {
 		if sacc := s.SystemAccount(); sacc != nil {
-			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+			js.deleteRaftGroupStore(sacc, ca.Group.Name)
 		}
 	}
 
