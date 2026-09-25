@@ -63,6 +63,7 @@ type RaftNode interface {
 	StepDown(preferred ...string) error
 	SetObserver(isObserver bool)
 	IsObserver() bool
+	SetScaleUp(scaleUp bool)
 	Campaign() error
 	CampaignImmediately() error
 	ID() string
@@ -260,7 +261,7 @@ type raft struct {
 	paused       bool // Whether or not applies are paused
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new to a brand-new group, "empty log" checks can be temporarily relaxed.
-	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
+	scaleUp      bool // The node is a scale up peer that's not a member yet, observer until the leader adds it.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
 	quorumPaused bool // Pause replication and quorum participation to prevent log growth during slow applies.
@@ -346,9 +347,9 @@ type RaftConfig struct {
 	// we know to protect against data loss.
 	Recovering bool
 
-	// ScaleUp identifies the Raft peer set is being scaled up.
+	// ScaleUp identifies this peer is being added to an existing group.
 	// We need to protect against losing state due to the new peers starting with an empty log.
-	// Therefore, these empty servers can't try to become leader, and vote as empty, until they at least have _some_ state.
+	// Therefore, these empty servers can't try to become leader until the leader adds them, and vote as empty until they at least have _some_ state.
 	ScaleUp bool
 
 	// NewTransport creates the transport used for Raft node communication.
@@ -503,7 +504,8 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		apply:    newIPQueue[*CommittedEntry](s, qpfx+"committedEntry"),
 		accName:  accName,
 		leadc:    make(chan leadChange, 1),
-		observer: cfg.Observer,
+		observer: cfg.Observer || cfg.ScaleUp,
+		scaleUp:  cfg.ScaleUp,
 	}
 
 	if cfg.NewTransport != nil {
@@ -577,6 +579,11 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.wal.FastState(&state)
 	n.bytes = state.Bytes
 
+	// A scale up peer restarting with a leader-provided state that names us is already a member.
+	if n.scaleUp && n.peers[n.id] != nil && (n.pindex > 0 || state.Msgs > 0) {
+		n.scaleUp, n.observer = false, cfg.Observer
+	}
+
 	if state.Msgs > 0 {
 		n.debug("Replaying state of %d entries", state.Msgs)
 
@@ -649,15 +656,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
-	if n.pindex == 0 && !cfg.Recovering {
-		if !cfg.ScaleUp {
-			// Only a brand-new group relaxes the empty log checks, a scale up peer's data lives elsewhere.
-			n.initializing = true
-		} else if !cfg.Observer {
-			// A scale up peer with an empty log observes until it gets data from the leader.
-			n.scaleUp = true
-			n.setObserverLocked(true, extUndetermined)
-		}
+	if n.pindex == 0 && !cfg.Recovering && !cfg.ScaleUp {
+		// Only a brand-new group relaxes the empty log checks, a scale up peer's data lives elsewhere.
+		n.initializing = true
 	}
 	n.Unlock()
 
@@ -2851,6 +2852,25 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.setObserverLocked(isObserver, extSt)
 }
 
+// SetScaleUp marks whether we're a scale up peer that observes until the leader adds us.
+func (n *raft) SetScaleUp(scaleUp bool) {
+	n.Lock()
+	defer n.Unlock()
+	n.setScaleUpLocked(scaleUp)
+}
+
+// Lock should be held.
+func (n *raft) setScaleUpLocked(scaleUp bool) {
+	if n.scaleUp == scaleUp {
+		return
+	}
+	n.scaleUp = scaleUp
+	n.setObserverLocked(scaleUp, n.extSt)
+	if !scaleUp {
+		n.debug("Scale up complete, leaving observer mode")
+	}
+}
+
 func (n *raft) setObserverLocked(isObserver bool, extSt extensionState) {
 	wasObserver := n.observer
 	n.observer = isObserver
@@ -3770,7 +3790,8 @@ func (n *raft) sendSnapshotToFollower(subject string) (uint64, error) {
 		return 0, err
 	}
 	// Go ahead and send the snapshot and peerstate here as first append entry to the catchup follower.
-	ae := n.buildAppendEntry([]*Entry{{EntrySnapshot, snap.data}, {EntryPeerState, snap.peerstate}})
+	// Send our current membership, the one stored with the snapshot can be outdated.
+	ae := n.buildAppendEntry([]*Entry{{EntrySnapshot, snap.data}, {EntryPeerState, encodePeerState(n.currentPeerStateLocked())}})
 	ae.pterm, ae.pindex = snap.lastTerm, snap.lastIndex
 	var state StreamState
 	n.wal.FastState(&state)
@@ -4832,6 +4853,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
 				n.processPeerState(ps)
+				// The leader's current membership naming us means we were added.
+				if n.peers[n.id] != nil {
+					n.setScaleUpLocked(false)
+				}
 				// Also need to copy from client's buffer.
 				ae.entries[0].Data = copyBytes(ae.entries[0].Data)
 			} else {
@@ -4942,6 +4967,10 @@ CONTINUE:
 			// Membership takes effect when stored, not when committed.
 			if ps, err := decodePeerState(e.Data); err == nil {
 				n.processPeerState(ps)
+				// The leader's membership naming us means we were added.
+				if n.peers[n.id] != nil {
+					n.setScaleUpLocked(false)
+				}
 			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
@@ -4951,6 +4980,10 @@ CONTINUE:
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
 				n.addPeer(newPeer)
+				// Our own add entry means we were added.
+				if newPeer == n.id {
+					n.setScaleUpLocked(false)
+				}
 			}
 		case EntryRemovePeer:
 			// When receiving or restoring, mark membership as changing.
@@ -5042,14 +5075,9 @@ CONTINUE:
 }
 
 // resetInitializing resets the notion of initializing.
-// If we were scaling up, also leaves observer mode.
 // Lock should be held.
 func (n *raft) resetInitializing() {
 	n.initializing = false
-	if n.scaleUp {
-		n.scaleUp = false
-		n.setObserverLocked(false, extUndetermined)
-	}
 }
 
 // processPeerState is called when a peer state entry is received

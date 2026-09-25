@@ -4084,7 +4084,7 @@ func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
 	require_False(t, n.LastHeardFromFollower(nats1).IsZero())
 }
 
-func TestNRGInitializeAndScaleUp(t *testing.T) {
+func TestNRGInitializeEmptyVote(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
@@ -4098,8 +4098,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
 
 	require_True(t, n.initializing)
-	n.scaleUp = true
-	n.SetObserver(true)
 	require_Equal(t, n.term, 0)
 
 	voteReply := "$TEST"
@@ -4117,8 +4115,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
 	require_True(t, n.initializing)
-	require_True(t, n.scaleUp)
-	require_True(t, n.observer)
 
 	msg, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
@@ -4126,12 +4122,10 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	require_True(t, vr.granted)
 	require_False(t, vr.empty)
 
-	// Processing an append entry resets scale up and puts us out of observer mode.
+	// Processing an append entry resets initializing.
 	n.processAppendEntry(aeMsg, n.aesub)
 	require_Equal(t, n.pindex, 1)
 	require_False(t, n.initializing)
-	require_False(t, n.scaleUp)
-	require_False(t, n.observer)
 
 	// Simulate a reset.
 	n.resetWAL()
@@ -4151,8 +4145,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 
 	// Reset to check if snapshot on catchup can also reset this.
 	n.initializing = true
-	n.scaleUp = true
-	n.SetObserver(true)
 	snapshotEntries := []*Entry{
 		newEntry(EntrySnapshot, nil),
 		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
@@ -4161,14 +4153,12 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n.createCatchup(aeSnapshot)
 	n.processAppendEntry(aeSnapshot, n.catchup.sub)
 	require_False(t, n.initializing)
-	require_False(t, n.scaleUp)
-	require_False(t, n.observer)
 
 	// Simulate a reset.
 	n.resetWAL()
 	require_Equal(t, n.pindex, 0)
 
-	// Vote when initializing but not scaling up, must also NOT be an "empty vote".
+	// Vote when initializing must NOT be an "empty vote".
 	n.initializing = true
 	require_NoError(t, n.processVoteRequest(&voteRequest{term: 3, candidate: "_random_", reply: voteReply}))
 	require_Equal(t, n.term, 3)
@@ -9920,5 +9910,142 @@ func TestNRGScaleUpEmptyCandidateNeedsAllEmptyServers(t *testing.T) {
 			n.runAsCandidate()
 			require_Equal(t, n.State(), test.expected)
 		})
+	}
+}
+
+// A scale up peer observes until the leader's add entry or membership names it, and votes as empty meanwhile.
+func TestNRGScaleUpPeerObserverUntilMember(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.servers[0]
+
+	for _, test := range []struct {
+		name       string
+		recovering bool
+		// Whether the log alone lifts observer mode: only our own add entry does.
+		joins bool
+		// How the log makes us a member.
+		join func(t *testing.T, n *raft, peers []string)
+	}{
+		{"AddPeer", false, true, func(t *testing.T, n *raft, peers []string) {
+			n.processAppendEntry(encode(t, &appendEntry{leader: peers[1], term: 1, commit: 0, pterm: 0, pindex: 0,
+				entries: []*Entry{newEntry(EntryAddPeer, []byte(n.ID()))}}), n.aesub)
+		}},
+		{"PeerState", true, true, func(t *testing.T, n *raft, peers []string) {
+			n.processAppendEntry(encode(t, &appendEntry{leader: peers[1], term: 1, commit: 0, pterm: 0, pindex: 0,
+				entries: []*Entry{newEntry(EntryPeerState, encodePeerState(&peerState{peers, len(peers), extUndetermined}))}}), n.aesub)
+		}},
+		{"NotAMember", false, false, func(t *testing.T, n *raft, peers []string) {
+			// A peer state without us keeps us a learner as well.
+			others := slices.DeleteFunc(copyStrings(peers), func(p string) bool { return p == n.ID() })
+			n.processAppendEntry(encode(t, &appendEntry{leader: peers[1], term: 1, commit: 0, pterm: 0, pindex: 0,
+				entries: []*Entry{newEntry(EntryPeerState, encodePeerState(&peerState{others, len(others), extUndetermined}))}}), n.aesub)
+			require_False(t, n.votingMemberLocked())
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+			require_NoError(t, err)
+			cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms, Managed: true, ScaleUp: true, Recovering: test.recovering}
+			peers := serverPeerNames(c.servers)
+			require_NoError(t, s.bootstrapRaftNode(cfg, peers, true))
+			n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+			require_NoError(t, err)
+			defer n.shutdown()
+
+			require_True(t, n.IsObserver())
+			// A scale up peer must never relax the "empty log" checks, data lives elsewhere.
+			require_False(t, n.initializing)
+
+			// We vote flagged as empty, which only counts for a candidate that holds data.
+			voteReply := "$TEST"
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer nc.Close()
+
+			sub, err := nc.SubscribeSync(voteReply)
+			require_NoError(t, err)
+			defer sub.Drain()
+			require_NoError(t, nc.Flush())
+
+			require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: peers[1], reply: voteReply}))
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			vr := decodeVoteResponse(msg.Data)
+			require_True(t, vr.granted)
+			require_True(t, vr.empty)
+
+			// Only the leader's membership naming us lifts observer mode.
+			test.join(t, n, peers)
+			require_Equal(t, n.IsObserver(), !test.joins)
+			require_Equal(t, n.scaleUp, !test.joins)
+
+			// Either way we vote, but only for a member of the group.
+			n.RLock()
+			pterm, pindex := n.pterm, n.pindex
+			n.RUnlock()
+			require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: pterm, lastIndex: pindex, candidate: "_random_", reply: voteReply}))
+			msg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_False(t, decodeVoteResponse(msg.Data).granted)
+			require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: pterm, lastIndex: pindex, candidate: peers[1], reply: voteReply}))
+			msg, err = sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_True(t, decodeVoteResponse(msg.Data).granted)
+			// Leaving must have armed a real election timer, not the observer interval.
+			if test.joins {
+				require_True(t, n.electTimer() != nil)
+			}
+		})
+	}
+}
+
+// A memory-storage scale up source restarting empty mustn't find commits to truncate on the not yet added destination.
+func TestNRGLearnerDoesNotCommitBeforeMembership(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 2)
+	defer c.shutdown()
+	s1, s2 := c.servers[0], c.servers[1]
+	p1, p2 := s1.Node(), s2.Node()
+	rgPeers := []string{p1, p2}
+
+	cfg1 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true}
+	sm1 := c.createStateMachine(s1, cfg1, []string{p1}, newStateAdder)
+	n1 := sm1.node()
+	require_NoError(t, n1.CampaignImmediately())
+	require_NotNil(t, smGroup{sm1}.waitOnLeader())
+	a1 := sm1.(*stateAdder)
+	a1.proposeDelta(10)
+	a1.proposeDelta(20)
+	a1.proposeDelta(30)
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if a1.total() != 60 {
+			return fmt.Errorf("n1 total %d", a1.total())
+		}
+		return nil
+	})
+
+	cfg2 := &RaftConfig{Name: "G", Store: t.TempDir(), Log: c.createWAL("G", MemoryStorage), Managed: true, ScaleUp: true}
+	sm2 := c.createStateMachine(s2, cfg2, rgPeers, newStateAdder)
+	n2 := sm2.node()
+	a2 := sm2.(*stateAdder)
+
+	// The destination may store entries, but must not commit any until added.
+	time.Sleep(2 * time.Second)
+	i2, c2, _ := n2.Progress()
+	t.Logf("destination before restart: index %d commit %d total %d (leader peers %v)", i2, c2, a2.total(), n1.PeerNames())
+	if c2 > 0 || a2.total() != 0 {
+		t.Fatalf("destination committed %d entries (total %d) while not a member of the leader's peer set %v", c2, a2.total(), n1.PeerNames())
+	}
+
+	// Restart the source as a member with a fresh memstore, as createRaftGroup would.
+	a1.stop()
+	a1.restart()
+	leader := smGroup{sm1, sm2}.waitOnLeader()
+	require_NotNil(t, leader)
+	n := leader.node()
+	index, _, _ := n.Progress()
+	t.Logf("leader after restart: %s term %d index %d, peers %v", n.ID(), n.Term(), index, n.PeerNames())
+	if index < c2 {
+		t.Fatalf("leader %s at index %d below a peer's committed index %d", n.ID(), index, c2)
 	}
 }

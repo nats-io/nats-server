@@ -196,7 +196,8 @@ type raftGroup struct {
 	Storage   StorageType `json:"store"`
 	Cluster   string      `json:"cluster,omitempty"`
 	Preferred string      `json:"preferred,omitempty"`
-	ScaleUp   bool        `json:"scale_up,omitempty"`
+	// ScaleUp marks the group as scaled up, kept for servers and desired states predating Desired.Members.
+	ScaleUp bool `json:"scale_up,omitempty"`
 	// Excluded peers are evacuated and can't be added to this group as part of the meta
 	// leader's reconciliation. Cleared when this group is at the configured replicas.
 	Excluded []string `json:"excluded,omitempty"`
@@ -238,6 +239,9 @@ type desiredRaftGroup struct {
 	// Removed are peers an operator peer-removed from this group. A group that
 	// can't reach quorum may only evict what's recorded here.
 	Removed []string `json:"removed,omitempty"`
+
+	// Members is the Raft membership as last reported by the group leader, a peer not in it observes until added.
+	Members []string `json:"members,omitempty"`
 
 	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
 }
@@ -331,12 +335,16 @@ func (rg *raftGroup) withDesired(target *raftGroup) *raftGroup {
 		Cluster:   target.Cluster,
 		Preferred: target.Preferred,
 	}
-	if rg.Desired != nil {
+	if rg.Desired == nil {
+		// A converged group's peers are all members, only peers the target adds are scaling up.
+		ng.Desired.Members = copyStrings(rg.Peers)
+	} else {
 		// Must preserve the original created timestamp, term,
 		// and whether an in-flight move is being retargeted.
 		ng.Desired.Created = rg.Desired.Created
 		ng.Desired.Term = rg.Desired.Term
 		ng.Desired.Move = rg.Desired.Move
+		ng.Desired.Members = copyStrings(rg.Desired.Members)
 		// Must preserve the prior origin (if any).
 		if rg.Desired.Origin != nil {
 			origin := *rg.Desired.Origin
@@ -3089,6 +3097,30 @@ func (d *desiredRaftGroup) addRemoved(peers []string) {
 	}
 }
 
+// removeMembers drops the removed peers from the membership,
+// making the remaining (empty) peers the members if none are left.
+// Lock should be held.
+func (d *desiredRaftGroup) removeMembers(peers, remaining []string) {
+	if d == nil || d.Members == nil {
+		return
+	}
+	d.Members = slices.DeleteFunc(d.Members, func(p string) bool { return slices.Contains(peers, p) })
+	if len(d.Members) == 0 {
+		d.Members = copyStrings(remaining)
+	}
+}
+
+// isScaleUpPeer reports whether the given peer runs a Raft node
+// for this group without being a member yet.
+// Lock should be held.
+func (rg *raftGroup) isScaleUpPeer(peer string) bool {
+	if rg.Desired == nil || rg.Desired.Members == nil {
+		// Without a recorded membership, all but the preferred peer holding the data are scaling up.
+		return rg.ScaleUp && peer != rg.Preferred
+	}
+	return !slices.Contains(rg.Desired.Members, peer)
+}
+
 // copyGroup returns a copy of rg whose Peers slice and nested Desired placement
 // are independent of the original, so it can be mutated and encoded.
 // Lock should be held.
@@ -3103,6 +3135,7 @@ func (rg *raftGroup) copyGroup() *raftGroup {
 		cd := *rg.Desired
 		cd.Peers = copyStrings(rg.Desired.Peers)
 		cd.Removed = copyStrings(rg.Desired.Removed)
+		cd.Members = copyStrings(rg.Desired.Members)
 		if rg.Desired.Origin != nil {
 			cr := *rg.Desired.Origin
 			cr.Placement = rg.Desired.Origin.Placement.clone()
@@ -3596,6 +3629,7 @@ func (cc *jetStreamCluster) remapConsumerAssignment(sa *streamAssignment, ca *co
 		cca.Group.Peers = removeFrom(cca.Group.Peers)
 		cca.Group.Desired.Peers = removeFrom(cca.Group.Desired.Peers)
 		cca.Group.Desired.addRemoved([]string{peer})
+		cca.Group.Desired.removeMembers([]string{peer}, cca.Group.Peers)
 	}
 	// Don't allow moving to an empty set.
 	if len(cca.Group.Desired.Peers) == 0 {
@@ -3940,7 +3974,8 @@ retry:
 	cc.creatingRaftGroups[rg.Name] = doneCh
 
 	// Snapshot rg fields; we drop js.mu below and rg is shared.
-	rgName, rgScaleUp := rg.Name, rg.ScaleUp
+	// A peer that's not a member yet observes until the leader adds it.
+	rgName, rgScaleUp := rg.Name, rg.isScaleUpPeer(cc.meta.ID())
 	rgPeers := copyStrings(rg.Peers)
 	storeDir := filepath.Join(js.config.StoreDir, sysAcc.Name, defaultStoreDirName, rg.Name)
 	js.mu.Unlock()
@@ -4845,18 +4880,18 @@ const (
 // JetStream lock is released. needDesired encodes whether desired state is missing
 // or was recorded under another leader term, and the meta leader must record it first.
 // Lock should be held.
-func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers []string, needDesired desiredNeed) {
+func (rg *raftGroup) desiredSnapshot(leaderTerm uint64) (id string, scaleDown bool, peers, members []string, needDesired desiredNeed) {
 	desired := rg.Desired
 	if desired != nil {
 		// MUST copy the peers, the assignment can be updated once we release.
-		id, scaleDown, peers = desired.ID, desired.ScaleDown, copyStrings(desired.Peers)
+		id, scaleDown, peers, members = desired.ID, desired.ScaleDown, copyStrings(desired.Peers), copyStrings(desired.Members)
 	}
 	if desired == nil || desired.ID == _EMPTY_ {
 		needDesired = desiredMissing
 	} else if desired.Term != leaderTerm {
 		needDesired = desiredStaleTerm
 	}
-	return id, scaleDown, peers, needDesired
+	return id, scaleDown, peers, members, needDesired
 }
 
 // peerIDs returns the IDs of the given peers.
@@ -4967,7 +5002,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	current := copyStrings(sa.Group.Peers)
 	// Peers we can't drop yet; they still host a consumer.
 	hostedPeers := sa.consumerHostedPeers()
-	desiredID, desiredScaleDown, desiredPeers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
+	desiredID, desiredScaleDown, desiredPeers, desiredMembers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -5036,14 +5071,22 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 				combined = append(combined, peer)
 			}
 		}
-		update.MetaPeers = combined
+		update.MetaPeers, update.RaftPeers = combined, actualPeers
 		sendMetaUpdate()
 		return mstat(MigrationStatusMeta, "expanding assignment with desired peers")
 	}
 
 	slices.Sort(current)
 	slices.Sort(actualPeers)
+	slices.Sort(desiredMembers)
 	peersMatch := slices.Equal(current, actualPeers)
+
+	// Report a changed membership to the meta leader before handing off leadership or removing ourselves.
+	if desiredMembers != nil && !slices.Equal(actualPeers, desiredMembers) {
+		update.MetaPeers, update.RaftPeers = current, actualPeers
+		sendMetaUpdate()
+		return mstat(MigrationStatusMeta, "reporting membership to meta leader")
+	}
 
 	// Remove peers not in our desired peer set.
 	var remaining []string
@@ -5182,7 +5225,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	}
 
 	// We're a step closer to being done.
-	update.MetaPeers = actualPeers
+	update.MetaPeers, update.RaftPeers = actualPeers, actualPeers
 	update.PeersMatch = peersMatch
 	sendMetaUpdate()
 	return mstat(MigrationStatusMeta, "waiting for peer set to settle")
@@ -6322,6 +6365,10 @@ func (js *jetStream) processStreamAssignment(sa *streamAssignment) {
 			if sa.Group != nil {
 				sa.Group.node = osa.Group.node
 				sa.Group.migration = osa.Group.migration
+				// The assignment naming us a member lifts scale up, also when there's no leader to do so.
+				if node := sa.Group.node; node != nil && isMember && !sa.Group.isScaleUpPeer(ourID) {
+					node.SetScaleUp(false)
+				}
 			}
 			sa.consumers = osa.consumers
 			if osa.hasResponded() {
@@ -6446,6 +6493,10 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	if sa.Group != nil {
 		sa.Group.node = osa.Group.node
 		sa.Group.migration = osa.Group.migration
+		// The assignment naming us a member lifts scale up, also when there's no leader to do so.
+		if node := sa.Group.node; node != nil && isMember && !sa.Group.isScaleUpPeer(ourID) {
+			node.SetScaleUp(false)
+		}
 	}
 	sa.consumers = osa.consumers
 	sa.err = osa.err
@@ -7192,6 +7243,10 @@ func (js *jetStream) processConsumerAssignment(ca *consumerAssignment) {
 		if ca.Group != nil {
 			ca.Group.node = oca.Group.node
 			ca.Group.migration = oca.Group.migration
+			// The assignment naming us a member lifts scale up, also when there's no leader to do so.
+			if node := ca.Group.node; node != nil && isMember && !ca.Group.isScaleUpPeer(ourID) {
+				node.SetScaleUp(false)
+			}
 		}
 		if oca.hasResponded() {
 			ca.markResponded()
@@ -8316,7 +8371,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	// MUST copy, the stream assignment can be updated once we release below.
 	streamPeers := copyStrings(osa.Group.Peers)
 	current := copyStrings(ca.Group.Peers)
-	desiredID, desiredScaleDown, desiredPeers, needDesired := ca.Group.desiredSnapshot(leaderTerm)
+	desiredID, desiredScaleDown, desiredPeers, desiredMembers, needDesired := ca.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -8394,14 +8449,22 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		if len(combined) == len(current) {
 			return mstat(MigrationStatusBlocked, "waiting for stream to migrate first")
 		}
-		update.MetaPeers = combined
+		update.MetaPeers, update.RaftPeers = combined, actualPeers
 		sendMetaUpdate()
 		return mstat(MigrationStatusMeta, "expanding assignment with desired peers")
 	}
 
 	slices.Sort(current)
 	slices.Sort(actualPeers)
+	slices.Sort(desiredMembers)
 	peersMatch := slices.Equal(current, actualPeers)
+
+	// Report a changed membership to the meta leader before handing off leadership or removing ourselves.
+	if desiredMembers != nil && !slices.Equal(actualPeers, desiredMembers) {
+		update.MetaPeers, update.RaftPeers = current, actualPeers
+		sendMetaUpdate()
+		return mstat(MigrationStatusMeta, "reporting membership to meta leader")
+	}
 
 	// Remove peers not in our desired peer set.
 	var remaining []string
@@ -8437,7 +8500,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	}
 
 	// We're a step closer to being done.
-	update.MetaPeers = actualPeers
+	update.MetaPeers, update.RaftPeers = actualPeers, actualPeers
 	update.PeersMatch = peersMatch
 	sendMetaUpdate()
 	return mstat(MigrationStatusMeta, "waiting for peer set to settle")
@@ -9180,6 +9243,7 @@ type desiredAssignmentUpdate struct {
 	// The below fields are mutually exclusive.
 	ScaleDownPeers []string `json:"scale_down_peers,omitempty"` // If the desired state was about scaledown, this is the selected peer set.
 	MetaPeers      []string `json:"meta_peers,omitempty"`       // Which peers the assignment should be updated to.
+	RaftPeers      []string `json:"raft_peers,omitempty"`       // The Raft membership of the group, sent along with MetaPeers.
 
 	PeersMatch bool `json:"match,omitempty"` // Actual peer set matches with the passed MetaPeers.
 }
@@ -9442,12 +9506,19 @@ func (rg *raftGroup) reconcileDesiredState(reconcile desiredAssignmentUpdate, re
 		if len(ng.Peers) >= replicas {
 			ng.Excluded = nil
 		}
-		// Don't reset ScaleUp here. If it was set, we'll want each replica to know
-		// about it until it unsets it as part of recovery.
+		// The scale up is over, every replica runs its node by now.
+		ng.ScaleUp = false
 	} else {
+		// Take on the reported membership, if any.
+		slices.Sort(reconcile.RaftPeers)
+		slices.Sort(ng.Desired.Members)
+		membersChanged := reconcile.RaftPeers != nil && !slices.Equal(reconcile.RaftPeers, ng.Desired.Members)
+		if membersChanged {
+			ng.Desired.Members = reconcile.RaftPeers
+		}
 		// Skip if the peer set is unchanged.
 		slices.Sort(prevPeers)
-		if slices.Equal(metaPeers, prevPeers) {
+		if slices.Equal(metaPeers, prevPeers) && !membersChanged {
 			return nil
 		}
 		// If new peers are added, mark this assignment for scale up.
@@ -10065,6 +10136,7 @@ func (cc *jetStreamCluster) reassignStreamPeers(sa *streamAssignment, peers []st
 		csa.Group.Peers = removeFrom(csa.Group.Peers)
 		csa.Group.Desired.Peers = removeFrom(csa.Group.Desired.Peers)
 		csa.Group.Desired.addRemoved(peers)
+		csa.Group.Desired.removeMembers(peers, csa.Group.Peers)
 	}
 	// Don't allow moving to an empty set.
 	if len(csa.Group.Desired.Peers) == 0 {
@@ -10245,6 +10317,7 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 			return true
 		})
 		cca.Group.Desired.addRemoved(dropped)
+		cca.Group.Desired.removeMembers(dropped, cca.Group.Peers)
 		// If a consumer lost all of its peers to removal.
 		if len(cca.Group.Peers) == 0 {
 			// Delete it if ephemeral.

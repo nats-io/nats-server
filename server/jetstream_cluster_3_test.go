@@ -15830,3 +15830,434 @@ func TestJetStreamClusterReconcileMigratesConsumerBeforeDroppingStreamPeer(t *te
 		return nil
 	})
 }
+
+// streamRaftNode returns the stream's raft node on the given server, nil if none.
+func streamRaftNode(s *Server, stream string) RaftNode {
+	sjs := s.getJetStream()
+	if sjs == nil {
+		return nil
+	}
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	sa := sjs.streamAssignment(globalAccountName, stream)
+	if sa == nil || sa.Group == nil {
+		return nil
+	}
+	return sa.Group.node
+}
+
+// streamMembers returns the stream's peers and raft membership as the meta leader has them.
+func streamMembers(t *testing.T, c *cluster, stream string) (peers, members []string, desired bool) {
+	t.Helper()
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mljs := ml.getJetStream()
+	mljs.mu.RLock()
+	defer mljs.mu.RUnlock()
+	sa := mljs.streamAssignment(globalAccountName, stream)
+	require_NotNil(t, sa)
+	peers = copyStrings(sa.Group.Peers)
+	if sa.Group.Desired != nil {
+		return peers, copyStrings(sa.Group.Desired.Members), true
+	}
+	return peers, nil, false
+}
+
+// setupR1ScaleUpSource creates an R1 stream with some messages, hosted away from the meta leader.
+func setupR1ScaleUpSource(t *testing.T, c *cluster, msgs int) (sl *Server) {
+	t.Helper()
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	sl = c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	if sl == c.leader() {
+		require_NoError(t, sl.getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	require_NotEqual(t, sl, c.leader())
+
+	for range msgs {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	return sl
+}
+
+// waitForScaleUpObservers waits until every server other than the source runs the stream's raft node as an observer.
+func waitForScaleUpObservers(t *testing.T, c *cluster, sl *Server) {
+	t.Helper()
+	// TODO(mvv): doesn't make sense, observer mode clears too quickly, any delay and this times out
+	checkFor(t, 10*time.Second, 2*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if s == sl {
+				continue
+			}
+			n := streamRaftNode(s, "TEST")
+			if n == nil {
+				return fmt.Errorf("no raft node on %s yet", s.Name())
+			}
+			if !n.IsObserver() {
+				return fmt.Errorf("%s is not an observer", s.Name())
+			}
+		}
+		return nil
+	})
+}
+
+// A scale up peer runs its raft node as an observer until the group leader adds it.
+func TestJetStreamClusterScaleUpPeersObserverUntilAdded(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sl := setupR1ScaleUpSource(t, c, 100)
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	_, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The new peers show up as observers, while the source is the only member.
+	waitForScaleUpObservers(t, c, sl)
+	peers, members, desired := streamMembers(t, c, "TEST")
+	require_True(t, desired)
+	require_Len(t, len(peers), 3)
+	require_True(t, slices.Contains(members, sl.Node()))
+
+	// And leave observer mode once added.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		peers, members, desired := streamMembers(t, c, "TEST")
+		if desired {
+			return fmt.Errorf("stream still converging: peers=%v members=%v", peers, members)
+		}
+		for _, s := range c.servers {
+			n := streamRaftNode(s, "TEST")
+			if n == nil {
+				return fmt.Errorf("no raft node on %s", s.Name())
+			}
+			if n.IsObserver() {
+				return fmt.Errorf("%s still an observer", s.Name())
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	}
+	state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+	require_NoError(t, err)
+	require_Equal(t, state.Msgs, 100)
+}
+
+// A group losing its leader after adding scale up peers, but before the meta layer confirmed them, must elect a leader again.
+func TestJetStreamClusterScaleUpLeaderLostBeforeMembershipConfirmed(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sl := setupR1ScaleUpSource(t, c, 10)
+	ml := c.leader()
+	require_NotEqual(t, ml, sl)
+
+	// Hold the group leader's membership report at the meta leader.
+	var dropReports atomic.Bool
+	dropReports.Store(true)
+	mljs := ml.getJetStream()
+	mljs.mu.Lock()
+	cc := mljs.cluster
+	origSub := cc.streamReconcile
+	cc.streamReconcile = nil
+	mljs.mu.Unlock()
+	require_NotNil(t, origSub)
+	ml.sysUnsubscribe(origSub)
+	mljs.mu.Lock()
+	sub, err := ml.systemSubscribe(streamAssignmentReconcileSubj, _EMPTY_, false, cc.c,
+		func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var reconcile streamAssignmentReconcile
+			if err := json.Unmarshal(msg, &reconcile); err == nil && dropReports.Load() && len(reconcile.RaftPeers) > 1 {
+				// The leader reporting that it added peers, earlier requests must go through.
+				return
+			}
+			mljs.reconcileDesiredStreamAssignment(sub, c, acc, subject, reply, msg)
+		})
+	cc.streamReconcile = sub
+	mljs.mu.Unlock()
+	require_NoError(t, err)
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The source adds both peers on its own, the meta layer just never hears of it.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		n := streamRaftNode(sl, "TEST")
+		if n == nil || !n.Leader() {
+			return errors.New("source is not the stream leader")
+		}
+		if n.MembershipChangeInProgress() {
+			return errors.New("membership change in progress")
+		}
+		if peers := n.Peers(); len(peers) != 3 {
+			return fmt.Errorf("source has %d raft peers, want 3", len(peers))
+		}
+		return nil
+	})
+	// The peers left observer mode on their own add entry, while the assignment still has the source as only member.
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		n := streamRaftNode(s, "TEST")
+		require_NotNil(t, n)
+		require_False(t, n.IsObserver())
+	}
+	_, members, desired := streamMembers(t, c, "TEST")
+	require_True(t, desired)
+	require_Len(t, len(members), 1)
+
+	// Lose the leader before the confirmation lands, and let the meta layer work normally from here on.
+	sl.Shutdown()
+	sl.WaitForShutdown()
+	sl = c.restartServer(sl)
+	dropReports.Store(false)
+
+	// The source is back with all the data and must be elected with the votes of the peers it added.
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		if c.streamLeader(globalAccountName, "TEST") != nil {
+			return nil
+		}
+		var states []string
+		for _, s := range c.servers {
+			if n := streamRaftNode(s, "TEST"); n != nil {
+				states = append(states, fmt.Sprintf("%s=%s(observer=%v)", s.Name(), n.State(), n.IsObserver()))
+			}
+		}
+		return fmt.Errorf("no stream leader: %s", strings.Join(states, " "))
+	})
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			n := streamRaftNode(s, "TEST")
+			if n == nil {
+				return fmt.Errorf("no raft node on %s", s.Name())
+			}
+			if n.IsObserver() {
+				return fmt.Errorf("%s still an observer", s.Name())
+			}
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	}
+	state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+	require_NoError(t, err)
+	require_Equal(t, state.Msgs, 10)
+}
+
+// If the only member of a group being scaled up is peer-removed, the remaining empty peers take over as members.
+func TestJetStreamClusterScaleUpEvictedSourceRescue(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	sl := setupR1ScaleUpSource(t, c, 10)
+	// Captured now, the ID isn't available after the shutdown below.
+	slNode := sl.Node()
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+
+	_, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// Take the source down as soon as the new peers run their observer nodes, before it could add them.
+	// TODO(mvv): doesn't make sense, observer mode clears too quickly, any delay and this times out
+	var others []*Server
+	checkFor(t, 10*time.Second, 2*time.Millisecond, func() error {
+		peers, _, _ := streamMembers(t, c, "TEST")
+		if len(peers) != 3 {
+			return fmt.Errorf("assignment not extended yet: %v", peers)
+		}
+		others = others[:0]
+		for _, s := range c.servers {
+			if s != sl && slices.Contains(peers, s.Node()) {
+				others = append(others, s)
+			}
+		}
+		for _, s := range others {
+			n := streamRaftNode(s, "TEST")
+			if n == nil {
+				return fmt.Errorf("no raft node on %s yet", s.Name())
+			}
+		}
+		return nil
+	})
+	sl.Shutdown()
+	sl.WaitForShutdown()
+
+	// Observers never elect a leader among themselves.
+	time.Sleep(2 * maxElectionTimeout)
+	require_True(t, c.streamLeader(globalAccountName, "TEST") == nil)
+
+	// Peer-remove the source, it's the only member.
+	b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: slNode})
+	require_NoError(t, err)
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamRemovePeerResponse
+	require_NoError(t, json.Unmarshal(msg.Data, &resp))
+	require_True(t, resp.Success)
+
+	// The remaining peers take over as members and elect a leader.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		peers, members, desired := streamMembers(t, c, "TEST")
+		if !desired {
+			return fmt.Errorf("expected desired state: peers=%v", peers)
+		}
+		if slices.Contains(members, slNode) {
+			return fmt.Errorf("removed source still a member: %v", members)
+		}
+		for _, s := range others {
+			if !slices.Contains(members, s.Node()) {
+				return fmt.Errorf("%s not a member: %v", s.Name(), members)
+			}
+			if streamRaftNode(s, "TEST").IsObserver() {
+				return fmt.Errorf("%s still an observer", s.Name())
+			}
+		}
+		return nil
+	})
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	checkFor(t, 30*time.Second, 250*time.Millisecond, func() error {
+		peers, members, desired := streamMembers(t, c, "TEST")
+		if desired {
+			return fmt.Errorf("stream still converging: peers=%v members=%v", peers, members)
+		}
+		if len(peers) != 3 || slices.Contains(peers, slNode) {
+			return fmt.Errorf("unexpected peers %v", peers)
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		if s != sl {
+			c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		}
+	}
+	// The stream is usable again, its data went with the removed source.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, 1)
+	require_Len(t, len(si.Cluster.Replicas), 2)
+}
+
+// A singleton scaled up again after a scale up and scale down must not be started as a scale up observer.
+func TestJetStreamClusterScaleUpSingletonAfterScaleDownNotObserver(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	waitConverged := func(replicas int) {
+		t.Helper()
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			peers, members, desired := streamMembers(t, c, "TEST")
+			if desired || len(peers) != replicas {
+				return fmt.Errorf("stream still converging to R%d: peers=%v members=%v", replicas, peers, members)
+			}
+			return nil
+		})
+		// A finalized desired state takes the scale up marker with it.
+		mljs := c.leader().getJetStream()
+		mljs.mu.RLock()
+		sa := mljs.streamAssignment(globalAccountName, "TEST")
+		mljs.mu.RUnlock()
+		require_NotNil(t, sa)
+		require_False(t, sa.Group.ScaleUp)
+		for _, s := range c.servers {
+			if streamRaftNode(s, "TEST") != nil {
+				c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+			}
+		}
+	}
+
+	// Scale up, which marks the assignment as scaling up.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	waitConverged(3)
+
+	// Back down to a singleton, the scale up marker must be gone.
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	waitConverged(1)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Scale up again, the singleton must elect itself and add the new peers.
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	waitConverged(3)
+
+	state, err := checkStateAndErr(t, c, globalAccountName, "TEST")
+	require_NoError(t, err)
+	require_Equal(t, state.Msgs, 20)
+}
+
+// Only peers that aren't members yet run their node as a scale up observer.
+func TestJetStreamClusterScaleUpPeerNodeCreation(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	sjs := s.getJetStream()
+	ourID := s.Node()
+	peers := serverPeerNames(c.servers)
+	other := slices.DeleteFunc(copyStrings(peers), func(p string) bool { return p == ourID })
+
+	for _, test := range []struct {
+		name         string
+		rg           *raftGroup
+		observer     bool
+		initializing bool
+	}{
+		{"NewGroup", &raftGroup{Peers: peers}, false, true},
+		{"MemberOfMigration", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers, Members: peers}}, false, true},
+		{"ScaleUpPeer", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers, Members: other}}, true, false},
+		{"LegacyDesiredNoMembers", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers}}, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.rg.Name = "TEST-" + test.name
+			test.rg.Storage = MemoryStorage
+			node, err := sjs.createRaftGroup(globalAccountName, test.rg, false, MemoryStorage, pprofLabels{})
+			require_NoError(t, err)
+			defer node.Delete()
+			n := node.(*raft)
+			require_Equal(t, n.IsObserver(), test.observer)
+			n.RLock()
+			initializing := n.initializing
+			n.RUnlock()
+			require_Equal(t, initializing, test.initializing)
+		})
+	}
+}
