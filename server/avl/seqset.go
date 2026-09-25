@@ -279,10 +279,6 @@ func (ss SequenceSet) Encode(buf []byte) []byte {
 		buf = buf[:encLen]
 	}
 
-	// TODO(dlc) - Go 1.19 introduced Append to not have to keep track.
-	// Once 1.20 is out we could change this over.
-	// Also binary.Write() is way slower, do not use.
-
 	var le = binary.LittleEndian
 	buf[0], buf[1] = magic, version
 	i := hdrLen
@@ -290,14 +286,15 @@ func (ss SequenceSet) Encode(buf []byte) []byte {
 	le.PutUint32(buf[i+4:], uint32(ss.size))
 	i += 8
 	ss.root.nodeIter(func(n *node) {
-		le.PutUint64(buf[i:], n.base)
-		i += 8
-		for _, b := range n.bits {
-			le.PutUint64(buf[i:], b)
-			i += 8
+		// Bound the whole record once, and read buckets without copying the array.
+		const nodeLen = (numBuckets+1)*8 + 2
+		record := buf[i : i+nodeLen]
+		le.PutUint64(record, n.base)
+		for j := range n.bits {
+			le.PutUint64(record[8+j*8:], n.bits[j])
 		}
-		le.PutUint16(buf[i:], uint16(n.h))
-		i += 2
+		le.PutUint16(record[nodeLen-2:], uint16(n.h))
+		i += nodeLen
 	})
 	return buf[:i]
 }
@@ -566,6 +563,9 @@ func (n *node) clear(seq uint64, deleted *bool) bool {
 	}
 	n.bits[i] &^= mask
 	*deleted = true
+	if n.bits[i] != 0 {
+		return false
+	}
 	for _, b := range n.bits {
 		if b != 0 {
 			return false
@@ -578,6 +578,7 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 	if n == nil {
 		return nil
 	}
+	nn := *nodes
 
 	if seq < n.base {
 		n.l = n.l.delete(seq, deleted, nodes)
@@ -596,6 +597,10 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 		}
 	}
 
+	// Clearing a bit without removing a node leaves heights and balance unchanged.
+	if *nodes == nn {
+		return n
+	}
 	if n != nil {
 		n.h = maxH(n) + 1
 	}
