@@ -11019,3 +11019,77 @@ func TestJetStreamClusterRestartedServerKeepsLastAppliedStreamGroup(t *testing.T
 	// The remap was applied before the kill, the stream must not go back to its R1 group.
 	require_Equal(t, mset.raftGroup().Name, r3Group)
 }
+
+// A group scaling up from its only member must snapshot what its store holds after a restart.
+func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	sl := setupR1ScaleUpSource(t, c, 5)
+	ml := c.leader()
+
+	// Hold the scale up before the assignment is extended onto the new peers.
+	var dropExpand atomic.Bool
+	dropExpand.Store(true)
+	holdStreamReconcile(t, ml, func(r *streamAssignmentReconcile) bool {
+		return dropExpand.Load() && len(r.MetaPeers) > 1
+	})
+
+	nc, js := jsClientConnect(t, ml)
+	defer nc.Close()
+	_, err := js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The source snapshots for the scale up, and stays the only member.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		n := streamRaftNode(sl, "TEST")
+		if n == nil || !n.Leader() || n.NeedSnapshot() {
+			return errors.New("source has no scale up snapshot yet")
+		}
+		return nil
+	})
+
+	// Store writes neither the snapshot nor the log hold.
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	for range 2 {
+		_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+	require_NoError(t, mset.flushAllPending())
+
+	// Hard kill the source, a clean shutdown would snapshot on the way out.
+	copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+	require_NoError(t, copyDir(t, copySd, sl.StoreDir()))
+	sl.Shutdown()
+	sl.WaitForShutdown()
+	require_NoError(t, os.RemoveAll(sl.StoreDir()))
+	require_NoError(t, copyDir(t, sl.StoreDir(), copySd))
+	c.restartServer(sl)
+
+	// Not waitOnStreamLeader, it waits for the scale up we're still holding.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if c.streamLeader(globalAccountName, "TEST") == nil {
+			return errors.New("no stream leader yet")
+		}
+		return nil
+	})
+	dropExpand.Store(false)
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		if _, _, desired := streamMembers(t, c, "TEST"); desired {
+			return errors.New("scale up not done yet")
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	}
+	// Without a new write that could make a replica notice it's behind.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if state := mset.state(); state.Msgs != 7 || state.LastSeq != 7 {
+			t.Fatalf("server %s has %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq)
+		}
+	}
+}

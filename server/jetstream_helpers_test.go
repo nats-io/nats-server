@@ -2555,3 +2555,84 @@ func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byt
 		require_Error(t, err, nats.ErrTooManyStalledMsgs)
 	}
 }
+
+// streamRaftNode returns the stream's raft node on the given server, nil if none.
+func streamRaftNode(s *Server, stream string) RaftNode {
+	sjs := s.getJetStream()
+	if sjs == nil {
+		return nil
+	}
+	sjs.mu.RLock()
+	defer sjs.mu.RUnlock()
+	sa := sjs.streamAssignment(globalAccountName, stream)
+	if sa == nil || sa.Group == nil {
+		return nil
+	}
+	return sa.Group.node
+}
+
+// streamMembers returns the stream's peers and raft membership as the meta leader has them.
+func streamMembers(t *testing.T, c *cluster, stream string) (peers, members []string, desired bool) {
+	t.Helper()
+	ml := c.leader()
+	require_NotNil(t, ml)
+	mljs := ml.getJetStream()
+	mljs.mu.RLock()
+	defer mljs.mu.RUnlock()
+	sa := mljs.streamAssignment(globalAccountName, stream)
+	require_NotNil(t, sa)
+	peers = copyStrings(sa.Group.Peers)
+	if sa.Group.Desired != nil {
+		return peers, copyStrings(sa.Group.Desired.Members), true
+	}
+	return peers, nil, false
+}
+
+// setupR1ScaleUpSource creates an R1 stream with some messages, hosted away from the meta leader.
+func setupR1ScaleUpSource(t *testing.T, c *cluster, msgs int) (sl *Server) {
+	t.Helper()
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+
+	sl = c.streamLeader(globalAccountName, "TEST")
+	require_NotNil(t, sl)
+	if sl == c.leader() {
+		require_NoError(t, sl.getJetStream().getMetaGroup().StepDown())
+		c.waitOnLeader()
+	}
+	require_NotEqual(t, sl, c.leader())
+
+	for range msgs {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	return sl
+}
+
+// holdStreamReconcile makes the meta leader drop the stream reconcile requests matching drop.
+func holdStreamReconcile(t *testing.T, ml *Server, drop func(r *streamAssignmentReconcile) bool) {
+	t.Helper()
+	mljs := ml.getJetStream()
+	mljs.mu.Lock()
+	cc := mljs.cluster
+	origSub := cc.streamReconcile
+	cc.streamReconcile = nil
+	mljs.mu.Unlock()
+	require_NotNil(t, origSub)
+	ml.sysUnsubscribe(origSub)
+	mljs.mu.Lock()
+	defer mljs.mu.Unlock()
+	sub, err := ml.systemSubscribe(streamAssignmentReconcileSubj, _EMPTY_, false, cc.c,
+		func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var reconcile streamAssignmentReconcile
+			if err := json.Unmarshal(msg, &reconcile); err == nil && drop(&reconcile) {
+				return
+			}
+			mljs.reconcileDesiredStreamAssignment(sub, c, acc, subject, reply, msg)
+		})
+	require_NoError(t, err)
+	cc.streamReconcile = sub
+}
