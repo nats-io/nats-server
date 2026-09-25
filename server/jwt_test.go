@@ -6744,6 +6744,174 @@ func TestJWTNoSystemAccountButNatsResolver(t *testing.T) {
 	}
 }
 
+func TestJWTAccountConnzWildcardImportResponderUniqueness(t *testing.T) {
+	sysKp, sysPub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(sysPub)
+	sysClaim.Exports.Add(
+		&jwt.Export{Subject: "$SYS.REQ.SERVER.PING.>", Type: jwt.Service},
+		&jwt.Export{Subject: "$SYS.REQ.ACCOUNT.*.>", Type: jwt.Service},
+	)
+	sysJwt := encodeClaim(t, sysClaim, sysPub)
+	sysCreds := newUser(t, sysKp)
+
+	appKp, appPub := createKey(t)
+	appClaim := jwt.NewAccountClaims(appPub)
+	appClaim.Imports.Add(
+		&jwt.Import{Account: sysPub, Subject: "$SYS.REQ.SERVER.PING.>", Type: jwt.Service},
+		&jwt.Import{Account: sysPub, Subject: "$SYS.REQ.ACCOUNT.*.>", Type: jwt.Service},
+	)
+	appJwt := encodeClaim(t, appClaim, appPub)
+	appCreds := newUser(t, appKp)
+
+	otherKp, otherPub := createKey(t)
+	otherJwt := encodeClaim(t, jwt.NewAccountClaims(otherPub), otherPub)
+	otherCreds := newUser(t, otherKp)
+
+	isolatedKp, isolatedPub := createKey(t)
+	isolatedJwt := encodeClaim(t, jwt.NewAccountClaims(isolatedPub), isolatedPub)
+	isolatedCreds := newUser(t, isolatedKp)
+
+	const routeBase = 19670
+	routes := fmt.Sprintf("nats-route://127.0.0.1:%d,nats-route://127.0.0.1:%d,nats-route://127.0.0.1:%d", routeBase, routeBase+1, routeBase+2)
+	var servers []*Server
+	for i := 0; i < 3; i++ {
+		conf := fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			server_name: s%d
+			operator: %s
+			system_account: %s
+			resolver: { type: full, dir: %q }
+			resolver_preload: {
+				%s: %q
+				%s: %q
+				%s: %q
+				%s: %q
+			}
+			cluster {
+				name: c
+				listen: 127.0.0.1:%d
+				no_advertise: true
+				routes: [%s]
+			}
+		`, i, ojwt, sysPub, t.TempDir(), sysPub, sysJwt, appPub, appJwt, otherPub, otherJwt, isolatedPub, isolatedJwt, routeBase+i, routes)
+		s, _ := RunServerWithConfig(createConfFile(t, []byte(conf)))
+		servers = append(servers, s)
+		defer s.Shutdown()
+	}
+	checkClusterFormed(t, servers...)
+
+	// Keep server-wide and account-scoped Connz totals distinguishable.
+	var clients []*nats.Conn
+	for i := 0; i < 4; i++ {
+		c := natsConnect(t, servers[0].ClientURL(), nats.UserCredentials(otherCreds))
+		clients = append(clients, c)
+	}
+	clients = append(clients, natsConnect(t, servers[0].ClientURL(), nats.UserCredentials(appCreds)))
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
+
+	checkReplies := func(label, creds, subject string, expectedTotalOnS0 int) {
+		t.Helper()
+		nc := natsConnect(t, servers[0].ClientURL(), nats.UserCredentials(creds))
+		defer nc.Close()
+		inbox := nats.NewInbox()
+		sub := natsSubSync(t, nc, inbox)
+		defer sub.Unsubscribe()
+		require_NoError(t, nc.Flush())
+		require_NoError(t, nc.PublishRequest(subject, inbox, nil))
+		require_NoError(t, nc.Flush())
+
+		byID := make(map[string]int, len(servers))
+		byName := make(map[string]ServerAPIConnzResponse, len(servers))
+		total := 0
+		readReply := func(timeout time.Duration) bool {
+			msg, err := sub.NextMsg(timeout)
+			if err != nil {
+				return false
+			}
+			var resp ServerAPIConnzResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_NotNil(t, resp.Server)
+			require_NotNil(t, resp.Data)
+			byID[resp.Server.ID]++
+			byName[resp.Server.Name] = resp
+			total++
+			return true
+		}
+		for total < len(servers) && readReply(time.Second) {
+		}
+		for readReply(75 * time.Millisecond) {
+		}
+		if total != len(servers) || len(byID) != len(servers) {
+			t.Fatalf("%s: expected exactly one reply per server, got responses=%d unique=%d counts=%v", label, total, len(byID), byID)
+		}
+		for id, count := range byID {
+			if count != 1 {
+				t.Fatalf("server %s replied %d times", id, count)
+			}
+		}
+		resp, ok := byName["s0"]
+		if !ok || resp.Data.Total != expectedTotalOnS0 {
+			t.Fatalf("expected s0 Connz total %d, got %+v", expectedTotalOnS0, resp.Data)
+		}
+		for name, resp := range byName {
+			if name != "s0" && resp.Data.Total != 0 {
+				t.Fatalf("account-scoped query exposed connections on %s: total=%d", name, resp.Data.Total)
+			}
+		}
+	}
+
+	checkReplies("initial server CONNZ", appCreds, "$SYS.REQ.SERVER.PING.CONNZ", 2)
+	checkReplies("initial account CONNZ", appCreds, "$SYS.REQ.ACCOUNT.PING.CONNZ", 2)
+	checkReplies("isolated account CONNZ", isolatedCreds, "$SYS.REQ.SERVER.PING.CONNZ", 1)
+
+	runConcurrentRefreshes := func(label string, refresh func(int)) {
+		t.Helper()
+		var requesters sync.WaitGroup
+		requesters.Add(1)
+		go func() {
+			defer requesters.Done()
+			for i := 0; i < 6; i++ {
+				checkReplies(label, appCreds, "$SYS.REQ.SERVER.PING.CONNZ", 2)
+				if i%2 == 0 {
+					checkReplies(label, appCreds, "$SYS.REQ.ACCOUNT.PING.CONNZ", 2)
+				}
+			}
+		}()
+		for i := 0; i < 4; i++ {
+			refresh(i)
+		}
+		requesters.Wait()
+	}
+	runConcurrentRefreshes("concurrent app claim refresh", func(i int) {
+		appClaim.Tags = []string{fmt.Sprintf("account-refresh-%d", i)}
+		appJwt = encodeClaim(t, appClaim, appPub)
+		if updated := updateJwt(t, servers[0].ClientURL(), sysCreds, appJwt, len(servers)); updated != len(servers) {
+			t.Fatalf("expected %d claim update replies, got %d", len(servers), updated)
+		}
+	})
+	// A claim refresh must preserve the precedence and the account-scoped view.
+	appClaim.Tags = []string{"refreshed"}
+	appJwt = encodeClaim(t, appClaim, appPub)
+	if updated := updateJwt(t, servers[0].ClientURL(), sysCreds, appJwt, len(servers)); updated != len(servers) {
+		t.Fatalf("expected %d claim update replies, got %d", len(servers), updated)
+	}
+	checkReplies("after account refresh", appCreds, "$SYS.REQ.SERVER.PING.CONNZ", 2)
+	checkReplies("after account refresh", appCreds, "$SYS.REQ.ACCOUNT.PING.CONNZ", 2)
+
+	// Refreshing the system account must not restore the overlapping dispatch.
+	sysClaim.Tags = []string{"refreshed"}
+	sysJwt = encodeClaim(t, sysClaim, sysPub)
+	if updated := updateJwt(t, servers[0].ClientURL(), sysCreds, sysJwt, len(servers)); updated != len(servers) {
+		t.Fatalf("expected %d system claim update replies, got %d", len(servers), updated)
+	}
+	checkReplies("after system refresh", appCreds, "$SYS.REQ.SERVER.PING.CONNZ", 2)
+	checkReplies("after system refresh", appCreds, "$SYS.REQ.ACCOUNT.PING.CONNZ", 2)
+}
+
 func TestJWTAccountConnzAccessAfterClaimUpdate(t *testing.T) {
 	skp, spub := createKey(t)
 	newUser(t, skp)
