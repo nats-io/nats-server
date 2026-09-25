@@ -10874,3 +10874,81 @@ func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, isMember(si.Cluster))
 }
+
+// A replica restarting after its stream's group was renamed must start a monitor for the new group.
+func TestJetStreamClusterStreamGroupRenamedWhileServerDownStartsMonitor(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Take down a follower that is neither the stream nor the meta leader.
+	sl, ml := c.streamLeader(globalAccountName, "TEST"), c.leader()
+	var rs *Server
+	for _, s := range c.servers {
+		if s != sl && s != ml {
+			rs = s
+			break
+		}
+	}
+	require_NotNil(t, rs)
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	oldGroup := mset.raftNode().Group()
+	rs.Shutdown()
+	rs.WaitForShutdown()
+	nc.Close()
+	nc, js = jsClientConnect(t, sl)
+	defer nc.Close()
+
+	// An idempotent create retry re-proposes the assignment as an add.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// Scale down to R1 and back to R3 while the server is down, renaming the group.
+	cfg.Replicas = 1
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	lmset, err := c.streamLeader(globalAccountName, "TEST").globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	newGroup := lmset.raftNode().Group()
+	require_NotEqual(t, oldGroup, newGroup)
+
+	rs = c.restartServer(rs)
+	c.waitOnServerCurrent(rs)
+
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		mset, err := rs.globalAccount().lookupStream("TEST")
+		if err != nil {
+			return err
+		}
+		n := mset.raftNode()
+		if n == nil {
+			return errors.New("no raft node")
+		}
+		if n.Group() != newGroup {
+			return fmt.Errorf("raft group %q, expected %q", n.Group(), newGroup)
+		}
+		if !mset.isMonitorRunning() {
+			return errors.New("stream monitor not running")
+		}
+		return nil
+	})
+	c.waitOnStreamCurrent(rs, globalAccountName, "TEST")
+	c.waitOnServerHealthz(rs)
+}

@@ -6892,6 +6892,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						if osa.Group.node != nil && osa.Group.node != sa.Group.node {
 							osa.Group.node.Delete()
 							osa.Group.node = nil
+							// Wait for the old group's monitor to exit, so we can start one for the new group.
+							mset.stopMonitoring()
+							alreadyRunning = false
 						}
 					}
 				}
