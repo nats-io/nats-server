@@ -241,6 +241,9 @@ type raft struct {
 	wtv []byte // Term and vote to be written
 	wps []byte // Peer state to be written
 
+	cf      *os.File // Commit file, only if the commit is persisted
+	wcommit uint64   // Commit last written to the commit file
+
 	catchup  *catchupState               // For when we need to catch up as a follower.
 	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
 
@@ -351,6 +354,9 @@ type RaftConfig struct {
 	// We need to protect against losing state due to the new peers starting with an empty log.
 	// Therefore, these empty servers can't try to become leader until the leader adds them, and vote as empty until they at least have _some_ state.
 	ScaleUp bool
+
+	// PersistCommit writes the commit to disk, so a restart doesn't apply less than was already applied.
+	PersistCommit bool
 
 	// NewTransport creates the transport used for Raft node communication.
 	// This is mainly for tests to inject a custom transport.
@@ -566,6 +572,14 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
+	// The persisted commit is only a floor for the replay below.
+	if _, ok := n.wal.(*memStore); !ok && cfg.PersistCommit {
+		if err := n.openCommitFile(); err != nil {
+			n.shutdown()
+			return nil, err
+		}
+	}
+
 	truncateAndErr := func(index uint64) {
 		if err := n.wal.Truncate(index); err != nil {
 			n.setWriteErr(err)
@@ -637,6 +651,26 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 				}
 			}
 		}
+	}
+
+	// A commit learned after the last entry was stored is only in the commit file.
+	if n.cf != nil {
+		n.Lock()
+		if n.votingMemberLocked() {
+			if n.paused {
+				// Applies resume in run(), which then also persists the commit.
+				n.hcommit = max(n.hcommit, min(n.wcommit, n.pindex))
+			} else {
+				for index := n.commit + 1; index <= min(n.wcommit, n.pindex); index++ {
+					if err := n.applyCommit(index); err != nil {
+						break
+					}
+				}
+				// Don't keep a commit beyond what we could apply, those entries may still be replaced.
+				n.writeCommitLocked()
+			}
+		}
+		n.Unlock()
 	}
 
 	n.debug("Started (cluster size %d, quorum %d)", n.csz, n.qn)
@@ -1466,6 +1500,11 @@ func (n *raft) ResumeApply() {
 				return
 			}
 		}
+	}
+
+	// Don't keep a commit beyond what we could apply, those entries may still be replaced.
+	if n.wcommit > n.pindex && n.commit < n.wcommit {
+		n.writeCommitLocked()
 	}
 
 	// Clear our paused state after we apply.
@@ -2809,6 +2848,11 @@ runner:
 		wal.Stop()
 	}
 
+	// A late write fails and is ignored as we're closed.
+	if n.cf != nil {
+		n.cf.Close()
+	}
+
 	n.debug("Shutdown")
 }
 
@@ -3957,6 +4001,11 @@ func (n *raft) applyCommit(index uint64) error {
 	ae.buf = nil
 	var committed []*Entry
 
+	// Persist before the upper layer can apply it.
+	if n.commit > n.wcommit {
+		n.writeCommitLocked()
+	}
+
 	defer func() {
 		// Pass to the upper layers if we have normal entries. It is
 		// entirely possible that 'committed' might be an empty slice here,
@@ -4426,6 +4475,9 @@ func (n *raft) truncateWAL(term, index uint64) {
 		// Make sure to reset commit and applied if above
 		if n.commit > n.pindex {
 			n.commit = n.pindex
+		}
+		if n.commit < n.wcommit {
+			n.writeCommitLocked()
 		}
 		if n.processed > n.commit {
 			n.processed = n.commit
@@ -5572,6 +5624,56 @@ func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) 
 		return nil, err
 	}
 	return decodePeerState(buf)
+}
+
+const (
+	commitFile = "commit.idx"
+	commitLen  = 8 + highwayhash.Size64 // uint64 + checksum
+)
+
+// openCommitFile opens the commit file and reads the commit it holds.
+func (n *raft) openCommitFile() error {
+	f, err := os.OpenFile(filepath.Join(n.sd, commitFile), os.O_RDWR|os.O_CREATE, defaultFilePerms)
+	if err != nil {
+		return err
+	}
+	var buf [commitLen]byte
+	if nr, _ := f.ReadAt(buf[:], 0); nr == len(buf) {
+		n.hh.Reset()
+		n.hh.Write(buf[:8])
+		var hb [highwayhash.Size64]byte
+		if bytes.Equal(buf[8:], n.hh.Sum(hb[:0])) {
+			n.wcommit = binary.LittleEndian.Uint64(buf[:])
+		} else {
+			// A corrupt commit is ignored, it's only a floor for the replay.
+			n.warn("Commit file corrupt, checksums did not match")
+		}
+	} else if nr > 0 {
+		n.warn("Commit file corrupt, too short")
+	}
+	n.cf = f
+	return nil
+}
+
+// writeCommitLocked writes the commit to the commit file, if it changed, without syncing.
+// Lock should be held.
+func (n *raft) writeCommitLocked() {
+	if n.cf == nil || n.werr != nil || n.commit == n.wcommit {
+		return
+	}
+	var buf [commitLen]byte
+	binary.LittleEndian.PutUint64(buf[:], n.commit)
+	n.hh.Reset()
+	n.hh.Write(buf[:8])
+	n.hh.Sum(buf[:8])
+	if _, err := n.cf.WriteAt(buf[:], 0); err != nil {
+		if !n.isClosed() {
+			n.setWriteErrLocked(err)
+			n.warn("Error writing commit file for %q: %v", n.group, err)
+		}
+		return
+	}
+	n.wcommit = n.commit
 }
 
 const (

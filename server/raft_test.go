@@ -4542,6 +4542,88 @@ func TestNRGTruncateOnStartup(t *testing.T) {
 	require_Equal(t, state.NumDeleted, 0)
 }
 
+func TestNRGIgnoresCorruptCommitFile(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0] // RunBasicJetStreamServer not available
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	scfg := StreamConfig{Name: "RAFT", Storage: FileStorage}
+	fs, err := newFileStore(fcfg, scfg)
+	require_NoError(t, err)
+
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs, PersistCommit: true}
+
+	err = s.bootstrapRaftNode(cfg, nil, false)
+	require_NoError(t, err)
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+
+	restart := func() {
+		t.Helper()
+		n.Stop()
+		n.WaitForStop()
+		// The node's run loop never started, so close the commit file here.
+		n.cf.Close()
+		require_NoError(t, fs.Stop())
+		fs, err = newFileStore(fcfg, scfg)
+		require_NoError(t, err)
+		cfg = &RaftConfig{Name: "TEST", Store: storeDir, Log: fs, PersistCommit: true}
+		n, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+		require_NoError(t, err)
+	}
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	aeMsg1 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries})
+	aeMsg2 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: entries})
+	aeMsg3 := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 2, entries: entries})
+	aeHeartbeat := encode(t, &appendEntry{leader: nats0, term: 1, commit: 2, pterm: 1, pindex: 3, entries: nil})
+
+	// The stored entries don't hold the commit, only the heartbeat that isn't stored does.
+	n.processAppendEntry(aeMsg1, n.aesub)
+	n.processAppendEntry(aeMsg2, n.aesub)
+	n.processAppendEntry(aeMsg3, n.aesub)
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.pindex, 3)
+	require_Equal(t, n.commit, 2)
+
+	cfn := filepath.Join(storeDir, commitFile)
+	buf, err := os.ReadFile(cfn)
+	require_NoError(t, err)
+	require_Len(t, len(buf), commitLen)
+
+	// A valid commit file restores the commit.
+	restart()
+	require_Equal(t, n.wcommit, 2)
+	require_Equal(t, n.commit, 2)
+
+	// A corrupt commit file is ignored.
+	corrupt := bytes.Clone(buf)
+	corrupt[0] ^= 0xff
+	require_NoError(t, os.WriteFile(cfn, corrupt, defaultFilePerms))
+	restart()
+	require_Equal(t, n.wcommit, 0)
+	require_Equal(t, n.commit, 0)
+
+	// A too short commit file is ignored.
+	require_NoError(t, os.WriteFile(cfn, buf[:8], defaultFilePerms))
+	restart()
+	require_Equal(t, n.wcommit, 0)
+	require_Equal(t, n.commit, 0)
+
+	// The commit file is rewritten once the commit moves up again.
+	n.processAppendEntry(aeHeartbeat, n.aesub)
+	require_Equal(t, n.commit, 2)
+	restart()
+	require_Equal(t, n.wcommit, 2)
+	require_Equal(t, n.commit, 2)
+}
+
 func TestNRGLeaderCatchupHandling(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

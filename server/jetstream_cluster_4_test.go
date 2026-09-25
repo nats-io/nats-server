@@ -3930,6 +3930,8 @@ func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
 	// 4. restart
 	c.restartAll()
 	c.waitOnAllCurrent()
+	// The stream was added and applied before the kill, it recovers with the meta layer.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
@@ -10951,4 +10953,69 @@ func TestJetStreamClusterStreamGroupRenamedWhileServerDownStartsMonitor(t *testi
 	})
 	c.waitOnStreamCurrent(rs, globalAccountName, "TEST")
 	c.waitOnServerHealthz(rs)
+}
+
+func TestJetStreamClusterRestartedServerKeepsLastAppliedStreamGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	sl := c.serverByName(si.Cluster.Leader)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	r1Group := mset.raftGroup().Name
+
+	// Scale up, the remap to the R3 group is applied first.
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3, Storage: FileStorage}
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), req))
+	var r3Group string
+	checkFor(t, 2*time.Second, time.Millisecond, func() error {
+		if rg := mset.raftGroup(); rg != nil && rg.Name != r1Group {
+			r3Group = rg.Name
+			return nil
+		}
+		return errors.New("remap not applied yet")
+	})
+
+	// Simulate a hard kill of the stream's server and one other right after the remap was applied.
+	var other *Server
+	for _, s := range c.servers {
+		if s != sl {
+			other = s
+			break
+		}
+	}
+	copies := make(map[string]string)
+	for _, s := range []*Server{sl, other} {
+		copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+		require_NoError(t, copyDir(t, copySd, s.StoreDir()))
+		copies[s.StoreDir()] = copySd
+	}
+	nc.Close()
+	c.stopAll()
+	for sd, copySd := range copies {
+		require_NoError(t, os.RemoveAll(sd))
+		require_NoError(t, copyDir(t, sd, copySd))
+	}
+
+	// Restart only those two, recovering before they have a meta leader.
+	sl = c.restartServer(sl)
+	c.restartServer(other)
+	checkFor(t, 10*time.Second, time.Millisecond, func() error {
+		if mset, err = sl.globalAccount().lookupStream("TEST"); err != nil {
+			return err
+		}
+		if mset.raftGroup() == nil {
+			return errors.New("stream not assigned yet")
+		}
+		return nil
+	})
+	// The remap was applied before the kill, the stream must not go back to its R1 group.
+	require_Equal(t, mset.raftGroup().Name, r3Group)
 }
