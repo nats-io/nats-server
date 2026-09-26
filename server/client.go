@@ -1140,6 +1140,26 @@ func (c *client) setPermissions(perms *Permissions) {
 	if perms == nil {
 		return
 	}
+	// Resolve account scoped mapping functions (e.g. {{accountHash()}}) into literal subjects.
+	// This never modifies the given perms, which may be shared between clients.
+	if permissionsHavePlaceholders(perms) {
+		pctx := subjectPlaceholderContext{}
+		if c.acc != nil {
+			pctx.account = c.acc.Name
+		}
+		if c.kind == LEAF && c.leaf != nil {
+			pctx.leafRemote = c.leaf.remoteAccName
+			// On a solicited connection the remote account is learned from the hub's INFO and
+			// the permissions are applied again at that point, so leave the token alone until then.
+			// On an accepted connection the permissions are never applied again, so an unresolved
+			// token is reported right away and left as a literal.
+			pctx.leafRemotePending = pctx.leafRemote == _EMPTY_ && c.leaf.remote != nil
+		}
+		var err error
+		if perms, err = expandPermissionsPlaceholders(perms, pctx); err != nil {
+			c.Errorf("Error resolving permission subjects: %v", err)
+		}
+	}
 	c.perms = &permissions{}
 	c.mperms = nil
 	c.darray = nil

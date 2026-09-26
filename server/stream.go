@@ -1926,6 +1926,48 @@ func (s *Server) checkStreamCfgLocked(config *StreamConfig, acc *Account, pedant
 	if _, err := cfg.Retention.MarshalJSON(); err != nil {
 		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid retention"))
 	}
+
+	// Account scoped mapping functions (e.g. {{accountHash()}}) in the transforms are resolved into literals
+	// here, once. The resolved configuration is what gets stored.
+	pctx := subjectPlaceholderContext{account: acc.Name}
+	if cfg.SubjectTransform != nil {
+		if err := expandSubjectsPlaceholders(pctx, &cfg.SubjectTransform.Source); err != nil {
+			return StreamConfig{}, NewJSStreamTransformInvalidSourceError(err)
+		}
+		if err := expandSubjectsPlaceholders(pctx, &cfg.SubjectTransform.Destination); err != nil {
+			return StreamConfig{}, NewJSStreamTransformInvalidDestinationError(err)
+		}
+	}
+	if cfg.RePublish != nil {
+		if err := expandSubjectsPlaceholders(pctx, &cfg.RePublish.Source, &cfg.RePublish.Destination); err != nil {
+			return StreamConfig{}, NewJSStreamInvalidConfigError(fmt.Errorf("stream configuration for republish: %w", err))
+		}
+	}
+	if cfg.Mirror != nil {
+		for i := range cfg.Mirror.SubjectTransforms {
+			tr := &cfg.Mirror.SubjectTransforms[i]
+			if err := expandSubjectsPlaceholders(pctx, &tr.Source); err != nil {
+				return StreamConfig{}, NewJSMirrorInvalidSubjectFilterError(err)
+			}
+			if err := expandSubjectsPlaceholders(pctx, &tr.Destination); err != nil {
+				return StreamConfig{}, NewJSMirrorInvalidTransformDestinationError(err)
+			}
+		}
+	}
+	for _, src := range cfg.Sources {
+		if src == nil {
+			continue
+		}
+		for i := range src.SubjectTransforms {
+			tr := &src.SubjectTransforms[i]
+			if err := expandSubjectsPlaceholders(pctx, &tr.Source); err != nil {
+				return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(err)
+			}
+			if err := expandSubjectsPlaceholders(pctx, &tr.Destination); err != nil {
+				return StreamConfig{}, NewJSSourceInvalidTransformDestinationError(err)
+			}
+		}
+	}
 	if _, err := cfg.Discard.MarshalJSON(); err != nil {
 		return cfg, NewJSStreamInvalidConfigError(fmt.Errorf("invalid discard policy"))
 	}

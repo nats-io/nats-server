@@ -13236,6 +13236,184 @@ func TestLeafNodePermsWithImportSubjectTransformGatewayRouted(t *testing.T) {
 	}
 }
 
+func TestLeafNodeDenyAccountFunctions(t *testing.T) {
+	hconf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts { HUB { users [ {user: hub, password: pwd} ] } }
+		leafnodes { listen: 127.0.0.1:-1 }
+	`))
+	hub, hopts := RunServerWithConfig(hconf)
+	defer hub.Shutdown()
+
+	sconf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		accounts { SPOKE { users [ {user: spoke, password: pwd} ] } }
+		leafnodes {
+			remotes [ {
+				url: "nats://hub:pwd@127.0.0.1:%d"
+				account: SPOKE
+				deny_exports: [ "export.{{accountHash()}}", "export.{{account-hash-leaf-remote()}}" ]
+				deny_imports: [ "import.{{accountHash()}}", "import.{{account-hash-leaf-remote()}}" ]
+			} ]
+		}
+	`, hopts.LeafNode.Port)))
+	spoke, _ := RunServerWithConfig(sconf)
+	defer spoke.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, spoke)
+
+	hubHash, spokeHash := getHash("HUB"), getHash("SPOKE")
+
+	leafClient := func(s *Server) *client {
+		t.Helper()
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, c := range s.leafs {
+			return c
+		}
+		t.Fatalf("No leafnode connection on %s", s.Name())
+		return nil
+	}
+	denies := func(c *client, pub bool, subject string) bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.perms == nil {
+			return false
+		}
+		sl := c.perms.sub.deny
+		if pub {
+			sl = c.perms.pub.deny
+		}
+		return sl != nil && sl.HasInterest(subject)
+	}
+
+	// The spoke resolves its own account right away and the hub's account once it is known.
+	sc := leafClient(spoke)
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if !denies(sc, true, "export."+hubHash) {
+			return fmt.Errorf("deny_exports not yet resolved with the remote account")
+		}
+		return nil
+	})
+	require_True(t, denies(sc, true, "export."+spokeHash))
+	require_True(t, denies(sc, false, "import."+spokeHash))
+	require_True(t, denies(sc, false, "import."+hubHash))
+	require_False(t, denies(sc, true, "export.{{accountHash()}}"))
+
+	// The hub receives the spoke's deny_imports and resolves them from the spoke's perspective.
+	hc := leafClient(hub)
+	checkFor(t, 2*time.Second, 25*time.Millisecond, func() error {
+		if !denies(hc, true, "import."+spokeHash) || !denies(hc, true, "import."+hubHash) {
+			return fmt.Errorf("deny_imports not yet resolved on the hub")
+		}
+		return nil
+	})
+
+	// Message flow: exports denied by the spoke never reach the hub.
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("hub", "pwd"))
+	defer ncHub.Close()
+	ncSpoke := natsConnect(t, spoke.ClientURL(), nats.UserInfo("spoke", "pwd"))
+	defer ncSpoke.Close()
+
+	hubSub := natsSubSync(t, ncHub, "export.>")
+	natsFlush(t, ncHub)
+	checkSubInterest(t, spoke, "SPOKE", "export.>", time.Second)
+	natsPub(t, ncSpoke, "export."+spokeHash, []byte("denied"))
+	natsPub(t, ncSpoke, "export."+hubHash, []byte("denied"))
+	natsPub(t, ncSpoke, "export.other", []byte("ok"))
+	m := natsNexMsg(t, hubSub, time.Second)
+	require_Equal(t, m.Subject, "export.other")
+	if m, err := hubSub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Did not expect to receive %q", m.Subject)
+	}
+
+	// And denied imports never reach the spoke.
+	spokeSub := natsSubSync(t, ncSpoke, "import.>")
+	natsFlush(t, ncSpoke)
+	checkSubInterest(t, hub, "HUB", "import.>", time.Second)
+	natsPub(t, ncHub, "import."+spokeHash, []byte("denied"))
+	natsPub(t, ncHub, "import."+hubHash, []byte("denied"))
+	natsPub(t, ncHub, "import.other", []byte("ok"))
+	m = natsNexMsg(t, spokeSub, time.Second)
+	require_Equal(t, m.Subject, "import.other")
+	if m, err := spokeSub.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("Did not expect to receive %q", m.Subject)
+	}
+}
+
+func TestLeafNodeDenyAccountFunctionsConfigErrors(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leafnodes {
+			remotes [ { url: "nats://127.0.0.1:1234", deny_imports: [ "x.{{accountHash(a,b)}}" ] } ]
+		}
+	`))
+	opts, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Error(t, validateLeafNode(opts), ErrMappingDestinationTooManyArgs)
+
+	// The import function never applies to a leafnode deny list, while the leaf remote
+	// function is only resolved once connected and passes validation.
+	conf = createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		leafnodes {
+			remotes [ { url: "nats://127.0.0.1:1234", deny_exports: [ "x.{{account-hash-leaf-remote()}}", "x.{{account-hash-import()}}" ] } ]
+		}
+	`))
+	opts, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+	err = validateLeafNode(opts)
+	require_Error(t, err, ErrMappingFunctionNotAvailable)
+	require_Contains(t, err.Error(), "{{account-hash-import()}}")
+}
+
+func TestLeafNodeHubPermissionsLeafRemoteFunction(t *testing.T) {
+	s := RunServer(DefaultOptions())
+	defer s.Shutdown()
+	l := &captureErrorLogger{errCh: make(chan string, 1)}
+	s.SetLogger(l, false, false)
+
+	perms := &Permissions{Publish: &SubjectPermission{Deny: []string{"deny.{{account-hash-leaf-remote()}}", "deny.{{accountHash()}}"}}}
+	hash := getHash(s.globalAccount().Name)
+
+	// Accepted (hub side) connection: the remote account is not known when the permissions are
+	// applied and they are never applied again, so the function is reported and left unresolved.
+	c := &client{srv: s, kind: LEAF, leaf: &leaf{}, acc: s.globalAccount()}
+	c.mu.Lock()
+	c.setPermissions(perms)
+	c.mu.Unlock()
+	select {
+	case e := <-l.errCh:
+		require_Contains(t, e, "account-hash-leaf-remote", "not available")
+	case <-time.After(time.Second):
+		t.Fatalf("Expected an error about the unresolved function")
+	}
+	c.mu.Lock()
+	require_True(t, c.perms.pub.deny.HasInterest("deny."+hash))
+	require_True(t, c.perms.pub.deny.HasInterest("deny.{{account-hash-leaf-remote()}}"))
+	c.mu.Unlock()
+
+	// Solicited (spoke side) connection: resolution is deferred until the hub's INFO, without error.
+	c = &client{srv: s, kind: LEAF, leaf: &leaf{remote: &leafNodeCfg{}}, acc: s.globalAccount()}
+	c.mu.Lock()
+	c.setPermissions(perms)
+	c.mu.Unlock()
+	select {
+	case e := <-l.errCh:
+		t.Fatalf("Unexpected error: %s", e)
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.mu.Lock()
+	require_True(t, c.perms.pub.deny.HasInterest("deny.{{account-hash-leaf-remote()}}"))
+	// Once the remote account is known, applying the permissions again resolves it.
+	c.leaf.remoteAccName = "REMOTE"
+	c.setPermissions(perms)
+	require_True(t, c.perms.pub.deny.HasInterest("deny."+getHash("REMOTE")))
+	require_False(t, c.perms.pub.deny.HasInterest("deny.{{account-hash-leaf-remote()}}"))
+	c.mu.Unlock()
+}
+
 func TestLeafNodeAccountLeafListReleasesClosedConnections(t *testing.T) {
 	o := DefaultOptions()
 	o.LeafNode.Host = "127.0.0.1"

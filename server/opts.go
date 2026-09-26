@@ -3952,7 +3952,14 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := stream.acc.addStreamExportWithAccountPos(stream.sub, accounts, stream.tPos); err != nil {
+		// Account scoped mapping functions (e.g. {{accountHash()}}) are resolved into literals here, once.
+		sub, err := expandSubjectPlaceholders(stream.sub, subjectPlaceholderContext{account: stream.acc.Name})
+		if err != nil {
+			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
+		if err := stream.acc.addStreamExportWithAccountPos(sub, accounts, stream.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding stream export %q: %v", stream.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -3970,7 +3977,13 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			}
 			accounts = append(accounts, ta)
 		}
-		if err := service.acc.addServiceExportWithResponseAndAccountPos(service.sub, service.rt, accounts, service.tPos); err != nil {
+		sub, err := expandSubjectPlaceholders(service.sub, subjectPlaceholderContext{account: service.acc.Name})
+		if err != nil {
+			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
+		if err := service.acc.addServiceExportWithResponseAndAccountPos(sub, service.rt, accounts, service.tPos); err != nil {
 			msg := fmt.Sprintf("Error adding service export %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
@@ -4015,6 +4028,13 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}
+		// Account scoped mapping functions (e.g. {{account-hash-import()}}) are resolved into literals here, once.
+		ictx := subjectPlaceholderContext{account: stream.acc.Name, importAccount: ta.Name}
+		if err := expandSubjectsPlaceholders(ictx, &stream.sub, &stream.pre, &stream.to); err != nil {
+			msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
 		if stream.pre != _EMPTY_ {
 			if err := stream.acc.addStreamImportWithClaim(ta, stream.sub, stream.pre, stream.atrc, nil); err != nil {
 				msg := fmt.Sprintf("Error adding stream import %q: %v", stream.sub, err)
@@ -4033,6 +4053,12 @@ func parseAccounts(v any, opts *Options, errors *[]error, warnings *[]error) err
 		ta := am[service.an]
 		if ta == nil {
 			msg := fmt.Sprintf("%q account not defined for service import", service.an)
+			*errors = append(*errors, &configErr{tk, msg})
+			continue
+		}
+		ictx := subjectPlaceholderContext{account: service.acc.Name, importAccount: ta.Name}
+		if err := expandSubjectsPlaceholders(ictx, &service.sub, &service.to); err != nil {
+			msg := fmt.Sprintf("Error adding service import %q: %v", service.sub, err)
 			*errors = append(*errors, &configErr{tk, msg})
 			continue
 		}

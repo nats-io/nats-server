@@ -222,6 +222,15 @@ func validateLeafNode(o *Options) error {
 			if err := checkPermSubjectArray(r.DenyExports, false); err != nil {
 				return fmt.Errorf("invalid deny_exports for remote %s: %w", r.safeName(), err)
 			}
+			// The remote account is only known once the connection is established, but the
+			// local account is known, so everything else can be checked now.
+			pctx := subjectPlaceholderContext{account: r.LocalAccount, leafRemotePending: true}
+			if _, err := expandPermissionSubjectsPlaceholders(r.DenyImports, pctx); err != nil {
+				return fmt.Errorf("invalid deny_imports for remote %s: %w", r.safeName(), err)
+			}
+			if _, err := expandPermissionSubjectsPlaceholders(r.DenyExports, pctx); err != nil {
+				return fmt.Errorf("invalid deny_exports for remote %s: %w", r.safeName(), err)
+			}
 			rn := r.name()
 			if _, dup := names[rn]; dup {
 				return fmt.Errorf("duplicate remote %s", r.safeName())
@@ -1397,6 +1406,9 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		solicited = true
 		remote.Lock()
 		c.leaf.remote = remote
+		// Bind the account before applying the deny lists so that account scoped
+		// mapping functions (e.g. {{accountHash()}}) in them can be resolved.
+		c.acc = acc
 		c.setPermissions(remote.perms)
 		if !c.leaf.remote.Hub {
 			c.leaf.isSpoke = true
@@ -1404,7 +1416,6 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		tlsFirst = remote.TLSHandshakeFirst
 		infoTimeout = remote.FirstInfoTimeout
 		remote.Unlock()
-		c.acc = acc
 	} else {
 		c.flags.set(expectConnect)
 		if ws != nil {
@@ -1800,8 +1811,16 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		c.updateLeafNodeURLs(info)
 	}
 
+	if !firstINFO && didSolicit {
+		// Remember the remote account name before applying permissions so that
+		// account scoped mapping functions referring to it can be resolved.
+		c.leaf.remoteAccName = info.RemoteAccount
+	}
+
 	// Only solicited leafnode connections trust permission updates from INFO.
-	if didSolicit && (info.Import != nil || info.Export != nil) {
+	// Also re-apply the local deny lists once the remote account is known if they refer to it.
+	if didSolicit && (info.Import != nil || info.Export != nil ||
+		(info.RemoteAccount != _EMPTY_ && c.leaf.remote != nil && permissionsHavePlaceholders(c.leaf.remote.perms))) {
 		perms := &Permissions{
 			Publish:   info.Export,
 			Subscribe: info.Import,
@@ -1832,8 +1851,6 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		// Clear deadline that was set in createLeafNode while waiting for the INFO.
 		c.nc.SetDeadline(time.Time{})
 		resumeConnect = true
-	} else if !firstINFO && didSolicit {
-		c.leaf.remoteAccName = info.RemoteAccount
 	}
 
 	// Check if we have the remote account information and if so make sure it's stored.
@@ -2422,7 +2439,19 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	c.setFirstPingTimer()
 
 	// If we received pub deny permissions from the other end, merge with existing ones.
-	c.mergeDenyPermissions(pub, proto.DenyPub)
+	// These are the remote's deny_imports: resolve account scoped mapping functions from its perspective.
+	denyPub := proto.DenyPub
+	if len(denyPub) > 0 && c.acc != nil {
+		var err error
+		denyPub, err = expandPermissionSubjectsPlaceholders(proto.DenyPub, subjectPlaceholderContext{
+			account:    proto.RemoteAccount,
+			leafRemote: c.acc.Name,
+		})
+		if err != nil {
+			c.Errorf("Error resolving leafnode deny permissions: %v", err)
+		}
+	}
+	c.mergeDenyPermissions(pub, denyPub)
 
 	acc := c.acc
 	c.mu.Unlock()
