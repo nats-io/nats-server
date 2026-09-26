@@ -2687,6 +2687,27 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Clustered ephemeral consumers use the assignment name as their identity,
+	// while the original consumer config can have an empty Name. Make sure a
+	// snapshot remains restorable in that case.
+	ephSubj := nats.NewInbox()
+	ephSub, err := nc.Subscribe(ephSubj, func(*nats.Msg) {})
+	if err != nil {
+		t.Fatalf("Unexpected error subscribing for ephemeral consumer: %v", err)
+	}
+	defer ephSub.Unsubscribe()
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Unexpected error flushing ephemeral consumer subscription: %v", err)
+	}
+	eph, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject:    ephSubj,
+		DeliverPolicy:     nats.DeliverNewPolicy,
+		AckPolicy:         nats.AckNonePolicy,
+		InactiveThreshold: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error creating ephemeral consumer: %v", err)
+	}
 
 	jsub, err := js.PullSubscribe("foo", "dlc")
 	if err != nil {
@@ -2840,6 +2861,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 
 	// Wait on the system to elect a leader for the restored consumer.
 	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	c.waitOnConsumerLeader("$G", "TEST", eph.Name)
 
 	// Now check for the consumer being recreated.
 	nci, err := js.ConsumerInfo("TEST", "dlc")
@@ -2857,6 +2879,14 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	nci.AckFloor.Last, ci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
 		t.Fatalf("Ack floors did not match %+v vs %+v", nci.AckFloor, ci.AckFloor)
+	}
+
+	ephInfo, err := js.ConsumerInfo("TEST", eph.Name)
+	if err != nil {
+		t.Fatalf("Unexpected error getting restored ephemeral consumer info: %v", err)
+	}
+	if ephInfo.Config.Durable != _EMPTY_ {
+		t.Fatalf("Expected restored consumer to remain ephemeral, got durable %q", ephInfo.Config.Durable)
 	}
 
 	// Make sure consumer works.
