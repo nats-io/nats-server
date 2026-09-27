@@ -397,34 +397,32 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 				}
 			}
 		}
-	} else {
+	} else if state == ConnOpen || state == ConnAll {
 		// Gather all open clients.
-		if state == ConnOpen || state == ConnAll {
-			for _, client := range clist {
-				// Snapshot each under the client lock.
-				client.mu.RLock()
-				var cAccName string
-				if client.acc != nil {
-					cAccName = client.acc.Name
-				}
-				cAuthUser := client.getRawAuthUser()
-				cMQTTID := client.getMQTTClientID()
-				client.mu.RUnlock()
-
-				// If we have an account specified we need to filter.
-				if acc != _EMPTY_ && cAccName != acc {
-					continue
-				}
-				// Do user filtering second
-				if user != _EMPTY_ && cAuthUser != user {
-					continue
-				}
-				// Do mqtt client ID filtering next
-				if mqttCID != _EMPTY_ && cMQTTID != mqttCID {
-					continue
-				}
-				openClients = append(openClients, client)
+		for _, client := range clist {
+			// Snapshot each under the client lock.
+			client.mu.RLock()
+			var cAccName string
+			if client.acc != nil {
+				cAccName = client.acc.Name
 			}
+			cAuthUser := client.getRawAuthUser()
+			cMQTTID := client.getMQTTClientID()
+			client.mu.RUnlock()
+
+			// If we have an account specified we need to filter.
+			if acc != _EMPTY_ && cAccName != acc {
+				continue
+			}
+			// Do user filtering second
+			if user != _EMPTY_ && cAuthUser != user {
+				continue
+			}
+			// Do mqtt client ID filtering next
+			if mqttCID != _EMPTY_ && cMQTTID != mqttCID {
+				continue
+			}
+			openClients = append(openClients, client)
 		}
 	}
 

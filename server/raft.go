@@ -5967,12 +5967,10 @@ func (n *raft) switchToCandidate() {
 
 	if n.State() != Candidate {
 		n.debug("Switching to candidate")
-	} else {
-		if n.lostQuorumLocked() && time.Since(n.llqrt) > lostQuorumSignal {
-			// We signal to the upper layers such that can alert on quorum lost.
-			n.updateLeadChange(false)
-			n.llqrt = time.Now()
-		}
+	} else if n.lostQuorumLocked() && time.Since(n.llqrt) > lostQuorumSignal {
+		// We signal to the upper layers such that can alert on quorum lost.
+		n.updateLeadChange(false)
+		n.llqrt = time.Now()
 	}
 	// Increment the term.
 	n.term++

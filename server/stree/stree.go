@@ -294,12 +294,10 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 				if sn.isLeaf() {
 					ln := sn.(*leaf[T])
 					ln.suffix = pre + ln.suffix
-				} else {
+				} else if len(pre) > 0 {
 					// We are a node here, we need to add in the old prefix.
-					if len(pre) > 0 {
-						bsn := sn.base()
-						bsn.prefix = pre + bsn.prefix
-					}
+					bsn := sn.base()
+					bsn.prefix = pre + bsn.prefix
 				}
 				*np = sn
 			}

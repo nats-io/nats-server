@@ -6463,11 +6463,9 @@ func (js *jetStream) processUpdateStreamAssignment(sa *streamAssignment) {
 	// Make sure we respond if we are a member.
 	if isMember {
 		sa.clearResponded()
-	} else {
+	} else if sa.Group != nil {
 		// Make sure to clean up any old node in case this stream moves back here.
-		if sa.Group != nil {
-			sa.Group.node = nil
-		}
+		sa.Group.node = nil
 	}
 
 	// Unsubscribe if it was previously unsupported.
@@ -7607,51 +7605,49 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 
 		if didCreate {
 			o.setCreatedTime(ca.Created)
-		} else {
+		} else if node != nil && len(rg.Peers) == 1 && rg.Desired == nil {
 			// Check for scale down to 1..
-			if node != nil && len(rg.Peers) == 1 && rg.Desired == nil {
-				o.clearNode()
-				o.stopMonitoring()
-				// Need to clear from rg too.
-				js.mu.Lock()
-				rg.node = nil
-				client, subject, reply := ca.Client, ca.Subject, ca.Reply
-				js.mu.Unlock()
-				// Perform the leader change in a goroutine, otherwise we could block meta operations.
-				if o.shouldStartMonitor() {
-					started := s.startGoRoutine(
-						func() {
-							defer s.grWG.Done()
-							defer o.clearMonitorRunning()
-							err = o.setLeader(true, 0)
-							var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
-							if err != nil {
-								resp.Error = NewJSConsumerCreateError(err, Unless(err))
-								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-							} else if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
-								// The consumer was closed before we could respond.
-								resp.Error = NewJSConsumerCreateError(errConsumerClosed)
-								s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-							} else if resp.Config.Direct || resp.Config.Sourcing {
-								rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
-								s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
-							} else {
-								s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
-							}
-						},
-						pprofLabels{
-							"type":     "consumer",
-							"account":  mset.accName(),
-							"stream":   mset.name(),
-							"consumer": ca.Name,
-						},
-					)
-					if !started {
-						o.clearMonitorRunning()
-					}
+			o.clearNode()
+			o.stopMonitoring()
+			// Need to clear from rg too.
+			js.mu.Lock()
+			rg.node = nil
+			client, subject, reply := ca.Client, ca.Subject, ca.Reply
+			js.mu.Unlock()
+			// Perform the leader change in a goroutine, otherwise we could block meta operations.
+			if o.shouldStartMonitor() {
+				started := s.startGoRoutine(
+					func() {
+						defer s.grWG.Done()
+						defer o.clearMonitorRunning()
+						err = o.setLeader(true, 0)
+						var resp = JSApiConsumerCreateResponse{ApiResponse: ApiResponse{Type: JSApiConsumerCreateResponseType}}
+						if err != nil {
+							resp.Error = NewJSConsumerCreateError(err, Unless(err))
+							s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						} else if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+							// The consumer was closed before we could respond.
+							resp.Error = NewJSConsumerCreateError(errConsumerClosed)
+							s.sendAPIErrResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						} else if resp.Config.Direct || resp.Config.Sourcing {
+							rhdr := genHeader(nil, JSStreamIdentity, mset.identity())
+							s.sendAPIHdrResponse(client, acc, subject, reply, _EMPTY_, rhdr, s.jsonResponse(&resp))
+						} else {
+							s.sendAPIResponse(client, acc, subject, reply, _EMPTY_, s.jsonResponse(&resp))
+						}
+					},
+					pprofLabels{
+						"type":     "consumer",
+						"account":  mset.accName(),
+						"stream":   mset.name(),
+						"consumer": ca.Name,
+					},
+				)
+				if !started {
+					o.clearMonitorRunning()
 				}
-				return
 			}
+			return
 		}
 
 		if node == nil {
