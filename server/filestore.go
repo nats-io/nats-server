@@ -1207,7 +1207,7 @@ func (fs *fileStore) loadEncryptionForMsgBlock(mb *msgBlock) error {
 			return errBadKeySize
 		}
 		// Recover key encryption key.
-		rb, err := fs.prf([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+		rb, err := fs.prf(fmt.Appendf(nil, "%s:%d", fs.cfg.Name, mb.index))
 		if err != nil {
 			return err
 		}
@@ -1479,7 +1479,7 @@ func (mb *msgBlock) convertCipher() error {
 
 	for _, prf := range prfs {
 		// Recover key encryption key.
-		rb, err := prf.keyGen([]byte(fmt.Sprintf("%s:%d", fs.cfg.Name, mb.index)))
+		rb, err := prf.keyGen(fmt.Appendf(nil, "%s:%d", fs.cfg.Name, mb.index))
 		if err != nil {
 			continue
 		}
@@ -5059,7 +5059,7 @@ func (fs *fileStore) RegisterProcessJetStreamMsg(cb ProcessJetStreamMsgHandler) 
 // Helper to get hash key for specific message block.
 // Lock should be held
 func (fs *fileStore) hashKeyForBlock(index uint32) []byte {
-	return []byte(fmt.Sprintf("%s-%d", fs.cfg.Name, index))
+	return fmt.Appendf(nil, "%s-%d", fs.cfg.Name, index)
 }
 
 func (mb *msgBlock) setupWriteCache(buf []byte) error {

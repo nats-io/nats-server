@@ -917,7 +917,7 @@ func (c *client) mqttParse(buf []byte) error {
 			if err == nil {
 				subs, err = c.mqttProcessSubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("SUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
+					c.traceOutOp("SUBACK", fmt.Appendf(nil, "pi=%v", pi))
 				}
 			}
 			if err == nil {
@@ -935,7 +935,7 @@ func (c *client) mqttParse(buf []byte) error {
 			if err == nil {
 				err = c.mqttProcessUnsubs(filters)
 				if err == nil && trace {
-					c.traceOutOp("UNSUBACK", []byte(fmt.Sprintf("pi=%v", pi)))
+					c.traceOutOp("UNSUBACK", fmt.Appendf(nil, "pi=%v", pi))
 				}
 			}
 			if err == nil {
@@ -972,7 +972,7 @@ func (c *client) mqttParse(buf []byte) error {
 			if rc != 0 {
 				c.mqttEnqueueConnAck(rc, sessp)
 				if trace {
-					c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
+					c.traceOutOp("CONNACK", fmt.Appendf(nil, "sp=%v rc=%v", sessp, rc))
 				}
 			} else if err == nil {
 				if err = s.mqttProcessConnect(c, cp, trace); err != nil {
@@ -4066,7 +4066,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	sendConnAck := func(rc byte, sessp bool) {
 		c.mqttEnqueueConnAck(rc, sessp)
 		if trace {
-			c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", sessp, rc)))
+			c.traceOutOp("CONNACK", fmt.Appendf(nil, "sp=%v rc=%v", sessp, rc))
 		}
 	}
 
@@ -4076,7 +4076,7 @@ func (s *Server) mqttProcessConnect(c *client, cp *mqttConnectProto, trace bool)
 	c.mu.Unlock()
 	if !s.isClientAuthorized(c) {
 		if trace {
-			c.traceOutOp("CONNACK", []byte(fmt.Sprintf("sp=%v rc=%v", false, mqttConnAckRCNotAuthorized)))
+			c.traceOutOp("CONNACK", fmt.Appendf(nil, "sp=%v rc=%v", false, mqttConnAckRCNotAuthorized))
 		}
 		c.authViolation()
 		return ErrAuthentication
@@ -5521,7 +5521,7 @@ func (c *client) mqttEnqueuePubResponse(packetType byte, pi uint16, trace bool) 
 		case mqttPacketPubComp:
 			name = "PUBCOMP"
 		}
-		c.traceOutOp(name, []byte(fmt.Sprintf("pi=%v", pi)))
+		c.traceOutOp(name, fmt.Appendf(nil, "pi=%v", pi))
 	}
 }
 

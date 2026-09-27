@@ -529,7 +529,7 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 		c.Errorf("Error marshaling CONNECT to route: %v\n", err)
 		return err
 	}
-	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
+	c.enqueueProto(fmt.Appendf(nil, ConProto, b))
 	return nil
 }
 
@@ -1168,7 +1168,7 @@ func (s *Server) forwardNewRouteInfoToKnownServers(info *Info, rtype RouteType, 
 	generateJSON := func(gm byte) []byte {
 		info.GossipMode = gm
 		b, _ := json.Marshal(info)
-		return []byte(fmt.Sprintf(InfoProto, b))
+		return fmt.Appendf(nil, InfoProto, b)
 	}
 
 	getJSON := func(r *client) []byte {

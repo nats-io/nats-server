@@ -1185,7 +1185,7 @@ func (c *client) sendLeafConnect(clusterName string, headers bool) error {
 	// Although this call is made before the writeLoop is created,
 	// we don't really need to send in place. The protocol will be
 	// sent out by the writeLoop.
-	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
+	c.enqueueProto(fmt.Appendf(nil, ConProto, b))
 	return nil
 }
 

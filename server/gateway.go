@@ -638,7 +638,7 @@ func (g *srvGateway) generateInfoJSON() {
 	if err != nil {
 		panic(err)
 	}
-	g.infoJSON = []byte(fmt.Sprintf(InfoProto, b))
+	g.infoJSON = fmt.Appendf(nil, InfoProto, b)
 }
 
 // Goes through the list of registered gateways and try to connect to those.
@@ -962,7 +962,7 @@ func (c *client) sendGatewayConnect(opts *Options) {
 	if err != nil {
 		panic(err)
 	}
-	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
+	c.enqueueProto(fmt.Appendf(nil, ConProto, b))
 }
 
 // Process the CONNECT protocol from a gateway connection.
@@ -1247,7 +1247,7 @@ func (s *Server) gossipGatewaysToInboundGateway(gwName string, c *client) {
 			info.GatewayURLs = urls
 			b, _ := json.Marshal(&info)
 			c.mu.Lock()
-			c.enqueueProto([]byte(fmt.Sprintf(InfoProto, b)))
+			c.enqueueProto(fmt.Appendf(nil, InfoProto, b))
 			c.mu.Unlock()
 		}
 	}
@@ -1273,7 +1273,7 @@ func (s *Server) forwardNewGatewayToLocalCluster(oinfo *Info) {
 		GatewayCmd:  gatewayCmdGossip,
 	}
 	b, _ := json.Marshal(info)
-	infoJSON := []byte(fmt.Sprintf(InfoProto, b))
+	infoJSON := fmt.Appendf(nil, InfoProto, b)
 
 	s.forEachRemote(func(r *client) {
 		r.mu.Lock()
@@ -1416,7 +1416,7 @@ func (s *Server) sendGatewayConfigsToRoute(route *client) {
 			info.GatewayURLs = urls
 			b, _ := json.Marshal(&info)
 			route.mu.Lock()
-			route.enqueueProto([]byte(fmt.Sprintf(InfoProto, b)))
+			route.enqueueProto(fmt.Appendf(nil, InfoProto, b))
 			route.mu.Unlock()
 		}
 	}
@@ -3216,7 +3216,7 @@ func (c *client) gatewaySwitchAccountToSendAllSubs(e *insie, accName string) {
 		}
 
 		b, _ := json.Marshal(&info)
-		infoJSON := []byte(fmt.Sprintf(InfoProto, b))
+		infoJSON := fmt.Appendf(nil, InfoProto, b)
 		if useLock {
 			c.mu.Lock()
 		}

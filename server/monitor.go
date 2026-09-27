@@ -682,7 +682,7 @@ func decodeBool(w http.ResponseWriter, r *http.Request, param string) (bool, err
 	val, err := strconv.ParseBool(str)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(fmt.Sprintf("Error decoding boolean for '%s': %v", param, err)))
+		w.Write(fmt.Appendf(nil, "Error decoding boolean for '%s': %v", param, err))
 		return false, err
 	}
 	return val, nil
@@ -696,7 +696,7 @@ func decodeUint64(w http.ResponseWriter, r *http.Request, param string) (uint64,
 	val, err := strconv.ParseUint(str, 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(fmt.Sprintf("Error decoding uint64 for '%s': %v", param, err)))
+		w.Write(fmt.Appendf(nil, "Error decoding uint64 for '%s': %v", param, err))
 		return 0, err
 	}
 	return val, nil
@@ -710,7 +710,7 @@ func decodeInt(w http.ResponseWriter, r *http.Request, param string) (int, error
 	val, err := strconv.Atoi(str)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(fmt.Sprintf("Error decoding int for '%s': %v", param, err)))
+		w.Write(fmt.Appendf(nil, "Error decoding int for '%s': %v", param, err))
 		return 0, err
 	}
 	return val, nil

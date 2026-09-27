@@ -520,7 +520,7 @@ func (c *client) parse(buf []byte) error {
 					changed := c.selectMappedSubject()
 					if changed {
 						if trace {
-							c.traceInOp("MAPPING", []byte(fmt.Sprintf("%s -> %s", c.pa.mapped, c.pa.subject)))
+							c.traceInOp("MAPPING", fmt.Appendf(nil, "%s -> %s", c.pa.mapped, c.pa.subject))
 						}
 						// c.pa.subject is the subject the original is now mapped to.
 						mt.addSubjectMappingEvent(c.pa.subject)

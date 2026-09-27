@@ -6262,7 +6262,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 			// regardless of cause, so internal errors don't leak to clients.
 			hdr = []byte("NATS/1.0 404 Message Not Found\r\n\r\n")
 		default:
-			hdr = []byte(fmt.Sprintf("NATS/1.0 500 %v\r\n\r\n", err))
+			hdr = fmt.Appendf(nil, "NATS/1.0 500 %v\r\n\r\n", err)
 		}
 		mset.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 		return

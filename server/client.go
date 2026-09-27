@@ -2788,7 +2788,7 @@ func (c *client) sendErr(err string) {
 		c.traceOutOp("-ERR", []byte(err))
 	}
 	if !c.isMqtt() {
-		c.enqueueProto([]byte(fmt.Sprintf(errProto, err)))
+		c.enqueueProto(fmt.Appendf(nil, errProto, err))
 	}
 	c.mu.Unlock()
 }
@@ -5947,7 +5947,7 @@ func (c *client) processPingTimer() {
 		}
 		if c.ping.out+1 > maxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
-			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+			c.enqueueProto(fmt.Appendf(nil, errProto, "Stale Connection"))
 			c.mu.Unlock()
 			c.closeConnection(StaleConnection)
 			return
@@ -5988,7 +5988,7 @@ func (c *client) watchForStaleConnection(pingInterval time.Duration, pingMax int
 	c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
 		c.mu.Lock()
 		c.Debugf("Stale Client Connection - Closing")
-		c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+		c.enqueueProto(fmt.Appendf(nil, errProto, "Stale Connection"))
 		c.mu.Unlock()
 		c.closeConnection(StaleConnection)
 	})
