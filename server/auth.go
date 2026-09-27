@@ -588,7 +588,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 			if !hasTags {
 				subj := list[i]
 				for idx, m := range srcs {
-					subj = strings.Replace(subj, m, values[idx][0], -1)
+					subj = strings.ReplaceAll(subj, m, values[idx][0])
 				}
 				if IsValidSubject(subj) {
 					emittedList = append(emittedList, subj)
@@ -614,7 +614,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 				for _, aa := range a {
 					subj := list[i]
 					for j := 0; j < len(srcs); j++ {
-						subj = strings.Replace(subj, srcs[j], aa[j], -1)
+						subj = strings.ReplaceAll(subj, srcs[j], aa[j])
 					}
 					if IsValidSubject(subj) {
 						emittedList = append(emittedList, subj)
