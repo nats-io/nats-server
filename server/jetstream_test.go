@@ -27245,3 +27245,105 @@ func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
 			friendlyBytes(int64(written)), friendlyBytes(before), friendlyBytes(after))
 	}
 }
+
+// Terminating a stream-deleted pending message under AckPolicy All must not
+// ack the messages below it. Reproduces https://github.com/nats-io/nats-server/issues/8648:
+// floor at 1, pending 2-5, purge the subject holding 3 and 4, then NAK. Message 2
+// was silently acked and never redelivered.
+func TestJetStreamAckAllTermDeletedPendingKeepsLower(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.MemoryStorage, nats.FileStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"n.>"}, Storage: st})
+			require_NoError(t, err)
+
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+				Durable: "C", AckPolicy: nats.AckAllPolicy, FilterSubject: "n.>",
+				MaxAckPending: 4, AckWait: 30 * time.Second,
+			})
+			require_NoError(t, err)
+
+			sub, err := js.PullSubscribe("n.>", "C")
+			require_NoError(t, err)
+
+			// Message 1, acked so the floor sits above 0.
+			_, err = js.Publish("n.1", []byte("1"))
+			require_NoError(t, err)
+			msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_NoError(t, msgs[0].AckSync())
+
+			// Messages 2-5, with 3 and 4 sharing a subject we will purge.
+			for i, subj := range []string{"n.2", "n.gone", "n.gone", "n.5"} {
+				_, err = js.Publish(subj, []byte(fmt.Sprintf("%d", i+2)))
+				require_NoError(t, err)
+			}
+
+			msgs, err = sub.Fetch(4, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 4)
+
+			// Delete 3 and 4 from the stream.
+			jr, err := json.Marshal(&JSApiStreamPurgeRequest{Subject: "n.gone"})
+			require_NoError(t, err)
+			_, err = nc.Request(fmt.Sprintf(JSApiStreamPurgeT, "TEST"), jr, 2*time.Second)
+			require_NoError(t, err)
+
+			// NAK the whole batch. 3 and 4 terminate, 2 and 5 must survive.
+			for _, m := range msgs {
+				require_NoError(t, m.Nak())
+			}
+
+			streamSeqs := func() ([]*nats.Msg, []uint64, error) {
+				msgs, err := sub.Fetch(2, nats.MaxWait(500*time.Millisecond))
+				if err != nil || len(msgs) != 2 {
+					return nil, nil, fmt.Errorf("expected 2 redelivered, got %d (%v)", len(msgs), err)
+				}
+				var seqs []uint64
+				for _, m := range msgs {
+					md, err := m.Metadata()
+					require_NoError(t, err)
+					seqs = append(seqs, md.Sequence.Stream)
+				}
+				return msgs, seqs, nil
+			}
+
+			var seqs []uint64
+			var rmsgs []*nats.Msg
+			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+				var err error
+				if rmsgs, seqs, err = streamSeqs(); err != nil {
+					return err
+				}
+				return nil
+			})
+			require_Equal(t, seqs[0], 2)
+			require_Equal(t, seqs[1], 5)
+
+			// The ack floor must not have moved past 1.
+			ci, err := js.ConsumerInfo("TEST", "C")
+			require_NoError(t, err)
+			require_Equal(t, ci.AckFloor.Stream, 1)
+
+			// NAK again: 2 was never acked, so it must come back again.
+			for _, m := range rmsgs {
+				require_NoError(t, m.Nak())
+			}
+			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+				var err error
+				if _, seqs, err = streamSeqs(); err != nil {
+					return err
+				}
+				return nil
+			})
+			require_Equal(t, seqs[0], 2)
+			require_Equal(t, seqs[1], 5)
+		})
+	}
+}

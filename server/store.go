@@ -439,7 +439,10 @@ type ConsumerStore interface {
 	Reset(sseq uint64) error
 	HasState() bool
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
-	UpdateAcks(dseq, sseq uint64) error
+	// term reports that this update terminates delivery of sseq only, e.g. the
+	// message was deleted from the stream. Under AckAll/AckFlowControl a term
+	// must not ack messages below sseq the way a regular ack does.
+	UpdateAcks(dseq, sseq uint64, term bool) error
 	RemoveRedeliveredBelow(seq uint64)
 	GetConfig() *ConsumerConfig
 	UpdateConfig(cfg *ConsumerConfig) error

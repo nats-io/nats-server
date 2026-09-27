@@ -9240,11 +9240,16 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 	t.Run("AckUpdate", func(t *testing.T) {
 		valid := binary.AppendUvarint(nil, 10)
 		valid = binary.AppendUvarint(valid, 20)
-		if _, _, err := decodeAckUpdate(valid); err != nil {
-			t.Fatalf("expected valid ack update to decode, got %v", err)
+		if _, _, term, err := decodeAckUpdate(valid); err != nil || term {
+			t.Fatalf("expected valid ack update to decode without term, got term=%v err=%v", term, err)
+		}
+		// Optional trailing byte marks the ack as a term.
+		termBuf := append(valid, 1)
+		if _, _, term, err := decodeAckUpdate(termBuf); err != nil || !term {
+			t.Fatalf("expected term ack update to decode, got term=%v err=%v", term, err)
 		}
 		for _, buf := range [][]byte{nil, valid[:1]} {
-			if _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
+			if _, _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
 				t.Fatalf("expected errBadAckUpdate for %v, got %v", buf, err)
 			}
 		}
