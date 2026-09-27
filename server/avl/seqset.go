@@ -434,7 +434,7 @@ const (
 )
 
 type node struct {
-	//v dvalue
+	// v dvalue
 	base uint64
 	bits [numBuckets]uint64
 	l    *node

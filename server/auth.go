@@ -56,7 +56,7 @@ type ClientAuthentication interface {
 	GetNonce() []byte
 	// Kind indicates what type of connection this is matching defined constants like CLIENT, ROUTER, GATEWAY, LEAF etc
 	Kind() int
-	//Gets the ID associated with a client
+	// Gets the ID associated with a client
 	GetID() uint64
 }
 

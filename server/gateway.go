@@ -134,7 +134,7 @@ func GatewayDoNotForceInterestOnlyMode(doNotForce bool) {
 }
 
 type srvGateway struct {
-	totalQSubs int64 //total number of queue subs in all remote gateways (used with atomic operations)
+	totalQSubs int64 // total number of queue subs in all remote gateways (used with atomic operations)
 	sync.RWMutex
 	enabled  bool                   // Immutable, true if both a name and port are configured
 	name     string                 // Name of the Gateway on this server

@@ -1601,7 +1601,7 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	if !sacc.hasServiceExportMatching(accConnzSubj) {
 		// pick export type that clamps importing account id into subject
 		if err := sacc.addServiceExportWithResponseAndAccountPos(accConnzSubj, Streamed, nil, 4); err != nil {
-			//if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
+			// if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
 			s.Errorf("Error adding system service export for %q: %v", accConnzSubj, err)
 		}
 	}
