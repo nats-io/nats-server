@@ -2975,7 +2975,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 	return nil
 }
 
-func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
+func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2999,7 +2999,7 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		return ErrStoreMsgNotFound
 	}
 
-	if ackAll {
+	if !explicit && ackAll {
 		// Use the original delivery sequence.
 		if p := o.state.Pending[sseq]; dseq > p.Sequence && p.Sequence > 0 {
 			dseq = p.Sequence
