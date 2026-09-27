@@ -2835,7 +2835,7 @@ func (s *Server) startRouteAcceptLoop() {
 	// Now that we have the port, keep track of all ip:port that resolve to this server.
 	if interfaceAddr, err := net.InterfaceAddrs(); err == nil {
 		var localIPs []string
-		for i := 0; i < len(interfaceAddr); i++ {
+		for i := range interfaceAddr {
 			interfaceIP, _, _ := net.ParseCIDR(interfaceAddr[i].String())
 			ipStr := interfaceIP.String()
 			if net.ParseIP(ipStr) != nil {

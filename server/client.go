@@ -1603,7 +1603,7 @@ func (c *client) readLoop(pre []byte) {
 
 		// Main call into parser for inbound data. This will generate callouts
 		// to process messages, etc.
-		for i := 0; i < len(bufs); i++ {
+		for i := range bufs {
 			if err := c.parse(bufs[i]); err != nil {
 				if err == ErrMinimumVersionRequired {
 					// Special case here, currently only for leaf node connections.
@@ -4237,7 +4237,7 @@ func (c *client) prunePubPermsCache() {
 	// will try a few times but will release/reacquire the "lock" at each
 	// attempt to give a chance to another go routine to take over and not
 	// have this go routine do too many attempts.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		// There is a case where we can invoke this from multiple go routines,
 		// (in deliverMsg() if sub.client is a LEAF), so we make sure to prune
 		// from only one go routine at a time.
@@ -5603,7 +5603,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		// Find a subscription that is able to deliver this message starting at a random index.
 		// Note that if the message came from a ROUTER, we will only have CLIENT or LEAF
 		// queue subs here, otherwise we can have all types.
-		for i := 0; i < lqs; i++ {
+		for i := range lqs {
 			if sindex+i < lqs {
 				sub = qsubs[sindex+i]
 			} else {

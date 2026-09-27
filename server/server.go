@@ -797,7 +797,7 @@ func NewServer(opts *Options) (*Server, error) {
 
 	// Fill up the maximum in flight syncRequests for this server.
 	// Used in JetStream catchup semantics.
-	for i := 0; i < maxConcurrentSyncRequests; i++ {
+	for range maxConcurrentSyncRequests {
 		s.syncOutSem <- struct{}{}
 	}
 

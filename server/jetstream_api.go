@@ -3127,7 +3127,7 @@ func (s *Server) jsMetaRescueRequest(sub *subscription, c *client, _ *Account, s
 
 func (s *Server) peerSetToNames(ps []string) []string {
 	names := make([]string, len(ps))
-	for i := 0; i < len(ps); i++ {
+	for i := range ps {
 		if si, ok := s.nodeToInfo.Load(ps[i]); !ok {
 			names[i] = ps[i]
 		} else {

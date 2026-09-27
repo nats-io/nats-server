@@ -65,7 +65,7 @@ func (n *node256) shrink() node {
 
 // Iterate over all children calling func f.
 func (n *node256) iter(f func(node) bool) {
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		if n.child[i] != nil {
 			if !f(n.child[i]) {
 				return

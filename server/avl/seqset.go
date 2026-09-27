@@ -340,7 +340,7 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 
 	ss, nodes := SequenceSet{size: sz}, make([]node, nn)
 
-	for i := 0; i < nn; i++ {
+	for i := range nn {
 		n := &nodes[i]
 		n.base = le.Uint64(buf[index:])
 		index += 8
@@ -373,10 +373,10 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 	}
 
 	var ss SequenceSet
-	for i := 0; i < nn; i++ {
+	for range nn {
 		base := le.Uint64(buf[index:])
 		index += 8
-		for nb := uint64(0); nb < v1NumBuckets; nb++ {
+		for nb := range uint64(v1NumBuckets) {
 			n := le.Uint64(buf[index:])
 			// Walk all set bits and insert sequences manually for this decode from v1.
 			for n != 0 {

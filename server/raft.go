@@ -2206,7 +2206,7 @@ func (n *raft) isCurrent(includeForwardProgress bool) bool {
 	// Otherwise, wait for a short period of time and see if we are making any
 	// forward progress.
 	if startDelta := n.commit - n.applied; startDelta > 0 {
-		for i := 0; i < 10; i++ { // 10ms, in 1ms increments
+		for range 10 { // 10ms, in 1ms increments
 			n.Unlock()
 			time.Sleep(time.Millisecond)
 			n.Lock()

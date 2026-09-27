@@ -522,7 +522,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 	applyTemplate := func(list jwt.StringList, failOnBadSubject bool) (jwt.StringList, error) {
 		found := false
 	FOR_FIND:
-		for i := 0; i < len(list); i++ {
+		for i := range list {
 			// check if templates are present
 			if mustacheRE.MatchString(list[i]) {
 				found = true
@@ -534,7 +534,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 		}
 		// process the templates
 		emittedList := make([]string, 0, len(list))
-		for i := 0; i < len(list); i++ {
+		for i := range list {
 			// find all the templates {{}} in this acl
 			tokens := mustacheRE.FindAllString(list[i], -1)
 			srcs := make([]string, len(tokens))
@@ -613,7 +613,7 @@ func processUserPermissionsTemplate(lim jwt.UserPermissionLimits, ujwt *jwt.User
 				a := nArrayCartesianProduct(values...)
 				for _, aa := range a {
 					subj := list[i]
-					for j := 0; j < len(srcs); j++ {
+					for j := range srcs {
 						subj = strings.Replace(subj, srcs[j], aa[j], -1)
 					}
 					if IsValidSubject(subj) {

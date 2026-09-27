@@ -228,7 +228,7 @@ func (hw *HashWheel) Decode(b []byte) (uint64, error) {
 	count := binary.LittleEndian.Uint64(b[1:])
 	stamp := binary.LittleEndian.Uint64(b[9:])
 	b = b[headerLen:]
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		ts, tn := binary.Varint(b)
 		if tn <= 0 {
 			return 0, io.ErrUnexpectedEOF

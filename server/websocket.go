@@ -604,7 +604,7 @@ func (r *wsReadInfo) unmask(buf []byte) {
 		return
 	}
 	var k [8]byte
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		k[i] = r.mkey[(p+i)&3]
 	}
 	km := binary.BigEndian.Uint64(k[:])
@@ -692,7 +692,7 @@ func (c *client) wsEnqueueControlMessage(controlMsg wsOpCode, payload []byte) {
 
 // Mask the buffer with the given key
 func wsMaskBuf(key, buf []byte) {
-	for i := 0; i < len(buf); i++ {
+	for i := range buf {
 		buf[i] ^= key[i&3]
 	}
 }
@@ -700,9 +700,9 @@ func wsMaskBuf(key, buf []byte) {
 // Mask the buffers, as if they were contiguous, with the given key
 func wsMaskBufs(key []byte, bufs [][]byte) {
 	pos := 0
-	for i := 0; i < len(bufs); i++ {
+	for i := range bufs {
 		buf := bufs[i]
-		for j := 0; j < len(buf); j++ {
+		for j := range buf {
 			buf[j] ^= key[pos&3]
 			pos++
 		}
@@ -1623,7 +1623,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 			}
 
 			fhIdx := startFrame()
-			for i := 0; i < len(nb); i++ {
+			for i := range nb {
 				b := nb[i]
 				if total+len(b) <= mfs {
 					buf := nbPoolGet(len(b))

@@ -1171,7 +1171,7 @@ func getHashSize(name string, size int) string {
 	sha := sha256.New()
 	sha.Write([]byte(name))
 	b := sha.Sum(nil)
-	for i := 0; i < size; i++ {
+	for i := range size {
 		b[i] = digits[int(b[i]%base)]
 	}
 	return string(b[:size])

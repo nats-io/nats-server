@@ -3599,7 +3599,7 @@ func (sess *mqttSession) update(filters []*mqttFilter, add bool) error {
 func (sess *mqttSession) bumpPI() uint16 {
 	var avail bool
 	next := sess.last_pi
-	for i := 0; i < 0xFFFF; i++ {
+	for range 0xFFFF {
 		next++
 		if next == 0 {
 			next = 1
@@ -6566,7 +6566,7 @@ func mqttToNATSSubjectConversion(mt []byte, wcOk bool) ([]byte, error) {
 	}
 
 	end := len(mt) - 1
-	for i := 0; i < len(mt); i++ {
+	for i := range mt {
 		switch mt[i] {
 		case mqttTopicLevelSep:
 			if i == 0 || res[j-1] == btsep {

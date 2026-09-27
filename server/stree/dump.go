@@ -61,7 +61,7 @@ func dumpPre(depth int) string {
 		return "-- "
 	} else {
 		var b strings.Builder
-		for i := 0; i < depth; i++ {
+		for range depth {
 			b.WriteString("  ")
 		}
 		b.WriteString("|__ ")

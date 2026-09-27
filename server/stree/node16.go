@@ -52,7 +52,7 @@ func (n *node16) isFull() bool { return n.size >= 16 }
 func (n *node16) grow() node {
 	nn := &node48{}
 	nn.prefix = n.prefix
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		nn.addChild(n.key[i], n.child[i])
 	}
 	return nn

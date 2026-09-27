@@ -2059,7 +2059,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	// Check for per subject info.
 	if numSubjects := int(readU64()); numSubjects > 0 {
 		fs.psim, fs.tsl = fs.psim.Empty(), 0
-		for i := 0; i < numSubjects; i++ {
+		for range numSubjects {
 			if lsubj := int(readU64()); lsubj > 0 {
 				if bi+lsubj > len(buf) {
 					_ = os.Remove(fn)
@@ -12574,7 +12574,7 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 		b = b[n:]
 		return s, true
 	}
-	for i := uint64(0); i < count; i++ {
+	for range count {
 		source, ok := readStr()
 		if !ok {
 			return 0, io.ErrUnexpectedEOF

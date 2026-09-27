@@ -2669,7 +2669,7 @@ func (acc *Account) updateLeafNodesEx(sub *subscription, delta int32, hubOnly bo
 	if nleafs > 1 {
 		start = rand.IntN(nleafs)
 	}
-	for i := 0; i < nleafs; i++ {
+	for i := range nleafs {
 		ln := acc.lleafs[(start+i)%nleafs]
 		if ln == sub.client {
 			continue

@@ -315,7 +315,7 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 			bi += int(n)
 			return s, true
 		}
-		for i := uint64(0); i < numSources; i++ {
+		for range numSources {
 			name, ok := readStr()
 			if !ok {
 				return nil, ErrCorruptStreamState
