@@ -6199,7 +6199,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	upToSeq := req.UpToSeq
 	// If we have UpToTime set get the proper sequence.
 	if req.UpToTime != nil {
-		upToSeq = store.GetSeqFromTime((*req.UpToTime).UTC())
+		upToSeq = store.GetSeqFromTime(req.UpToTime.UTC())
 		var state StreamState
 		store.FastState(&state)
 		// Avoid selecting a first sequence that will take us to before the stream first

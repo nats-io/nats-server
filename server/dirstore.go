@@ -551,7 +551,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 
 func xorAssign(lVal *[sha256.Size]byte, rVal [sha256.Size]byte) {
 	for i := range rVal {
-		(*lVal)[i] ^= rVal[i]
+		lVal[i] ^= rVal[i]
 	}
 }
 

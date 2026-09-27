@@ -2618,7 +2618,7 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 
 	// Make sure we always store PauseUntil in UTC.
 	if cfg.PauseUntil != nil {
-		utc := (*cfg.PauseUntil).UTC()
+		utc := cfg.PauseUntil.UTC()
 		cfg.PauseUntil = &utc
 	}
 
