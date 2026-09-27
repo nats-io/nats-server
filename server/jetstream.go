@@ -963,7 +963,7 @@ func (js *jetStream) isEnabled() bool {
 	return !js.disabled.Load()
 }
 
-// Mark that we will be in standlone mode.
+// Mark that we will be in standalone mode.
 func (js *jetStream) setJetStreamStandAlone(isStandAlone bool) {
 	if js == nil {
 		return

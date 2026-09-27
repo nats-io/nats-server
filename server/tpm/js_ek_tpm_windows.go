@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	// Version of the NATS TPM JS implmentation
+	// Version of the NATS TPM JS implementation
 	JsKeyTPMVersion = 1
 )
 
@@ -258,7 +258,7 @@ func LoadJetStreamEncryptionKeyFromTPM(srkPassword, jsKeyFile, jsKeyPassword str
 		return "", fmt.Errorf("unable to regenerate SRK from the TPM: %v", err)
 	}
 	// Read the keys from the key file. If the filed doesn't exist it means we need to create
-	// a new js encrytpion key.
+	// a new js encryption key.
 	publicBlob, privateBlob, err := readTPMKeysFromFile(jsKeyFile)
 	if err != nil {
 		if os.IsNotExist(err) {

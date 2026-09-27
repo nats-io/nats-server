@@ -65,7 +65,7 @@ type option interface {
 	// special handling for changes in cluster's pool size or accounts list.
 	IsClusterPoolSizeOrAccountsChange() bool
 
-	// IsJetStreamChange inidicates a change in the servers config for JetStream.
+	// IsJetStreamChange indicates a change in the servers config for JetStream.
 	// Account changes will be handled separately in reloadAuthorization.
 	IsJetStreamChange() bool
 
@@ -2419,7 +2419,7 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 	return true
 }
 
-// reloadClusterPermissions reconfigures the cluster's permssions
+// reloadClusterPermissions reconfigures the cluster's permissions
 // and set the permissions to all existing routes, sending an
 // update INFO protocol so that remote can resend their local
 // subs if needed, and sending local subs matching cluster's
@@ -2767,7 +2767,7 @@ func (s *Server) reloadClusterPoolAndAccounts(co *clusterOption, opts *Options) 
 		})
 	} else if len(co.accsRemoved) > 0 {
 		// For accounts that no longer have a dedicated route, we need to send
-		// the subsriptions on the existing pooled routes for those accounts.
+		// the subscriptions on the existing pooled routes for those accounts.
 		for _, an := range co.accsRemoved {
 			if a, ok := s.accounts.Load(an); ok {
 				acc := a.(*Account)

@@ -3772,7 +3772,7 @@ func (sess *mqttSession) untrackPublish(pi uint16) (jsAckSubject string) {
 // Lock held on entry
 func (sess *mqttSession) trackAsPubRel(pi uint16, jsAckSubject string) {
 	if sess.pubRelConsumer == nil {
-		// The cosumer MUST be set up already.
+		// The consumer MUST be set up already.
 		return
 	}
 	jsDur := sess.pubRelConsumer.Durable
@@ -4439,7 +4439,7 @@ func mqttComputeNatsMsgSize(pp *mqttPublish, encodePP bool) int {
 }
 
 // Composes a NATS message from a MQTT PUBLISH packet. The message includes an
-// internal header containint the original packet's QoS, and for QoS2 packets
+// internal header containing the original packet's QoS, and for QoS2 packets
 // the original subject.
 //
 // Example (QoS2, subject: "foo.bar"):

@@ -475,7 +475,7 @@ func (c *LocalCache) saveCache(s *Server) {
 }
 
 var OCSPResponseCacheUsage = `
-You may enable OCSP peer response cacheing at server configuration root level:
+You may enable OCSP peer response caching at server configuration root level:
 
 (If no TLS blocks are configured with OCSP peer verification, ocsp_cache is ignored.)
 

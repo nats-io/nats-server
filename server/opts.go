@@ -2386,7 +2386,7 @@ func parseGateway(v any, o *Options, errors *[]error, warnings *[]error) error {
 var dynamicJSAccountLimits = JetStreamAccountLimits{-1, -1, -1, -1, -1, -1, -1, false}
 var defaultJSAccountTiers = map[string]JetStreamAccountLimits{_EMPTY_: dynamicJSAccountLimits}
 
-// Parses jetstream account limits for an account. Simple setup with boolen is allowed, and we will
+// Parses jetstream account limits for an account. Simple setup with boolean is allowed, and we will
 // use dynamic account limits.
 func parseJetStreamForAccount(v any, acc *Account, errors *[]error) error {
 	var lt token
@@ -3418,7 +3418,7 @@ func checkClusterPermissionSubjects(perms *Permissions) error {
 	return nil
 }
 
-// Temp structures to hold account import and export defintions since they need
+// Temp structures to hold account import and export definitions since they need
 // to be processed after being parsed.
 type export struct {
 	acc  *Account

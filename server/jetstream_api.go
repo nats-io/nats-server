@@ -1230,7 +1230,7 @@ func addDelayedResponse(head, tail **delayedAPIResponse, r *delayedAPIResponse) 
 	// Find its spot in the list.
 	var prev *delayedAPIResponse
 	for c := *head; c != nil; c = c.next {
-		// We insert only if we are stricly before the current `c`.
+		// We insert only if we are strictly before the current `c`.
 		if r.deadline.Before(c.deadline) {
 			r.next = c
 			if prev != nil {

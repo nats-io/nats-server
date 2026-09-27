@@ -55,7 +55,7 @@ func (n *node16) kind() string  { return "NODE16" }
 func (n *node48) kind() string  { return "NODE48" }
 func (n *node256) kind() string { return "NODE256" }
 
-// Calculates the indendation, etc.
+// Calculates the indentation, etc.
 func dumpPre(depth int) string {
 	if depth == 0 {
 		return "-- "

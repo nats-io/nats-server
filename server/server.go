@@ -364,7 +364,7 @@ type Server struct {
 	gcbMu     sync.RWMutex
 	gcbOut    int64
 	gcbOutMax int64 // Taken from JetStreamMaxCatchup or defaultMaxTotalCatchupOutBytes
-	// A global chanel to kick out stalled catchup sequences.
+	// A global channel to kick out stalled catchup sequences.
 	gcbKick chan struct{}
 
 	// Total outbound syncRequests
@@ -3328,7 +3328,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 
 	c.Debugf("Client connection created")
 
-	// Save info.TLSRequired value since we may neeed to change it back and forth.
+	// Save info.TLSRequired value since we may need to change it back and forth.
 	orgInfoTLSReq := info.TLSRequired
 
 	var tlsFirstFallback time.Duration

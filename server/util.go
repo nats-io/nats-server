@@ -257,7 +257,7 @@ func (m refCountedUrlSet) getAsStringSlice() []string {
 // Go 1.13 introduced default-on TCP keepalives with aggressive timings and
 // there's no sane portable way in Go with stdlib to split the initial timer
 // from the retry timer.  Linux/BSD defaults are 2hrs/75s and Go sets both
-// to 15s; the issue re making them indepedently tunable has been open since
+// to 15s; the issue re making them independently tunable has been open since
 // 2014 and this code here is being written in 2020.
 // The NATS protocol has its own L7 PING/PONG keepalive system and the Go
 // defaults are inappropriate for IoT deployment scenarios.

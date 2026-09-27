@@ -2056,7 +2056,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	// the INFO protocol, that is much later.
 	// In the meantime, if the server shutsdown, there would be no reference
 	// to the client (connection) to be closed, leaving this readLoop
-	// uinterrupted, causing the Shutdown() to wait indefinitively.
+	// uninterrupted, causing the Shutdown() to wait indefinitively.
 	// We need to store the client in a special map, under a special lock.
 	if !s.addToTempClients(c.cid, c) {
 		c.mu.Unlock()

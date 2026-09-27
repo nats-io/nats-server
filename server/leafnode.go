@@ -1218,7 +1218,7 @@ func (s *Server) addLeafNodeURL(urlStr string) bool {
 // Server lock is held on entry.
 func (s *Server) removeLeafNodeURL(urlStr string) bool {
 	// Don't need to do this if we are removing the route connection because
-	// we are shuting down...
+	// we are shutting down...
 	if s.isShuttingDown() {
 		return false
 	}
@@ -1520,7 +1520,7 @@ func (c *client) leafClientHandshakeIfNeeded(remote *leafNodeCfg, opts *Options)
 		return false, nil
 	}
 
-	// If TLS required, peform handshake.
+	// If TLS required, perform handshake.
 	// Get the URL that was used to connect to the remote server.
 	rURL := remote.getCurrentURL()
 

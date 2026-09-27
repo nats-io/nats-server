@@ -216,7 +216,7 @@ func wsMaxMessageSize(mpay int) uint64 {
 // When bytes are present in `buf`, the `pos` is incremented by the number
 // of bytes found up to `needed` and the new position is returned. If not
 // enough bytes are found, the bytes found in `buf` are copied to the returned
-// slice and the remaning bytes are read from `r`.
+// slice and the remaining bytes are read from `r`.
 func wsGet(r io.Reader, buf []byte, pos, needed uint64) ([]byte, uint64, error) {
 	avail := uint64(len(buf)) - pos
 	if avail >= needed {

@@ -184,7 +184,7 @@ func getProcessImageName() (name string) {
 func initCounters() (err error) {
 
 	processPid = os.Getpid()
-	// require an addressible nil pointer
+	// require an addressable nil pointer
 	var source uint16
 	if err := pdhOpenQuery(&source, 0, &pcHandle); err != nil {
 		return err

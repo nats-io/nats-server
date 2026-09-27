@@ -958,7 +958,7 @@ func (ms *memStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAllo
 				}
 			}
 		})
-		// If maxAllowed was sepcified check that we will not exceed that.
+		// If maxAllowed was specified check that we will not exceed that.
 		if maxAllowed > 0 && len(seqs) > maxAllowed {
 			return nil, ErrTooManyResults
 		}

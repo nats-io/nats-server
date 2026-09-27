@@ -2731,7 +2731,7 @@ func (fs *fileStore) recoverMsgs() error {
 
 // Will expire msgs that have aged out on restart.
 // We will treat this differently in case we have a recovery
-// that will expire alot of messages on startup.
+// that will expire a lot of messages on startup.
 // Should only be called on startup.
 func (fs *fileStore) expireMsgsOnRecover() error {
 	if fs.state.Msgs == 0 {
@@ -4155,7 +4155,7 @@ func (fs *fileStore) multiLastSeqsLocked(filters []string, maxSeq uint64, maxAll
 			return nil, ierr
 		}
 
-		// If maxAllowed was sepcified check that we will not exceed that.
+		// If maxAllowed was specified check that we will not exceed that.
 		if maxAllowed > 0 && len(seqs) > maxAllowed {
 			return nil, ErrTooManyResults
 		}

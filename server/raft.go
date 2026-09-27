@@ -3041,7 +3041,7 @@ func newProposedEntry(entry *Entry, reply string, term uint64) *proposedEntry {
 	return pe
 }
 
-// Will return this proosed entry.
+// Will return this proposed entry.
 func (pe *proposedEntry) returnToPool() {
 	pe.Entry, pe.reply, pe.term = nil, _EMPTY_, 0
 	pePool.Put(pe)

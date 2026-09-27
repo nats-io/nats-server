@@ -430,7 +430,7 @@ func (c *client) initMsgTrace(hdr []byte, ingressError error) (bool, *msgTrace) 
 	// There should always be a server object, and for CLIENT and LEAF, the
 	// account should be available.
 	if srv == nil || (acc == nil && (kind == CLIENT || kind == LEAF)) {
-		// Make the caller skip message procesing if `traceOnly` is true.
+		// Make the caller skip message processing if `traceOnly` is true.
 		return traceOnly, nil
 	}
 	// For non CLIENT connection, get the account and hop header.

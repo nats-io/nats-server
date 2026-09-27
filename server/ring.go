@@ -73,7 +73,7 @@ func (rb *closedRingBuffer) totalConns() uint64 {
 // modify. If the contents of the client itself need to be modified,
 // meaning swapping in any optional items, a copy should be made. We
 // could introduce a new lock and hold that but since we return this
-// list inside monitor which allows programatic access, we do not
+// list inside monitor which allows programmatic access, we do not
 // know when it would be done.
 func (rb *closedRingBuffer) closedClients() []*closedClient {
 	rb.mu.Lock()

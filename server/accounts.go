@@ -1286,7 +1286,7 @@ func (a *Account) TrackServiceExportWithSampling(service, results string, sampli
 	if !IsValidPublishSubject(results) {
 		return ErrBadPublishSubject
 	}
-	// Don't loop back on outselves.
+	// Don't loop back on ourselves.
 	if a.IsExportService(results) {
 		return ErrBadPublishSubject
 	}
@@ -2580,7 +2580,7 @@ func (se *serviceExport) checkExpiredResponses() {
 
 	// TODO(dlc) - Should we release lock while doing this? Or only do these in batches?
 	// Should we break this up for responses only from this service export?
-	// Responses live on acc directly for fast inbound processsing for the _R_ wildcard.
+	// Responses live on acc directly for fast inbound processing for the _R_ wildcard.
 	// We could do another indirection at this level but just to get to the service export?
 	var totalResponses int
 	acc.mu.RLock()
@@ -3419,7 +3419,7 @@ func (a *Account) hasExternalAuth() bool {
 	return a.extAuth != nil
 }
 
-// Deterimine if this is an external auth user.
+// Determine if this is an external auth user.
 func (a *Account) isExternalAuthUser(userID string) bool {
 	if a == nil {
 		return false
@@ -4747,7 +4747,7 @@ type DirResOption func(s *DirAccResolver) error
 func FetchTimeout(to time.Duration) DirResOption {
 	return func(r *DirAccResolver) error {
 		if to <= time.Duration(0) {
-			return fmt.Errorf("Fetch timeout %v is too smal", to)
+			return fmt.Errorf("Fetch timeout %v is too small", to)
 		}
 		r.fetchTimeout = to
 		return nil

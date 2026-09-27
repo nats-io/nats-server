@@ -277,7 +277,7 @@ func (oc *OCSPMonitor) run() {
 
 	var doShutdown bool
 	defer func() {
-		// Need to decrement before shuting down, otherwise shutdown
+		// Need to decrement before shutting down, otherwise shutdown
 		// would be stuck waiting on grWG to go down to 0.
 		s.grWG.Done()
 		if doShutdown {

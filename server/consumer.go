@@ -322,7 +322,7 @@ const (
 	DeliverNew
 	// DeliverByStartSequence will look for a defined starting sequence to start.
 	DeliverByStartSequence
-	// DeliverByStartTime will select the first messsage with a timestamp >= to StartTime.
+	// DeliverByStartTime will select the first message with a timestamp >= to StartTime.
 	DeliverByStartTime
 	// DeliverLastPerSubject will start the consumer with the last message for all subjects received.
 	DeliverLastPerSubject
@@ -2515,7 +2515,7 @@ func (o *consumer) setRateLimit(bps uint64) {
 	// Burst should be set to maximum msg size for this account, etc.
 	var burst int
 	// We don't need to get cfgMu's rlock here since this function
-	// is already invoked under mset.mu.RLock(), which superseeds cfgMu.
+	// is already invoked under mset.mu.RLock(), which supersedes cfgMu.
 	if mset.cfg.MaxMsgSize > 0 {
 		burst = int(mset.cfg.MaxMsgSize)
 	} else {
@@ -5818,7 +5818,7 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 	mset := o.mset
 	ap := o.cfg.AckPolicy
 
-	// Cant touch pmsg after this sending so capture what we need.
+	// Can't touch pmsg after this sending so capture what we need.
 	seq, ts := pmsg.seq, pmsg.ts
 
 	// Update delivered first.
@@ -6037,7 +6037,7 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 		o.creditWaitingRequest(subj)
 		// pull mode and we have pending.
 		if _, ok := o.pending[seq]; ok {
-			// We found this messsage on pending, we need
+			// We found this message on pending, we need
 			// to queue it up for immediate redelivery since
 			// we know it was not delivered
 			if !o.onRedeliverQueue(seq) {
@@ -6850,7 +6850,7 @@ func (o *consumer) stopWithFlags(dflag, sdflag, doSignal, advisory bool) error {
 	if mset != nil {
 		mset.mu.Lock()
 		mset.removeConsumer(o)
-		// No need for cfgMu's lock since mset.mu.Lock superseeds it.
+		// No need for cfgMu's lock since mset.mu.Lock supersedes it.
 		rp = mset.cfg.Retention
 		mset.mu.Unlock()
 	}

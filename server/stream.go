@@ -827,7 +827,7 @@ func (a *Account) recoverStream(config *StreamConfig) (*stream, error) {
 	return a.addStreamWithAssignment(config, nil, nil, false, true)
 }
 
-// AddStreamWithStore adds a stream for the given account with custome store config options.
+// AddStreamWithStore adds a stream for the given account with custom store config options.
 func (a *Account) addStreamWithStore(config *StreamConfig, fsConfig *FileStoreConfig) (*stream, error) {
 	return a.addStreamWithAssignment(config, fsConfig, nil, false, false)
 }

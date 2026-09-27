@@ -94,7 +94,7 @@ const (
 	okProto   = "+OK" + _CRLF_
 )
 
-// TLS Hanshake client types
+// TLS Handshake client types
 const (
 	tlsHandshakeLeaf = "leafnode"
 	tlsHandshakeMQTT = "mqtt"
@@ -1263,7 +1263,7 @@ func (c *client) publicPermissions() *Permissions {
 			perms.Publish.Deny = append(perms.Publish.Deny, string(sub.subject))
 		}
 	}
-	// Subsribe
+	// Subscribe
 	if c.perms.sub.allow != nil {
 		subs := _subs[:0]
 		c.perms.sub.allow.All(&subs)
@@ -2064,7 +2064,7 @@ func (c *client) handleWriteTimeout(written, attempted int64, numChunks int) boo
 // Depending on the kind of connection, the connection will be saved.
 // If a writeLoop has been started, the final flush will be done there, otherwise
 // flush and close of TCP connection is done here in place.
-// Returns true if closed in place, flase otherwise.
+// Returns true if closed in place, false otherwise.
 // Lock is held on entry.
 func (c *client) markConnAsClosed(reason ClosedState) {
 	// Possibly set skipFlushOnClose flag even if connection has already been
@@ -4094,7 +4094,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// This is specifically looking at situations where we are getting behind and may want
 	// to intervene before this producer goes back to top of readloop. We are in the producer's
 	// readloop go routine at this point.
-	// FIXME(dlc) - We may call this alot, maybe suppress after first call?
+	// FIXME(dlc) - We may call this a lot, maybe suppress after first call?
 	if len(client.out.nb) != 0 {
 		client.flushSignal()
 	}
@@ -4166,7 +4166,7 @@ func (c *client) trackRemoteReply(subject, reply string) {
 
 // pruneRemoteTracking will prune any remote tracking objects
 // that are too old. These are orphaned when a service is not
-// sending reponses etc.
+// sending responses etc.
 // Lock should be held upon entry.
 func (c *client) pruneRemoteTracking() {
 	c.mu.Lock()
@@ -5541,7 +5541,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// Process queue subs
 	for i := 0; i < len(r.qsubs); i++ {
 		qsubs := r.qsubs[i]
-		// If we have a filter check that here. We could make this a map or someting more
+		// If we have a filter check that here. We could make this a map or something more
 		// complex but linear search since we expect queues to be small. Should be faster
 		// and more cache friendly.
 		if qf != nil && len(qsubs) > 0 {
@@ -6525,7 +6525,7 @@ func (c *client) getRTTValue() time.Duration {
 // look for a subject on a given account (since these type of
 // connections are not bound to a specific account).
 // If the c.pa.subject is found in the cache, the cached result
-// is returned, otherwse, we match the account's sublist and update
+// is returned, otherwise, we match the account's sublist and update
 // the cache. The cache is pruned if reaching a certain size.
 func (c *client) getAccAndResultFromCache() (*Account, *SublistResult) {
 	var (
