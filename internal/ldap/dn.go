@@ -158,7 +158,7 @@ func ParseDN(str string) (*DN, error) {
 			}
 
 			dst := []byte{0}
-			n, err := enchex.Decode([]byte(dst), []byte(str[i:i+2]))
+			n, err := enchex.Decode(dst, []byte(str[i:i+2]))
 			if err != nil {
 				return nil, fmt.Errorf("failed to decode escaped character: %s", err)
 			} else if n != 1 {

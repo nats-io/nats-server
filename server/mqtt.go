@@ -582,7 +582,7 @@ func (s *Server) startMQTT() {
 func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	opts := s.getOpts()
 
-	maxPay := int32(opts.MaxPayload)
+	maxPay := opts.MaxPayload
 	maxSubs := int32(opts.MaxSubs)
 	if maxSubs == 0 {
 		maxSubs = -1

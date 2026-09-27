@@ -759,7 +759,7 @@ func (c *client) initClient() {
 	// Snapshot max control line since currently can not be changed on reload and we
 	// were checking it on each call to parse. If this changes and we allow MaxControlLine
 	// to be reloaded without restart, this code will need to change.
-	c.mcl = int32(opts.MaxControlLine)
+	c.mcl = opts.MaxControlLine
 	if c.mcl == 0 {
 		c.mcl = MAX_CONTROL_LINE_SIZE
 	}
@@ -1653,8 +1653,8 @@ func (c *client) readLoop(pre []byte) {
 				acc.stats.inMsgs += inMsgs
 				acc.stats.inBytes += inBytes
 				if c.kind == LEAF {
-					acc.stats.ln.inMsgs += int64(inMsgs)
-					acc.stats.ln.inBytes += int64(inBytes)
+					acc.stats.ln.inMsgs += inMsgs
+					acc.stats.ln.inBytes += inBytes
 				}
 				acc.stats.Unlock()
 			}

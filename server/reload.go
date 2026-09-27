@@ -631,7 +631,7 @@ type maxControlLineOption struct {
 
 // Apply the setting by updating each client.
 func (m *maxControlLineOption) Apply(server *Server) {
-	mcl := int32(m.newValue)
+	mcl := m.newValue
 	server.mu.Lock()
 	for _, client := range server.clients {
 		atomic.StoreInt32(&client.mcl, mcl)
@@ -652,7 +652,7 @@ func (m *maxPayloadOption) Apply(server *Server) {
 	server.mu.Lock()
 	server.info.MaxPayload = m.newValue
 	for _, client := range server.clients {
-		atomic.StoreInt32(&client.mpay, int32(m.newValue))
+		atomic.StoreInt32(&client.mpay, m.newValue)
 	}
 	server.mu.Unlock()
 	server.Noticef("Reloaded: max_payload = %d", m.newValue)

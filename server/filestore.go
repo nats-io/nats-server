@@ -6675,7 +6675,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 	if rl < msgHdrSize {
 		return 0, 0, false, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
 	}
-	return uint32(ri), rl, hashChecked, nil
+	return ri, rl, hashChecked, nil
 }
 
 func (fs *fileStore) isClosed() bool {
@@ -6895,7 +6895,7 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 				mb.rbytes -= rl
 				// For return accounting.
 				purged++
-				bytes += uint64(rl)
+				bytes += rl
 			}
 		}
 	}
@@ -7152,7 +7152,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 	}
 
 	// Can't expire if we still have pending.
-	if mb.cache != nil && len(mb.cache.buf)-int(mb.cache.wp) > 0 {
+	if mb.cache != nil && len(mb.cache.buf)-mb.cache.wp > 0 {
 		mb.resetCacheExpireTimer(mb.cexp)
 		if strengthened {
 			mb.finishedWithCache()
@@ -7847,7 +7847,7 @@ func (mb *msgBlock) pendingWriteSizeLocked() int {
 	}
 	var pending int
 	if !mb.closed && mb.mfd != nil && mb.cache != nil {
-		pending = len(mb.cache.buf) - int(mb.cache.wp)
+		pending = len(mb.cache.buf) - mb.cache.wp
 	}
 	return pending
 }

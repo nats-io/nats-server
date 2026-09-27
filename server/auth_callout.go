@@ -369,7 +369,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	}
 
 	authTimeout := secondsToDuration(s.getOpts().AuthTimeout)
-	claim.Expires = time.Now().Add(time.Duration(authTimeout)).UTC().Unix()
+	claim.Expires = time.Now().Add(authTimeout).UTC().Unix()
 
 	// Grab client info for the request.
 	c.mu.Lock()
@@ -424,7 +424,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 
 	// Check if we have been asked to encrypt.
 	if xkp != nil {
-		req, err = xkp.Seal([]byte(req), pubAccXKey)
+		req, err = xkp.Seal(req, pubAccXKey)
 		if err != nil {
 			errStr = fmt.Sprintf("Error encrypting auth request claim on account %q: %v", acc.Name, err)
 			s.Warnf(errStr)

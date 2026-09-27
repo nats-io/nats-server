@@ -1606,7 +1606,7 @@ func (mset *stream) autoTuneFileStorageBlockSize(fsCfg *FileStoreConfig) {
 	} else {
 		blkSize = defaultMediumBlockSize
 	}
-	fsCfg.BlockSize = uint64(blkSize)
+	fsCfg.BlockSize = blkSize
 }
 
 // rebuildDedupe will rebuild any dedupe structures needed after recovery of a stream.
@@ -3690,7 +3690,7 @@ const (
 
 // Calculate our backoff based on number of failures.
 func calculateRetryBackoff(fails int) time.Duration {
-	backoff := time.Duration(retryBackOff) * time.Duration(fails*2)
+	backoff := retryBackOff * time.Duration(fails*2)
 	if backoff > retryMaximum {
 		backoff = retryMaximum
 	}

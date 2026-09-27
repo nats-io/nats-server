@@ -5661,7 +5661,7 @@ func (o *consumer) sendIdleHeartbeat(subj string) {
 	if fcp := o.fcid; fcp != _EMPTY_ {
 		// Add in that we are stalled on flow control here.
 		addOn := fmt.Appendf(nil, "%s: %s\r\n\r\n", JSConsumerStalled, fcp)
-		hdr = append(hdr[:len(hdr)-LEN_CR_LF], []byte(addOn)...)
+		hdr = append(hdr[:len(hdr)-LEN_CR_LF], addOn...)
 	}
 	o.outq.send(newJSPubMsg(subj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }

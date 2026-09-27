@@ -610,7 +610,7 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 				// sampling. What is done here is to check them all until we
 				// found one with sampling.
 				tk := bytes.Split(val, dashAsBytes)
-				if len(tk) == 4 && len([]byte(tk[3])) == 2 {
+				if len(tk) == 4 && len(tk[3]) == 2 {
 					if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
 						if hexVal&0x1 == 0x1 {
 							traceParentHdrFound = true

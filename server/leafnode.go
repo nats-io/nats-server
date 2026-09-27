@@ -1252,7 +1252,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 	// Snapshot server options.
 	opts := s.getOpts()
 
-	maxPay := int32(opts.MaxPayload)
+	maxPay := opts.MaxPayload
 	maxSubs := int32(opts.MaxSubs)
 	// For system, maxSubs of 0 means unlimited, so re-adjust here.
 	if maxSubs == 0 {
