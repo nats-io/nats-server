@@ -13782,7 +13782,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 }
 
 // UpdateAcks is called whenever a consumer with explicit ack or ack all acks a message.
-func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
+func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64, term bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -13816,7 +13816,9 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	kick = true
 
 	// Check for AckAll here (or AckFlowControl which functions like AckAll).
-	if o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl {
+	// A term is scoped to this message only, so it falls through to the
+	// explicit path even under AckAll.
+	if !term && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
