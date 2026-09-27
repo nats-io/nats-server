@@ -13789,7 +13789,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 }
 
 // UpdateAcks is called whenever a consumer with explicit ack or ack all acks a message.
-func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
+func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -13826,7 +13826,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	// Done with the consistency checks, we'll always kick for below updates.
 	kick = true
 
-	if ackAll {
+	if !explicit && ackAll {
 		// Use the original delivery sequence.
 		if p := o.state.Pending[sseq]; dseq > p.Sequence && p.Sequence > 0 {
 			dseq = p.Sequence
