@@ -686,7 +686,8 @@ func s2WriterOptions(cm string) []s2.WriterOption {
 }
 
 // New will setup a new server struct after parsing the options.
-// DEPRECATED: Use NewServer(opts)
+//
+// Deprecated: Use NewServer(opts)
 func New(opts *Options) *Server {
 	s, _ := NewServer(opts)
 	return s
@@ -3009,13 +3010,15 @@ func (s *Server) setBlockProfileRate(rate int) {
 }
 
 // StartHTTPMonitoring will enable the HTTP monitoring port.
-// DEPRECATED: Should use StartMonitoring.
+//
+// Deprecated: Should use StartMonitoring.
 func (s *Server) StartHTTPMonitoring() {
 	s.startMonitoring(false)
 }
 
 // StartHTTPSMonitoring will enable the HTTPS monitoring port.
-// DEPRECATED: Should use StartMonitoring.
+//
+// Deprecated: Should use StartMonitoring.
 func (s *Server) StartHTTPSMonitoring() {
 	s.startMonitoring(true)
 }
