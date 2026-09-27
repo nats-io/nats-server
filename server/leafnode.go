@@ -1415,7 +1415,7 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 			// handshake on our side.
 			pre = make([]byte, 4)
 			c.nc.SetReadDeadline(time.Now().Add(tlsFirstFallback))
-			n, _ := io.ReadFull(c.nc, pre[:])
+			n, _ := io.ReadFull(c.nc, pre)
 			c.nc.SetReadDeadline(time.Time{})
 			// If we get any data (regardless of possible timeout), we will proceed
 			// with the TLS handshake.

@@ -649,7 +649,7 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	if tlsRequired && opts.AllowNonTLS {
 		pre = make([]byte, 4)
 		c.nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.MQTT.TLSTimeout)))
-		n, _ := io.ReadFull(c.nc, pre[:])
+		n, _ := io.ReadFull(c.nc, pre)
 		c.nc.SetReadDeadline(time.Time{})
 		pre = pre[:n]
 		if n > 0 && pre[0] == 0x16 {

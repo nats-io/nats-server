@@ -934,7 +934,7 @@ func (fs *fileStore) genEncryptionKeys(context string) (aek cipher.AEAD, bek cip
 		return nil, nil, nil, nil, fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 	}
 
-	bek, err = genBlockEncryptionKey(sc, seed[:], nonce)
+	bek, err = genBlockEncryptionKey(sc, seed, nonce)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

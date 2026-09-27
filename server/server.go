@@ -3412,7 +3412,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		nc := c.nc
 		c.mu.Unlock()
 		_ = nc.SetReadDeadline(time.Now().Add(tlsFirstFallback))
-		n, _ := io.ReadFull(nc, pre[:])
+		n, _ := io.ReadFull(nc, pre)
 		_ = nc.SetReadDeadline(time.Time{})
 		c.mu.Lock()
 		// If we get any data (regardless of possible timeout), we will proceed
@@ -3443,7 +3443,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 		nc := c.nc
 		c.mu.Unlock()
 		_ = nc.SetReadDeadline(time.Now().Add(secondsToDuration(opts.TLSTimeout)))
-		n, _ := io.ReadFull(nc, pre[:])
+		n, _ := io.ReadFull(nc, pre)
 		_ = nc.SetReadDeadline(time.Time{})
 		c.mu.Lock()
 		pre = pre[:n]

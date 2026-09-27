@@ -2072,7 +2072,7 @@ func (n *raft) loadLastSnapshot() (*snapshot, error) {
 	n.hh.Reset()
 	n.hh.Write(buf[:hoff])
 	var hb [highwayhash.Size64]byte
-	if !bytes.Equal(lchk[:], n.hh.Sum(hb[:0])) {
+	if !bytes.Equal(lchk, n.hh.Sum(hb[:0])) {
 		n.warn("Snapshot corrupt, checksums did not match")
 		return nil, errSnapshotCorrupt
 	}

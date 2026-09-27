@@ -2959,7 +2959,7 @@ VALID:
 		var le = binary.LittleEndian
 		le.PutUint64(b[1:], seq)
 		copy(b[1+8:], reply)
-		o.propose(b[:])
+		o.propose(b)
 		if reply != _EMPTY_ {
 			if o.rsm == nil {
 				o.rsm = make(map[string]resetRequest, 1)
