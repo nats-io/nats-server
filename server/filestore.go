@@ -1810,7 +1810,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 		// Check if this is a delete tombstone.
 		if seq&tbit != 0 {
-			seq = seq &^ tbit
+			seq &^= tbit
 			// Need to process this here and make sure we have accounted for this properly.
 			tombstones = append(tombstones, seq)
 			if maxTombstoneSeq == 0 || seq > maxTombstoneSeq {
@@ -1823,7 +1823,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		fseq := atomic.LoadUint64(&mb.first.seq)
 		// This is an old erased message, or a new one that we can track.
 		if seq == 0 || seq&ebit != 0 || seq < fseq {
-			seq = seq &^ ebit
+			seq &^= ebit
 			if seq >= fseq {
 				updateLast(seq, ts)
 				if mb.msgs == 0 {
@@ -6528,7 +6528,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		if !isDeleted(seq) {
 			// Check for tombstones.
 			if seq&tbit != 0 {
-				seq = seq &^ tbit
+				seq &^= tbit
 				// If this entry is for a lower seq than ours then keep around.
 				// We also check that it is greater than our floor. Floor is zero on normal
 				// calls to compact.
@@ -6762,7 +6762,7 @@ func (mb *msgBlock) flushLoop(fch, qch chan struct{}) {
 					default:
 					}
 					newWaiting := mb.pendingWriteSize()
-					if waited = waited + ts; waited > maxFlushWait || newWaiting <= waiting {
+					if waited += ts; waited > maxFlushWait || newWaiting <= waiting {
 						break
 					}
 					waiting = newWaiting
@@ -7784,7 +7784,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 		// Accounting, do this before stripping ebit, it is ebit aware.
 		mb.updateAccounting(seq, ts, rl)
 		// Strip ebit if set.
-		seq = seq &^ ebit
+		seq &^= ebit
 		// If we have a hole due to skipping many messages, fill it.
 		if len(mb.cache.idx) > 0 && last+1 < seq {
 			for dseq := last + 1; dseq < seq; dseq++ {
@@ -7910,7 +7910,7 @@ func (mb *msgBlock) blkSize() uint64 {
 func (mb *msgBlock) updateAccounting(seq uint64, ts int64, rl uint64) {
 	isDeleted := seq&ebit != 0
 	if isDeleted {
-		seq = seq &^ ebit
+		seq &^= ebit
 	}
 
 	fseq := atomic.LoadUint64(&mb.first.seq)
@@ -8594,7 +8594,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 		// Clear any erase bits.
 		erased := seq&ebit != 0
-		seq = seq &^ ebit
+		seq &^= ebit
 
 		// The sequence needs to only ever move up.
 		if seq <= last {
@@ -11231,7 +11231,7 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 		rl &^= hbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
-			seq = seq &^ tbit
+			seq &^= tbit
 			// Tombstones below the global first seq are irrelevant.
 			// And we only count tombstones below this block's first seq.
 			if seq >= mb.fs.state.FirstSeq && (fseq == 0 || seq < fseq) {
@@ -14655,7 +14655,7 @@ func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.Fi
 func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if sync {
-		flags = flags | os.O_SYNC
+		flags |= os.O_SYNC
 	}
 	dios.acquire()
 	defer dios.release()

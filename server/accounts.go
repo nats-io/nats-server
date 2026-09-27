@@ -2724,7 +2724,7 @@ func (a *Account) addStreamImportWithClaim(account *Account, from, prefix string
 			return ErrStreamImportBadPrefix
 		}
 		if prefix[len(prefix)-1] != btsep {
-			prefix = prefix + string(btsep)
+			prefix += string(btsep)
 		}
 	}
 
