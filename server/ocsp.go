@@ -395,7 +395,7 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 		// This is normally non-nil, but can still be nil here when in tests
 		// or in some embedded scenarios.
 		if cert.Leaf == nil {
-			if len(cert.Certificate) <= 0 {
+			if len(cert.Certificate) == 0 {
 				return nil, nil, fmt.Errorf("no certificate found")
 			}
 			var err error

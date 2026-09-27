@@ -82,7 +82,7 @@ func protoScanFieldValue(typ int, b []byte) (size int, err error) {
 
 func protoScanVarint(b []byte) (v uint64, size int, err error) {
 	var y uint64
-	if len(b) <= 0 {
+	if len(b) == 0 {
 		return 0, 0, errProtoInsufficient
 	}
 	v = uint64(b[0])
