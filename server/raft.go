@@ -4032,7 +4032,7 @@ func (n *raft) tryCommit(index uint64) (bool, error) {
 	acks := len(n.acks[index])
 	// Count the leader if it's still part of membership
 	if n.peers[n.ID()] != nil {
-		acks += 1
+		acks++
 	}
 	if acks < n.qn {
 		return false, nil

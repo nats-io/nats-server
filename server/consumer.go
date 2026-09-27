@@ -4856,7 +4856,7 @@ func (o *consumer) incDeliveryCount(sseq uint64) uint64 {
 	if o.rdc == nil {
 		o.rdc = make(map[uint64]uint64)
 	}
-	o.rdc[sseq] += 1
+	o.rdc[sseq]++
 	return o.rdc[sseq] + 1
 }
 

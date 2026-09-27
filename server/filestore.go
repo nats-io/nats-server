@@ -12959,7 +12959,7 @@ func (fs *fileStore) Snapshot(deadline time.Duration, checkMsgs, includeConsumer
 		return nil, ErrStoreSnapshotInProgress
 	}
 	// Mark us as snapshotting
-	fs.sips += 1
+	fs.sips++
 	fs.mu.Unlock()
 
 	if checkMsgs {

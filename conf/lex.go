@@ -894,7 +894,7 @@ func (lx *lexer) isVariable() bool {
 		return false
 	}
 	if lx.input[lx.start] == '$' {
-		lx.start += 1
+		lx.start++
 		return true
 	}
 	return false
