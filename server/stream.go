@@ -3690,10 +3690,7 @@ const (
 
 // Calculate our backoff based on number of failures.
 func calculateRetryBackoff(fails int) time.Duration {
-	backoff := time.Duration(retryBackOff) * time.Duration(fails*2)
-	if backoff > retryMaximum {
-		backoff = retryMaximum
-	}
+	backoff := min(time.Duration(retryBackOff)*time.Duration(fails*2), retryMaximum)
 	return backoff
 }
 

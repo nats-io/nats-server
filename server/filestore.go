@@ -2844,10 +2844,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			if mb.msgs > 0 {
 				atomic.StoreUint64(&mb.first.seq, seq)
 				needNextFirst = true
-				sz := fileStoreMsgSize(sm.subj, sm.hdr, sm.msg)
-				if sz > mb.bytes {
-					sz = mb.bytes
-				}
+				sz := min(fileStoreMsgSize(sm.subj, sm.hdr, sm.msg), mb.bytes)
 				mb.bytes -= sz
 				bytes += sz
 				mb.msgs--
@@ -7164,10 +7161,7 @@ func (mb *msgBlock) tryExpireCacheLocked() {
 	tns := ats.AccessTime()
 
 	// For the core buffer of messages, we care about reads and writes, but not removes.
-	bufts := mb.llts
-	if mb.lwts > bufts {
-		bufts = mb.lwts
-	}
+	bufts := max(mb.lwts, mb.llts)
 
 	// Check for activity on the cache that would prevent us from expiring.
 	// Both tns and bufts come from ats.AccessTime(), which means bufts can understate
@@ -10002,10 +9996,7 @@ func (fs *fileStore) FastState(state *StreamState) {
 	// Make sure to reset if being re-used.
 	state.Deleted, state.NumDeleted = nil, 0
 	if state.LastSeq > state.FirstSeq {
-		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
-		if state.NumDeleted < 0 {
-			state.NumDeleted = 0
-		}
+		state.NumDeleted = max(int((state.LastSeq-state.FirstSeq+1)-state.Msgs), 0)
 	}
 	state.Consumers = fs.numConsumers()
 	state.NumSubjects = fs.numSubjects()
@@ -10146,10 +10137,7 @@ func (mb *msgBlock) sinceLastWriteActivity() time.Duration {
 	if mb.closed {
 		return 0
 	}
-	last := mb.lwts
-	if mb.lrts > last {
-		last = mb.lrts
-	}
+	last := max(mb.lrts, mb.lwts)
 	return time.Since(time.Unix(0, last).UTC())
 }
 
@@ -11758,10 +11746,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 		defer mb.finishedWithCache()
 	}
 
-	startSlot := int(ss.First - mb.cache.fseq)
-	if startSlot < 0 {
-		startSlot = 0
-	}
+	startSlot := max(int(ss.First-mb.cache.fseq), 0)
 	if startSlot >= len(mb.cache.idx) {
 		ss.First = ss.Last
 		ss.firstNeedsUpdate = false
@@ -11769,10 +11754,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 		return nil
 	}
 
-	endSlot := int(ss.Last - mb.cache.fseq)
-	if endSlot < 0 {
-		endSlot = 0
-	}
+	endSlot := max(int(ss.Last-mb.cache.fseq), 0)
 	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
 		return nil
 	}
@@ -13031,10 +13013,7 @@ func (fs *fileStore) EncodedStreamState(failed uint64, withSources bool) ([]byte
 	// Calculate deleted.
 	var numDeleted int64
 	if fs.state.LastSeq > fs.state.FirstSeq {
-		numDeleted = int64(fs.state.LastSeq-fs.state.FirstSeq+1) - int64(fs.state.Msgs)
-		if numDeleted < 0 {
-			numDeleted = 0
-		}
+		numDeleted = max(int64(fs.state.LastSeq-fs.state.FirstSeq+1)-int64(fs.state.Msgs), 0)
 	}
 
 	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks.

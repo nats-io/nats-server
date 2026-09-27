@@ -2671,15 +2671,9 @@ func (js *jetStream) usageStats() *JetStreamStats {
 	stats.API.Errors = uint64(atomic.LoadInt64(&js.apiErrors))
 	stats.API.Inflight = uint64(atomic.LoadInt64(&js.apiInflight))
 	// Make sure we do not report negative.
-	used := atomic.LoadInt64(&js.memUsed)
-	if used < 0 {
-		used = 0
-	}
+	used := max(atomic.LoadInt64(&js.memUsed), 0)
 	stats.Memory = uint64(used)
-	used = atomic.LoadInt64(&js.storeUsed)
-	if used < 0 {
-		used = 0
-	}
+	used = max(atomic.LoadInt64(&js.storeUsed), 0)
 	stats.Store = uint64(used)
 	stats.HAAssets = s.numRaftNodes()
 	return &stats

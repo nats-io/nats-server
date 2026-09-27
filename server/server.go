@@ -4556,10 +4556,7 @@ func (s *Server) lameDuckMode() {
 		}
 		if batch == 1 || i%batch == 0 {
 			// We pick a random interval which will be at least si/2
-			v := rand.Int64N(si)
-			if v < si/2 {
-				v = si / 2
-			}
+			v := max(rand.Int64N(si), si/2)
 			t.Reset(time.Duration(v))
 			// Sleep for given interval or bail out if kicked by Shutdown().
 			select {

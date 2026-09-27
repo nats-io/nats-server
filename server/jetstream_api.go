@@ -2217,10 +2217,7 @@ func (s *Server) jsStreamInfoRequest(sub *subscription, c *client, a *Account, s
 					offset = len(subjs)
 				}
 
-				end := offset + JSMaxSubjectDetails
-				if end > len(subjs) {
-					end = len(subjs)
-				}
+				end := min(offset+JSMaxSubjectDetails, len(subjs))
 				actualSize := end - offset
 				var sd map[string]uint64
 

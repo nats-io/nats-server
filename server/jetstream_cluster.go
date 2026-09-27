@@ -10548,18 +10548,12 @@ func (cc *jetStreamCluster) selectPeerGroup(r int, cluster string, cfg *StreamCo
 		if ni.stats != nil {
 			switch cfg.Storage {
 			case MemoryStorage:
-				used := ni.stats.ReservedMemory
-				if ni.stats.Memory > used {
-					used = ni.stats.Memory
-				}
+				used := max(ni.stats.Memory, ni.stats.ReservedMemory)
 				if ni.cfg.MaxMemory > int64(used) {
 					available = uint64(ni.cfg.MaxMemory) - used
 				}
 			case FileStorage:
-				used := ni.stats.ReservedStore
-				if ni.stats.Store > used {
-					used = ni.stats.Store
-				}
+				used := max(ni.stats.Store, ni.stats.ReservedStore)
 				if ni.cfg.MaxStore > int64(used) {
 					available = uint64(ni.cfg.MaxStore) - used
 				}

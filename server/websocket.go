@@ -204,10 +204,7 @@ func wsMaxMessageSize(mpay int) uint64 {
 	if mpay <= 0 {
 		mpay = MAX_PAYLOAD_SIZE
 	}
-	limit := uint64(mpay) * wsMaxMsgPayloadMultiple
-	if limit > wsMaxMsgPayloadLimit {
-		limit = wsMaxMsgPayloadLimit
-	}
+	limit := min(uint64(mpay)*wsMaxMsgPayloadMultiple, wsMaxMsgPayloadLimit)
 	return limit
 }
 
@@ -416,10 +413,7 @@ func (r *wsReadInfo) Read(dst []byte) (int, error) {
 	copied := 0
 	rem := len(dst)
 	for buf := r.cbufs[0]; buf != nil && rem > 0; {
-		n := len(buf[r.coff:])
-		if n > rem {
-			n = rem
-		}
+		n := min(len(buf[r.coff:]), rem)
 		copy(dst[copied:], buf[r.coff:r.coff+n])
 		copied += n
 		rem -= n
@@ -1637,10 +1631,7 @@ func (c *client) wsCollapsePtoNB() (net.Buffers, int64) {
 					if endStart {
 						endFrame(fhIdx, total)
 					}
-					total = len(b)
-					if total >= mfs {
-						total = mfs
-					}
+					total = min(len(b), mfs)
 					if endStart {
 						fhIdx = startFrame()
 					}

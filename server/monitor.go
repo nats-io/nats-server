@@ -236,10 +236,7 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 		subs = opts.Subscriptions
 		subsDet = opts.SubscriptionsDetail
-		offset = opts.Offset
-		if offset < 0 {
-			offset = 0
-		}
+		offset = max(opts.Offset, 0)
 		limit = opts.Limit
 		if limit <= 0 {
 			limit = DefaultConnListSize
@@ -1032,10 +1029,7 @@ func (s *Server) Subsz(opts *SubszOptions) (*Subsz, error) {
 
 	if opts != nil {
 		subdetail = opts.Subscriptions
-		offset = opts.Offset
-		if offset < 0 {
-			offset = 0
-		}
+		offset = max(opts.Offset, 0)
 		limit = opts.Limit
 		if limit <= 0 {
 			limit = DefaultSubListSize

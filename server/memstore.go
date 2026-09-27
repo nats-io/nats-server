@@ -2350,10 +2350,7 @@ func (ms *memStore) removeSeqPerSubject(subj string, seq uint64) {
 // Lock should be held.
 func (ms *memStore) recalculateForSubj(subj string, ss *SimpleState) {
 	if ss.firstNeedsUpdate {
-		tseq := ss.First + 1
-		if tseq < ms.state.FirstSeq {
-			tseq = ms.state.FirstSeq
-		}
+		tseq := max(ss.First+1, ms.state.FirstSeq)
 		for ; tseq <= ss.Last; tseq++ {
 			if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 				ss.First = tseq
@@ -2368,10 +2365,7 @@ func (ms *memStore) recalculateForSubj(subj string, ss *SimpleState) {
 		}
 	}
 	if ss.lastNeedsUpdate {
-		tseq := ss.Last - 1
-		if tseq > ms.state.LastSeq {
-			tseq = ms.state.LastSeq
-		}
+		tseq := min(ss.Last-1, ms.state.LastSeq)
 		for ; tseq >= ss.First; tseq-- {
 			if sm := ms.msgs[tseq]; sm != nil && sm.subj == subj {
 				ss.Last = tseq
@@ -2468,10 +2462,7 @@ func (ms *memStore) FastState(state *StreamState) {
 	state.LastSeq = ms.state.LastSeq
 	state.LastTime = ms.state.LastTime
 	if state.LastSeq > state.FirstSeq {
-		state.NumDeleted = int((state.LastSeq - state.FirstSeq + 1) - state.Msgs)
-		if state.NumDeleted < 0 {
-			state.NumDeleted = 0
-		}
+		state.NumDeleted = max(int((state.LastSeq-state.FirstSeq+1)-state.Msgs), 0)
 	}
 	state.Consumers = len(ms.consumers)
 	state.NumSubjects = ms.fss.Size()
@@ -2654,10 +2645,7 @@ func (ms *memStore) EncodedStreamState(failed uint64, withSources bool) ([]byte,
 	version := streamStateVersion
 
 	// Quick calculate num deleted.
-	numDeleted := int((ms.state.LastSeq - ms.state.FirstSeq + 1) - ms.state.Msgs)
-	if numDeleted < 0 {
-		numDeleted = 0
-	}
+	numDeleted := max(int((ms.state.LastSeq-ms.state.FirstSeq+1)-ms.state.Msgs), 0)
 
 	// Encoded is Msgs, Bytes, FirstSeq, LastSeq, Failed, NumDeleted and optional DeletedBlocks.
 	// Calculate the exact encoded size up front so the buffer is allocated once.

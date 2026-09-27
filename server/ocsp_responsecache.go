@@ -623,10 +623,7 @@ func parseOCSPResponseCache(v any) (pcfg *OCSPResponseCacheConfig, retError erro
 			default:
 				return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldTypeConversion, "unexpected type")}
 			}
-			si := time.Duration(at) * time.Second
-			if si < OCSPResponseCacheMinimumSaveInterval {
-				si = OCSPResponseCacheMinimumSaveInterval
-			}
+			si := max(time.Duration(at)*time.Second, OCSPResponseCacheMinimumSaveInterval)
 			pcfg.SaveInterval = si.Seconds()
 		default:
 			return nil, &configErr{tk, fmt.Sprintf(certidp.ErrParsingCacheOptFieldGeneric, mk)}

@@ -7227,10 +7227,7 @@ func (o *consumer) checkStateForInterestStream(ss *StreamState) error {
 	// Start at first stream seq or a previous check floor, whichever is higher.
 	// Note this will really help for interest retention, with WQ the loadNextMsg
 	// gets us a long way already since it will skip deleted msgs not for our filter.
-	fseq := ss.FirstSeq
-	if chkfloor > fseq {
-		fseq = chkfloor
-	}
+	fseq := max(chkfloor, ss.FirstSeq)
 
 	var retryAsflr uint64
 	for seq = fseq; dflr > 0 && seq <= dflr; seq++ {
