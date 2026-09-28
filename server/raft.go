@@ -63,6 +63,7 @@ type RaftNode interface {
 	StepDown(preferred ...string) error
 	SetObserver(isObserver bool)
 	IsObserver() bool
+	SetScaleUp(scaleUp bool)
 	Campaign() error
 	CampaignImmediately() error
 	ID() string
@@ -260,7 +261,7 @@ type raft struct {
 	paused       bool // Whether or not applies are paused
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new to a brand-new group, "empty log" checks can be temporarily relaxed.
-	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
+	scaleUp      bool // The node is a scale up peer that's not a member yet, observer until the leader adds it.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
 	quorumPaused bool // Pause replication and quorum participation to prevent log growth during slow applies.
@@ -346,9 +347,9 @@ type RaftConfig struct {
 	// we know to protect against data loss.
 	Recovering bool
 
-	// ScaleUp identifies the Raft peer set is being scaled up.
+	// ScaleUp identifies this peer is being added to an existing group.
 	// We need to protect against losing state due to the new peers starting with an empty log.
-	// Therefore, these empty servers can't try to become leader, and vote as empty, until they at least have _some_ state.
+	// Therefore, these empty servers can't try to become leader until the leader adds them, and vote as empty until they at least have _some_ state.
 	ScaleUp bool
 
 	// NewTransport creates the transport used for Raft node communication.
@@ -504,6 +505,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		accName:  accName,
 		leadc:    make(chan leadChange, 1),
 		observer: cfg.Observer,
+		scaleUp:  cfg.ScaleUp,
 	}
 
 	if cfg.NewTransport != nil {
@@ -649,15 +651,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
-	if n.pindex == 0 && !cfg.Recovering {
-		if !cfg.ScaleUp {
-			// Only a brand-new group relaxes the empty log checks, a scale up peer's data lives elsewhere.
-			n.initializing = true
-		} else if !cfg.Observer {
-			// A scale up peer with an empty log observes until it gets data from the leader.
-			n.scaleUp = true
-			n.setObserverLocked(true, extUndetermined)
-		}
+	if n.pindex == 0 && !cfg.Recovering && !cfg.ScaleUp {
+		// Only a brand-new group relaxes the empty log checks, a scale up peer's data lives elsewhere.
+		n.initializing = true
 	}
 	n.Unlock()
 
@@ -1357,7 +1353,7 @@ func (n *raft) RescueQuorum(qn int) (prev, cur int, err error) {
 	if n.leader != noLeader {
 		return prev, 0, errRescueLeaderKnown
 	}
-	if n.observer || n.peers[n.id] == nil {
+	if n.observer || n.scaleUp || n.peers[n.id] == nil {
 		return prev, 0, errRescueNotVoting
 	}
 	// Refuse to rescue a server with an empty log. It could never win an
@@ -2834,10 +2830,11 @@ func (n *raft) electTimer() *time.Timer {
 	return n.elect
 }
 
+// IsObserver reports whether we're an observer, or a scale up peer observing until the leader adds us.
 func (n *raft) IsObserver() bool {
 	n.RLock()
 	defer n.RUnlock()
-	return n.observer
+	return n.observer || n.scaleUp
 }
 
 // Sets the state to observer only.
@@ -2849,6 +2846,28 @@ func (n *raft) setObserver(isObserver bool, extSt extensionState) {
 	n.Lock()
 	defer n.Unlock()
 	n.setObserverLocked(isObserver, extSt)
+}
+
+// SetScaleUp marks whether we're a scale up peer that observes until the leader adds us.
+func (n *raft) SetScaleUp(scaleUp bool) {
+	n.Lock()
+	defer n.Unlock()
+	n.setScaleUpLocked(scaleUp)
+}
+
+// Lock should be held.
+func (n *raft) setScaleUpLocked(scaleUp bool) {
+	if n.scaleUp == scaleUp {
+		return
+	}
+	n.scaleUp = scaleUp
+	if !scaleUp {
+		n.debug("Scale up complete")
+		// Skip the observer interval, unless we're still an observer for another reason.
+		if !n.observer {
+			n.resetElect(randElectionTimeout())
+		}
+	}
 }
 
 func (n *raft) setObserverLocked(isObserver bool, extSt extensionState) {
@@ -4640,6 +4659,10 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.cancelCatchup()
 			// Reset our notion of catching up.
 			catchingUp = false
+			// Caught up as a member, a scale up peer was added.
+			if n.peers[n.id] != nil {
+				n.setScaleUpLocked(false)
+			}
 		} else if isNew {
 			var ar *appendEntryResponse
 			var inbox string
@@ -4831,6 +4854,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			}
 
 			if ps, err := decodePeerState(ae.entries[1].Data); err == nil {
+				// The snapshot's membership can be older than the log, scale up is only left once caught up.
 				n.processPeerState(ps)
 				// Also need to copy from client's buffer.
 				ae.entries[0].Data = copyBytes(ae.entries[0].Data)
@@ -4929,7 +4953,7 @@ CONTINUE:
 				// This is us. We need to check if we can become the leader.
 				if maybeLeader == n.id {
 					// If not an observer and not paused we are good to go.
-					if !n.observer && !n.paused {
+					if !n.observer && !n.scaleUp && !n.paused {
 						n.lxfer = true
 						n.xferCampaign()
 					} else if n.paused {
@@ -4942,6 +4966,10 @@ CONTINUE:
 			// Membership takes effect when stored, not when committed.
 			if ps, err := decodePeerState(e.Data); err == nil {
 				n.processPeerState(ps)
+				// The leader's live membership naming us means we were added, a catchup or replay can be stale.
+				if isNew && n.peers[n.id] != nil {
+					n.setScaleUpLocked(false)
+				}
 			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
@@ -4951,6 +4979,10 @@ CONTINUE:
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
 				n.addPeer(newPeer)
+				// Our own live add entry means we were added, a catchup can replay an add that was undone.
+				if isNew && newPeer == n.id {
+					n.setScaleUpLocked(false)
+				}
 			}
 		case EntryRemovePeer:
 			// When receiving or restoring, mark membership as changing.
@@ -5042,14 +5074,9 @@ CONTINUE:
 }
 
 // resetInitializing resets the notion of initializing.
-// If we were scaling up, also leaves observer mode.
 // Lock should be held.
 func (n *raft) resetInitializing() {
 	n.initializing = false
-	if n.scaleUp {
-		n.scaleUp = false
-		n.setObserverLocked(false, extUndetermined)
-	}
 }
 
 // processPeerState is called when a peer state entry is received
@@ -5974,7 +6001,7 @@ func (n *raft) switchToCandidate() {
 
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.
-	if n.observer || n.paused || n.processed < n.commit {
+	if n.observer || n.scaleUp || n.paused || n.processed < n.commit {
 		n.resetElect(minElectionTimeout / 4)
 		return
 	}
