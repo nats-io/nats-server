@@ -3381,10 +3381,14 @@ func (n *raft) addPeer(peer string) {
 // and adjusts cluster size and quorum accordingly.
 // Lock should be held.
 func (n *raft) removePeer(peer string) {
-	if n.removed == nil {
-		n.removed = map[string]time.Time{}
+	// Only unmanaged groups auto-add peers via trackPeer, so only they need
+	// to remember removals to prevent a removed peer from being re-added.
+	if !n.managed {
+		if n.removed == nil {
+			n.removed = map[string]time.Time{}
+		}
+		n.removed[peer] = time.Now()
 	}
-	n.removed[peer] = time.Now()
 
 	delete(n.peers, peer)
 	// Clear observed state if it was still lingering.
@@ -4993,8 +4997,8 @@ func (n *raft) processPeerState(ps *peerState) {
 		}
 	}
 	// Any remaining old nodes are marked as removed, so they can't be
-	// re-added via automatic peer tracking.
-	if len(old) > 0 {
+	// re-added via automatic peer tracking, which only unmanaged groups do.
+	if len(old) > 0 && !n.managed {
 		if n.removed == nil {
 			n.removed = map[string]time.Time{}
 		}
