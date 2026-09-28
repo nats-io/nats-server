@@ -3430,23 +3430,13 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 		return false
 	}
 
+	// Membership takes effect once stored, committing only makes it official.
 	if e.Type == EntryAddPeer {
-		// Track directly, but wait for commit to be official
-		if _, ok := n.peers[peer]; !ok {
-			n.peers[peer] = &lps{}
-			n.adjustClusterSizeAndQuorum()
-		}
-	}
-
-	if e.Type == EntryRemovePeer {
-		// Track directly, but wait for commit to be official
-		if _, ok := n.peers[peer]; ok {
-			delete(n.peers, peer)
-			n.adjustClusterSizeAndQuorum()
-		}
+		n.addPeer(peer)
+	} else {
+		n.removePeer(peer)
 		if n.qn <= 1 {
 			n.tryCommit(n.pindex)
-			return true
 		}
 	}
 	return true
@@ -3967,48 +3957,11 @@ func (n *raft) applyCommit(index uint64) error {
 				})
 			}
 		case EntryPeerState:
-			if n.State() != Leader {
-				if ps, err := decodePeerState(e.Data); err == nil {
-					n.processPeerState(ps)
-				}
-			}
-		case EntryAddPeer:
-			newPeer := string(e.Data)
-			// Skip applying a membership change that was reverted by peer eviction, only valid
-			// if we won the election; a follower must always apply what the leader committed.
-			if n.membChange == nil && n.State() == Leader {
-				n.debug("Skipping reverted membership change adding peer %q", newPeer)
-				continue
-			}
-			n.debug("Added peer %q", newPeer)
-
-			// Store our peer in our global peer map for all peers.
-			peers.LoadOrStore(newPeer, newPeer)
-
-			n.addPeer(newPeer)
-
-			// We pass these up as well.
-			committed = append(committed, e)
-
-			// We are done with this membership change
-			if n.membChange != nil && n.membChange.index == index {
-				n.membChange = nil
-			}
-
-		case EntryRemovePeer:
+			// Took effect when stored, see processAppendEntry.
+		case EntryAddPeer, EntryRemovePeer:
 			peer := string(e.Data)
-			// Skip applying a membership change that was reverted by peer eviction, only valid
-			// if we won the election; a follower must always apply what the leader committed.
-			if n.membChange == nil && n.State() == Leader {
-				n.debug("Skipping reverted membership change removing peer %q", peer)
-				continue
-			}
-			n.debug("Removing peer %q", peer)
-
-			n.removePeer(peer)
-
-			// Remove from string intern map.
-			peers.Delete(peer)
+			// Membership took effect when stored, committing only makes it official.
+			n.debug("Committed membership change %s peer %q", e.Type, peer)
 
 			// We pass these up as well.
 			committed = append(committed, e)
@@ -4019,8 +3972,8 @@ func (n *raft) applyCommit(index uint64) error {
 			}
 
 			// If this is us and we are the leader signal the caller
-			// to attempt to stepdown.
-			if peer == n.id && n.State() == Leader {
+			// to attempt to stepdown, unless we're still a member.
+			if e.Type == EntryRemovePeer && peer == n.id && n.State() == Leader && n.peers[n.id] == nil {
 				return errNodeRemoved
 			}
 		}
@@ -4933,31 +4886,32 @@ CONTINUE:
 					}
 				}
 			}
+		case EntryPeerState:
+			// Membership takes effect when stored, not when committed.
+			if ps, err := decodePeerState(e.Data); err == nil {
+				n.processPeerState(ps)
+			}
 		case EntryAddPeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			if newPeer := string(e.Data); len(newPeer) == idLen {
-				// Track directly, but wait for commit to be official
 				n.membChange = &membChange{index: n.pindex, peer: newPeer}
-				if _, ok := n.peers[newPeer]; !ok {
-					n.peers[newPeer] = &lps{}
-				}
-				n.adjustClusterSizeAndQuorum()
 				// Store our peer in our global peer map for all peers.
 				peers.LoadOrStore(newPeer, newPeer)
+				n.addPeer(newPeer)
 			}
 		case EntryRemovePeer:
 			// When receiving or restoring, mark membership as changing.
 			// Set to the index where this entry was stored (pindex is now this entry's index)
 			if oldPeer := string(e.Data); len(oldPeer) == idLen {
-				// Track directly, but wait for commit to be official
 				ps, ok := n.peers[oldPeer]
 				if !ok {
 					ps = &lps{}
 				}
 				n.membChange = &membChange{index: n.pindex, peer: oldPeer, prev: ps}
-				delete(n.peers, oldPeer)
-				n.adjustClusterSizeAndQuorum()
+				n.removePeer(oldPeer)
+				// Remove from string intern map.
+				peers.Delete(oldPeer)
 			}
 		}
 	}
