@@ -2417,6 +2417,11 @@ func (js *jetStream) monitorCluster() {
 			return
 		case <-aq.ch:
 			ces := aq.pop()
+			// Don't apply entries while shutting down, they replay after restart.
+			if js.isShuttingDown() {
+				aq.recycle(&ces)
+				continue
+			}
 			for _, ce := range ces {
 				if recovering && ru == nil {
 					ru = &recoveryUpdates{

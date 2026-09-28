@@ -9953,6 +9953,72 @@ func TestJetStreamClusterConsumerDeleteRacingGroupRename(t *testing.T) {
 	}
 }
 
+// Meta entries must not be applied while shutting down, and replay after restart.
+func TestJetStreamClusterMetaAppliesSkippedWhileShuttingDown(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	// A follower that's shutting down, as far as the meta monitor is concerned.
+	s := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, s)
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+	n := o.raftNode().(*raft)
+	n.RLock()
+	group, sd := n.group, n.sd
+	n.RUnlock()
+
+	sjs := s.getJetStream()
+	sjs.mu.Lock()
+	sjs.shuttingDown = true
+	sjs.mu.Unlock()
+
+	require_NoError(t, js.DeleteConsumer("TEST", "C"))
+	// The others apply the removal.
+	for _, os := range c.servers {
+		if os == s {
+			continue
+		}
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			if os.lookupRaftNode(group) != nil {
+				return fmt.Errorf("%s still runs the consumer's raft node", os.Name())
+			}
+			return nil
+		})
+	}
+	// The shutting down server doesn't touch what's still running.
+	require_Equal(t, n.State(), Follower)
+	require_True(t, s.lookupRaftNode(group) == n)
+	_, err = os.Stat(sd)
+	require_NoError(t, err)
+
+	// The removal replays after a restart.
+	s.Shutdown()
+	s.WaitForShutdown()
+	s = c.restartServer(s)
+	c.waitOnServerCurrent(s)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if s.lookupRaftNode(group) != nil {
+			return fmt.Errorf("consumer's raft node still registered after restart")
+		}
+		if _, err := os.Stat(sd); !os.IsNotExist(err) {
+			return fmt.Errorf("consumer's raft store still on disk after restart")
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterStreamDeleteRacingGroupRename(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
