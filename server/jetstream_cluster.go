@@ -4962,7 +4962,12 @@ func (s *Server) extendPeerSet(n RaftNode, actual []*Peer, actualPeers, current,
 	if len(candidates) == 0 {
 		return nil
 	}
-	add := s.selectPeerToAdd(n, n.ID(), actual, candidates)
+	add, catchingUp := s.selectPeerToAdd(n, n.ID(), actual, candidates)
+	if catchingUp {
+		// A heartbeat gets a learner to report its progress sooner.
+		n.SendHeartbeat()
+		return mstat(MigrationStatusCatchup, "waiting for peer to catch up before adding it")
+	}
 	if add == _EMPTY_ {
 		// We haven't heard from any candidates, send a heartbeat now to get them to respond
 		// if they were waiting. We'll be signaled right away after a new peer is observed.
@@ -11626,27 +11631,35 @@ func mightBeLivePeer(p *Peer, ourPeerId string, leaderSince *time.Time) bool {
 }
 
 // selectPeerToAdd picks the peer from candidates that is most preferable to
-// add during a migration: the one we heard from most recently. An unheard
-// candidate is only picked if the live members still form a quorum in the
-// grown group, so adding an offline peer can't stall it. Empty if no peer
-// can be added safely right now.
-func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, candidates []string) string {
+// add during a migration: the caught up one we heard from most recently. An
+// unheard candidate is only picked if the live members still form a quorum in
+// the grown group, so adding an offline peer can't stall it. Empty if no peer
+// can be added safely right now, also reporting if that's because a live
+// candidate is still catching up.
+func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, candidates []string) (string, bool) {
 	if len(candidates) == 0 {
-		return _EMPTY_
+		return _EMPTY_, false
 	}
 	online := func(peer string) bool {
 		si, ok := s.nodeToInfo.Load(peer)
 		return ok && si != nil && !si.(nodeInfo).offline
 	}
-	// Prefer the candidate we've heard from most recently.
-	add, last := _EMPTY_, time.Time{}
+	// Prefer the caught up candidate we've heard from most recently.
+	add, last, catchingUp := _EMPTY_, time.Time{}, false
 	for _, peer := range candidates {
-		if ts := n.LastHeardFromFollower(peer); online(peer) && withinLiveWindow(ts) && ts.After(last) {
-			add, last = peer, ts
+		if ts := n.LastHeardFromFollower(peer); online(peer) && withinLiveWindow(ts) {
+			// Only added once caught up as a learner, its vote is then based on current membership.
+			if !n.IsFollowerCaughtUp(peer) {
+				catchingUp = true
+			} else if ts.After(last) {
+				add, last = peer, ts
+			}
 		}
 	}
 	if add != _EMPTY_ {
-		return add
+		return add, false
+	} else if catchingUp {
+		return _EMPTY_, true
 	}
 	// Otherwise, only add a peer if the members we've recently heard from can
 	// still reach quorum after the group has grown.
@@ -11657,9 +11670,9 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 		}
 	}
 	if quorum := (len(current)+1)/2 + 1; live >= quorum {
-		return candidates[0]
+		return candidates[0], false
 	}
-	return _EMPTY_
+	return _EMPTY_, false
 }
 
 // selectStepDownPreferred picks the peer to transfer leadership to before the

@@ -190,6 +190,7 @@ type raft struct {
 
 	removed  map[string]time.Time           // Peers that were removed from the group
 	observed map[string]time.Time           // Peers not in our peer set that we've heard from, only for managed groups
+	learned  map[string]uint64              // Last index a learner acked in our term, only as leader
 	acks     map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
 	pae      map[uint64]*appendEntry        // Pending append entries
 	paeBytes uint64                         // Total byte size of the pending append entries in pae
@@ -269,6 +270,7 @@ type raft struct {
 	observer     bool // The node is observing, i.e. not able to become leader
 	initializing bool // The node is new to a brand-new group, "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is a scale up peer that's not a member yet, observer until the leader adds it.
+	caughtUp     bool // A scale up peer caught up with the leader, its membership is no longer replayed or stale.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
 	quorumPaused bool // Pause replication and quorum participation to prevent log growth during slow applies.
@@ -2606,6 +2608,7 @@ func (n *raft) shutdown() {
 	if n.state.Swap(int32(Closed)) != int32(Closed) {
 		n.leaderState.Store(false)
 		n.leaderSince.Store(nil)
+		n.learned = nil
 		close(n.quit)
 	}
 }
@@ -3463,6 +3466,8 @@ func (n *raft) addPeer(peer string) {
 		// to bump cluster size.
 		n.peers[peer] = &lps{}
 	}
+	// Its progress is tracked as a member from now on.
+	delete(n.learned, peer)
 	// Adjust cluster size and quorum if needed.
 	n.adjustClusterSizeAndQuorum()
 	// Write out our new state.
@@ -3519,17 +3524,21 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	}
 	if e.Type == EntryRemovePeer {
 		n.membChange.prev = ps
+	} else {
+		// The add needs the new quorum, so a sole member can't commit it without the new peer.
+		n.addPeer(peer)
 	}
 	err := n.sendAppendEntryLocked([]*Entry{e}, true)
 	if err != nil {
+		if e.Type == EntryAddPeer {
+			n.removePeer(peer)
+		}
 		n.membChange = nil
 		return false
 	}
 
 	// Membership takes effect once stored, committing only makes it official.
-	if e.Type == EntryAddPeer {
-		n.addPeer(peer)
-	} else {
+	if e.Type == EntryRemovePeer {
 		n.removePeer(peer)
 		if n.qn <= 1 {
 			n.tryCommit(n.pindex)
@@ -4121,6 +4130,12 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 	// Update peer's last index.
 	if ps != nil && ar.index > ps.li {
 		ps.li = ar.index
+	} else if ps == nil && n.managed && ar.term == n.term {
+		// A learner's progress decides when it can be added.
+		if n.learned == nil {
+			n.learned = make(map[string]uint64, 1)
+		}
+		n.learned[ar.peer] = max(n.learned[ar.peer], ar.index)
 	}
 
 	// Ignore items already committed, or skip if this is not about an entry that matches our current term.
@@ -4273,7 +4288,12 @@ func (n *raft) IsFollowerCaughtUp(peer string) bool {
 	}
 	// Requires an ack since becoming leader, so lagging voters don't count right after an election.
 	ps := n.peers[peer]
-	return ps != nil && ps.li > 0 && ps.li >= ps.ci && withinLiveWindow(ps.ts)
+	if ps == nil {
+		// A learner caught up once it acked everything committed in our term.
+		li, ok := n.learned[peer]
+		return ok && li >= n.commit && withinLiveWindow(n.observed[peer])
+	}
+	return ps.li > 0 && ps.li >= ps.ci && withinLiveWindow(ps.ts)
 }
 
 // withinLiveWindow reports whether ts is recent enough for a peer to be considered live.
@@ -4428,6 +4448,8 @@ func (n *raft) createCatchup(ae *appendEntry) string {
 		}
 		signal = n.catchup.signal
 	}
+	// A catchup replays membership that can be stale until it completes.
+	n.caughtUp = false
 	// Snapshot term and index.
 	n.catchup = &catchupState{
 		cterm:  ae.pterm,
@@ -4741,6 +4763,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 			n.cancelCatchup()
 			// Reset our notion of catching up.
 			catchingUp = false
+			n.caughtUp = true
 			// Caught up as a member, a scale up peer was added.
 			if n.peers[n.id] != nil {
 				n.setScaleUpLocked(false)
@@ -5089,6 +5112,10 @@ CONTINUE:
 	// A replayed entry is stored, a restart recovers its commit again.
 	if sub == nil && n.votingMemberLocked() {
 		n.scommit = max(n.scommit, aeCommit)
+	}
+	// A live entry that follows our log means our membership is the leader's.
+	if isNew && !catchingUp {
+		n.caughtUp = true
 	}
 
 	// Apply anything we need here.
@@ -5955,6 +5982,11 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 		voteOk = false
 	}
 
+	// A scale up peer's membership can be replayed and stale until it caught up, it could elect a removed peer.
+	if n.scaleUp && !n.caughtUp {
+		voteOk = false
+	}
+
 	// If we have an empty log, but are initializing.
 	if voteOk && vresp.empty && n.initializing {
 		// Reset notion of having an empty log if we're voting during initialization.
@@ -6139,6 +6171,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.aflr = 0
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
+	n.learned = nil
 	n.lxfer = false
 
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
@@ -6234,6 +6267,8 @@ func (n *raft) switchToLeader() {
 	n.debug("Switching to leader")
 
 	n.lxfer = false
+	// Learner progress only counts from acks in our term.
+	n.learned = nil
 	n.updateLeader(n.id)
 	n.switchState(Leader)
 

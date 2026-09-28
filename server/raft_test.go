@@ -10087,7 +10087,7 @@ func TestNRGScaleUpPeerObserverUntilMember(t *testing.T) {
 			// A scale up peer must never relax the "empty log" checks, data lives elsewhere.
 			require_False(t, n.initializing)
 
-			// We vote flagged as empty, which only counts for a candidate that holds data.
+			// We don't vote before we caught up, our membership could be stale.
 			voteReply := "$TEST"
 			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
 			require_NoError(t, err)
@@ -10102,7 +10102,7 @@ func TestNRGScaleUpPeerObserverUntilMember(t *testing.T) {
 			msg, err := sub.NextMsg(time.Second)
 			require_NoError(t, err)
 			vr := decodeVoteResponse(msg.Data)
-			require_True(t, vr.granted)
+			require_False(t, vr.granted)
 			require_True(t, vr.empty)
 
 			// Only the leader's membership naming us lifts observer mode.
@@ -10360,12 +10360,12 @@ func nrgStaleSnapshotLeader(t *testing.T, s *Server, lid, xid, yid string) *raft
 	require_Equal(t, l.commit, 8)
 	l.RUnlock()
 
-	// Scaling up again, L adds X, committed on its own as the sole member.
+	// Scaling up again, L adds X, which needs X's ack under the new quorum.
 	require_True(t, l.sendMembershipChange(newEntry(EntryAddPeer, []byte(xid))))
 	l.RLock()
 	defer l.RUnlock()
 	require_Equal(t, l.pindex, 9)
-	require_Equal(t, l.commit, 9)
+	require_Equal(t, l.commit, 8)
 	return l
 }
 
@@ -10541,8 +10541,8 @@ func TestNRGScaleUpAddRemoveAddCatchupStaysScaleUp(t *testing.T) {
 	}
 }
 
-// Scale up peers mid-catchup still vote, a caught up member gets elected when the leader is lost.
-func TestNRGScaleUpPeersMidCatchupStillVote(t *testing.T) {
+// A scale up peer only votes once caught up, mid-catchup its membership can be stale.
+func TestNRGScaleUpPeerVotesOnceCaughtUp(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 	s0, s1, s2 := c.servers[0], c.servers[1], c.servers[2]
@@ -10569,19 +10569,68 @@ func TestNRGScaleUpPeersMidCatchupStillVote(t *testing.T) {
 	}
 	a, b := members[0], members[1]
 
-	// X installed L's snapshot at [1:2] before L went down.
-	x, _ := nrgHandNode(t, s2, "X", append(copyStrings(peers), xid), t.TempDir(), t.TempDir(), true, false)
-	defer x.shutdown()
+	// X installs L's snapshot at [1:2].
 	ps := encodePeerState(&peerState{peers, len(peers), extUndetermined})
 	snap := &appendEntry{leader: lid, term: 1, lterm: 1, commit: 2, pterm: 1, pindex: 2, entries: []*Entry{{EntrySnapshot, []byte("snap")}, {EntryPeerState, ps}}}
-	nrgInstallCatchupSnapshot(t, x, &appendEntry{leader: lid, term: 1, commit: 2, pterm: 1, pindex: 3}, snap)
-	require_True(t, x.IsObserver())
+	trigger := &appendEntry{leader: lid, term: 1, commit: 2, pterm: 1, pindex: 3}
+	newX := func() (*raft, *subscription) {
+		x, _ := nrgHandNode(t, s2, "X", append(copyStrings(peers), xid), t.TempDir(), t.TempDir(), true, false)
+		t.Cleanup(x.shutdown)
+		csub := nrgInstallCatchupSnapshot(t, x, trigger, snap)
+		require_True(t, x.IsObserver())
+		return x, csub
+	}
 
+	// Mid-catchup X neither wins nor votes.
+	x, _ := newX()
 	if nrgCanWin(t, sub, x, a, b) {
 		t.Errorf("Scale up peer X could win mid-catchup")
 	}
+	if nrgCanWin(t, sub, a, b, x) {
+		t.Errorf("A won with the vote of scale up peer X mid-catchup")
+	}
+
+	// Once caught up X votes, a leader only adds a peer that caught up as a learner.
+	x, csub := newX()
+	x.processAppendEntry(encode(t, &appendEntry{leader: lid, term: 1, lterm: 1, commit: 2, pterm: 1, pindex: 2, entries: []*Entry{newEntry(EntryAddPeer, []byte(xid))}}), csub)
+	x.processAppendEntry(encode(t, &appendEntry{leader: lid, term: 1, commit: 3, pterm: 1, pindex: 3}), x.aesub)
+	require_False(t, x.IsObserver())
 	if !nrgCanWin(t, sub, a, b, x) {
-		t.Errorf("A couldn't win with the votes of B and scale up peer X")
+		t.Errorf("A couldn't win with the votes of B and caught up X")
+	}
+}
+
+// A scale up peer that replayed a stale membership mustn't vote for a removed peer.
+func TestNRGScaleUpPeerDoesntVoteOnReplayedMembership(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s0, s1, s2 := c.servers[0], c.servers[1], c.servers[2]
+	aid, bid, cid := s0.sys.shash[:idLen], s1.sys.shash[:idLen], s2.sys.shash[:idLen]
+
+	nc, sub := nrgTestSub(t, s0)
+	defer nc.Close()
+
+	// B was removed by A but never learned, it still has {A,B,C} at [1:1].
+	b, _ := nrgHandNode(t, s1, "B", []string{aid, bid, cid}, t.TempDir(), t.TempDir(), false, false)
+	defer b.shutdown()
+	all := encodePeerState(&peerState{[]string{aid, bid, cid}, 3, extUndetermined})
+	b.processAppendEntry(encode(t, &appendEntry{leader: aid, term: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{{EntryPeerState, all}}}), b.aesub)
+
+	// C was removed as well, wiped, and re-added as a scale up peer. Its catchup replays [1:1].
+	cn, _ := nrgHandNode(t, s2, "C", []string{aid, cid}, t.TempDir(), t.TempDir(), true, false)
+	defer cn.shutdown()
+	cn.Lock()
+	cn.createCatchup(&appendEntry{leader: aid, term: 1, commit: 3, pterm: 1, pindex: 3})
+	csub := cn.catchup.sub
+	cn.Unlock()
+	cn.processAppendEntry(encode(t, &appendEntry{leader: aid, term: 1, lterm: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{{EntryPeerState, all}}}), csub)
+	cn.RLock()
+	require_True(t, cn.peers[bid] != nil)
+	cn.RUnlock()
+
+	// B's log is as up to date as C's, only C's vote could elect it.
+	if nrgCanWin(t, sub, b, cn) {
+		t.Errorf("Removed peer B was elected with the vote of scale up peer C")
 	}
 }
 

@@ -9032,17 +9032,21 @@ func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
 			peers[id] = &lps{ts: ts}
 			s.nodeToInfo.Store(id, nodeInfo{})
 		}
+		// Observed learners have caught up, unless a test says otherwise.
+		learned := make(map[string]uint64, len(observed))
 		for id := range observed {
 			s.nodeToInfo.Store(id, nodeInfo{})
+			learned[id] = 1
 		}
-		return &raft{peers: peers, observed: observed}
+		return &raft{peers: peers, observed: observed, learned: learned}
 	}
 	selectFor := func(n *raft, candidates []string) string {
 		var current []*Peer
 		for id, ps := range n.peers {
 			current = append(current, &Peer{ID: id, Last: ps.ts})
 		}
-		return s.selectPeerToAdd(n, "A", current, candidates)
+		add, _ := s.selectPeerToAdd(n, "A", current, candidates)
+		return add
 	}
 
 	// No candidates to add.
@@ -9061,6 +9065,22 @@ func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
 	// A candidate heard too long ago doesn't count as heard.
 	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"B": now.Add(-4 * hbInterval)})
 	require_Equal(t, selectFor(n, []string{"B"}), _EMPTY_)
+
+	// A live candidate is only added once caught up.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"D": now})
+	n.commit = 2
+	add, catchingUp := s.selectPeerToAdd(n, "A", nil, []string{"D"})
+	require_Equal(t, add, _EMPTY_)
+	require_True(t, catchingUp)
+
+	// A live candidate catching up is waited for, rather than adding an unheard one.
+	n = newNode(map[string]time.Time{"A": {}, "B": now, "C": now}, map[string]time.Time{"D": now})
+	n.commit = 2
+	require_Equal(t, selectFor(n, []string{"D", "E"}), _EMPTY_)
+
+	// Once caught up, the live candidate is preferred.
+	n.learned["D"] = 2
+	require_Equal(t, selectFor(n, []string{"D", "E"}), "D")
 
 	// An unheard candidate can't be added to a group that would then require
 	// a quorum larger than its live members, e.g. growing R1 with an offline
