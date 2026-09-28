@@ -9331,6 +9331,114 @@ func TestFileStoreMessageTTL(t *testing.T) {
 	require_Equal(t, ss.Msgs, 0)
 }
 
+func TestFileStoreMessageTTLRemovedOutOfBandDoesNotLeakTHW(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true, AllowRollup: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 10)
+
+	// Remove the messages out of band, the way a rollup or a subject purge does.
+	// This path does not consult the THW, so the entries stay behind.
+	purged, err := fs.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+
+	// Once the TTLs are due, the expiry pass must notice the messages are already
+	// gone and drop the entries, instead of retrying them on every pass forever.
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count = fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
+func TestFileStoreMessageTTLTruncatedBelowDoesNotLeakTHW(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	// Truncate below the last TTL message. LastSeq drops to 5 and the entries for
+	// 6..10 now point past the end of the stream, so removeMsg reports ErrStoreEOF.
+	require_NoError(t, fs.Truncate(5))
+
+	var ss StreamState
+	fs.FastState(&ss)
+	require_Equal(t, ss.LastSeq, 5)
+
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
+func TestFileStoreMessageTTLRemovedOutOfBandPrunedTHWIsPersisted(t *testing.T) {
+	dir := t.TempDir()
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: FileStorage, AllowMsgTTL: true, AllowRollup: true}
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: dir}, cfg)
+	require_NoError(t, err)
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	// Remove out of band and flush, so thw.db on disk still carries the ten entries
+	// and nothing after this point dirties the state except the pruning itself.
+	purged, err := fs.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+	require_NoError(t, fs.forceWriteFullState())
+
+	time.Sleep(time.Second * 2)
+	fs.expireMsgs()
+
+	fs.mu.RLock()
+	count := fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+
+	// A restart must not bring the stale entries back from thw.db.
+	fs.Stop()
+	fs, err = newFileStore(FileStoreConfig{StoreDir: dir}, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	fs.mu.RLock()
+	count = fs.ttls.Count()
+	fs.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
 func TestFileStoreMessageTTLRestart(t *testing.T) {
 	dir := t.TempDir()
 
@@ -12612,6 +12720,39 @@ func TestFileStoreCompactRewritesFileWithSwap(t *testing.T) {
 	require_Equal(t, mbcache.idx[0], 0)
 }
 
+func TestFileStoreCompactSync(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: defaultMediumBlockSize, SyncAlways: true, SyncInterval: time.Hour},
+		StreamConfig{Name: "WAL", Storage: FileStorage},
+	)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// Fill one block past the compact threshold
+	mb := fs.getFirstBlock()
+	msg := make([]byte, 256*1024)
+	var seq, rbytes uint64
+	for rbytes <= compactMinimum {
+		seq, _, err = fs.StoreMsg(_EMPTY_, nil, msg, 0)
+		require_NoError(t, err)
+		mb.mu.RLock()
+		rbytes = mb.rbytes
+		mb.mu.RUnlock()
+	}
+	fs.syncBlocks()
+	require_Equal(t, fs.numMsgBlocks(), 1)
+
+	// Compact to seq so that a new block is written, containing only the last entry.
+	// Verify that with SyncAlways the new block file does not need sync.
+	purged, err := fs.Compact(seq)
+	require_NoError(t, err)
+	require_Equal(t, purged, seq-1)
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	require_LessThan(t, mb.rbytes, rbytes)
+	require_False(t, mb.needSync)
+}
+
 func TestFileStoreIndexCacheBufIdxMismatch(t *testing.T) {
 	const (
 		KindTruncateFull = iota
@@ -15827,4 +15968,136 @@ func TestFileStoreEraseMsgCacheExpiredDuringTombstoneWrite(t *testing.T) {
 		require_True(t, removed)
 	}
 	fs.Stop()
+}
+
+func testFileStoreConcurrentCompaction(t *testing.T, read func(*fileStore, uint64) error) {
+	t.Helper()
+	for _, blocks := range []int{2, 64} {
+		t.Run(fmt.Sprintf("blocks=%d", blocks), func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{
+					StoreDir: t.TempDir(), BlockSize: 1024 * 1024,
+					CacheExpire: time.Hour, SyncInterval: time.Hour,
+				},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: FileStorage, Retention: WorkQueuePolicy},
+			)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// A populated first block gives readers time to overlap the compaction scan.
+			const seq = 4096
+			for range seq {
+				_, _, err := fs.StoreMsg("foo", nil, []byte("hello"), 0)
+				require_NoError(t, err)
+			}
+			for i := 1; i < blocks; i++ {
+				fs.mu.Lock()
+				_, err := fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, []byte("hello"), 0)
+				require_NoError(t, err)
+			}
+			removed, err := fs.RemoveMsg(2)
+			require_NoError(t, err)
+			require_True(t, removed)
+			require_NoError(t, fs.FlushAllPending())
+			require_Equal(t, fs.numMsgBlocks(), blocks)
+			require_NoError(t, read(fs, seq))
+
+			var stop atomic.Bool
+			var reads atomic.Uint64
+			var wg sync.WaitGroup
+			errs := make(chan error, 1)
+			for range 4 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for !stop.Load() {
+						if err := read(fs, seq); err != nil {
+							select {
+							case errs <- err:
+							default:
+							}
+							return
+						}
+						reads.Add(1)
+						runtime.Gosched()
+					}
+				}()
+			}
+			defer func() { stop.Store(true); wg.Wait() }()
+
+			mb := fs.getFirstBlock()
+			for range 25 {
+				// Match syncBlocks' shared store lock and exclusive block lock.
+				fs.mu.RLock()
+				mb.mu.Lock()
+				err := mb.compact()
+				mb.mu.Unlock()
+				fs.mu.RUnlock()
+				require_NoError(t, err)
+				runtime.Gosched()
+			}
+			stop.Store(true)
+			wg.Wait()
+			_, err = fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
+			select {
+			case err := <-errs:
+				t.Fatal(err)
+			default:
+			}
+			require_True(t, reads.Load() > 0)
+			require_NoError(t, read(fs, seq))
+		})
+	}
+}
+
+func TestFileStoreCompactionPreservesConcurrentBlockSelection(t *testing.T) {
+	testFileStoreConcurrentCompaction(t, func(fs *fileStore, seq uint64) error {
+		sm, _, err := fs.LoadNextMsg("", false, seq, nil)
+		if err != nil {
+			return err
+		}
+		if sm.seq != seq {
+			return fmt.Errorf("read starting at %d returned %d", seq, sm.seq)
+		}
+		return nil
+	})
+}
+
+func TestFileStoreCompactionPreservesRedelivery(t *testing.T) {
+	testFileStoreConcurrentCompaction(t, func(fs *fileStore, seq uint64) error {
+		var state StreamState
+		fs.FastState(&state)
+		o := &consumer{
+			srv:       &Server{opts: &Options{}},
+			mset:      &stream{store: fs},
+			cfg:       ConsumerConfig{AckPolicy: AckExplicit},
+			retention: WorkQueuePolicy,
+			sseq:      state.LastSeq + 1,
+			dseq:      2,
+			asflr:     seq - 1,
+			maxdc:     10,
+			pending:   map[uint64]*Pending{seq: {Sequence: 1, Timestamp: time.Now().Add(-time.Minute).UnixNano()}},
+		}
+		o.addToRedeliverQueue(seq)
+		o.mu.Lock()
+		pmsg, dc, err := o.getNextMsg()
+		_, pending := o.pending[seq]
+		_, retry := o.rdc[seq]
+		floor := o.asflr
+		o.mu.Unlock()
+		var delivered uint64
+		if pmsg != nil {
+			delivered = pmsg.seq
+			pmsg.returnToPool()
+		}
+		if err != nil || delivered != seq || dc != 2 || !pending || !retry || floor != seq-1 {
+			return fmt.Errorf("retained redelivery lost: seq=%d deliveries=%d error=%v pending=%v retry=%v ack_floor=%d",
+				delivered, dc, err, pending, retry, floor)
+		}
+		return nil
+	})
 }

@@ -155,7 +155,7 @@ type Info struct {
 	GatewayURL        string   `json:"gateway_url,omitempty"`         // Gateway URL on that server (sent by route's INFO)
 	GatewayCmd        byte     `json:"gateway_cmd,omitempty"`         // Command code for the receiving server to know what to do
 	GatewayCmdPayload []byte   `json:"gateway_cmd_payload,omitempty"` // Command payload when needed
-	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses new $GNR. prefix for mapped replies
+	GatewayNRP        bool     `json:"gateway_nrp,omitempty"`         // Uses the _GR_. prefix for mapped replies
 	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
 
 	// LeafNode Specific
@@ -297,7 +297,7 @@ type Server struct {
 	varzUpdateRouteURLs bool
 
 	// Keeps a sublist of subscriptions attached to leafnode connections
-	// for the $GNR.*.*.*.> subject so that a server can send back a mapped
+	// for the _GR_.> subject so that a server can send back a mapped
 	// gateway reply.
 	gwLeafSubs *Sublist
 
@@ -1469,6 +1469,33 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		s.mu.Unlock()
 		s.addSystemAccountExports(sysAcc)
 		s.mu.Lock()
+		// On reload the system account's exports were rebuilt from the
+		// options above, which dropped the internally added ones (such as
+		// the JetStream API export) until addSystemAccountExports put them
+		// back. Imports resolved in between were left with a nil export,
+		// so re-resolve them now that every export exists again.
+		if reloading {
+			s.accounts.Range(func(_, v any) bool {
+				acc := v.(*Account)
+				acc.mu.Lock()
+				for _, sis := range acc.imports.services {
+					for _, si := range sis {
+						if si.se != nil || si.acc == nil {
+							continue
+						}
+						if si.acc == acc {
+							si.se = acc.getServiceExport(si.to)
+							continue
+						}
+						si.acc.mu.RLock()
+						si.se = si.acc.getServiceExport(si.to)
+						si.acc.mu.RUnlock()
+					}
+				}
+				acc.mu.Unlock()
+				return true
+			})
+		}
 	}
 
 	return awcsti, nil

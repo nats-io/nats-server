@@ -2238,6 +2238,10 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 
 	js.mu.RLock()
 	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+	var ca *consumerAssignment
+	if sa != nil {
+		ca = sa.consumers[consumer]
+	}
 	js.mu.RUnlock()
 
 	if isLeader && sa == nil {
@@ -2254,10 +2258,6 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		return
 	}
 
-	var ca *consumerAssignment
-	if sa.consumers != nil {
-		ca = sa.consumers[consumer]
-	}
 	if ca == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))

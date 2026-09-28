@@ -1297,6 +1297,39 @@ func TestMemStoreAllLastSeqs(t *testing.T) {
 	require_True(t, reflect.DeepEqual(seqs, expected))
 }
 
+func TestMemStoreMessageTTLRemovedOutOfBandDoesNotLeakTHW(t *testing.T) {
+	ms, err := newMemStore(&StreamConfig{Name: "zzz", Subjects: []string{"test.>"}, Storage: MemoryStorage, AllowMsgTTL: true, AllowRollup: true})
+	require_NoError(t, err)
+	defer ms.Stop()
+
+	ttl := int64(1) // 1 second
+
+	for i := 1; i <= 10; i++ {
+		_, _, err = ms.StoreMsg("test.a", nil, nil, ttl)
+		require_NoError(t, err)
+	}
+
+	ms.mu.RLock()
+	count := ms.ttls.Count()
+	ms.mu.RUnlock()
+	require_Equal(t, count, 10)
+
+	// Remove the messages out of band, the way a rollup or a subject purge does.
+	purged, err := ms.PurgeEx("test.a", 0, 0)
+	require_NoError(t, err)
+	require_Equal(t, purged, 10)
+
+	// Once the TTLs are due, the expiry pass must drop the entries for messages
+	// that are already gone instead of retrying them on every pass forever.
+	time.Sleep(time.Second * 2)
+	ms.expireMsgs()
+
+	ms.mu.RLock()
+	count = ms.ttls.Count()
+	ms.mu.RUnlock()
+	require_Equal(t, count, 0)
+}
+
 func TestMemStoreUpdateConfigTTLState(t *testing.T) {
 	cfg := &StreamConfig{
 		Name:     "zzz",

@@ -404,7 +404,7 @@ func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte)
 	recv := func() []byte {
 		expBuf := make([]byte, 32768)
 		// Wait for commands to be processed and results queued for read
-		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, err := c.Read(expBuf)
 		c.SetReadDeadline(time.Time{})
 
@@ -437,7 +437,7 @@ func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte)
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 

@@ -2369,6 +2369,10 @@ func (s *Server) clientHasMovedToDifferentAccount(c *client) bool {
 		nu *NkeyUser
 		u  *User
 	)
+	// In operator mode the account comes from the JWT, not config
+	if s.trustedKeys != nil {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opts.Nkey != _EMPTY_ {

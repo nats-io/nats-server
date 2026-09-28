@@ -585,6 +585,58 @@ func TestAuthCalloutMultiAccounts(t *testing.T) {
 	require_True(t, userInfo.Account == "BAZ")
 }
 
+func TestAuthCalloutNotInvokedOnAccountMaxConnections(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: ZZ
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			FOO {
+				users [ {user: "foo", password: "pwd"} ]
+				limits { max_connections: 1 }
+			}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Username == "foo" && opts.Password == "pwd" {
+			ujwt := createAuthUser(t, user, _EMPTY_, "FOO", "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+		} else {
+			m.Respond(nil)
+		}
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	// The first connection takes the only slot for FOO. Since no allowed_accounts
+	// are set, every account is delegated, so this one goes through the callout.
+	nc := at.Connect(nats.UserInfo("foo", "pwd"))
+	defer nc.Close()
+	require_Equal(t, atomic.LoadUint32(&callouts), 1)
+
+	// The second connection has valid credentials, but the account is full.
+	// This must be rejected with the max connections error and must not be
+	// delegated to the auth callout service.
+	_, err := at.NewClient(nats.UserInfo("foo", "pwd"))
+	require_Error(t, err)
+	require_Contains(t, err.Error(), ErrTooManyAccountConnections.Error())
+	// The callout request is sent asynchronously, so give it a moment to
+	// (not) arrive before checking.
+	time.Sleep(250 * time.Millisecond)
+	require_Equal(t, atomic.LoadUint32(&callouts), 1)
+}
+
 func TestAuthCalloutAllowedAccounts(t *testing.T) {
 	conf := `
 		listen: "127.0.0.1:-1"
