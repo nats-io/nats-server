@@ -9223,3 +9223,52 @@ func TestNRGCachePendingEntryBytesAccounting(t *testing.T) {
 	require_Len(t, len(n.pae), 0)
 	require_Equal(t, n.paeBytes, 0)
 }
+
+func TestNRGCatchupSnapshotClearsCoveredMembershipChange(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R"   // "nats-0"
+	oldPeer := "yrzKKRBu" // "nats-1"
+	n.Lock()
+	n.addPeer(nats0)
+	n.addPeer(oldPeer)
+	n.Unlock()
+	require_Len(t, len(n.peers), 3)
+
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: []*Entry{newEntry(EntryNormal, esm)}})
+	aeRemovePeer := encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 1, pindex: 1, entries: []*Entry{newEntry(EntryRemovePeer, []byte(oldPeer))}})
+	n.processAppendEntry(aeMsg, n.aesub)
+	n.processAppendEntry(aeRemovePeer, n.aesub)
+	require_Equal(t, n.pindex, 2)
+	require_True(t, n.MembershipChangeInProgress())
+	require_Equal(t, n.membChange.index, 2)
+
+	// The leader is way ahead, this triggers catchup.
+	aeTriggerCatchup := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: nil})
+	n.processAppendEntry(aeTriggerCatchup, n.aesub)
+	require_True(t, n.catchup != nil)
+
+	// The leader catches us up with a snapshot at index 100 whose peer state already
+	// reflects the removal. Index 2 is below the snapshot, so it will never be applied.
+	snapshotEntries := []*Entry{
+		newEntry(EntrySnapshot, nil),
+		newEntry(EntryPeerState, encodePeerState(&peerState{[]string{n.id, nats0}, 2, n.extSt})),
+	}
+	aeCatchupSnapshot := encode(t, &appendEntry{leader: nats0, term: 1, commit: 100, pterm: 1, pindex: 100, entries: snapshotEntries})
+	n.processAppendEntry(aeCatchupSnapshot, n.catchup.sub)
+	require_Equal(t, n.commit, 100)
+	_, ok := n.peers[oldPeer]
+	require_False(t, ok)
+	require_Equal(t, n.csz, 2)
+
+	// The change is committed as far as we're concerned, it must not linger.
+	require_False(t, n.MembershipChangeInProgress())
+	require_True(t, n.membChange == nil)
+
+	// And if we become leader we can still change membership.
+	n.term = 2
+	n.switchToLeader()
+	require_NoError(t, n.ProposeRemovePeer(nats0))
+}
