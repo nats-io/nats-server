@@ -13281,3 +13281,130 @@ func TestLeafNodeAccountLeafListReleasesClosedConnections(t *testing.T) {
 		require_True(t, c == nil)
 	}
 }
+
+func TestLeafNodeInterestLeakOnConcurrentClose(t *testing.T) {
+	const (
+		workers    = 8
+		iterations = 500
+		subsPerCon = 64
+	)
+
+	oa := DefaultOptions()
+	oa.ServerName = "HUB"
+	oa.LeafNode.Host = "127.0.0.1"
+	oa.LeafNode.Port = -1
+	a := RunServer(oa)
+	defer a.Shutdown()
+
+	ln, _ := runSolicitLeafServer(oa)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, a)
+	checkLeafNodeConnected(t, ln)
+
+	// A leafnode reconnect rebuilds the smap from the account sublist and would
+	// clear the leak, so pin the connection being measured.
+	leafsz, err := ln.Leafz(&LeafzOptions{})
+	require_NoError(t, err)
+	require_Equal(t, leafsz.NumLeafs, 1)
+	leafID := leafsz.Leafs[0].ID
+
+	// Interest on the hub that belongs to the test, from the hub's own sublist.
+	// This is the reference the leafnode's smap has to converge to.
+	hubInterest := func() []string {
+		acc := a.GlobalAccount()
+		var subs []*subscription
+		acc.sl.localSubs(&subs, false)
+		var res []string
+		for _, sub := range subs {
+			if subj := string(sub.subject); strings.HasPrefix(subj, "foo.") {
+				res = append(res, subj)
+			}
+		}
+		return res
+	}
+
+	// Interest the leafnode has been told about by the hub, for the test's subjects.
+	leafInterest := func() ([]string, error) {
+		leafsz, err := ln.Leafz(&LeafzOptions{Subscriptions: true})
+		if err != nil {
+			return nil, err
+		}
+		if leafsz.NumLeafs != 1 {
+			return nil, fmt.Errorf("Expected 1 leafnode connection, got %v", leafsz.NumLeafs)
+		}
+		lz := leafsz.Leafs[0]
+		if lz.ID != leafID {
+			return nil, fmt.Errorf("Leafnode reconnected, its smap was rebuilt from the account sublist")
+		}
+		var res []string
+		for _, subj := range lz.Subs {
+			if strings.HasPrefix(subj, "foo.") {
+				res = append(res, subj)
+			}
+		}
+		return res, nil
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				// The kick races the client's own writes, so silence the
+				// resulting write errors.
+				nc, err := nats.Connect(a.ClientURL(), nats.NoReconnect(),
+					nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
+				if err != nil {
+					t.Errorf("Error connecting: %v", err)
+					return
+				}
+				cid, _ := nc.GetClientID()
+				// Queue a batch of SUBs. nats.go's flusher writes them out as
+				// a single buffer, and the hub's readloop processes them one
+				// by one, each one going through updateLeafNodesEx.
+				for s := 0; s < subsPerCon; s++ {
+					if _, err := nc.Subscribe(fmt.Sprintf("foo.%d.%d.%d", w, i, s), func(*nats.Msg) {}); err != nil {
+						t.Errorf("Error subscribing: %v", err)
+						nc.Close()
+						return
+					}
+				}
+				// Close the connection from a different goroutine than its
+				// readloop while the batch is (likely) still in flight.
+				// clearAccountSubs then sends the -1 for every sub in c.subs.
+				if err := a.DisconnectClientByID(cid); err != nil {
+					t.Errorf("Error kicking client %d: %v", cid, err)
+				}
+				nc.Close()
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// The hub must have dropped all of the kicked clients' subscriptions.
+	checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+		if subs := hubInterest(); len(subs) != 0 {
+			return fmt.Errorf("Hub still has %d subscriptions, e.g. %q", len(subs), subs[0])
+		}
+		return nil
+	})
+
+	// And the leafnode must have been told about that. Nothing is sending
+	// updates anymore, so whatever is left after a grace period is stale.
+	var leaked []string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		subs, err := leafInterest()
+		require_NoError(t, err)
+		leaked = subs
+		if len(leaked) == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(leaked) > 0 {
+		n := min(len(leaked), 10)
+		t.Fatalf("Leafnode has stale interest on %d subjects the hub no longer has, e.g. %v", len(leaked), leaked[:n])
+	}
+}

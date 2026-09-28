@@ -1429,11 +1429,13 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 	// This processing needs to be after we swap in the real accounts above.
 	for acc, sids := range siMap {
 		c := acc.ic
+		// Subscription propagation takes the server lock. Do not hold it
+		// while waiting for the internal client's subscription mutex.
+		s.mu.Unlock()
 		for _, sid := range sids {
 			c.processUnsub(sid)
 		}
 		acc.addAllServiceImportSubs()
-		s.mu.Unlock()
 		s.registerSystemImports(acc)
 		s.mu.Lock()
 	}

@@ -272,6 +272,7 @@ type client struct {
 	msubs      int32
 	mcl        int32
 	mu         sync.RWMutex
+	subMu      sync.Mutex // Serializes subscription registration, propagation, and removal.
 	cid        uint64
 	start      time.Time
 	nonce      []byte
@@ -3109,6 +3110,9 @@ func (c *client) processSub(subject, queue, bsid []byte, cb msgHandler, noForwar
 }
 
 func (c *client) processSubEx(subject, queue, bsid []byte, cb msgHandler, noForward, si, rsi bool) (*subscription, error) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	// Create the subscription
 	sub := &subscription{client: c, subject: subject, queue: queue, sid: bsid, icb: cb, si: si, rsi: rsi}
 
@@ -3505,45 +3509,64 @@ func queueMatches(queue string, qsubs [][]*subscription) bool {
 	return false
 }
 
-// Low level unsubscribe for a given client.
+// Unsubscribe and retract remote interest after any in-flight registration.
 func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool) {
 	if s := c.srv; s != nil && s.isShuttingDown() {
 		return
 	}
 
+	c.subMu.Lock()
 	c.mu.Lock()
+	if sub.isClosed() {
+		c.mu.Unlock()
+		c.subMu.Unlock()
+		return
+	}
 	if !force && sub.max > 0 && sub.nm < sub.max {
 		c.Debugf("Deferring actual UNSUB(%s): %d max, %d received", sub.subject, sub.max, sub.nm)
 		c.mu.Unlock()
+		c.subMu.Unlock()
 		return
 	}
-
 	if c.trace {
 		c.traceOp("<-> %s", "DELSUB", sub.sid)
 	}
-
-	// Remove accounting if requested. This will be false when we close a connection
-	// with open subscriptions.
-	if remove {
+	if remove && c.subs[bytesToString(sub.sid)] == sub {
 		delete(c.subs, bytesToString(sub.sid))
-		if acc != nil {
-			acc.sl.Remove(sub)
-		}
-	}
-
-	// Check to see if we have shadow subscriptions.
-	var updateRoute bool
-	var isSpokeLeaf bool
-	shadowSubs := sub.shadow
-	sub.shadow = nil
-	if len(shadowSubs) > 0 {
-		isSpokeLeaf = c.isSpokeLeafNode()
-		updateRoute = !isSpokeLeaf && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF || c.kind == JETSTREAM) && c.srv != nil
 	}
 	sub.close()
 	c.mu.Unlock()
+	c.removeAccountSubs(acc, []*subscription{sub})
+	c.subMu.Unlock()
+	c.checkSubReverseEntry(acc, sub)
+}
 
-	// Process shadow subs if we have them.
+// Cleanup for a subscription whose removal has already been claimed. Its
+// registration and any shadow reload have finished before this is called.
+func (c *client) removeSubShadows(sub *subscription) {
+	c.mu.Lock()
+	shadowSubs := sub.shadow
+	sub.shadow = nil
+	c.mu.Unlock()
+	c.removeShadowSubs(shadowSubs)
+}
+
+// Reverse-entry cleanup can unsubscribe internal clients, so run it outside subMu.
+func (c *client) checkSubReverseEntry(acc *Account, sub *subscription) {
+	if acc != nil && !isReservedReply(sub.subject) {
+		acc.checkForReverseEntry(string(sub.subject), nil, true)
+	}
+}
+
+func (c *client) removeShadowSubs(shadowSubs []*subscription) {
+	if len(shadowSubs) == 0 {
+		return
+	}
+	c.mu.RLock()
+	isSpokeLeaf := c.isSpokeLeafNode()
+	updateRoute := !isSpokeLeaf && (c.kind == CLIENT || c.kind == SYSTEM || c.kind == LEAF || c.kind == JETSTREAM) && c.srv != nil
+	c.mu.RUnlock()
+
 	for _, nsub := range shadowSubs {
 		if err := nsub.im.acc.sl.Remove(nsub); err != nil {
 			c.Debugf("Could not remove shadow import subscription for account %q", nsub.im.acc.Name)
@@ -3553,12 +3576,6 @@ func (c *client) unsubscribe(acc *Account, sub *subscription, force, remove bool
 		} else if isSpokeLeaf {
 			nsub.im.acc.updateLeafNodesEx(nsub, -1, true)
 		}
-	}
-
-	// Now check to see if this was part of a respMap entry for service imports.
-	// We can skip subscriptions on reserved replies.
-	if acc != nil && !isReservedReply(sub.subject) {
-		acc.checkForReverseEntry(string(sub.subject), nil, true)
 	}
 }
 
@@ -3585,12 +3602,7 @@ func (c *client) processUnsub(arg []byte) error {
 	// Indicate activity.
 	c.in.subs++
 
-	// Grab connection type.
-	kind := c.kind
-	srv := c.srv
 	var acc *Account
-
-	updateGWs := false
 	if sub, ok = c.subs[string(sid)]; ok {
 		acc = c.acc
 		if max > 0 && max > sub.nm {
@@ -3600,7 +3612,6 @@ func (c *client) processUnsub(arg []byte) error {
 			sub.max = 0
 			unsub = true
 		}
-		updateGWs = srv.gateway.enabled
 	}
 	c.mu.Unlock()
 
@@ -3610,14 +3621,6 @@ func (c *client) processUnsub(arg []byte) error {
 
 	if unsub {
 		c.unsubscribe(acc, sub, false, true)
-		if acc != nil && (kind == CLIENT || kind == SYSTEM || kind == ACCOUNT || kind == JETSTREAM) {
-			srv.updateRouteSubscriptionMap(acc, sub, -1)
-			if updateGWs {
-				srv.gatewayUpdateSubInterest(acc.Name, sub, -1)
-			}
-		}
-		// Now check on leafnode updates.
-		acc.updateLeafNodes(sub, -1)
 	}
 
 	return nil
@@ -3933,27 +3936,17 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 			// We handle these slightly differently.
 			defer client.removeReplySub(sub)
 		} else {
-			// For routing..
-			shouldForward := client.kind == CLIENT || client.kind == SYSTEM && client.srv != nil
 			// If we are at the exact number, unsubscribe but
 			// still process the message in hand, otherwise
 			// unsubscribe and drop message on the floor.
 			if sub.nm == sub.max {
 				client.Debugf("Auto-unsubscribe limit of %d reached for sid '%s'", sub.max, sub.sid)
-				// Due to defer, reverse the code order so that execution
-				// is consistent with other cases where we unsubscribe.
-				if shouldForward {
-					defer srv.updateRemoteSubscription(client.acc, sub, -1)
-				}
 				defer client.unsubscribe(client.acc, sub, true, true)
 			} else if sub.nm > sub.max {
 				client.Debugf("Auto-unsubscribe limit [%d] exceeded", sub.max)
 				mt.addEgressEvent(client, sub, errMsgTraceAutoSubExceeded)
 				client.mu.Unlock()
 				client.unsubscribe(client.acc, sub, true, true)
-				if shouldForward {
-					srv.updateRemoteSubscription(client.acc, sub, -1)
-				}
 				return false
 			}
 		}
@@ -6210,16 +6203,13 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 	}
 	c.mu.Unlock()
 
-	// This list is all subs who are allowed and we need to check accounts.
+	// Shadow replacement must complete before close can remove its interest.
 	for _, sub := range subs {
-		c.mu.Lock()
-		oldShadows := sub.shadow
-		sub.shadow = nil
-		c.mu.Unlock()
-		c.addShadowSubscriptions(acc, sub)
-		for _, nsub := range oldShadows {
-			nsub.im.acc.sl.Remove(nsub)
+		c.subMu.Lock()
+		if !sub.isClosed() {
+			c.reloadSubShadows(acc, sub)
 		}
+		c.subMu.Unlock()
 	}
 
 	// Unsubscribe all that need to be removed and report back to client and logs.
@@ -6233,6 +6223,16 @@ func (c *client) processSubsOnConfigReload(awcsti map[string]struct{}) {
 			srv.Noticef("Removed sub %q (sid %q) for %s - not authorized", sub.subject, sub.sid, c.getAuthUser())
 		}
 	}
+}
+
+// The caller holds subMu, so removal cannot race shadow replacement.
+func (c *client) reloadSubShadows(acc *Account, sub *subscription) {
+	c.mu.Lock()
+	oldShadows := sub.shadow
+	sub.shadow = nil
+	c.mu.Unlock()
+	c.addShadowSubscriptions(acc, sub)
+	c.removeShadowSubs(oldShadows)
 }
 
 // Allows us to count up all the queue subscribers during close.
@@ -6312,8 +6312,8 @@ func (c *client) closeConnection(reason ClosedState) {
 		}
 	}
 
-	// Now that we are done with subscriptions, clear the field so that the
-	// connection can be released and gc'ed.
+	// Cleanup owns a snapshot of the subscriptions, even when deferred, so
+	// the connection no longer needs to retain the map.
 	if kind == CLIENT || kind == LEAF {
 		c.mu.Lock()
 		c.subs = nil
@@ -6334,6 +6334,7 @@ func (c *client) closeConnection(reason ClosedState) {
 // populated for saveClosedClient; otherwise c.subs is cleared and c.acc
 // registered back to the global account.
 // Client lock MUST NOT be held on entry.
+// May be called with subMu held; in that case accounting cleanup is deferred.
 func (c *client) clearAccountSubs(close bool) {
 	c.mu.Lock()
 	kind := c.kind
@@ -6349,24 +6350,61 @@ func (c *client) clearAccountSubs(close bool) {
 	// it will be needed in saveClosedClient (which has been started as a
 	// go routine in markConnAsClosed). Cleanup will be done there.
 	for _, sub := range c.subs {
-		// Auto-unsubscribe subscriptions must be unsubscribed forcibly.
-		sub.max = 0
-		sub.close()
-		subs = append(subs, sub)
 		if !close {
 			delete(c.subs, string(sub.sid))
 		}
+		if sub.isClosed() {
+			continue
+		}
+		// Stop delivery immediately. Propagation cleanup waits for subMu below.
+		sub.max = 0
+		sub.close()
+		subs = append(subs, sub)
 	}
-	spoke := c.isSpokeLeafNode()
 	c.mu.Unlock()
+	cleanup := func() {
+		c.removeAccountSubs(acc, subs)
+		c.subMu.Unlock()
+		for _, sub := range subs {
+			c.checkSubReverseEntry(acc, sub)
+		}
+	}
+	if len(subs) > 0 {
+		if c.subMu.TryLock() {
+			cleanup()
+		} else {
+			// Close may be called by the goroutine registering a subscription.
+			// Let it finish propagating interest before retracting this snapshot.
+			go func() {
+				c.subMu.Lock()
+				cleanup()
+			}()
+		}
+	}
+
+	if !close {
+		// Register back to global account, mimicking the state after client initialization.
+		c.registerWithAccount(srv.globalAccount())
+	}
+}
+
+// removeAccountSubs retracts a claimed set of subscriptions. The caller holds
+// subMu, and marks each subscription closed under mu before handing it here.
+// Keep removals and queue updates batched when closing a connection.
+func (c *client) removeAccountSubs(acc *Account, subs []*subscription) {
+	if acc == nil || len(subs) == 0 {
+		return
+	}
+	c.mu.RLock()
+	kind, srv, spoke := c.kind, c.srv, c.isSpokeLeafNode()
+	c.mu.RUnlock()
 
 	acc.sl.RemoveBatch(subs)
 
 	if srv != nil {
 		qsubs := map[string]*qsub{}
 		for _, sub := range subs {
-			// Call unsubscribe here to cleanup shadow subscriptions and such.
-			c.unsubscribe(acc, sub, true, false)
+			c.removeSubShadows(sub)
 			// Update route as normal for a normal subscriber.
 			if sub.queue == nil {
 				if !spoke {
@@ -6402,11 +6440,6 @@ func (c *client) clearAccountSubs(close bool) {
 			}
 			acc.updateLeafNodes(esub.sub, -esub.n)
 		}
-	}
-
-	if !close {
-		// Register back to global account, mimicking the state after client initialization.
-		c.registerWithAccount(srv.globalAccount())
 	}
 }
 

@@ -2921,6 +2921,9 @@ func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 
 // processLeafSub will process an inbound sub request for the remote leaf node.
 func (c *client) processLeafSub(argo []byte) (err error) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	// Indicate activity.
 	c.in.subs++
 
@@ -3088,8 +3091,6 @@ func (c *client) processLeafUnsub(arg []byte) error {
 	// Indicate any activity, so pub and sub or unsubs.
 	c.in.subs++
 
-	srv := c.srv
-
 	c.mu.Lock()
 	if c.isClosed() {
 		c.mu.Unlock()
@@ -3105,7 +3106,6 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		return nil
 	}
 
-	spoke := c.isSpokeLeafNode()
 	// We store local subs by account and subject and optionally queue name.
 	// LS- will have the arg exactly as the key.
 	sub, ok := c.subs[string(arg)]
@@ -3114,23 +3114,9 @@ func (c *client) processLeafUnsub(arg []byte) error {
 		c.mu.Unlock()
 		return nil
 	}
-	delta := int32(1)
-	if len(sub.queue) > 0 {
-		delta = sub.qw
-	}
 	c.mu.Unlock()
 
 	c.unsubscribe(acc, sub, true, true)
-	if !spoke {
-		// If we are routing subtract from the route map for the associated account.
-		srv.updateRouteSubscriptionMap(acc, sub, -delta)
-		// Gateways
-		if srv.gateway.enabled {
-			srv.gatewayUpdateSubInterest(acc.Name, sub, -delta)
-		}
-	}
-	// Now check on leafnode updates for other leaf nodes.
-	acc.updateLeafNodes(sub, -delta)
 	return nil
 }
 
