@@ -45,6 +45,7 @@ type RaftNode interface {
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
+	SnapshotInCurrentTerm() bool
 	SendHeartbeat()
 	Applied(index uint64) (entries uint64, bytes uint64)
 	Processed(index uint64, applied uint64) (entries uint64, bytes uint64)
@@ -245,6 +246,7 @@ type raft struct {
 	csync   bool     // Sync the commit file after writing it
 	scommit uint64   // Commit a restart recovers from the stored log and snapshot alone
 	wcommit uint64   // Commit last written to the commit file
+	sterm   uint64   // Term in which we last installed a snapshot
 
 	catchup  *catchupState               // For when we need to catch up as a follower.
 	progress map[string]*ipQueue[uint64] // For leader or server catching up a follower.
@@ -1724,6 +1726,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	}
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
+	n.sterm = n.term
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		return err
@@ -1977,6 +1980,13 @@ func (n *raft) NeedSnapshot() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.snapfile == _EMPTY_ && n.applied > 0
+}
+
+// SnapshotInCurrentTerm returns whether we installed a snapshot in the current term since starting.
+func (n *raft) SnapshotInCurrentTerm() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.snapfile != _EMPTY_ && n.sterm == n.term
 }
 
 const (

@@ -5024,14 +5024,19 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	if n.NeedSnapshot() {
+	// Also when growing from one after a restart, our store can hold writes our log doesn't.
+	needSnapshot := n.NeedSnapshot()
+	members := peerIDs(n.Peers())
+	growing := len(members) == 1 && slices.ContainsFunc(desiredPeers, func(p string) bool { return !slices.Contains(members, p) })
+	if needSnapshot || (growing && !n.SnapshotInCurrentTerm()) {
 		if err := mset.flushAllPending(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
 			}
 			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
+		// Best effort when growing, nothing may have been applied since the last snapshot.
+		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil && (needSnapshot || !errors.Is(err, errNoSnapAvailable)) {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
 		// The snapshot is installed, continue right away so new peers can be added
