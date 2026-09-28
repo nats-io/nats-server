@@ -10019,6 +10019,51 @@ func TestJetStreamClusterMetaAppliesSkippedWhileShuttingDown(t *testing.T) {
 	})
 }
 
+// The stop gap cleanup of a consumer removal must delete a running Raft node, not just its store.
+func TestJetStreamClusterConsumerRemovalStopGapDeletesRunningNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	s := c.consumerLeader(globalAccountName, "TEST", "C")
+	require_NotNil(t, s)
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+	n := o.raftNode().(*raft)
+	require_Equal(t, n.State(), Leader)
+	n.RLock()
+	sd := n.sd
+	n.RUnlock()
+
+	// A removal for a consumer that can't be looked up, but names the running node's group.
+	sjs := s.getJetStream()
+	sjs.mu.RLock()
+	ca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	sjs.mu.RUnlock()
+	require_NotNil(t, ca)
+	rca := &consumerAssignment{
+		Client: ca.Client, Created: ca.Created, Stream: "TEST", Name: "GONE",
+		Group: &raftGroup{Name: ca.Group.Name, Peers: copyStrings(ca.Group.Peers)},
+	}
+	sjs.processClusterDeleteConsumer(rca, false)
+
+	// The node is gone along with its store, not just the store.
+	require_Equal(t, n.State(), Closed)
+	require_True(t, n.IsDeleted())
+	_, err = os.Stat(sd)
+	require_True(t, os.IsNotExist(err))
+	require_True(t, s.lookupRaftNode(ca.Group.Name) == nil)
+}
+
 func TestJetStreamClusterStreamDeleteRacingGroupRename(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
