@@ -4123,7 +4123,7 @@ func TestNRGTrackPeerAutoAddOnlyUnmanaged(t *testing.T) {
 	require_False(t, n.LastHeardFromFollower(nats1).IsZero())
 }
 
-func TestNRGInitializeAndScaleUp(t *testing.T) {
+func TestNRGInitializeEmptyVote(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()
 
@@ -4137,8 +4137,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	aeMsg := encode(t, &appendEntry{leader: nats0, term: 1, commit: 1, pterm: 0, pindex: 0, entries: entries})
 
 	require_True(t, n.initializing)
-	n.scaleUp = true
-	n.SetObserver(true)
 	require_Equal(t, n.term, 0)
 
 	voteReply := "$TEST"
@@ -4156,8 +4154,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	require_Equal(t, n.term, 1)
 	require_Equal(t, n.vote, nats0)
 	require_True(t, n.initializing)
-	require_True(t, n.scaleUp)
-	require_True(t, n.observer)
 
 	msg, err := sub.NextMsg(time.Second)
 	require_NoError(t, err)
@@ -4165,12 +4161,10 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	require_True(t, vr.granted)
 	require_False(t, vr.empty)
 
-	// Processing an append entry resets scale up and puts us out of observer mode.
+	// Processing an append entry resets initializing.
 	n.processAppendEntry(aeMsg, n.aesub)
 	require_Equal(t, n.pindex, 1)
 	require_False(t, n.initializing)
-	require_False(t, n.scaleUp)
-	require_False(t, n.observer)
 
 	// Simulate a reset.
 	n.resetWAL()
@@ -4190,8 +4184,6 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 
 	// Reset to check if snapshot on catchup can also reset this.
 	n.initializing = true
-	n.scaleUp = true
-	n.SetObserver(true)
 	snapshotEntries := []*Entry{
 		newEntry(EntrySnapshot, nil),
 		newEntry(EntryPeerState, encodePeerState(&peerState{n.peerNames(), n.csz, n.extSt})),
@@ -4200,14 +4192,12 @@ func TestNRGInitializeAndScaleUp(t *testing.T) {
 	n.createCatchup(aeSnapshot)
 	n.processAppendEntry(aeSnapshot, n.catchup.sub)
 	require_False(t, n.initializing)
-	require_False(t, n.scaleUp)
-	require_False(t, n.observer)
 
 	// Simulate a reset.
 	n.resetWAL()
 	require_Equal(t, n.pindex, 0)
 
-	// Vote when initializing but not scaling up, must also NOT be an "empty vote".
+	// Vote when initializing must NOT be an "empty vote".
 	n.initializing = true
 	require_NoError(t, n.processVoteRequest(&voteRequest{term: 3, candidate: "_random_", reply: voteReply}))
 	require_Equal(t, n.term, 3)
@@ -10229,6 +10219,102 @@ func TestNRGScaleUpEmptyCandidateNeedsAllEmptyServers(t *testing.T) {
 			require_Equal(t, n.State(), Candidate)
 			n.runAsCandidate()
 			require_Equal(t, n.State(), test.expected)
+		})
+	}
+}
+
+// A scale up peer can't campaign, rescue, or take a transfer until the leader adds it, catchup only counts once complete.
+func TestNRGScaleUpPeerObserverUntilAdded(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	s := c.servers[0]
+	id := s.sys.shash[:idLen]
+	peers := serverPeerNames(c.servers)
+	others := slices.DeleteFunc(copyStrings(peers), func(p string) bool { return p == id })
+	leader := others[0]
+	withUs := encodePeerState(&peerState{peers, len(peers), extUndetermined})
+
+	for _, test := range []struct {
+		name string
+		// The leader's entries naming us, sent live or as a catchup, nil if the meta layer's assignment lifts scale up.
+		entries []*Entry
+		catchup bool
+		joins   bool
+	}{
+		{"AddPeer", []*Entry{newEntry(EntryAddPeer, []byte(id))}, false, true},
+		{"PeerState", []*Entry{newEntry(EntryPeerState, withUs)}, false, true},
+		{"NotAMember", []*Entry{newEntry(EntryPeerState, encodePeerState(&peerState{others, len(others), extUndetermined}))}, false, false},
+		{"CatchupAddPeer", []*Entry{newEntry(EntryAddPeer, []byte(id))}, true, true},
+		{"CatchupPeerState", []*Entry{newEntry(EntryPeerState, withUs)}, true, true},
+		{"CatchupSnapshot", []*Entry{newEntry(EntrySnapshot, []byte("snap")), newEntry(EntryPeerState, withUs)}, true, true},
+		{"Assignment", nil, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ms, err := newMemStore(&StreamConfig{Name: "TEST", Storage: MemoryStorage})
+			require_NoError(t, err)
+			cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms, Managed: true, ScaleUp: true}
+			require_NoError(t, s.bootstrapRaftNode(cfg, []string{id, leader}, true))
+			n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+			require_NoError(t, err)
+			defer n.shutdown()
+
+			// A scale up peer's data lives elsewhere, it mustn't relax the empty log checks.
+			n.RLock()
+			initializing := n.initializing
+			n.RUnlock()
+			require_False(t, initializing)
+
+			// Interest from a voter, so only scale up keeps us from switching to candidate.
+			nc := natsConnect(t, s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			defer nc.Close()
+			natsSubSync(t, nc, n.vsubj)
+			natsFlush(t, nc)
+
+			_, _, err = n.RescueQuorum(1)
+			require_Error(t, err, errRescueNotVoting)
+			n.switchToCandidate()
+			require_Equal(t, n.State(), Follower)
+			// We still vote for a member.
+			require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, candidate: leader, reply: "$TEST"}))
+			n.processAppendEntry(encode(t, &appendEntry{leader: leader, term: 1, entries: []*Entry{newEntry(EntryLeaderTransfer, []byte(id))}}), n.aesub)
+			n.RLock()
+			vote, lxfer := n.vote, n.lxfer
+			n.RUnlock()
+			require_Equal(t, vote, leader)
+			require_False(t, lxfer)
+
+			switch {
+			case test.entries == nil:
+				n.Lock()
+				n.etlr = time.Time{}
+				n.Unlock()
+				n.SetScaleUp(false)
+				// Without an entry from a leader resetting it, leaving must arm a real election timer itself.
+				n.RLock()
+				etlr := n.etlr
+				n.RUnlock()
+				require_False(t, etlr.IsZero())
+			case test.catchup:
+				n.Lock()
+				n.createCatchup(&appendEntry{leader: leader, term: 1, pterm: 1, pindex: 2})
+				csub := n.catchup.sub
+				n.Unlock()
+				// A snapshot doesn't follow on from our log, the other entries do.
+				pindex := uint64(1)
+				if test.entries[0].Type == EntrySnapshot {
+					pindex = 5
+				}
+				n.processAppendEntry(encode(t, &appendEntry{leader: leader, term: 1, lterm: 1, commit: 1, pterm: 1, pindex: pindex, entries: test.entries}), csub)
+				require_True(t, n.IsObserver())
+				// The leader's next entry completes the catchup.
+				n.RLock()
+				pindex = n.pindex
+				n.RUnlock()
+				n.processAppendEntry(encode(t, &appendEntry{leader: leader, term: 1, commit: pindex, pterm: 1, pindex: pindex}), n.aesub)
+			default:
+				n.processAppendEntry(encode(t, &appendEntry{leader: leader, term: 1, commit: 1, pterm: 1, pindex: 1, entries: test.entries}), n.aesub)
+			}
+			require_Equal(t, n.IsObserver(), !test.joins)
 		})
 	}
 }
