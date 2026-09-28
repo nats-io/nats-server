@@ -1120,6 +1120,11 @@ func (s *Server) mqttHandleClosedClient(c *client) {
 // Runs from a server configuration reload routine.
 // No lock held on entry.
 func (s *Server) mqttUpdateMaxAckPending(newmaxp uint16) {
+	// Same default as mqttSessionCreate: an unset option must not leave the
+	// sessions with a limit of 0, which would stop all QoS 1 and 2 deliveries.
+	if newmaxp == 0 {
+		newmaxp = mqttDefaultMaxAckPending
+	}
 	msm := &s.mqtt.sessmgr
 	s.accounts.Range(func(k, _ any) bool {
 		accName := k.(string)
