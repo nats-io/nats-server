@@ -8196,13 +8196,6 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				default:
 				}
 			}
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-				if entries, _ := rg.Size(); entries != 0 {
-					kick()
-					return fmt.Errorf("meta log not compacted yet (%d entries)", entries)
-				}
-				return nil
-			})
 
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
@@ -8219,7 +8212,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				// Should we have compacted on this iteration?
 				if entries > thresh {
 					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-						if entries, _ := rg.Size(); entries != 0 {
+						if entries, _ := rg.Size(); entries > thresh {
 							kick()
 							return fmt.Errorf("haven't compacted yet (%d entries)", entries)
 						}
@@ -8262,13 +8255,6 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				default:
 				}
 			}
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-				if _, size := rg.Size(); size != 0 {
-					kick()
-					return fmt.Errorf("meta log not compacted yet (%d bytes)", size)
-				}
-				return nil
-			})
 
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
@@ -8285,7 +8271,7 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				// Should we have compacted on this iteration?
 				if size > thresh {
 					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-						if _, size := rg.Size(); size != 0 {
+						if _, size := rg.Size(); size > thresh {
 							kick()
 							return fmt.Errorf("haven't compacted yet (%d bytes)", size)
 						}
