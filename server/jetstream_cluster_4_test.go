@@ -10624,6 +10624,154 @@ func TestJetStreamClusterScaleDownWaitsForPeerStateAnswer(t *testing.T) {
 	require_True(t, slices.Contains(sa.Group.Peers, sl.NodeName()))
 }
 
+// proposeStreamDesiredPeers has the meta leader start moving an R3 stream onto the desired peers, returning its current peers.
+func proposeStreamDesiredPeers(t *testing.T, c *cluster, stream string, desired []string) []string {
+	t.Helper()
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	defer mjs.mu.Unlock()
+	sa := mjs.streamAssignment(globalAccountName, stream)
+	require_NotNil(t, sa)
+	origin := copyStrings(sa.Group.Peers)
+	nsa := sa.copyGroup()
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   desired,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    origin,
+			Replicas: 3,
+		},
+	}
+	require_NoError(t, cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa)))
+	cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	return origin
+}
+
+func TestJetStreamClusterStreamMoveWaitsForAllDesiredPeers(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnStreamLeader(globalAccountName, "TEST")
+
+	// Move away from the stream leader, onto the server not hosting the stream yet.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	rs := c.randomNonStreamLeader(globalAccountName, "TEST")
+	var desired []string
+	for _, s := range c.servers {
+		if s != sl {
+			desired = append(desired, s.NodeName())
+		}
+	}
+
+	// Temporarily stop a desired follower from answering with the state of its stream store.
+	// The other two desired peers form a quorum, but that must not be enough to remove the leader.
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
+	rs.sysUnsubscribe(mset.infoSub)
+	mset.mu.Unlock()
+
+	origin := proposeStreamDesiredPeers(t, c, "TEST", desired)
+
+	assignment := func(s *Server) ([]string, *DesiredClusterInfoStatus) {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return nil, nil
+		}
+		return copyStrings(sa.Group.Peers), sa.Group.migration
+	}
+
+	// Wait for the group to be extended with the new peer.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if peers, _ := assignment(sl); len(peers) != 4 {
+			return fmt.Errorf("expected 4 peers, got %d", len(peers))
+		}
+		return nil
+	})
+
+	// The old peer must stay while a desired peer can't vouch for its data.
+	requireHeld := func(leader *Server) {
+		t.Helper()
+		var held bool
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			peers, status := assignment(leader)
+			require_Len(t, len(peers), 4)
+			require_True(t, slices.Contains(peers, sl.NodeName()))
+			require_True(t, c.streamLeader(globalAccountName, "TEST") == leader)
+			if status != nil && status.Type == MigrationStatusCatchup {
+				held = true
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		require_True(t, held)
+	}
+	requireHeld(sl)
+
+	// A new leader must not remove the old peer either, even though it starts without any peer state.
+	var other string
+	for _, p := range origin {
+		if p != sl.NodeName() && p != rs.NodeName() {
+			other = p
+		}
+	}
+	lmset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	require_NoError(t, lmset.raftNode().StepDown(other))
+	var nl *Server
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if nl = c.streamLeader(globalAccountName, "TEST"); nl == nil || nl.NodeName() != other {
+			return errors.New("leadership not transferred yet")
+		}
+		return nil
+	})
+	requireHeld(nl)
+
+	// Once it answers again, the move goes ahead and the old peer is removed.
+	mset.mu.Lock()
+	mset.infoSub, err = rs.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, mset.handleClusterStreamInfoRequest)
+	mset.mu.Unlock()
+	require_NoError(t, err)
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		l := c.streamLeader(globalAccountName, "TEST")
+		if l == nil {
+			return errors.New("no stream leader")
+		}
+		if peers, _ := assignment(l); len(peers) != 3 || slices.Contains(peers, sl.NodeName()) {
+			return fmt.Errorf("old peer still in %v", peers)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterMigrationMightBeLive(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-time.Hour)
+
+	// We always count ourselves.
+	require_True(t, mightBeLivePeer(&Peer{ID: "A"}, "A", &old))
+	// A peer we recently heard from.
+	require_True(t, mightBeLivePeer(&Peer{ID: "B", Last: now}, "A", &old))
+	// A new leader hasn't had a chance to hear from the peer yet.
+	require_True(t, mightBeLivePeer(&Peer{ID: "B"}, "A", &now))
+	require_True(t, mightBeLivePeer(&Peer{ID: "B"}, "A", nil))
+	// A leader that should have heard from the peer by now considers it down.
+	require_False(t, mightBeLivePeer(&Peer{ID: "B"}, "A", &old))
+	require_False(t, mightBeLivePeer(&Peer{ID: "B", Last: old}, "A", &old))
+}
+
 func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	mset := &stream{srv: &Server{}}
 	pos := &peerPositions{}
