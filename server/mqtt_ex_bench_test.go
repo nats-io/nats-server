@@ -123,7 +123,7 @@ func (bc mqttBenchContext) benchmarkPubPipelined(b *testing.B) {
 	m := mqttBenchDefaultMatrix.
 		NoSubscribers().
 		NoTopics().
-		QOS1Only()
+		QOS12Only()
 
 	b.Run("PUBX", func(b *testing.B) {
 		m.runMatrix(b, bc, func(b *testing.B, bc *mqttBenchContext) {
@@ -321,6 +321,11 @@ func (m mqttBenchMatrix) QOS0Only() mqttBenchMatrix {
 
 func (m mqttBenchMatrix) QOS1Only() mqttBenchMatrix {
 	m.QOS = []int{1}
+	return m
+}
+
+func (m mqttBenchMatrix) QOS12Only() mqttBenchMatrix {
+	m.QOS = []int{1, 2}
 	return m
 }
 

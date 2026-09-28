@@ -3501,7 +3501,8 @@ func TestNoRaceJetStreamClusterMemoryStreamConsumerRaftGrowth(t *testing.T) {
 		t.Fatalf("Error looking up consumer %q", "q1")
 	}
 	node := o.raftNode().(*raft)
-	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+	// Higher than 10s for minSnapDelta.
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
 		if ms := node.wal.(*memStore); ms.State().Msgs > 8192 {
 			return fmt.Errorf("Did not compact the raft memory WAL")
 		}
@@ -7756,7 +7757,7 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	})
 
 	numToSend := 1000
-	for i := 0; i < numToSend; i++ {
+	for range numToSend {
 		_, err := js.PublishAsync("EV.NEW", nil)
 		require_NoError(t, err)
 	}
@@ -7766,6 +7767,18 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 		t.Fatalf("Did not receive completion signal")
 	}
 
+	// Wait for the consumer leader to have received all messages.
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("EVENTS", "D")
+		if err != nil {
+			return err
+		}
+		if ci.NumPending != uint64(numToSend) {
+			return fmt.Errorf("expected %d pending, got %d", numToSend, ci.NumPending)
+		}
+		return nil
+	})
+
 	// Now make sure we can pull messages since we have not acked.
 	// The bug is that the acks arrive on S1 faster then the messages but we want to
 	// make sure we do not remove prematurely.
@@ -7773,7 +7786,7 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	require_NoError(t, err)
 	require_Len(t, len(msgs), 100)
 	for _, m := range msgs {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
 
 	ci, err := js.ConsumerInfo("EVENTS", "D")
@@ -7813,7 +7826,7 @@ func TestNoRaceJetStreamClusterUnbalancedInterestMultipleConsumers(t *testing.T)
 	require_NoError(t, err)
 	require_Len(t, len(msgs), 900)
 	for _, m := range msgs {
-		m.AckSync()
+		require_NoError(t, m.AckSync())
 	}
 
 	// Let acks propagate.

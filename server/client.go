@@ -1006,11 +1006,15 @@ func (c *client) applyAccountLimits() {
 // with the authenticated user. This is used to map
 // any permissions into the client and setup accounts.
 func (c *client) RegisterUser(user *User) {
+	c.registerUser(user)
+}
+
+func (c *client) registerUser(user *User) error {
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
 			c.reportErrRegisterAccount(user.Account, err)
-			return
+			return err
 		}
 	}
 
@@ -1038,6 +1042,7 @@ func (c *client) RegisterUser(user *User) {
 	}
 
 	c.mu.Unlock()
+	return nil
 }
 
 // RegisterNkeyUser allows auth to call back into a new nkey
@@ -1078,11 +1083,33 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 		c.perms = nil
 		c.mperms = nil
 		c.darray = nil
+		c.replies = nil
 		return true
 	}
+	var responsePermissionsUnchanged bool
+	if c.user.Permissions != nil {
+		responsePermissionsUnchanged = sameResponsePermissions(c.user.Permissions.Response, perms.Response)
+	}
+	replies := c.replies
 	c.user.Permissions = perms.clone()
 	c.setPermissions(c.user.Permissions)
+	if responsePermissionsUnchanged {
+		c.replies = replies
+	} else if c.user.Permissions.Response == nil {
+		c.replies = nil
+	}
+	for _, sub := range c.subs {
+		if len(sub.queue) > 0 {
+			c.canSubscribe(string(sub.subject), string(sub.queue))
+		} else {
+			c.canSubscribe(string(sub.subject))
+		}
+	}
 	return true
+}
+
+func sameResponsePermissions(current, updated *ResponsePermission) bool {
+	return current != nil && updated != nil && *current == *updated
 }
 
 func splitSubjectQueue(sq string) ([]byte, []byte, error) {
@@ -1591,8 +1618,9 @@ func (c *client) readLoop(pre []byte) {
 				// assigned messages and their "fsp" incremented, and need now to be
 				// decremented and their writeLoop signaled.
 				c.flushClients(0)
-				// handled inline
-				if err != ErrMaxPayload && err != ErrAuthentication {
+				// Handled inline, or the connection was already closed
+				// (e.g. account registration failure in processConnect).
+				if err != ErrMaxPayload && err != ErrAuthentication && err != ErrConnectionClosed {
 					c.Error(err)
 					c.closeConnection(ProtocolViolation)
 				}
@@ -1780,7 +1808,12 @@ func (c *client) flushOutbound() bool {
 	// Check for compression
 	cw := c.out.cw
 	if cw != nil {
-		// We will have to adjust once we have compressed, so remove for now.
+		// Replace only the bytes being compressed. Pending bytes also include
+		// already-compressed data left in wnb after a partial write.
+		attempted = 0
+		for _, buf := range collapsed {
+			attempted += int64(len(buf))
+		}
 		c.out.pb -= attempted
 		if c.isWebsocket() {
 			c.ws.fs -= attempted
@@ -2383,8 +2416,11 @@ func (c *client) processConnect(arg []byte) error {
 		// A second CONNECT may move the client into a different account via
 		// checkAuthentication. Drop any previously-registered subscriptions
 		// from the current account first so they don't leak in that account's
-		// sublist after the client switches.
+		// sublist after the client switches. Also, clear any cached sublist
+		// results before switching accounts.
 		if !firstConnect {
+			c.in.genid = 0
+			c.in.results = nil
 			c.clearAccountSubs(false)
 		}
 
@@ -2401,6 +2437,13 @@ func (c *client) processConnect(arg []byte) error {
 				if tooManyAccCons {
 					return ErrTooManyAccountConnections
 				}
+			}
+			// Account registration failures already sent the error and closed the connection.
+			c.mu.Lock()
+			closed := c.isClosed()
+			c.mu.Unlock()
+			if closed {
+				return ErrConnectionClosed
 			}
 			c.authViolation()
 			return ErrAuthentication
@@ -3601,6 +3644,24 @@ func (c *client) checkDenySub(subject, queue string) bool {
 	return denied
 }
 
+// importTargetSubject returns the subject that will actually be delivered to
+// this subscription. For a shadow subscription created by a stream import, the
+// delivered subject is the import's local (post-transform) form, which can
+// differ from the subject the message was published on in the exporting
+// account. For any other subscription the subject is returned unchanged.
+func (s *subscription) importTargetSubject(subj []byte) []byte {
+	if s == nil || s.im == nil {
+		return subj
+	}
+	if s.im.tr != nil {
+		return []byte(s.im.tr.TransformSubject(bytesToString(subj)))
+	}
+	if !s.im.usePub {
+		return []byte(s.im.to)
+	}
+	return subj
+}
+
 // Create a message header for routes or leafnodes. Header and origin cluster aware.
 func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
 	hasHeader := c.pa.hdr > 0
@@ -3636,14 +3697,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// Leaf nodes are LMSG
 		mh[0] = 'L'
 		// Remap subject if its a shadow subscription, treat like a normal client.
-		if rt.sub.im != nil {
-			if rt.sub.im.tr != nil {
-				to := rt.sub.im.tr.TransformSubject(bytesToString(subj))
-				subj = []byte(to)
-			} else if !rt.sub.im.usePub {
-				subj = []byte(rt.sub.im.to)
-			}
-		}
+		subj = rt.sub.importTargetSubject(subj)
 	}
 	mh = append(mh, subj...)
 	mh = append(mh, ' ')
@@ -3809,7 +3863,17 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 
 	// Check if we are a leafnode and have perms to check.
 	if client.kind == LEAF && client.perms != nil {
-		subjectToCheck, _ := getGWRoutedSubjectOrSelf(subject)
+		// For a shadow subscription created by a stream import, the subject that
+		// goes on the wire is the import's local (post-transform) form, see
+		// msgHeaderForRouteOrLeaf() above. Check the permissions against that
+		// form: the exporting account's subject is never sent to the leafnode,
+		// and requiring a permission for it would grant the leafnode an
+		// unrelated capability in its own account.
+		// The import transform is applied first and an internal gateway reply
+		// prefix is stripped from its result, because the header path transforms
+		// the complete subject as well. Stripping first could authorize a
+		// subject that differs from the one placed on the wire.
+		subjectToCheck, _ := getGWRoutedSubjectOrSelf(sub.importTargetSubject(subject))
 		if !client.pubAllowedFullCheck(string(subjectToCheck), true, true) {
 			mt.addEgressEvent(client, sub, errMsgTracePubViolation)
 			client.mu.Unlock()
@@ -3985,7 +4049,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// Also this check captures if the original reply (c.pa.reply) is a GW routed
 	// reply (since it is known to be > minReplyLen). If that is the case, we need to
 	// track the binding between the routed reply and the reply set in the message
-	// header (which is c.pa.reply without the GNR routing prefix).
+	// header (which is c.pa.reply without the _GR_ routing prefix).
 	if client.kind == CLIENT && len(c.pa.reply) > minReplyLen {
 		if gwrply {
 			// Note that we keep track of the GW routed reply in the destination
@@ -4324,10 +4388,8 @@ func isReservedReply(reply []byte) bool {
 	// Faster to check with string([:]) than byte-by-byte
 	if isJSAckSubject(reply) {
 		return true
-	} else if len(reply) > gwReplyPrefixLen && bytesToString(reply[:gwReplyPrefixLen]) == gwReplyPrefix {
-		return true
 	}
-	return false
+	return hasGWRoutedReplyPrefix(reply)
 }
 
 // This will decide to call the client code or router code.
@@ -4367,7 +4429,7 @@ func (c *client) processInboundClientMsg(msg []byte) (bool, bool) {
 	c.in.msgs++
 	c.in.bytes += int32(len(msg) - LEN_CR_LF)
 
-	// Check that client (could be here with SYSTEM) is not publishing on reserved "$GNR" prefix.
+	// Check that client (could be here with SYSTEM) is not publishing on reserved "_GR_" or legacy "$GR" prefix.
 	if c.kind == CLIENT && hasGWRoutedReplyPrefix(c.pa.subject) {
 		c.pubPermissionViolation(c.pa.subject)
 		return false, true
@@ -5649,7 +5711,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			var delivered bool
 			if !skipDelivery {
 				mh := c.msgHeader(dsubj, creply, sub)
-				delivered = c.deliverMsg(prodIsMQTT, sub, acc, subject, creply, mh, msg, rplyHasGWPrefix)
+				delivered = c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix)
 				if restorePaTrace {
 					c.pa.trace = mt
 				}

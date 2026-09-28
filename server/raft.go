@@ -70,7 +70,8 @@ type RaftNode interface {
 	Peers() []*Peer
 	PeerNames() []string
 	VotingPeerNames() []string
-	LastHeardFromPeer(peer string) time.Time
+	LastHeardFromFollower(peer string) time.Time
+	IsFollowerCaughtUp(peer string) bool
 	ProposeAddPeer(peer string) error
 	ProposeRemovePeer(peer string) error
 	EvictPeers(peers []string) ([]string, error)
@@ -295,6 +296,7 @@ type catchupState struct {
 type lps struct {
 	ts time.Time // Last timestamp
 	li uint64    // Last index replicated
+	ci uint64    // Index the follower must reach to be caught up
 }
 
 type membChange struct {
@@ -2592,7 +2594,7 @@ func (n *raft) Reset() {
 
 	// Reset peer set to just ourselves; a new leader will fold us back into
 	// the cluster's membership view via processPeerState.
-	n.peers = map[string]*lps{n.id: {time.Time{}, 0}}
+	n.peers = map[string]*lps{n.id: {}}
 	n.removed = nil
 	n.adjustClusterSizeAndQuorum()
 
@@ -3367,7 +3369,7 @@ func (n *raft) addPeer(peer string) {
 	if _, ok := n.peers[peer]; !ok {
 		// We are not tracking this one automatically so we need
 		// to bump cluster size.
-		n.peers[peer] = &lps{time.Time{}, 0}
+		n.peers[peer] = &lps{}
 	}
 	// Adjust cluster size and quorum if needed.
 	n.adjustClusterSizeAndQuorum()
@@ -3431,7 +3433,7 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 	if e.Type == EntryAddPeer {
 		// Track directly, but wait for commit to be official
 		if _, ok := n.peers[peer]; !ok {
-			n.peers[peer] = &lps{time.Time{}, 0}
+			n.peers[peer] = &lps{}
 			n.adjustClusterSizeAndQuorum()
 		}
 	}
@@ -3797,6 +3799,12 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 		n.debug("Will cancel existing entry for catching up %q", ar.peer)
 		delete(n.progress, ar.peer)
 		q.push(n.pindex)
+	}
+
+	// The follower may have lost state, so only trust the index it reports now,
+	// and it's not caught up until it confirms everything we have.
+	if ps := n.peers[ar.peer]; ps != nil {
+		ps.li, ps.ci = ar.index, n.pindex
 	}
 
 	// Check to make sure we have this entry.
@@ -4170,16 +4178,35 @@ func (n *raft) trackPeer(peer string) error {
 	return nil
 }
 
-// LastHeardFromPeer returns when we last heard from the given peer, even if
+// LastHeardFromFollower returns when we last heard from the given peer, even if
 // it's not in our peer set yet. Zero if we never heard from it. The upper
 // layer uses this to judge if a meta-assigned peer is up before adding it.
-func (n *raft) LastHeardFromPeer(peer string) time.Time {
+// Only known by the leader.
+func (n *raft) LastHeardFromFollower(peer string) time.Time {
 	n.RLock()
 	defer n.RUnlock()
 	if ps := n.peers[peer]; ps != nil {
 		return ps.ts
 	}
 	return n.observed[peer]
+}
+
+// IsFollowerCaughtUp returns whether we're not catching up this peer, it confirmed its last catchup,
+// and we have heard from it recently.
+// Only known by the leader.
+func (n *raft) IsFollowerCaughtUp(peer string) bool {
+	n.RLock()
+	defer n.RUnlock()
+	if peer == n.id {
+		return true
+	}
+	// Covers catchup that started before the peer was tracked.
+	if _, ok := n.progress[peer]; ok {
+		return false
+	}
+	// Requires an ack since becoming leader, so lagging voters don't count right after an election.
+	ps := n.peers[peer]
+	return ps != nil && ps.li > 0 && ps.li >= ps.ci && time.Since(ps.ts) <= hbInterval*3
 }
 
 func (n *raft) runAsCandidate() {
@@ -4489,8 +4516,8 @@ func (n *raft) updateLeader(newLeader string) {
 	// But if we're a follower we only track the leader, and reset all others.
 	if newLeader != n.id && !wasLeader {
 		for peer, ps := range n.peers {
-			// Always reset last replicated index.
-			ps.li = 0
+			// Always reset last replicated and catchup index.
+			ps.li, ps.ci = 0, 0
 			if peer == newLeader {
 				continue
 			}
@@ -4904,7 +4931,7 @@ CONTINUE:
 				// Track directly, but wait for commit to be official
 				n.membChange = &membChange{index: n.pindex, peer: newPeer}
 				if _, ok := n.peers[newPeer]; !ok {
-					n.peers[newPeer] = &lps{time.Time{}, 0}
+					n.peers[newPeer] = &lps{}
 				}
 				n.adjustClusterSizeAndQuorum()
 				// Store our peer in our global peer map for all peers.
@@ -4917,7 +4944,7 @@ CONTINUE:
 				// Track directly, but wait for commit to be official
 				ps, ok := n.peers[oldPeer]
 				if !ok {
-					ps = &lps{time.Time{}, 0}
+					ps = &lps{}
 				}
 				n.membChange = &membChange{index: n.pindex, peer: oldPeer, prev: ps}
 				delete(n.peers, oldPeer)
@@ -4992,7 +5019,7 @@ func (n *raft) processPeerState(ps *peerState) {
 			n.peers[peer] = lp
 			delete(old, peer)
 		} else {
-			n.peers[peer] = &lps{time.Time{}, 0}
+			n.peers[peer] = &lps{}
 		}
 		// If we were on the removed list reverse that here.
 		if n.removed != nil {

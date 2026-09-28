@@ -1952,12 +1952,16 @@ func TestJetStreamJWTClusterAccountNRG(t *testing.T) {
 	c := createJetStreamClusterWithTemplate(t, tmlp, "cluster", 3)
 	defer c.shutdown()
 
+	// Prevent 'nats: JetStream not enabled for account' when creating the first stream.
+	c.waitOnAccount(aExpPub)
+
 	nc, _ := jsClientConnect(t, c.randomServer(), nats.UserCredentials(accCreds))
-	jsStreamCreate(t, nc, &StreamConfig{
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
 		Name:     "TEST",
 		Replicas: 3,
 		Storage:  FileStorage,
 	})
+	require_NoError(t, err)
 
 	// We'll try flipping the state a few times and then do some sanity
 	// checks to check that it took effect.
@@ -2320,8 +2324,16 @@ func TestJetStreamAccountResolverNoFetchIfNotMember(t *testing.T) {
 	s := c.leader()
 	js := s.getJetStream()
 	ci := &ClientInfo{Cluster: "R3S", Account: aPub}
-	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}}
-	sa := &streamAssignment{Client: ci, Config: cfg}
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 2}
+	// Place the stream on the other servers, so this server is not a member.
+	var peers []string
+	for _, srv := range c.servers {
+		if srv != s {
+			peers = append(peers, srv.NodeName())
+		}
+	}
+	rg := &raftGroup{Name: "TEST", Storage: cfg.Storage, Peers: peers}
+	sa := &streamAssignment{Client: ci, Config: cfg, Group: rg}
 	start := time.Now()
 	// Simulate some meta operations where this server is not a member.
 	// The server should not fetch the account from the resolver.

@@ -1128,6 +1128,7 @@ func (a *Account) removeLeafNode(c *client) {
 	for i, l := range a.lleafs {
 		if l == c {
 			a.lleafs[i] = a.lleafs[ll-1]
+			a.lleafs[ll-1] = nil
 			if ll == 1 {
 				a.lleafs = nil
 			} else {
@@ -3581,6 +3582,7 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 	}
 	a.mu.Unlock()
 
+	mappingFailed := false
 	for sub, wm := range ac.Mappings {
 		mappings := make([]*MapDest, len(wm))
 		for i, m := range wm {
@@ -3591,11 +3593,18 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			}
 		}
 		// This will overwrite existing entries
-		a.AddWeightedMappings(string(sub), mappings...)
+		if err := a.AddWeightedMappings(string(sub), mappings...); err != nil {
+			// Do not remove existing mappings when a replacement fails to install;
+			// otherwise a rejected dest can leave the account with no mapping.
+			s.Errorf("Error adding subject mapping %q for account [%s]: %v", sub, tl, err)
+			mappingFailed = true
+		}
 	}
-	// remove mappings
-	for _, rmMapping := range removeList {
-		a.RemoveMapping(rmMapping)
+	// remove mappings only after all replacements installed cleanly
+	if !mappingFailed {
+		for _, rmMapping := range removeList {
+			a.RemoveMapping(rmMapping)
+		}
 	}
 
 	// Re-register system exports/imports.
@@ -4450,6 +4459,49 @@ func claimValidate(claim *jwt.AccountClaims) error {
 	claim.Validate(vr)
 	if vr.IsBlocking(false) {
 		return fmt.Errorf("validation errors: %v", vr.Errors())
+	}
+	// Align with Account.AddWeightedMappings so JWT pushes that would be
+	// silently discarded at install time are rejected up front instead.
+	if err := validateAccountClaimMappings(claim); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAccountClaimMappings applies the same destination checks used by
+// Account.AddWeightedMappings (duplicates, weight totals, ValidateMapping,
+// NewSubjectTransform). jwt.Mapping.Validate is intentionally weaker.
+func validateAccountClaimMappings(claim *jwt.AccountClaims) error {
+	if claim == nil {
+		return nil
+	}
+	for src, wms := range claim.Mappings {
+		if !IsValidSubject(string(src)) {
+			return fmt.Errorf("mapping %q: %w", src, ErrBadSubject)
+		}
+		seen := make(map[string]struct{})
+		tw := make(map[string]uint8)
+		for _, m := range wms {
+			dest := string(m.Subject)
+			if _, ok := seen[dest]; ok {
+				return fmt.Errorf("mapping %q: duplicate entry for %q", src, dest)
+			}
+			seen[dest] = struct{}{}
+			weight := m.GetWeight()
+			if weight > 100 {
+				return fmt.Errorf("mapping %q: individual weights need to be <= 100", src)
+			}
+			tw[m.Cluster] += weight
+			if tw[m.Cluster] > 100 {
+				return fmt.Errorf("mapping %q: total weight needs to be <= 100", src)
+			}
+			if err := ValidateMapping(string(src), dest); err != nil {
+				return fmt.Errorf("mapping %q -> %q: %v", src, dest, err)
+			}
+			if _, err := NewSubjectTransform(string(src), dest); err != nil {
+				return fmt.Errorf("mapping %q -> %q: %v", src, dest, err)
+			}
+		}
 	}
 	return nil
 }

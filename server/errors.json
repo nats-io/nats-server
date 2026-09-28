@@ -2258,5 +2258,15 @@
     "help": "",
     "url": "",
     "deprecates": ""
+  },
+  {
+    "constant": "JSSourceConsumerFlowControlStalledErr",
+    "code": 500,
+    "error_code": 10228,
+    "description": "stream source consumer stalled on flow control",
+    "comment": "",
+    "help": "",
+    "url": "",
+    "deprecates": ""
   }
 ]

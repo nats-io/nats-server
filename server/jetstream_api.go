@@ -2395,6 +2395,10 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 
 	js.mu.RLock()
 	isLeader, sa := cc.isLeader(), js.streamAssignment(acc.Name, stream)
+	var ca *consumerAssignment
+	if sa != nil {
+		ca = sa.consumers[consumer]
+	}
 	js.mu.RUnlock()
 
 	if isLeader && sa == nil {
@@ -2411,10 +2415,6 @@ func (s *Server) jsConsumerLeaderStepDownRequest(sub *subscription, c *client, _
 		return
 	}
 
-	var ca *consumerAssignment
-	if sa.consumers != nil {
-		ca = sa.consumers[consumer]
-	}
 	if ca == nil {
 		resp.Error = NewJSConsumerNotFoundError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp))
@@ -3277,7 +3277,8 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 	// we need to expand into another one below.
 	newCluster := currCluster
 
-	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil)
+	haCost := cc.streamHACost(accName, &cfg)
+	peers, e := cc.selectPeerGroup(cfg.Replicas+1, currCluster, &cfg, currPeers, 1, nil, haCost, nil)
 	if len(peers) <= cfg.Replicas {
 		// since expanding in the same cluster did not yield a result, try in different cluster
 		peers = nil
@@ -3292,7 +3293,7 @@ func (s *Server) jsLeaderServerStreamMoveRequest(sub *subscription, c *client, _
 		errs := &selectPeerError{}
 		errs.accumulate(e)
 		for cluster := range clusters {
-			newPeers, e := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0, nil)
+			newPeers, e := cc.selectPeerGroup(cfg.Replicas, cluster, &cfg, nil, 0, nil, haCost, nil)
 			if len(newPeers) >= cfg.Replicas {
 				peers = append([]string{}, currPeers...)
 				peers = append(peers, newPeers[:cfg.Replicas]...)
