@@ -1619,14 +1619,15 @@ func TestNRGEvictPeers(t *testing.T) {
 		require_NoError(t, err)
 		require_Len(t, len(evicted), 0)
 
-		// The peer is evicted and marked removed, size and quorum shrink.
+		// The peer is evicted, size and quorum shrink. Managed groups don't
+		// track removed peers, the meta layer owns membership.
 		evicted, err = n.EvictPeers([]string{nats0})
 		require_NoError(t, err)
 		require_True(t, slices.Equal(evicted, []string{nats0}))
 		_, ok := n.peers[nats0]
 		require_False(t, ok)
 		_, ok = n.removed[nats0]
-		require_True(t, ok)
+		require_False(t, ok)
 		require_Equal(t, n.csz, 1)
 		require_Equal(t, n.qn, 1)
 
@@ -1739,14 +1740,14 @@ func TestNRGEvictPeers(t *testing.T) {
 		n.Unlock()
 
 		// Evicting the peer must first revert the speculative removal, then
-		// evict it for real: marked removed, size and quorum adjusted.
+		// evict it for real: size and quorum adjusted.
 		evicted, err := n.EvictPeers([]string{nats1})
 		require_NoError(t, err)
 		require_True(t, slices.Equal(evicted, []string{nats1}))
 		_, ok = n.peers[nats1]
 		require_False(t, ok)
 		_, ok = n.removed[nats1]
-		require_True(t, ok)
+		require_False(t, ok)
 		require_Equal(t, n.csz, 2)
 		require_Equal(t, n.qn, 2)
 		require_True(t, n.membChange == nil)
@@ -1844,15 +1845,15 @@ func TestNRGEvictPeers(t *testing.T) {
 		_, ok = n.peers[nats0]
 		require_False(t, ok)
 		_, ok = n.removed[nats0]
-		require_True(t, ok)
+		require_False(t, ok)
 		require_Equal(t, n.csz, 2)
 		require_Equal(t, n.qn, 2)
 		require_NotNil(t, n.membChange)
 
 		// Once the added peer is peer-removed or reconciled away, it shows
 		// up in the evict list itself and the change is reverted. There's
-		// nothing to remove from the peer map, so it's not marked removed;
-		// the entry may still commit under another leader.
+		// nothing to remove from the peer map; the entry may still commit
+		// under another leader.
 		evicted, err = n.EvictPeers([]string{nats1})
 		require_NoError(t, err)
 		require_Len(t, len(evicted), 0)
