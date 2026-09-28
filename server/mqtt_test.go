@@ -6882,6 +6882,82 @@ func TestMQTTConfigReload(t *testing.T) {
 	testMQTTCheckPubMsg(t, c, r, "bar", mqttPubQos1, []byte("msg4"))
 }
 
+func TestMQTTConfigReloadKeepsQoS1DeliveryWithDefaultMaxAckPending(t *testing.T) {
+	tlsMap := `tls {
+		cert_file: "../test/configs/certs/tlsauth/server.pem"
+		key_file: "../test/configs/certs/tlsauth/server-key.pem"
+		ca_file: "../test/configs/certs/tlsauth/ca.pem"
+		verify_and_map: true
+		timeout: 2
+	}`
+	for _, test := range []struct {
+		name   string
+		before string
+		after  string
+		users  string
+		cert   bool
+	}{
+		// With a tls block the TLS config is rebuilt on every reload, so even a
+		// reload that changes nothing applies the MQTT options again (#8661).
+		{"no-op reload with certificate mapped user", tlsMap, tlsMap, `users = [ { user: "CN=example.com,OU=NATS.io" } ]`, true},
+		{"reload changing ack_wait", `ack_wait: "30s"`, `ack_wait: "45s"`, `users = [ { user: "u", password: "p" } ]`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmpl := `
+				listen: 127.0.0.1:-1
+				server_name: mqtt
+				jetstream { store_dir: %q }
+				mqtt {
+					listen: 127.0.0.1:-1
+					%s
+				}
+				authorization { %s }
+			`
+			dir := t.TempDir()
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, dir, test.before, test.users)))
+			s, o := RunServerWithConfig(conf)
+			defer testMQTTShutdownServer(s)
+
+			connect := func(id string) (net.Conn, *mqttReader) {
+				ci := &mqttConnInfo{clientID: id, cleanSess: true}
+				if test.cert {
+					tlsc, err := GenTLSConfig(&TLSConfigOpts{
+						CertFile: "../test/configs/certs/tlsauth/client.pem",
+						KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+					})
+					require_NoError(t, err)
+					tlsc.InsecureSkipVerify = true
+					tlsc.MinVersion = tls.VersionTLS13
+					ci.tls, ci.tlsc = true, tlsc
+				} else {
+					ci.user, ci.pass = "u", "p"
+				}
+				c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return c, r
+			}
+			sub, rs := connect("sub")
+			defer sub.Close()
+			testMQTTSub(t, 1, sub, rs, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+			testMQTTFlush(t, sub, nil, rs)
+			pub, rp := connect("pub")
+			defer pub.Close()
+
+			testMQTTPublish(t, pub, rp, 1, false, false, "foo", 1, []byte("msg1"))
+			pi := testMQTTCheckPubMsg(t, sub, rs, "foo", mqttPubQos1, []byte("msg1"))
+			testMQTTSendPIPacket(mqttPacketPubAck, t, sub, pi)
+
+			changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(tmpl, dir, test.after, test.users)))
+			require_NoError(t, s.Reload())
+
+			// max_ack_pending is not set, so the session must keep the default
+			// limit instead of 0, which would stop every QoS 1 delivery.
+			testMQTTPublish(t, pub, rp, 1, false, false, "foo", 2, []byte("msg2"))
+			testMQTTCheckPubMsg(t, sub, rs, "foo", mqttPubQos1, []byte("msg2"))
+		})
+	}
+}
+
 func TestMQTTStreamInfoReturnsNonEmptySubject(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
