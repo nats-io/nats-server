@@ -7398,7 +7398,13 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
 	ncs, _ := jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
-	sub, err := ncs.SubscribeSync("$JSC.R.>")
+	// Stream info answers to the leader share the reply prefix, only count catchup msgs.
+	var catchupMsgs atomic.Int64
+	_, err = ncs.Subscribe("$JSC.R.>", func(msg *nats.Msg) {
+		if len(msg.Data) == 0 || msg.Data[0] != '{' {
+			catchupMsgs.Add(1)
+		}
+	})
 	require_NoError(t, err)
 
 	// Now scale up to R3.
@@ -7412,7 +7418,7 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 
 	// Make sure we only sent the number of catchup msgs we expected.
 	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
-		if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
+		if nmsgs := int(catchupMsgs.Load()); nmsgs != (cfg.Replicas-1)*(num+1) {
 			return fmt.Errorf("expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
 		}
 		return nil

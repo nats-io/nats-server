@@ -10550,7 +10550,12 @@ func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	require_False(t, first.IsZero())
 	require_False(t, pos.retried)
 
-	// Straight away is fine for the first retry.
+	// The first retry waits a fraction of the interval.
+	pos.request(mset, globalAccountName, "TEST")
+	require_Equal(t, pos.asked, first)
+	require_False(t, pos.retried)
+	pos.asked = time.Now().Add(-migratePosAskInterval / 5)
+	first = pos.asked
 	pos.request(mset, globalAccountName, "TEST")
 	require_True(t, pos.retried)
 	require_True(t, pos.asked.After(first))
