@@ -9845,3 +9845,80 @@ func TestNRGLearnerSnapshotNotCommittedOnRestart(t *testing.T) {
 	require_Equal(t, ce.Index, 101)
 	require_Equal(t, ce.Entries[0].Type, EntryNormal)
 }
+
+// An empty scale up peer only wins once every server answered empty, unless it's the preferred peer.
+func TestNRGScaleUpEmptyCandidateNeedsAllEmptyServers(t *testing.T) {
+	const dataHolder = "S1Nunr6R"
+	const freshPeer = "yrzKKRBu"
+	const otherFresh = "cnrtt3eg"
+
+	for _, test := range []struct {
+		name string
+		// The peers besides ourselves, and the grants of those that answer.
+		peers  []string
+		grants map[string]bool // peer -> its log is empty
+		// Whether we're the preferred peer, i.e. we hold the data being scaled up from.
+		preferred bool
+		expected  RaftState
+	}{
+		{
+			// The other peer's grant hides its empty log, so our own vote must count as empty.
+			name: "GrantHidesEmptyLog", peers: []string{dataHolder, freshPeer},
+			grants: map[string]bool{freshPeer: false}, expected: Candidate,
+		},
+		{
+			// All peers answered empty, so nothing can be truncated.
+			name: "AllEmpty", peers: []string{freshPeer},
+			grants: map[string]bool{freshPeer: true}, expected: Leader,
+		},
+		{
+			// The R1 source holds the data despite its empty log, so it wins on quorum.
+			name: "PreferredWinsOnQuorum", peers: []string{freshPeer, otherFresh},
+			grants: map[string]bool{freshPeer: true}, preferred: true, expected: Leader,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			n.Lock()
+			// A scale up peer with an empty log is never initializing.
+			n.initializing = false
+			for _, peer := range test.peers {
+				n.addPeer(peer)
+			}
+			n.lsut = time.Time{}
+			n.Unlock()
+
+			// The preferred peer campaigns immediately, which marks it as holding the data.
+			if test.preferred {
+				require_NoError(t, n.CampaignImmediately())
+			}
+
+			require_Equal(t, n.pindex, 0)
+			require_Equal(t, n.csz, len(test.peers)+1)
+			require_Equal(t, n.QuorumNeeded(), 2)
+			// Must not be an observer, there can be no leader left to be fed by.
+			require_False(t, n.IsObserver())
+
+			nc, err := nats.Connect(n.s.ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer nc.Close()
+			sub, err := nc.Subscribe(n.vsubj, func(m *nats.Msg) {
+				req := decodeVoteRequest(m.Data, m.Reply)
+				for peer, empty := range test.grants {
+					resp := voteResponse{term: req.term, peer: peer, granted: true, empty: empty}
+					m.Respond(resp.encode())
+				}
+			})
+			require_NoError(t, err)
+			defer sub.Drain()
+			require_NoError(t, nc.Flush())
+
+			n.switchToCandidate()
+			require_Equal(t, n.State(), Candidate)
+			n.runAsCandidate()
+			require_Equal(t, n.State(), test.expected)
+		})
+	}
+}

@@ -259,7 +259,7 @@ type raft struct {
 	maybeLeader  bool // The group had a preferred leader. And is maybe already acting as leader prior to scale up.
 	paused       bool // Whether or not applies are paused
 	observer     bool // The node is observing, i.e. not able to become leader
-	initializing bool // The node is new, and "empty log" checks can be temporarily relaxed.
+	initializing bool // The node is new to a brand-new group, "empty log" checks can be temporarily relaxed.
 	scaleUp      bool // The node is part of a scale up, puts us in observer mode until the log contains data.
 	deleted      bool // If the node was deleted.
 	snapshotting bool // Snapshot is in progress.
@@ -348,7 +348,7 @@ type RaftConfig struct {
 
 	// ScaleUp identifies the Raft peer set is being scaled up.
 	// We need to protect against losing state due to the new peers starting with an empty log.
-	// Therefore, these empty servers can't try to become leader until they at least have _some_ state.
+	// Therefore, these empty servers can't try to become leader, and vote as empty, until they at least have _some_ state.
 	ScaleUp bool
 
 	// NewTransport creates the transport used for Raft node communication.
@@ -649,12 +649,12 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	n.resetElectionTimeout()
 	n.llqrt = time.Now()
 
-	// If our log is empty, and we're initializing, relax the "empty log" checks temporarily.
-	if !cfg.Recovering && n.pindex == 0 {
-		n.initializing = true
-		// If we're scaling up and our log is empty, must put ourselves into observer
-		// and wait for data from the leader.
-		if !cfg.Observer && cfg.ScaleUp {
+	if n.pindex == 0 && !cfg.Recovering {
+		if !cfg.ScaleUp {
+			// Only a brand-new group relaxes the empty log checks, a scale up peer's data lives elsewhere.
+			n.initializing = true
+		} else if !cfg.Observer {
+			// A scale up peer with an empty log observes until it gets data from the leader.
 			n.scaleUp = true
 			n.setObserverLocked(true, extUndetermined)
 		}
@@ -4189,13 +4189,15 @@ func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
 	n.votes.drain()
+	// An empty log only wins on quorum while initializing or as the preferred peer, see processVoteRequest.
+	selfEmpty := n.pindex == 0 && !n.initializing && !n.maybeLeader
 	n.Unlock()
 
 	// Send out our request for votes.
 	n.requestVote()
 
 	// We vote for ourselves.
-	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true})
+	n.votes.push(&voteResponse{term: n.term, peer: n.ID(), granted: true, empty: selfEmpty})
 
 	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
@@ -4228,10 +4230,8 @@ func (n *raft) runAsCandidate() {
 			nterm := n.term
 			csz := n.csz
 			countVote := n.shouldCountVoteFromPeer(vresp.peer)
-			// While an unsafe quorum rescue is active (see RescueQuorum), grants
-			// from empty voters count toward quorum, but only if our own log is
-			// non-empty. Empty servers must never form quorum among themselves.
-			countEmpty := n.rescue != nil && n.pindex > 0
+			// Empty grants only count during a quorum rescue with a non-empty log, or for the preferred peer.
+			countEmpty := (n.rescue != nil && n.pindex > 0) || n.maybeLeader
 			n.RUnlock()
 
 			if vresp.granted && nterm == vresp.term {
@@ -5765,14 +5765,14 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	// Only way we get to yes is through here.
 	voteOk := n.vote == noVote || n.vote == vr.candidate
 
-	// In a managed group a scale up peer doesn't vote, and nobody votes for a candidate outside the peer set.
-	if n.managed && (n.scaleUp || n.peers[vr.candidate] == nil) {
+	// A managed group doesn't vote for a candidate outside its peer set, a scale up peer's empty vote is flagged instead.
+	if n.managed && n.peers[vr.candidate] == nil {
 		voteOk = false
 	}
 
 	// If we have an empty log, but are initializing.
 	if voteOk && vresp.empty && n.initializing {
-		// Reset notion of having an empty log if we're voting during initialization/scale up.
+		// Reset notion of having an empty log if we're voting during initialization.
 		// Ensures they only need quorum, and not need to hear from all servers.
 		vresp.empty = false
 	}
