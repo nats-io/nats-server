@@ -11013,6 +11013,194 @@ func TestJetStreamClusterCanRemovePeer(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamMoveHoldsWhileDesiredPeerCatchesUp(t *testing.T) {
+	askInterval, stall := migratePosAskInterval, migrateCatchupStall
+	migratePosAskInterval, migrateCatchupStall = 250*time.Millisecond, time.Second
+	defer func() { migratePosAskInterval, migrateCatchupStall = askInterval, stall }()
+
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 100 {
+		sendStreamMsg(t, nc, "foo", "hello")
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Move away from the stream leader, onto the server not hosting the stream yet.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	var desired []string
+	var followers []*Server
+	var ns *Server
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		desired = append(desired, s.NodeName())
+		if s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			followers = append(followers, s)
+		} else {
+			ns = s
+		}
+	}
+	require_Len(t, len(followers), 2)
+	require_NotNil(t, ns)
+
+	// answerWith has the server answer requests for the state of its stream store with h, or not at all.
+	answerWith := func(s *Server, h func(mset *stream, reply string)) {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		s.sysUnsubscribe(mset.infoSub)
+		if h == nil {
+			return
+		}
+		isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
+		mset.infoSub, err = s.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var req clusterStreamInfoRequest
+			if json.Unmarshal(msg, &req) != nil || !req.State {
+				mset.handleClusterStreamInfoRequest(sub, c, acc, subject, reply, msg)
+				return
+			}
+			h(mset, reply)
+		})
+		require_NoError(t, err)
+	}
+
+	// Keep the followers from vouching for their data until the new peer reports on its terms.
+	for _, s := range followers {
+		answerWith(s, nil)
+	}
+
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	nsa := sa.copyGroup()
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   desired,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    copyStrings(sa.Group.Peers),
+			Replicas: 3,
+		},
+	}
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa))
+	if err == nil {
+		cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	}
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Have the new peer report a store that's behind, making progress while progress is set.
+	var progress atomic.Bool
+	progress.Store(true)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		_, err := ns.globalAccount().lookupStream("TEST")
+		return err
+	})
+	var seq uint64
+	answerWith(ns, func(mset *stream, reply string) {
+		if progress.Load() {
+			seq++
+		}
+		state := StreamState{LastSeq: seq}
+		ns.sendInternalMsgLocked(reply, _EMPTY_, nil, &clusterStreamInfoResponse{Peer: mset.raftNode().ID(), State: &state})
+	})
+
+	// The followers vouch for their data, which is a quorum of the desired peers.
+	for _, s := range followers {
+		answerWith(s, (*stream).processClusterStreamStateRequest)
+	}
+
+	group := func() ([]string, *DesiredClusterInfoStatus) {
+		sjs := sl.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return nil, nil
+		}
+		return copyStrings(sa.Group.Peers), sa.Group.migration
+	}
+
+	// While the new peer makes progress, the old leader stays, for longer than a stall.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if peers, _ := group(); len(peers) != 4 {
+			return fmt.Errorf("expected 4 peers, got %d", len(peers))
+		}
+		return nil
+	})
+	for deadline := time.Now().Add(3 * migrateCatchupStall); time.Now().Before(deadline); {
+		peers, _ := group()
+		require_True(t, slices.Contains(peers, sl.NodeName()))
+		require_True(t, c.streamLeader(globalAccountName, "TEST") == sl)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Once it stalls, the move goes ahead without it.
+	progress.Store(false)
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		if peers, _ := group(); len(peers) != 3 || slices.Contains(peers, sl.NodeName()) {
+			return fmt.Errorf("old peer still in %v", peers)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterStreamMigrationHoldsForCatchup(t *testing.T) {
+	now := time.Now()
+	actual := []*Peer{{ID: "A"}, {ID: "B", Last: now}, {ID: "C", Last: now}, {ID: "D", Last: now}}
+	desired := []string{"B", "C", "D"}
+	pos := &peerPositions{bar: 100, seqs: map[string]uint64{"B": 100, "C": 100}}
+
+	report := func(peer string, seq uint64) {
+		pos.record(&clusterStreamInfoResponse{Peer: peer, State: &StreamState{LastSeq: seq}})
+	}
+
+	// Nobody is catching up.
+	require_False(t, pos.holdForCatchup("A", "A", actual, desired, nil))
+
+	// A desired peer we're catching up holds the removal, as does one that told us it's behind.
+	require_True(t, pos.holdForCatchup("A", "A", actual, desired, []string{"D"}))
+	report("D", 10)
+	require_True(t, pos.holdForCatchup("A", "A", actual, desired, nil))
+
+	// Once it stalls, we stop waiting for it, also if it reports the same again.
+	pos.progress = time.Now().Add(-migrateCatchupStall)
+	report("D", 10)
+	require_False(t, pos.holdForCatchup("A", "A", actual, desired, nil))
+
+	// Until it makes progress again.
+	report("D", 20)
+	require_True(t, pos.holdForCatchup("A", "A", actual, desired, nil))
+
+	// Removing a peer that's down doesn't cost us a copy.
+	require_False(t, pos.holdForCatchup("A", "X", append(actual, &Peer{ID: "X"}), desired, nil))
+	require_True(t, pos.progress.IsZero())
+
+	// A desired peer that's down, or not desired at all, doesn't hold the removal.
+	actual[3].Last = time.Time{}
+	require_False(t, pos.holdForCatchup("A", "A", actual, desired, []string{"D"}))
+	actual[3].Last = now
+	require_False(t, pos.holdForCatchup("A", "A", actual, []string{"B", "C"}, []string{"D"}))
+
+	// Once caught up, it no longer holds the removal.
+	report("D", 100)
+	require_False(t, pos.holdForCatchup("A", "A", actual, desired, nil))
+}
+
 func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
 	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
 		func(serverName, _, _, conf string) string {
