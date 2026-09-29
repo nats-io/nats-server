@@ -20794,7 +20794,7 @@ func TestJetStreamStreamRetentionUpdatesConsumers(t *testing.T) {
 			require_NoError(t, err)
 
 			o := mset.lookupConsumer("test_consumer")
-			require_NotNil(t, err)
+			require_NotNil(t, o)
 			require_Equal(t, o.retention, from)
 
 			sc.Retention = to
