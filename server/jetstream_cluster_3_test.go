@@ -15592,7 +15592,10 @@ func TestJetStreamClusterScaleDownCancelsCatchup(t *testing.T) {
 	sl.gcbSubLast(hold)
 	scale(3)
 	waitReplicas(3)
-	require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
+	// Replicas are Raft-current once added, their store catchup may still be finishing.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }
 
 func TestJetStreamClusterConsumerScaleDownDesiredAfterMetaLeaderChange(t *testing.T) {

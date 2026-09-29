@@ -188,7 +188,7 @@ type raft struct {
 	peers map[string]*lps // Other peers in the Raft group
 
 	removed  map[string]time.Time           // Peers that were removed from the group
-	observed map[string]time.Time           // Peers not in our peer set that we've heard from, only for managed groups
+	observed map[string]*lps                // Peers not in our peer set that we've heard from, only for managed groups
 	acks     map[uint64]map[string]struct{} // Append entry responses/acks, map of entry index -> peer ID
 	pae      map[uint64]*appendEntry        // Pending append entries
 	paeBytes uint64                         // Total byte size of the pending append entries in pae
@@ -3449,9 +3449,19 @@ func (n *raft) addPeer(peer string) {
 	}
 
 	if _, ok := n.peers[peer]; !ok {
-		// We are not tracking this one automatically so we need
-		// to bump cluster size.
-		n.peers[peer] = &lps{}
+		// We are not tracking this one automatically so we need to bump cluster size.
+		// A learner keeps its progress and last seen time as a member.
+		if ps := n.observed[peer]; ps != nil {
+			n.peers[peer] = ps
+		} else {
+			n.peers[peer] = &lps{}
+		}
+	}
+	if n.observed != nil {
+		delete(n.observed, peer)
+		if len(n.observed) == 0 {
+			n.observed = nil
+		}
 	}
 	// Adjust cluster size and quorum if needed.
 	n.adjustClusterSizeAndQuorum()
@@ -3507,23 +3517,20 @@ func (n *raft) sendMembershipChange(e *Entry) bool {
 		n.membChange = nil
 		return false
 	}
-	if e.Type == EntryRemovePeer {
-		n.membChange.prev = ps
-	}
-	err := n.sendAppendEntryLocked([]*Entry{e}, true)
-	if err != nil {
-		n.membChange = nil
-		return false
-	}
-
 	// Membership takes effect once stored, committing only makes it official.
+	// Applied before storing, so the entry commits under the new quorum.
 	if e.Type == EntryAddPeer {
 		n.addPeer(peer)
 	} else {
+		n.membChange.prev = ps
 		n.removePeer(peer)
-		if n.qn <= 1 {
-			n.tryCommit(n.pindex)
+	}
+	if err := n.sendAppendEntryLocked([]*Entry{e}, true); err != nil {
+		// A WAL reset may have reverted it already.
+		if n.membChange != nil {
+			n.revertMembershipChange()
 		}
+		return false
 	}
 	return true
 }
@@ -3879,7 +3886,7 @@ func (n *raft) catchupFollower(ar *appendEntryResponse) {
 
 	// The follower may have lost state, so only trust the index it reports now,
 	// and it's not caught up until it confirms everything we have.
-	if ps := n.peers[ar.peer]; ps != nil {
+	if ps := n.progressLocked(ar.peer); ps != nil {
 		ps.li, ps.ci = ar.index, n.pindex
 	}
 
@@ -4108,9 +4115,14 @@ func (n *raft) trackResponse(ar *appendEntryResponse) bool {
 
 	ps := n.peers[ar.peer]
 
+	// A learner's progress in our term decides when it can be added.
+	lp := ps
+	if lp == nil && ar.term == n.term {
+		lp = n.observed[ar.peer]
+	}
 	// Update peer's last index.
-	if ps != nil && ar.index > ps.li {
-		ps.li = ar.index
+	if lp != nil && ar.index > lp.li {
+		lp.li = ar.index
 	}
 
 	// Ignore items already committed, or skip if this is not about an entry that matches our current term.
@@ -4195,27 +4207,27 @@ func (n *raft) trackPeer(peer string) error {
 	}
 	if ps := n.peers[peer]; ps != nil {
 		ps.ts = time.Now()
-		if n.observed != nil {
-			delete(n.observed, peer)
-			if len(n.observed) == 0 {
-				n.observed = nil
-			}
-		}
 	} else if n.managed {
 		// For managed groups the meta layer can assign peers before they've been
 		// added to our peer set. Track when we hear from them, so the upper layer
 		// can prefer adding peers that are demonstrably up.
 		if n.observed == nil {
-			n.observed = make(map[string]time.Time, 1)
+			n.observed = make(map[string]*lps, 1)
 		}
-		// On first contact, nudge the upper layer so it can check if this unblocks adding the peer.
-		if _, seen := n.observed[peer]; !seen && n.leaderState.Load() {
-			select {
-			case n.leadc <- leadChange{isLeader: true, term: n.term, nudge: true}:
-			default:
+		ps := n.observed[peer]
+		if ps == nil {
+			// A learner must reach what we have on first contact to be caught up.
+			ps = &lps{ci: n.pindex}
+			n.observed[peer] = ps
+			// On first contact, nudge the upper layer so it can check if this unblocks adding the peer.
+			if n.leaderState.Load() {
+				select {
+				case n.leadc <- leadChange{isLeader: true, term: n.term, nudge: true}:
+				default:
+				}
 			}
 		}
-		n.observed[peer] = time.Now()
+		ps.ts = time.Now()
 	}
 	n.Unlock()
 
@@ -4242,8 +4254,17 @@ func (n *raft) votingMemberLocked() bool {
 func (n *raft) LastHeardFromFollower(peer string) time.Time {
 	n.RLock()
 	defer n.RUnlock()
-	if ps := n.peers[peer]; ps != nil {
+	if ps := n.progressLocked(peer); ps != nil {
 		return ps.ts
+	}
+	return time.Time{}
+}
+
+// progressLocked returns the state of a member, or of a learner if not a member.
+// Lock should be held.
+func (n *raft) progressLocked(peer string) *lps {
+	if ps := n.peers[peer]; ps != nil {
+		return ps
 	}
 	return n.observed[peer]
 }
@@ -4262,8 +4283,14 @@ func (n *raft) IsFollowerCaughtUp(peer string) bool {
 		return false
 	}
 	// Requires an ack since becoming leader, so lagging voters don't count right after an election.
-	ps := n.peers[peer]
-	return ps != nil && ps.li > 0 && ps.li >= ps.ci && time.Since(ps.ts) <= hbInterval*3
+	// A learner is caught up the same way as a member.
+	ps := n.progressLocked(peer)
+	return ps != nil && ps.li > 0 && ps.li >= ps.ci && withinLiveWindow(ps.ts)
+}
+
+// withinLiveWindow reports whether ts is recent enough for a peer to be considered live.
+func withinLiveWindow(ts time.Time) bool {
+	return !ts.IsZero() && time.Since(ts) <= hbInterval*3
 }
 
 func (n *raft) runAsCandidate() {
@@ -4545,6 +4572,13 @@ func (n *raft) revertMembershipChange() {
 			delete(n.removed, peer)
 			if len(n.removed) == 0 {
 				n.removed = nil
+			}
+		}
+		// It may have been observed while removed, it's a member again.
+		if n.observed != nil {
+			delete(n.observed, peer)
+			if len(n.observed) == 0 {
+				n.observed = nil
 			}
 		}
 	} else {
@@ -6131,6 +6165,7 @@ func (n *raft) switchToFollowerLocked(leader string) {
 	n.aflr = 0
 	n.leaderState.Store(false)
 	n.leaderSince.Store(nil)
+	n.observed = nil
 	n.lxfer = false
 
 	// Reset acks, we can't assume acks from a previous term are still valid in another term.
@@ -6205,6 +6240,7 @@ func (n *raft) switchToLeader() {
 	n.debug("Switching to leader")
 
 	n.lxfer = false
+	n.observed = nil
 	n.updateLeader(n.id)
 	n.switchState(Leader)
 
