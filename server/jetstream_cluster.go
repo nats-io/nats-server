@@ -7833,12 +7833,21 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	// Check if we already have this consumer running.
 	o := mset.lookupConsumer(consumer)
 
+	// A local R1 was assigned while we still have a node. The monitor removes the node once
+	// everything committed was applied, and becomes leader. We don't wait for it.
+	toLocal := o != nil && (o.raftNode() != nil || o.isLocalUpdates()) && len(ca.Group.Peers) == 1 && ca.Group.Desired == nil && o.isMonitorRunning()
+	if toLocal {
+		o.setFinalizeLocal()
+	}
+
 	if o != nil && oca != nil && oca.Group.Name != ca.Group.Name {
 		s.Warnf("JetStream cluster detected consumer remapping for '%s > %s' from %q to %q",
 			acc, ca.Name, oca.Group.Name, ca.Group.Name)
-		o.clearNode()
-		o.stopMonitoring()
-		alreadyRunning = false
+		if !toLocal {
+			o.clearNode()
+			o.stopMonitoring()
+			alreadyRunning = false
+		}
 		// Make sure to clear from original.
 		js.mu.Lock()
 		oca.Group.node = nil
@@ -8009,6 +8018,14 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		if didCreate {
 			o.setCreatedTime(ca.Created)
 		} else {
+			// The monitor finishes the scale down to 1.
+			if toLocal {
+				if !js.isMetaRecovering() && isConfigUpdate {
+					ca.clearResponded()
+					o.setConsumerAssignment(ca)
+				}
+				return
+			}
 			// Check for scale down to 1..
 			if node != nil && len(rg.Peers) == 1 && rg.Desired == nil {
 				o.clearNode()
@@ -8450,6 +8467,8 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	defer n.Stop()
 
 	qch, mqch, lch, aq, uch := n.QuitC(), o.monitorQuitC(), n.LeadChangeC(), n.ApplyQ(), o.updateC()
+	// Don't leave updates queued for a switch to a local R1 we won't finish.
+	defer o.abortSwitch()
 
 	s.Debugf("Starting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
 	defer s.Debugf("Exiting consumer monitor for '%s > %s > %s' [%s]", o.acc.Name, ca.Stream, ca.Name, n.Group())
@@ -8617,6 +8636,15 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				ce.ReturnToPool()
 			}
 			aq.recycle(&ces)
+			// A switch to run as a local R1 waits for everything to be applied, check again.
+			if o.switching.Load() {
+				if js.finalizeConsumerLocal(o, n) {
+					return
+				}
+				if mmt != nil {
+					resetMigrationMonitoring(migrateFastCheckInterval)
+				}
+			}
 
 		case lc := <-lch:
 			// Not a change in leadership, just a nudge about a newly observed peer.
@@ -8640,6 +8668,14 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					o.checkStateForInterestStream(&ss)
 				}
 			}
+			// A migration's switch to run as a local R1 is only for the leader.
+			if !isLeader {
+				o.mu.Lock()
+				if !o.finalizeLocal {
+					o.endSwitchLocked()
+				}
+				o.mu.Unlock()
+			}
 
 			// We may receive a leader change after the consumer assignment which would cancel us
 			// monitoring for this closely. So re-assess our state here as well.
@@ -8662,6 +8698,10 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				startMigrationMonitoring()
 			} else {
 				stopMigrationMonitoring()
+			}
+			// A local R1 was assigned, remove our node once everything is applied.
+			if js.finalizeConsumerLocal(o, n) {
+				return
 			}
 		case <-mmtc:
 			if !isLeader {
@@ -8746,6 +8786,23 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			return mstat(MigrationStatusMeta, "requesting desired state from meta leader")
 		}
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
+	}
+	// A switch to run as a local R1 is abandoned if that's no longer where we're going.
+	if o.switching.Load() && (replicas != 1 || len(current) != 1) {
+		o.abortSwitch()
+	}
+	// A scale down to R1 was abandoned after we switched to run as a local R1, switch back
+	// before growing.
+	if o.isLocalUpdates() {
+		members := peerIDs(n.Peers())
+		if slices.ContainsFunc(desiredPeers, func(p string) bool { return !slices.Contains(members, p) }) {
+			if err := o.switchToReplicated(n, leaderTerm); err != nil {
+				if errors.Is(err, ErrStoreClosed) {
+					return mstat(MigrationStatusUnavailable, "shutting down")
+				}
+				return mstat(MigrationStatusSnapshot, "waiting to switch back to replicated").withErr(err)
+			}
+		}
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
 	if n.NeedSnapshot() {
@@ -8873,6 +8930,11 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			name = fmt.Sprintf("with id %s", remove)
 		}
 		return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
+	}
+
+	// Before the meta layer can be asked to finalize a local R1 assignment, run as a local R1.
+	if peersMatch && len(current) == 1 && replicas == 1 && !o.switchToLocal(n) {
+		return mstat(MigrationStatusCatchup, "waiting for updates to be applied before switching to a local R1")
 	}
 
 	// We're a step closer to being done.
@@ -9258,6 +9320,139 @@ func decodeResetUpdate(buf []byte) (sseq uint64, reply string, err error) {
 
 func (js *jetStream) processConsumerLeaderChange(o *consumer, isLeader bool, term uint64) error {
 	return js.processConsumerLeaderChangeWithAssignment(o, nil, isLeader, term)
+}
+
+// switchToLocal switches a replicated consumer we're the only member of to run as a local R1:
+// its state updates go to the store directly and it's leader as an R1. While switching, updates
+// stay queued instead of being proposed. Once everything proposed was applied, the queued
+// updates are applied locally, in order, and we switch. The monitor keeps the node until the meta
+// layer finalized the local R1 assignment. It doesn't block, the apply path needs to make progress,
+// so it's called again until it returns true. Only then can the meta layer be asked to finalize it.
+func (o *consumer) switchToLocal(n RaftNode) bool {
+	o.mu.Lock()
+	if o.localUpdates || o.node == nil {
+		o.mu.Unlock()
+		return true
+	}
+	o.switching.Store(true)
+	// Don't switch once closed or after a write error, updates stay queued.
+	if o.closed || o.werr != nil || o.forwarding || !raftLogApplied(n) {
+		o.mu.Unlock()
+		return false
+	}
+	js := o.js
+	for {
+		// Apply what's queued locally, new updates keep being queued meanwhile.
+		held := o.phead
+		if held == nil {
+			break
+		}
+		o.phead, o.ptail = nil, nil
+		o.mu.Unlock()
+		var entries []*Entry
+		for p := held; p != nil; p = p.next {
+			entries = append(entries, newEntry(EntryNormal, p.data))
+		}
+		if err := js.applyConsumerEntries(o, newCommittedEntry(0, entries), true); err != nil {
+			// Like the apply path, an unexpected error means we can't continue.
+			if err != errConsumerClosed {
+				o.setWriteErr(err)
+			}
+			return false
+		}
+		o.mu.Lock()
+	}
+	o.node, o.localUpdates = nil, true
+	o.switching.Store(false)
+	ca := o.ca
+	o.mu.Unlock()
+	js.processConsumerLeaderChangeWithAssignment(o, ca, true, 0)
+	return true
+}
+
+// endSwitchLocked ends a switch to run as a local R1, done or abandoned, queued updates are proposed again.
+// Lock should be held.
+func (o *consumer) endSwitchLocked() {
+	if !o.switching.Load() {
+		return
+	}
+	o.switching.Store(false)
+	if o.phead != nil && o.pch != nil {
+		select {
+		case o.pch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// abortSwitch abandons a switch to run as a local R1.
+func (o *consumer) abortSwitch() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.endSwitchLocked()
+}
+
+// switchToReplicated switches a consumer that runs as a local R1, because a scale down
+// to R1 was abandoned, back to proposing through the group. Our state can include updates the
+// log doesn't have, so we snapshot it first. Leadership is re-established for our term.
+func (o *consumer) switchToReplicated(n RaftNode, term uint64) error {
+	snap, err := o.store.EncodedState()
+	if err != nil {
+		return err
+	}
+	if err := n.ReplaceSnapshot(snap); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	o.node, o.localUpdates = n, false
+	ca := o.ca
+	o.mu.Unlock()
+	o.js.processConsumerLeaderChangeWithAssignment(o, ca, true, term)
+	return nil
+}
+
+// isLocalUpdates returns whether the consumer switched to run as a local R1, keeping the node until
+// the meta layer finalized the assignment.
+func (o *consumer) isLocalUpdates() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.localUpdates
+}
+
+// setFinalizeLocal has the monitor remove our node and become leader, after the meta
+// layer assigned a local R1. The meta layer doesn't wait for it.
+func (o *consumer) setFinalizeLocal() {
+	o.mu.Lock()
+	o.finalizeLocal = true
+	o.mu.Unlock()
+	select {
+	case o.uch <- struct{}{}:
+	default:
+	}
+}
+
+// finalizeConsumerLocal removes our node after a local R1 was assigned. The migration switched
+// us to run as a local R1 before asking for that, otherwise we switch first. Returns true once
+// done, the monitor then exits.
+func (js *jetStream) finalizeConsumerLocal(o *consumer, n RaftNode) bool {
+	o.mu.RLock()
+	finalize := o.finalizeLocal
+	o.mu.RUnlock()
+	if !finalize || !o.switchToLocal(n) {
+		return false
+	}
+	o.mu.Lock()
+	o.finalizeLocal, o.localUpdates = false, false
+	ca := o.ca
+	o.mu.Unlock()
+
+	js.mu.Lock()
+	if ca != nil && ca.Group != nil && ca.Group.node == n {
+		ca.Group.node = nil
+	}
+	js.mu.Unlock()
+	n.Delete()
+	return true
 }
 
 func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *consumerAssignment, isLeader bool, term uint64) error {

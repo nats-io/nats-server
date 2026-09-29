@@ -12404,3 +12404,414 @@ func TestJetStreamClusterAtomicBatchStagedReplicatedCommittedAfterScaleDown(t *t
 		t.Fatalf("expected 3 msgs, got %d", state.Msgs)
 	}
 }
+
+func TestJetStreamClusterConsumerScaleDownToR1WithUnappliedAcks(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3, Retention: nats.InterestPolicy})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs[:5] {
+		require_NoError(t, m.AckSync())
+	}
+
+	// The replica we scale down to.
+	rs := c.randomNonConsumerLeader(globalAccountName, "TEST", "C")
+	mset, err := rs.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+	n := o.raftNode()
+	o.mu.RLock()
+	cfs := o.store.(*consumerFileStore)
+	o.mu.RUnlock()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if state, err := cfs.State(); err != nil {
+			return err
+		} else if state.AckFloor.Stream != 5 {
+			return fmt.Errorf("ack floor %d", state.AckFloor.Stream)
+		}
+		return nil
+	})
+
+	// Committed but not applied on it, its monitor is busy. With interest retention a
+	// follower removes the stream's first message when it's acked, outside the consumer's
+	// and stream's locks, so the monitor waits on the stream's store.
+	pindex, _, _ := n.Progress()
+	fs := mset.store.(*fileStore)
+	fs.mu.Lock()
+	for _, m := range msgs[5:] {
+		require_NoError(t, m.AckSync())
+	}
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if _, commit, _ := n.Progress(); commit < pindex+5 {
+			return errors.New("not committed yet")
+		}
+		return nil
+	})
+
+	// The meta layer applies the scale down to R1 for the consumer, remapping it to an R1 group.
+	sjs := rs.getJetStream()
+	sjs.mu.Lock()
+	oca := sjs.consumerAssignment(globalAccountName, "TEST", "C")
+	ca := oca.copyGroup()
+	cfg := *oca.Config
+	cfg.Replicas = 1
+	ca.Config = &cfg
+	ca.Group.Name = "C-R1F-scaledn"
+	ca.Group.Peers = []string{n.ID()}
+	ca.Group.Desired = nil
+	sjs.streamAssignment(globalAccountName, "TEST").consumers["C"] = ca
+	sjs.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		sjs.processClusterCreateConsumer(oca, ca, nil, true)
+		close(done)
+	}()
+
+	// Release the monitor after a moment, while the scale down is being applied.
+	time.Sleep(250 * time.Millisecond)
+	fs.mu.Unlock()
+	<-done
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		if o.raftNode() != nil {
+			return errors.New("still has a raft node")
+		}
+		return nil
+	})
+
+	// Every committed ack must have been applied before going local, stored and in memory
+	// once it's the leader.
+	if state, err := o.store.State(); err != nil || state.AckFloor.Stream != 10 {
+		t.Errorf("stored ack floor %+v, %v, expected 10", state.AckFloor, err)
+	}
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if !o.isLeader() || o.asflr != 10 {
+			return fmt.Errorf("leader %v, ack floor in memory %d, expected 10", o.isLeader(), o.asflr)
+		}
+		return nil
+	})
+	if state, err := o.store.State(); err != nil || state.AckFloor.Stream != 10 {
+		t.Errorf("stored ack floor %+v, %v, expected 10", state.AckFloor, err)
+	}
+}
+
+func TestJetStreamClusterConsumerScaleUpAndDownUnderLoad(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	const total = 12000
+	for i := range total {
+		_, err = js.PublishAsync("foo", []byte(strconv.Itoa(i)))
+		require_NoError(t, err)
+	}
+	select {
+	case <-js.PublishAsyncComplete():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("publishes not acked")
+	}
+	cfg := &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1, AckWait: 2 * time.Second}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// Consume and ack continuously. An acked message must never be delivered again.
+	var acked atomic.Uint64
+	var errs []string
+	var errMu sync.Mutex
+	failf := func(format string, args ...any) {
+		errMu.Lock()
+		errs = append(errs, fmt.Sprintf(format, args...))
+		errMu.Unlock()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cnc, cjs := jsClientConnect(t, c.randomServer())
+		defer cnc.Close()
+		sub, err := cjs.PullSubscribe("foo", "C")
+		if err != nil {
+			failf("subscribe: %v", err)
+			return
+		}
+		ackedSeqs := make(map[uint64]struct{}, total)
+		lastProgress := time.Now()
+		for len(ackedSeqs) < total {
+			if time.Since(lastProgress) > 15*time.Second {
+				failf("no progress, %d acked", len(ackedSeqs))
+				return
+			}
+			msgs, err := sub.Fetch(2, nats.MaxWait(time.Second))
+			if err != nil {
+				continue
+			}
+			// Keep consuming across the scale changes.
+			time.Sleep(3 * time.Millisecond)
+			for _, m := range msgs {
+				md, err := m.Metadata()
+				if err != nil {
+					continue
+				}
+				if _, ok := ackedSeqs[md.Sequence.Stream]; ok {
+					failf("acked message %d delivered again (delivered %d times)", md.Sequence.Stream, md.NumDelivered)
+				}
+				if m.AckSync() == nil {
+					ackedSeqs[md.Sequence.Stream] = struct{}{}
+					acked.Add(1)
+					lastProgress = time.Now()
+				}
+			}
+		}
+	}()
+
+	consumerStates := func() []string {
+		var states []string
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				continue
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				states = append(states, s.Name()+": no consumer")
+				continue
+			}
+			o.mu.RLock()
+			st := fmt.Sprintf("%s: node=%v localUpdates=%v finalize=%v switching=%v leader=%v", s.Name(), o.node != nil, o.localUpdates, o.finalizeLocal, o.switching.Load(), o.isLeader())
+			o.mu.RUnlock()
+			sjs := s.getJetStream()
+			sjs.mu.RLock()
+			if ca := sjs.consumerAssignment(globalAccountName, "TEST", "C"); ca != nil && ca.Group != nil {
+				st += fmt.Sprintf(" peers=%v desired=%v gnode=%v", ca.Group.Peers, ca.Group.Desired != nil, ca.Group.node != nil)
+				if ca.Group.migration != nil {
+					st += " migration=" + ca.Group.migration.Description
+				}
+			}
+			sjs.mu.RUnlock()
+			states = append(states, st)
+		}
+		return states
+	}
+	waitForAcks := func() {
+		t.Helper()
+		start := acked.Load()
+		checkFor(t, 10*time.Second, 10*time.Millisecond, func() error {
+			if acked.Load() < min(start+20, total) {
+				return fmt.Errorf("acks not progressing: %v", consumerStates())
+			}
+			return nil
+		})
+	}
+	waitForScale := func(replicas int) {
+		t.Helper()
+		checkFor(t, 20*time.Second, 50*time.Millisecond, func() error {
+			ci, err := js.ConsumerInfo("TEST", "C")
+			if err != nil {
+				return err
+			}
+			if ci.Cluster == nil || len(ci.Cluster.Replicas) != replicas-1 {
+				states := consumerStates()
+				return fmt.Errorf("not at R%d yet: %v", replicas, states)
+			}
+			for _, r := range ci.Cluster.Replicas {
+				if !r.Current {
+					return fmt.Errorf("replica %s not current", r.Name)
+				}
+			}
+			return nil
+		})
+	}
+	for range 3 {
+		waitForAcks()
+		cfg.Replicas = 3
+		_, err = js.UpdateConsumer("TEST", cfg)
+		require_NoError(t, err)
+		waitForScale(3)
+		waitForAcks()
+		cfg.Replicas = 1
+		_, err = js.UpdateConsumer("TEST", cfg)
+		require_NoError(t, err)
+		waitForScale(1)
+	}
+	if acked.Load() >= total {
+		t.Fatalf("consumed everything before the last scale down, the test needs more messages")
+	}
+	select {
+	case <-done:
+	case <-time.After(120 * time.Second):
+		t.Fatalf("consumer didn't finish, %d acked", acked.Load())
+	}
+	errMu.Lock()
+	defer errMu.Unlock()
+	for _, e := range errs {
+		t.Error(e)
+	}
+
+	// The consumer's stored state reflects every ack, also after a restart.
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	cl.Shutdown()
+	cl.WaitForShutdown()
+	c.restartServer(cl)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		ci, err := js.ConsumerInfo("TEST", "C")
+		if err != nil {
+			return err
+		}
+		if ci.AckFloor.Stream != total || ci.NumAckPending != 0 {
+			return fmt.Errorf("ack floor %d, ack pending %d", ci.AckFloor.Stream, ci.NumAckPending)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterScaleDownToR1RunsLocalBeforeFinalizing(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	ccfg := &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	serverByPeer := func(peer string) *Server {
+		for _, s := range c.servers {
+			if s.NodeName() == peer {
+				return s
+			}
+		}
+		return nil
+	}
+	var mu sync.Mutex
+	var finalReports int
+	var violations []string
+	fail := func(format string, args ...any) {
+		mu.Lock()
+		violations = append(violations, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	// On a report asking to finalize a local R1, the reporting peer must run as a local R1 already.
+	// Subscribe on every server, the reporting server delivers it locally.
+	for _, s := range c.servers {
+		_, err = s.sysSubscribe(streamAssignmentReconcileSubj, func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
+			var r streamAssignmentReconcile
+			if json.Unmarshal(msg, &r) != nil || !r.PeersMatch || len(r.MetaPeers) != 1 {
+				return
+			}
+			mu.Lock()
+			finalReports++
+			mu.Unlock()
+			ps := serverByPeer(r.MetaPeers[0])
+			mset, err := ps.globalAccount().lookupStream("TEST")
+			if err != nil {
+				fail("stream: %v", err)
+				return
+			}
+			mset.mu.RLock()
+			defer mset.mu.RUnlock()
+			if mset.node != nil && !mset.localWrites {
+				fail("stream still writes through the log when asking to finalize a local R1")
+			}
+			if mset.syncSub != nil {
+				fail("stream still answers catchup requests when asking to finalize a local R1")
+			}
+		})
+		require_NoError(t, err)
+		_, err = s.sysSubscribe(consumerAssignmentReconcileSubj, func(_ *subscription, _ *client, _ *Account, _, _ string, msg []byte) {
+			var r consumerAssignmentReconcile
+			if json.Unmarshal(msg, &r) != nil || !r.PeersMatch || len(r.MetaPeers) != 1 {
+				return
+			}
+			mu.Lock()
+			finalReports++
+			mu.Unlock()
+			ps := serverByPeer(r.MetaPeers[0])
+			mset, err := ps.globalAccount().lookupStream("TEST")
+			if err != nil {
+				fail("consumer's stream: %v", err)
+				return
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				fail("consumer not found")
+				return
+			}
+			o.mu.RLock()
+			defer o.mu.RUnlock()
+			if o.node != nil || !o.isLeader() {
+				fail("consumer doesn't run as a local R1 when asking to finalize it (node %v, leader %v)", o.node != nil, o.isLeader())
+			}
+		})
+		require_NoError(t, err)
+	}
+
+	// Scale the consumer down, then the stream.
+	ccfg.Replicas = 1
+	_, err = js.UpdateConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			if mset, err := s.globalAccount().lookupStream("TEST"); err == nil {
+				if mset.raftNode() != nil {
+					return fmt.Errorf("stream on %s still has a raft node", s.Name())
+				}
+				if o := mset.lookupConsumer("C"); o != nil && o.raftNode() != nil {
+					return fmt.Errorf("consumer on %s still has a raft node", s.Name())
+				}
+			}
+		}
+		return nil
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if finalReports == 0 {
+		t.Fatalf("no final reports observed")
+	}
+	for _, v := range violations {
+		t.Error(v)
+	}
+
+	// Both keep working as a local R1.
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(11)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 11)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+}

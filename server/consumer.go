@@ -540,6 +540,13 @@ type consumer struct {
 	monitorWg sync.WaitGroup
 	monitorMu sync.Mutex // Serializes monitorWg's Add against Wait to prevent a WaitGroup reuse panic.
 	inMonitor bool
+	// Set once a local R1 was assigned, the monitor removes the node once everything is applied.
+	finalizeLocal bool
+	// Set once the migration switched us to run as a local R1, before the meta layer finalized it.
+	// The monitor keeps the node, but our updates are local.
+	localUpdates bool
+	switching    atomic.Bool // A switch to run as a local R1 waits for everything to be applied, updates stay queued.
+	forwarding   bool        // Proposals were taken from the queue and are being proposed.
 
 	// R>1 proposals
 	pch   chan struct{}
@@ -1574,8 +1581,12 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	if ca == nil {
 		return
 	}
-	// Set our node.
-	o.node = ca.Group.node
+	// Set our node. Keep it while the monitor finishes a scale down to a local R1,
+	// it removes the node once done. And while we run as a local R1, the node is
+	// only kept by the monitor.
+	if !o.localUpdates && (ca.Group.node != nil || !o.finalizeLocal || o.node == nil) {
+		o.node = ca.Group.node
+	}
 
 	// Trigger update chan.
 	select {
@@ -3019,9 +3030,20 @@ func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}
+		// While switching to run as a local R1, updates stay queued. The switch applies them locally.
+		if o.switching.Load() {
+			o.mu.Unlock()
+			return nil
+		}
 		proposal := o.phead
 		o.phead, o.ptail = nil, nil
+		o.forwarding = proposal != nil
 		o.mu.Unlock()
+		defer func() {
+			o.mu.Lock()
+			o.forwarding = false
+			o.mu.Unlock()
+		}()
 		// 256k max for now per batch.
 		const maxBatch = 256 * 1024
 		var entries []*Entry
@@ -3029,14 +3051,16 @@ func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}
 			entries = append(entries, newEntry(EntryNormal, proposal.data))
 			sz += len(proposal.data)
 			if sz > maxBatch {
-				node.ProposeMulti(term, entries)
+				if err := node.ProposeMulti(term, entries); err != nil {
+					return err
+				}
 				// We need to re-create `entries` because there is a reference
 				// to it in the node's pae map.
 				sz, entries = 0, nil
 			}
 		}
 		if len(entries) > 0 {
-			node.ProposeMulti(term, entries)
+			return node.ProposeMulti(term, entries)
 		}
 		return nil
 	}
