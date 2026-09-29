@@ -296,15 +296,14 @@ func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
 	return sa.legacyMoveOrigin()
 }
 
-// isR1ScaleUpSource reports whether the given peer is the source for an
-// in-progress R1 scale-up.
-func (sa *streamAssignment) isR1ScaleUpSource(peer string) bool {
+// isR1ScaleUpSource reports whether we're the source of an in-progress R1 scale up, our Raft group's only member
+// while the desired peers add another, based on membership since the desired origin can't identify it after stacked updates.
+// Lock should be held.
+func (sa *streamAssignment) isR1ScaleUpSource(ourID string, members []*Peer) bool {
 	if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
 		return false
 	}
-	d := sa.Group.Desired
-	return d.Origin != nil && d.Origin.Replicas == 1 && len(d.Peers) > 1 &&
-		len(d.Origin.Peers) == 1 && d.Origin.Peers[0] == peer
+	return len(members) == 1 && members[0].ID == ourID && slices.ContainsFunc(sa.Group.Desired.Peers, func(p string) bool { return p != ourID })
 }
 
 // moveInFlight returns whether a move is still converging, including one that was
@@ -4161,7 +4160,11 @@ func prepareStreamRecovery(mset *stream, n RaftNode) error {
 		// the existing R1 history. Preserve the store if
 		// the source has restarted before the initial snapshot
 		// was installed
-		if mset.streamAssignment().isR1ScaleUpSource(n.ID()) {
+		sa, members := mset.streamAssignment(), n.Peers()
+		mset.js.mu.RLock()
+		r1ScaleUpSource := sa.isR1ScaleUpSource(n.ID(), members)
+		mset.js.mu.RUnlock()
+		if r1ScaleUpSource {
 			return nil
 		}
 	}
@@ -5015,6 +5018,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	// Store whether any peers are currently being caught up, in which case they're
 	// not current yet and we need to wait before removing peers.
 	catchups := mset.catchupPeers()
+	members := n.Peers()
 
 	// Snapshot the assignment state we need up front, so the Raft reads below don't
 	// contend for Raft locks while holding the JetStream lock.
@@ -5035,6 +5039,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	// Peers we can't drop yet; they still host a consumer.
 	hostedPeers := sa.consumerHostedPeers()
 	desiredID, desiredScaleDown, desiredPeers, desiredMembers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
+	growing := sa.isR1ScaleUpSource(ourPeerId, members)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -5051,14 +5056,17 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	if n.NeedSnapshot() {
+	// Also when growing from one after a restart, our store can hold writes our log doesn't.
+	needSnapshot := n.NeedSnapshot()
+	if needSnapshot || (growing && !n.SnapshotInCurrentTerm()) {
 		if err := mset.flushAllPending(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
 			}
 			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
+		// Best effort when growing, nothing may have been applied since the last snapshot.
+		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil && (needSnapshot || !errors.Is(err, errNoSnapAvailable)) {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
 		// The snapshot is installed, continue right away so new peers can be added
