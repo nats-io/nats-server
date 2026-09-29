@@ -5171,8 +5171,9 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		}
 		// We only need to weigh the peers we're keeping, we already have Raft quorum, or
 		// we couldn't have grown the group to get here. Peers outside the desired set are
-		// on their way out, and we don't want them to block us.
-		if caughtUpDesired < len(desiredPeers)/2+1 {
+		// on their way out, and we don't want them to block us. Past quorum, we still keep every
+		// copy of the stream while a desired peer is catching up, unless it stalls.
+		if caughtUpDesired < len(desiredPeers)/2+1 || positions.holdForCatchup(ourPeerId, remove, actual, desiredPeers, catchups) {
 			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
 		}
 		// The group left after the removal must still be able to commit.
@@ -6165,9 +6166,15 @@ const (
 	migrateFastCheckInterval     = 50 * time.Millisecond
 	migrateFallbackCheckInterval = 500 * time.Millisecond
 	migrateMetaRetryInterval     = 5 * time.Second
+)
 
+// Variables so tests can shorten them.
+var (
 	// migratePosAskInterval is how often a migrating leader re-asks peers for their stream state.
 	migratePosAskInterval = 2 * time.Second
+
+	// migrateCatchupStall is how long a catching up desired peer may go without progress before we stop waiting for it.
+	migrateCatchupStall = 3 * migratePosAskInterval
 )
 
 // Determines if we should send lost quorum advisory. We throttle these after first one.
@@ -13228,18 +13235,49 @@ func (mset *stream) catchupPeers() []string {
 // peerPositions is what the members of a group have told the leader about their stream state.
 // Owned by the stream's monitor routine, so it needs no locking.
 type peerPositions struct {
-	bar     uint64            // Minimum sequence peers must store to be considered caught up.
-	asked   time.Time         // When we last asked, so we don't request on every tick.
-	seqs    map[string]uint64 // Where each peer last said its store was.
-	retried bool              // Whether the free first retry is used up, later ones wait out migratePosAskInterval.
-	reply   string            // Inbox the answers come back on, empty while not listening.
-	sub     *subscription     // Subscription used to receive replies.
+	bar      uint64            // Minimum sequence peers must store to be considered caught up.
+	asked    time.Time         // When we last asked, so we don't request on every tick.
+	progress time.Time         // When a peer that's behind last reported progress, zero while not holding.
+	seqs     map[string]uint64 // Where each peer last said its store was.
+	retried  bool              // Whether the free first retry is used up, later ones wait out migratePosAskInterval.
+	reply    string            // Inbox the answers come back on, empty while not listening.
+	sub      *subscription     // Subscription used to receive replies.
 }
 
 // isCaughtUp reports whether a peer has caught up to at least the recorded bar.
 func (pos *peerPositions) isCaughtUp(peer string) bool {
 	seq, ok := pos.seqs[peer]
 	return ok && seq >= pos.bar
+}
+
+// isBehind reports whether a peer told us its store is short of the recorded bar.
+func (pos *peerPositions) isBehind(peer string) bool {
+	seq, ok := pos.seqs[peer]
+	return ok && seq < pos.bar
+}
+
+// holdForCatchup reports whether removing a live peer should wait for live desired peers
+// that are still catching up, for as long as they keep making progress.
+func (pos *peerPositions) holdForCatchup(ourPeerId, remove string, actual []*Peer, desiredPeers, catchups []string) bool {
+	live := func(p *Peer) bool { return p.ID == ourPeerId || withinLiveWindow(p.Last) }
+	var removeLive, behind bool
+	for _, p := range actual {
+		if p.ID == remove {
+			removeLive = live(p)
+		} else if p.ID != ourPeerId && live(p) && slices.Contains(desiredPeers, p.ID) &&
+			(slices.Contains(catchups, p.ID) || pos.isBehind(p.ID)) {
+			behind = true
+		}
+	}
+	// Removing a peer that's down doesn't cost us a copy.
+	if !removeLive || !behind {
+		pos.progress = time.Time{}
+		return false
+	}
+	if pos.progress.IsZero() {
+		pos.progress = time.Now()
+	}
+	return time.Since(pos.progress) < migrateCatchupStall
 }
 
 // record folds an answer in, reporting whether a peer we could not vouch for now is.
@@ -13250,6 +13288,10 @@ func (pos *peerPositions) record(resp *clusterStreamInfoResponse) bool {
 	was := pos.isCaughtUp(resp.Peer)
 	if pos.seqs == nil {
 		pos.seqs = make(map[string]uint64)
+	}
+	// A peer that's behind storing more than before is making progress.
+	if seq, ok := pos.seqs[resp.Peer]; ok && seq < pos.bar && resp.State.LastSeq > seq {
+		pos.progress = time.Now()
 	}
 	pos.seqs[resp.Peer] = resp.State.LastSeq
 	return !was && pos.isCaughtUp(resp.Peer)
