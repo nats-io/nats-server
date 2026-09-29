@@ -11458,3 +11458,117 @@ func TestJetStreamClusterRestartedServerKeepsLastAppliedStreamGroup(t *testing.T
 	// The remap was applied before the kill, the stream must not go back to its R1 group.
 	require_Equal(t, mset.raftGroup().Name, r3Group)
 }
+
+// A group scaling up from its only member must snapshot what its store holds after a restart.
+func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	for range 5 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// The source restarts below, so it mustn't be the meta leader.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	var ml *Server
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if ml = c.leader(); ml == nil || ml == sl {
+			if ml != nil {
+				ml.getJetStream().getMetaGroup().StepDown()
+			}
+			return errors.New("meta leader is unknown or the source")
+		}
+		return nil
+	})
+	mljs := ml.getJetStream()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Hold the scale up before the assignment is extended onto the new peers.
+	var dropExpand atomic.Bool
+	dropExpand.Store(true)
+	mljs.mu.Lock()
+	cc := mljs.cluster
+	origSub := cc.streamReconcile
+	cc.streamReconcile = nil
+	mljs.mu.Unlock()
+	ml.sysUnsubscribe(origSub)
+	mljs.mu.Lock()
+	cc.streamReconcile, err = ml.systemSubscribe(streamAssignmentReconcileSubj, _EMPTY_, false, cc.c,
+		func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var reconcile streamAssignmentReconcile
+			if json.Unmarshal(msg, &reconcile) == nil && dropExpand.Load() && len(reconcile.MetaPeers) > 1 {
+				return
+			}
+			mljs.reconcileDesiredStreamAssignment(sub, c, acc, subject, reply, msg)
+		})
+	mljs.mu.Unlock()
+	require_NoError(t, err)
+
+	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+
+	// The source snapshots for the scale up, and stays the only member.
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if n := mset.raftNode(); n == nil || !n.Leader() || n.NeedSnapshot() {
+			return errors.New("source has no scale up snapshot yet")
+		}
+		return nil
+	})
+
+	// Store writes neither the snapshot nor the log hold.
+	for range 2 {
+		_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+	}
+	require_NoError(t, mset.flushAllPending())
+
+	// Hard kill the source, a clean shutdown would snapshot on the way out.
+	copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+	require_NoError(t, copyDir(t, copySd, sl.StoreDir()))
+	sl.Shutdown()
+	sl.WaitForShutdown()
+	require_NoError(t, os.RemoveAll(sl.StoreDir()))
+	require_NoError(t, copyDir(t, sl.StoreDir(), copySd))
+	c.restartServer(sl)
+
+	// Not waitOnStreamLeader, it waits for the scale up we're still holding.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if c.streamLeader(globalAccountName, "TEST") == nil {
+			return errors.New("no stream leader yet")
+		}
+		return nil
+	})
+	dropExpand.Store(false)
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		ml := c.leader()
+		if ml == nil {
+			return errors.New("no meta leader")
+		}
+		mljs := ml.getJetStream()
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if sa := mljs.streamAssignment(globalAccountName, "TEST"); sa == nil || sa.Group.Desired != nil {
+			return errors.New("scale up not done yet")
+		}
+		return nil
+	})
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	}
+	// Without a new write that could make a replica notice it's behind.
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		if state := mset.state(); state.Msgs != 7 || state.LastSeq != 7 {
+			t.Fatalf("server %s has %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq)
+		}
+	}
+}

@@ -12838,7 +12838,8 @@ func TestJetStreamClusterWALReplayPreservesFirstSeq(t *testing.T) {
 
 type snapshotlessRaftNode struct {
 	RaftNode
-	id string
+	id    string
+	peers []string
 }
 
 func (n *snapshotlessRaftNode) ID() string                         { return n.id }
@@ -12846,51 +12847,67 @@ func (n *snapshotlessRaftNode) Progress() (uint64, uint64, uint64) { return 1, 1
 func (n *snapshotlessRaftNode) LoadLastSnapshot() (uint64, []byte, error) {
 	return 0, nil, errNoSnapAvailable
 }
+func (n *snapshotlessRaftNode) Peers() []*Peer {
+	peers := make([]*Peer, 0, len(n.peers))
+	for _, p := range n.peers {
+		peers = append(peers, &Peer{ID: p})
+	}
+	return peers
+}
 
 func TestJetStreamClusterPrepareForWALReplayPreservesR1ScaleUpSource(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
-	require_NoError(t, err)
-	for range 3 {
-		_, err = js.Publish("foo", []byte("msg"))
-		require_NoError(t, err)
-	}
-
-	mset, err := s.GlobalAccount().lookupStream("TEST")
-	require_NoError(t, err)
-	fs := mset.store.(*fileStore)
-	fs.syncOnFlush.Store(true)
-
-	// Simulate the original R1 peer restarting before bootstrap completed.
 	const source = "source"
-	n := &snapshotlessRaftNode{id: source}
-	mset.mu.Lock()
-	mset.node = n
-	mset.sa = &streamAssignment{Group: &raftGroup{Desired: &desiredRaftGroup{
-		Peers: []string{source, "peer-2", "peer-3"},
-		Origin: &desiredRaftGroupOrigin{
-			Peers:    []string{source},
-			Replicas: 1,
-		},
-	}}}
-	mset.mu.Unlock()
-	defer func() {
-		mset.mu.Lock()
-		mset.node, mset.sa = nil, nil
-		mset.mu.Unlock()
-	}()
+	for _, test := range []struct {
+		title   string
+		peers   []string
+		origin  *desiredRaftGroupOrigin
+		desired []string
+		msgs    uint64
+	}{
+		// The original R1 peer restarting before bootstrap completed.
+		{"R1 origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 3},
+		// After stacked updates the origin needn't name the source, only the membership does.
+		{"stacked origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source, "peer-2", "peer-3"}, Replicas: 3}, []string{source, "peer-4", "peer-5"}, 3},
+		// The source only adds peers after snapshotting, so a WAL without one is complete.
+		{"not sole member", []string{source, "peer-2"}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 0},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
 
-	// Its new WAL cannot reconstruct the existing R1 stream state,
-	// prepareStreamRecovery must preserve the stream store
-	require_NoError(t, prepareStreamRecovery(mset, n))
-	state := mset.state()
-	require_Equal(t, state.Msgs, 3)
-	require_Equal(t, state.LastSeq, 3)
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
+			require_NoError(t, err)
+			for range 3 {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			fs := mset.store.(*fileStore)
+			fs.syncOnFlush.Store(true)
+
+			n := &snapshotlessRaftNode{id: source, peers: test.peers}
+			mset.mu.Lock()
+			mset.node = n
+			mset.sa = &streamAssignment{Group: &raftGroup{Desired: &desiredRaftGroup{Peers: test.desired, Origin: test.origin}}}
+			mset.mu.Unlock()
+			defer func() {
+				mset.mu.Lock()
+				mset.node, mset.sa = nil, nil
+				mset.mu.Unlock()
+			}()
+
+			// A sole member's new WAL can't reconstruct the existing stream state, so its store must be preserved.
+			require_NoError(t, prepareStreamRecovery(mset, n))
+			state := mset.state()
+			require_Equal(t, state.Msgs, test.msgs)
+			require_Equal(t, state.LastSeq, test.msgs)
+		})
+	}
 }
 
 func TestJetStreamClusterPrepareForWALReplayTruncatesStore(t *testing.T) {

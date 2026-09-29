@@ -295,15 +295,11 @@ func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
 	return sa.legacyMoveOrigin()
 }
 
-// isR1ScaleUpSource reports whether the given peer is the source for an
-// in-progress R1 scale-up.
-func (sa *streamAssignment) isR1ScaleUpSource(peer string) bool {
-	if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
-		return false
-	}
-	d := sa.Group.Desired
-	return d.Origin != nil && d.Origin.Replicas == 1 && len(d.Peers) > 1 &&
-		len(d.Origin.Peers) == 1 && d.Origin.Peers[0] == peer
+// isR1ScaleUpSource reports whether we're our Raft group's only member, as the source of an R1 scale up is
+// until its first snapshot, based on membership since the desired origin can't identify it after stacked updates.
+func isR1ScaleUpSource(n RaftNode) bool {
+	peers := n.Peers()
+	return len(peers) == 1 && peers[0].ID == n.ID()
 }
 
 // moveInFlight returns whether a move is still converging, including one that was
@@ -4155,7 +4151,7 @@ func prepareStreamRecovery(mset *stream, n RaftNode) error {
 		// the existing R1 history. Preserve the store if
 		// the source has restarted before the initial snapshot
 		// was installed
-		if mset.streamAssignment().isR1ScaleUpSource(n.ID()) {
+		if isR1ScaleUpSource(n) {
 			return nil
 		}
 	}
@@ -5024,14 +5020,18 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	if n.NeedSnapshot() {
+	// Also when growing from one after a restart, our store can hold writes our log doesn't.
+	needSnapshot := n.NeedSnapshot()
+	growing := isR1ScaleUpSource(n) && slices.ContainsFunc(desiredPeers, func(p string) bool { return p != ourPeerId })
+	if needSnapshot || (growing && !n.SnapshotInCurrentTerm()) {
 		if err := mset.flushAllPending(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
 			}
 			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
+		// Best effort when growing, nothing may have been applied since the last snapshot.
+		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil && (needSnapshot || !errors.Is(err, errNoSnapAvailable)) {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
 		// The snapshot is installed, continue right away so new peers can be added
