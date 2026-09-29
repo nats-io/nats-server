@@ -10626,6 +10626,290 @@ func TestJetStreamClusterScaleDownWaitsForPeerStateAnswer(t *testing.T) {
 	require_True(t, slices.Contains(sa.Group.Peers, sl.NodeName()))
 }
 
+func TestJetStreamClusterStreamMoveIgnoresStoreStateOfDownPeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R4S", 4)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		sendStreamMsg(t, nc, "foo", "hello")
+	}
+	checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
+
+	// Move away from the stream leader, onto the server not hosting the stream yet.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	var desired []string
+	var followers []*Server
+	var ns *Server
+	for _, s := range c.servers {
+		if s == sl {
+			continue
+		}
+		desired = append(desired, s.NodeName())
+		if s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			followers = append(followers, s)
+		} else {
+			ns = s
+		}
+	}
+	require_Len(t, len(followers), 2)
+	require_NotNil(t, ns)
+
+	// answer has the server answer with the state of its stream store, and counts the answers
+	// given once it holds all messages.
+	answer := func(s *Server, answering bool) *atomic.Int32 {
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		var answered atomic.Int32
+		mset.mu.Lock()
+		defer mset.mu.Unlock()
+		s.sysUnsubscribe(mset.infoSub)
+		if !answering {
+			return &answered
+		}
+		isubj := fmt.Sprintf(clusterStreamInfoT, mset.jsa.acc(), mset.cfg.Name)
+		mset.infoSub, err = s.systemSubscribe(isubj, _EMPTY_, false, mset.sysc, func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var req clusterStreamInfoRequest
+			if json.Unmarshal(msg, &req) != nil || !req.State {
+				mset.handleClusterStreamInfoRequest(sub, c, acc, subject, reply, msg)
+				return
+			}
+			mset.processClusterStreamStateRequest(reply)
+			if mset.state().LastSeq == 10 {
+				answered.Add(1)
+			}
+		})
+		require_NoError(t, err)
+		return &answered
+	}
+	waitAnswered := func(answered *atomic.Int32, count int32) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			if n := answered.Load(); n < count {
+				return fmt.Errorf("expected %d answers, got %d", count, n)
+			}
+			return nil
+		})
+	}
+
+	// Stop both followers from answering with the state of their stream store.
+	for _, s := range followers {
+		answer(s, false)
+	}
+
+	// Have the meta leader start moving the stream onto the desired peers.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	origin := copyStrings(sa.Group.Peers)
+	nsa := sa.copyGroup()
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   desired,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    origin,
+			Replicas: 3,
+		},
+	}
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa))
+	cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	assignment := func(s *Server) ([]string, *DesiredClusterInfoStatus) {
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		if sa == nil || sa.Group == nil {
+			return nil, nil
+		}
+		return copyStrings(sa.Group.Peers), sa.Group.migration
+	}
+
+	// Wait for the group to be extended with the new peer.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		if peers, _ := assignment(sl); len(peers) != 4 {
+			return fmt.Errorf("expected 4 peers, got %d", len(peers))
+		}
+		return nil
+	})
+
+	// The old peer must stay while a quorum of desired peers can't vouch for their data.
+	requireHeld := func() {
+		t.Helper()
+		var held bool
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			peers, status := assignment(sl)
+			require_Len(t, len(peers), 4)
+			require_True(t, slices.Contains(peers, sl.NodeName()))
+			require_True(t, c.streamLeader(globalAccountName, "TEST") == sl)
+			if status != nil && status.Type == MigrationStatusCatchup {
+				held = true
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		require_True(t, held)
+	}
+
+	// Only the new peer vouches for its data, which is not a quorum of the desired peers.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		_, err := ns.globalAccount().lookupStream("TEST")
+		return err
+	})
+	waitAnswered(answer(ns, true), 2)
+	requireHeld()
+
+	// Once the new peer is down, its earlier answer must not count towards a quorum anymore.
+	ns.Shutdown()
+	lmset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if lmset.raftNode().IsFollowerCaughtUp(ns.NodeName()) {
+			return errors.New("new peer still caught up")
+		}
+		return nil
+	})
+	waitAnswered(answer(followers[0], true), 1)
+	requireHeld()
+
+	// Once the new peer is back, it forms a quorum with the answering follower and the old peer is removed.
+	// The other follower still doesn't answer, but it must not block the move.
+	c.restartServer(ns)
+	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+		l := c.streamLeader(globalAccountName, "TEST")
+		if l == nil {
+			return errors.New("no stream leader")
+		}
+		if peers, _ := assignment(l); len(peers) != 3 || slices.Contains(peers, sl.NodeName()) {
+			return fmt.Errorf("old peer still in %v", peers)
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerMoveWaitsForDesiredQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R6S", 6)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	nc.Close()
+
+	// Move onto the servers not hosting the stream yet, while two of them are down.
+	var desired []string
+	var down []*Server
+	for _, s := range c.servers {
+		if s.JetStreamIsStreamAssigned(globalAccountName, "TEST") {
+			continue
+		}
+		desired = append(desired, s.NodeName())
+		if len(down) < 2 {
+			down = append(down, s)
+		}
+	}
+	require_Len(t, len(desired), 3)
+	for _, s := range down {
+		s.Shutdown()
+	}
+	c.waitOnLeader()
+
+	// Have the meta leader start moving the stream, and with it the consumer, onto the desired peers.
+	ml := c.leader()
+	mjs := ml.getJetStream()
+	cc := mjs.cluster
+	mjs.mu.Lock()
+	sa := mjs.streamAssignment(globalAccountName, "TEST")
+	require_NotNil(t, sa)
+	origin := copyStrings(sa.Group.Peers)
+	nsa := sa.copyGroup()
+	nsa.Reply = _EMPTY_
+	nsa.Group.Desired = &desiredRaftGroup{
+		Created: time.Now().UTC(),
+		ID:      nuid.Next(),
+		Peers:   desired,
+		Origin: &desiredRaftGroupOrigin{
+			Peers:    origin,
+			Replicas: 3,
+		},
+	}
+	err = cc.meta.Propose(cc.term, encodeUpdateStreamAssignment(nsa))
+	cc.trackInflightStreamProposal(globalAccountName, nsa, false)
+	mjs.mu.Unlock()
+	require_NoError(t, err)
+
+	assignment := func() ([]string, []string, *DesiredClusterInfoStatus) {
+		cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+		if cl == nil {
+			return nil, nil, nil
+		}
+		sjs := cl.getJetStream()
+		sjs.mu.RLock()
+		defer sjs.mu.RUnlock()
+		sa := sjs.streamAssignment(globalAccountName, "TEST")
+		ca := sjs.consumerAssignment(globalAccountName, "TEST", "CONSUMER")
+		if sa == nil || sa.Group == nil || ca == nil || ca.Group == nil {
+			return nil, nil, nil
+		}
+		return copyStrings(sa.Group.Peers), copyStrings(ca.Group.Peers), ca.Group.migration
+	}
+
+	// Wait for the consumer group to be extended with all desired peers.
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		if _, peers, _ := assignment(); len(peers) != 6 {
+			return fmt.Errorf("expected 6 consumer peers, got %d", len(peers))
+		}
+		return nil
+	})
+
+	// Only one desired peer is caught up, which is not a quorum of the desired peers.
+	// The old peers could still form a quorum with it, but must not be removed.
+	var held bool
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		_, peers, status := assignment()
+		require_Len(t, len(peers), 6)
+		if status != nil && status.Type == MigrationStatusCatchup {
+			held = true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require_True(t, held)
+
+	// Once the desired peers are back, the consumer and then the stream complete the move.
+	for _, s := range down {
+		c.restartServer(s)
+	}
+	slices.Sort(desired)
+	checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+		speers, cpeers, _ := assignment()
+		slices.Sort(speers)
+		slices.Sort(cpeers)
+		if !slices.Equal(cpeers, desired) {
+			return fmt.Errorf("consumer peers %v, expected %v", cpeers, desired)
+		}
+		if !slices.Equal(speers, desired) {
+			return fmt.Errorf("stream peers %v, expected %v", speers, desired)
+		}
+		return nil
+	})
+}
+
 func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	mset := &stream{srv: &Server{}}
 	pos := &peerPositions{}
@@ -10682,6 +10966,51 @@ func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	pos.asked = time.Now().Add(-migratePosAskInterval)
 	pos.request(mset, globalAccountName, "TEST")
 	require_True(t, pos.asked.After(second))
+}
+
+func TestJetStreamClusterCanRemovePeer(t *testing.T) {
+	// Peers are "A" (us), then uppercase for current and heard from, lowercase for down.
+	peers := func(spec string) []*Peer {
+		var actual []*Peer
+		for _, id := range spec {
+			switch {
+			case id == 'A':
+				// We always count ourselves, without having heard from us.
+				actual = append(actual, &Peer{ID: "A", Current: true})
+			case id >= 'a' && id <= 'z':
+				actual = append(actual, &Peer{ID: strings.ToUpper(string(id))})
+			default:
+				actual = append(actual, &Peer{ID: string(id), Current: true, Last: time.Now()})
+			}
+		}
+		return actual
+	}
+	lagging := &Peer{ID: "L", Last: time.Now()}
+	unheard := &Peer{ID: "U", Current: true, Last: time.Now().Add(-time.Hour)}
+
+	s := &Server{}
+	for _, test := range []struct {
+		name   string
+		actual []*Peer
+		remove string
+		ok     bool
+	}{
+		{"R3 all up", peers("ABC"), "B", true},
+		{"R3 removing the other live peer", peers("ABc"), "B", false},
+		{"R3 removing a peer that's down", peers("ABc"), "C", true},
+		{"R4 removing ourselves", peers("ABCD"), "A", true},
+		{"R4 removing ourselves with one live peer left", peers("ABcd"), "A", false},
+		{"R5 removing a live peer leaves no quorum", peers("ABcDe"), "D", false},
+		{"R5 removing a peer that's down", peers("ABcDe"), "E", true},
+		{"R6 needs three voters after the removal", peers("ABCdef"), "D", true},
+		{"R6 short of three voters after the removal", peers("ABCdef"), "B", false},
+		{"lagging peer doesn't count", append(peers("AB"), lagging), "B", false},
+		{"unheard peer doesn't count", append(peers("AB"), unheard), "B", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require_Equal(t, s.canRemovePeer("A", test.remove, test.actual), test.ok)
+		})
+	}
 }
 
 func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
