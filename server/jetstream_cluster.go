@@ -982,45 +982,23 @@ func (cc *jetStreamCluster) isLeader() bool {
 	return cc.meta != nil && cc.meta.Leader()
 }
 
-// isStreamCurrent will determine if the stream is up to date.
-// For R1 it will make sure the stream is present on this server.
+// streamGroupNode returns the stream's group node and whether the group should have one.
 // Read lock should be held.
-func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
-	if cc == nil {
-		// Non-clustered mode
-		return true
-	}
+func (cc *jetStreamCluster) streamGroupNode(account, stream string) (RaftNode, bool, bool) {
 	as := cc.streams[account]
 	if as == nil {
-		return false
+		return nil, false, false
 	}
 	sa := as[stream]
 	if sa == nil {
-		return false
+		return nil, false, false
 	}
 	rg := sa.Group
 	if rg == nil {
-		return false
+		return nil, false, false
 	}
-
-	if rg.node == nil || rg.node.Current() {
-		// Check if we are processing a snapshot and are catching up.
-		acc, err := cc.s.LookupAccount(account)
-		if err != nil {
-			return false
-		}
-		mset, err := acc.lookupStream(stream)
-		if err != nil {
-			return false
-		}
-		if mset.isCatchingUp() {
-			return false
-		}
-		// Success.
-		return true
-	}
-
-	return false
+	// Mirrors createRaftGroup, a single peer group only keeps a node while a desired state is pending.
+	return rg.node, rg.Desired != nil || len(rg.Peers) > 1, true
 }
 
 // isStreamHealthy will determine if the stream is up to date or very close.
@@ -1266,9 +1244,34 @@ func (s *Server) JetStreamIsStreamCurrent(account, stream string) bool {
 	if js == nil {
 		return false
 	}
+	if cc == nil {
+		// Non-clustered mode
+		return true
+	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return cc.isStreamCurrent(account, stream)
+	node, needsNode, ok := cc.streamGroupNode(account, stream)
+	js.mu.RUnlock()
+	if !ok || (needsNode && node == nil) {
+		return false
+	}
+	if node != nil && !node.Current() {
+		return false
+	}
+
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		return false
+	}
+	mset, err := acc.lookupStream(stream)
+	if err != nil {
+		return false
+	}
+	// The stream only uses the group node once it's been assigned.
+	if mset.raftNode() != node {
+		return false
+	}
+	// Check if we are processing a snapshot and are catching up.
+	return !mset.isCatchingUp()
 }
 
 func (a *Account) JetStreamIsConsumerLeader(stream, consumer string) bool {
