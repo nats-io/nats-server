@@ -4792,7 +4792,7 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 100
-		ttl := 200 * time.Millisecond
+		ttl := 400 * time.Millisecond
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxAge: ttl}
 		created := time.Now()
 		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -4802,12 +4802,14 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 		// These are in first block.
 		fs.StoreMsg("A", nil, msg, 0)
 		fs.StoreMsg("B", nil, msg, 0)
-		time.Sleep(ttl / 2)
+		stored := time.Now()
+		// Leave a large margin so C doesn't expire as well if the restart is slow.
+		time.Sleep(ttl * 3 / 4)
 		// This one in 2nd block.
 		fs.StoreMsg("C", nil, msg, 0)
 
 		fs.Stop()
-		time.Sleep(ttl/2 + 10*time.Millisecond)
+		time.Sleep(time.Until(stored.Add(ttl + 10*time.Millisecond)))
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
