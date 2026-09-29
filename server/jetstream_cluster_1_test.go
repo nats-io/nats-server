@@ -9889,7 +9889,7 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	// This is fine for the RAFT log and allowing the consumer to be created,
 	// but we will not be able to apply the consumer assignment for some time.
 	mjs := nl.getJetStream()
-	require_NotNil(t, js)
+	require_NotNil(t, mjs)
 	mg := mjs.getMetaGroup()
 	require_NotNil(t, mg)
 	err = mg.(*raft).PauseApply()
@@ -10101,7 +10101,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10212,7 +10212,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10286,7 +10286,7 @@ func TestJetStreamClusterStreamHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10422,7 +10422,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10544,7 +10544,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
@@ -10624,7 +10624,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
