@@ -1418,6 +1418,42 @@ func TestNRGTruncateWALClearsPendingAppendEntryCache(t *testing.T) {
 	require_NotNil(t, n.pae[1])
 }
 
+func TestNRGFailedMembershipChangeReverts(t *testing.T) {
+	for _, typ := range []EntryType{EntryAddPeer, EntryRemovePeer} {
+		t.Run(typ.String(), func(t *testing.T) {
+			n, cleanup := initSingleMemRaftNode(t)
+			defer cleanup()
+
+			nats0 := "S1Nunr6R"   // "nats-0"
+			newPeer := "yrzKKRBu" // "nats-1"
+			n.addPeer(nats0)
+			peer := newPeer
+			if typ == EntryRemovePeer {
+				n.addPeer(newPeer)
+				peer = nats0
+			}
+			n.switchToLeader()
+
+			n.Lock()
+			csz, qn := n.csz, n.qn
+			// Storing the membership change fails.
+			n.werr = errors.New("test write error")
+			n.Unlock()
+			require_False(t, n.sendMembershipChange(newEntry(typ, []byte(peer))))
+
+			n.RLock()
+			defer n.RUnlock()
+			require_True(t, n.membChange == nil)
+			require_Equal(t, n.peers[peer] != nil, typ == EntryRemovePeer)
+			require_Equal(t, n.csz, csz)
+			require_Equal(t, n.qn, qn)
+			// A peer that was never removed must not be marked as removed.
+			_, removed := n.removed[peer]
+			require_False(t, removed)
+		})
+	}
+}
+
 func TestNRGTruncateWALRevertsUncommittedAddPeer(t *testing.T) {
 	const (
 		KindLeader = iota
@@ -3964,7 +4000,7 @@ func TestNRGDoesntRequestVoteOnWriteError(t *testing.T) {
 }
 
 func TestNRGTrackPeerObserved(t *testing.T) {
-	n := &raft{managed: true, id: "A", term: 2, peers: map[string]*lps{"A": {}}, leadc: make(chan leadChange, 1)}
+	n := &raft{managed: true, id: "A", term: 2, peers: map[string]*lps{"A": {}}, leadc: make(chan leadChange, 1), sd: t.TempDir(), dios: defaultDiskIOSemaphore()}
 
 	requireNudge := func() {
 		t.Helper()
@@ -4000,10 +4036,9 @@ func TestNRGTrackPeerObserved(t *testing.T) {
 	require_NoError(t, n.trackPeer("A"))
 	require_False(t, n.LastHeardFromFollower("A").IsZero())
 
-	// Once the peer becomes a member, the observed entry is cleaned up.
+	// Once the peer becomes a member, the observed entry moves to its peer state.
 	require_Len(t, len(n.observed), 1)
-	n.peers["B"] = &lps{}
-	require_NoError(t, n.trackPeer("B"))
+	n.addPeer("B")
 	require_Len(t, len(n.observed), 0)
 	require_False(t, n.LastHeardFromFollower("B").IsZero())
 
@@ -4768,6 +4803,37 @@ func TestNRGSnapshotOnlyCatchupNotCaughtUpUntilConfirmed(t *testing.T) {
 
 	// Only caught up once the follower confirms it has the snapshot.
 	n.processAppendEntryResponse(newAppendEntryResponse(1, 4, nats1, true))
+	require_True(t, n.IsFollowerCaughtUp(nats1))
+}
+
+func TestNRGLearnerCaughtUpUnderContinuousLoad(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	// Create a sample entry, the content doesn't matter, just that it's stored.
+	esm := encodeStreamMsgAllowCompress("foo", "_INBOX.foo", nil, nil, 0, 0, true)
+	entries := []*Entry{newEntry(EntryNormal, esm)}
+
+	n.managed = true
+	n.switchToLeader()
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// The learner always acks one entry behind, as the R1 leader commits when storing.
+	for range 3 {
+		n.Lock()
+		require_NoError(t, n.sendAppendEntryLocked(entries, true))
+		require_Equal(t, n.commit, n.pindex)
+		index := n.pindex - 1
+		n.Unlock()
+		n.processAppendEntryResponse(newAppendEntryResponse(n.term, index, nats1, true))
+	}
+	require_True(t, n.IsFollowerCaughtUp(nats1))
+
+	// Once added, the learner keeps its progress as a member.
+	n.Lock()
+	n.addPeer(nats1)
+	require_Len(t, len(n.observed), 0)
+	n.Unlock()
 	require_True(t, n.IsFollowerCaughtUp(nats1))
 }
 
