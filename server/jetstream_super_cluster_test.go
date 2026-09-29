@@ -6389,9 +6389,8 @@ func TestJetStreamClusterConsumerMoveWaitsForQuorumUntilPeerRemoved(t *testing.T
 		down = append(down, name)
 	}
 
-	// The consumer must refuse the removal outright. Proposing it instead would
-	// leave a membership change in flight that can never commit, since the group
-	// it'd be left with can't reach quorum.
+	// The consumer must refuse the removal outright, a single live desired peer
+	// isn't a quorum of them.
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
 		var cs *DesiredClusterInfoStatus
 		for _, c := range []*cluster{c1, c2} {
@@ -6399,7 +6398,7 @@ func TestJetStreamClusterConsumerMoveWaitsForQuorumUntilPeerRemoved(t *testing.T
 				_, _, _, cs = groupState(cl)
 			}
 		}
-		if cs == nil || cs.Type != MigrationStatusQuorum {
+		if cs == nil || cs.Type != MigrationStatusCatchup {
 			return fmt.Errorf("consumer not refusing the removal, status %+v", cs)
 		}
 		return nil

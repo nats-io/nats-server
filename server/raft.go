@@ -2377,7 +2377,7 @@ func (n *raft) StepDown(preferred ...string) error {
 		var isHealthy bool
 		if ps, ok := n.peers[maybeLeader]; ok {
 			si, ok := n.s.nodeToInfo.Load(maybeLeader)
-			isHealthy = ok && !si.(nodeInfo).offline && time.Since(ps.ts) < hbInterval*3
+			isHealthy = ok && !si.(nodeInfo).offline && withinLiveWindow(ps.ts)
 		}
 		if !isHealthy {
 			maybeLeader = noLeader
@@ -2392,7 +2392,7 @@ func (n *raft) StepDown(preferred ...string) error {
 				continue
 			}
 			si, ok := n.s.nodeToInfo.Load(peer)
-			isHealthy := ok && !si.(nodeInfo).offline && time.Since(ps.ts) < hbInterval*3
+			isHealthy := ok && !si.(nodeInfo).offline && withinLiveWindow(ps.ts)
 			if isHealthy {
 				maybeLeader = peer
 				break
