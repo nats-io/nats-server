@@ -42,6 +42,7 @@ type RaftNode interface {
 	ForwardProposal(entry []byte) error
 	LoadLastSnapshot() (uint64, []byte, error)
 	InstallSnapshot(snap []byte, force bool) error
+	ReplaceSnapshot(snap []byte) error
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
@@ -1675,10 +1676,21 @@ func (n *raft) SendSnapshot(data []byte) error {
 // all of the log entries up to and including index. This should not be called with
 // entries that have been applied to the FSM but have not been applied to the raft state.
 func (n *raft) InstallSnapshot(data []byte, force bool) error {
+	return n.installSnapshotData(data, force, false)
+}
+
+// ReplaceSnapshot installs a snapshot like InstallSnapshot forced, but as the only member it
+// can replace our last snapshot if nothing was applied since. Our state can then include
+// writes the log doesn't have, from before switching to it.
+func (n *raft) ReplaceSnapshot(data []byte) error {
+	return n.installSnapshotData(data, true, true)
+}
+
+func (n *raft) installSnapshotData(data []byte, force, replace bool) error {
 	n.Lock()
 	defer n.Unlock()
 
-	c, err := n.createSnapshotCheckpointLocked(force)
+	c, err := n.createSnapshotCheckpointLocked(force, replace)
 	if err != nil {
 		return err
 	}
@@ -1751,10 +1763,10 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 func (n *raft) CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error) {
 	n.Lock()
 	defer n.Unlock()
-	return n.createSnapshotCheckpointLocked(force)
+	return n.createSnapshotCheckpointLocked(force, false)
 }
 
-func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
+func (n *raft) createSnapshotCheckpointLocked(force, replace bool) (*checkpoint, error) {
 	if n.State() == Closed {
 		return nil, errNodeClosed
 	}
@@ -1784,6 +1796,10 @@ func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
 	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		term = ae.term
 		ae.returnToPool()
+	} else if t, i, err := termAndIndexFromSnapFile(n.snapfile); replace && err == nil && i == n.applied && len(n.peers) == 1 {
+		// Nothing applied since our last snapshot. As the only member we can replace it, our
+		// state can include writes the log doesn't have, from before switching to it.
+		term = t
 	} else {
 		n.debug("Not snapshotting as entry %d is not available", n.applied)
 		return nil, errNoSnapAvailable
