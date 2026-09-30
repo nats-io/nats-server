@@ -2531,14 +2531,16 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 	reply = append(reply, replyPre...)
 	reply = append(reply, b[:]...)
 
-	if tracking && s.sys != nil {
-		// Add in our tracking identifier. This allows the metrics to get back to only
-		// this server without needless SUBS/UNSUBS.
-		reply = append(reply, '.')
-		reply = append(reply, s.sys.shash...)
-		reply = append(reply, '.', 'T')
-	}
+	if tracking {
+		if shash := s.Node(); shash != _EMPTY_ {
+			// Add in our tracking identifier. This allows the metrics to get back to only
+			// this server without needless SUBS/UNSUBS.
+			reply = append(reply, '.')
+			reply = append(reply, shash...)
+			reply = append(reply, '.', 'T')
 
+		}
+	}
 	return reply
 }
 
@@ -2668,12 +2670,15 @@ func (a *Account) SetServiceExportAllowTrace(export string, allowTrace bool) err
 func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImport, tracking bool, header http.Header, mt *msgTrace) *serviceImport {
 	nrr := string(osi.acc.newServiceReply(tracking))
 
+	dest.mu.Lock()
+	osiSe, osiLat, osiRT, osiShare := osi.se, osi.latency, osi.rt, osi.share
+	dest.mu.Unlock()
+
 	a.mu.Lock()
-	rt := osi.rt
 
 	// dest is the requestor's account. a is the service responder with the export.
 	// Marked as internal here, that is how we distinguish.
-	si := &serviceImport{dest, nil, osi.se, nil, nrr, to, nil, 0, rt, nil, nil, nil, mt, false, true, false, osi.share, false, false, false, nil}
+	si := &serviceImport{dest, nil, osiSe, nil, nrr, to, nil, 0, osiRT, nil, nil, nil, mt, false, true, false, osiShare, false, false, false, nil}
 
 	if a.exports.responses == nil {
 		a.exports.responses = make(map[string]*serviceImport)
@@ -2682,12 +2687,12 @@ func (a *Account) addRespServiceImport(dest *Account, to string, osi *serviceImp
 
 	// Always grab time and make sure response threshold timer is running.
 	si.ts = time.Now().UnixNano()
-	if osi.se != nil {
-		osi.se.setResponseThresholdTimer()
+	if osiSe != nil {
+		osiSe.setResponseThresholdTimer()
 	}
 
-	if rt == Singleton && tracking {
-		si.latency = osi.latency
+	if osiRT == Singleton && tracking {
+		si.latency = osiLat
 		si.tracking = true
 		si.trackingHdr = header
 	}
