@@ -4281,25 +4281,39 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
-	if sseq < fs.state.FirstSeq {
-		sseq = fs.state.FirstSeq
-	}
-	// Track starting for both block for the sseq and staring block that matches any subject.
-	var seqStart int
-	// See if we need to figure out starting block per sseq.
-	if sseq > fs.state.FirstSeq {
-		// This should not, but can return -1, so make sure we check to avoid panic below.
-		if seqStart, _ = fs.selectMsgBlockWithIndex(sseq); seqStart < 0 {
-			seqStart = 0
-		}
-	}
-
 	isAll := filter == _EMPTY_ || filter == fwcs
 	if isAll && filter == _EMPTY_ {
 		filter = fwcs
 	}
 	wc := subjectHasWildcard(filter)
+
+	// When starting at the beginning, count directly from stream and subject state.
+	// No message blocks need to be loaded, even if there are sequence gaps.
+	if sseq <= fs.state.FirstSeq {
+		if isAll {
+			if lastPerSubject {
+				return uint64(fs.psim.Size()), validThrough, nil
+			}
+			return fs.state.Msgs, validThrough, nil
+		}
+		if !wc {
+			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+				if lastPerSubject {
+					return 1, validThrough, nil
+				}
+				return info.total, validThrough, nil
+			}
+			return 0, validThrough, nil
+		}
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, info *psi) {
+			if lastPerSubject {
+				total++
+			} else {
+				total += info.total
+			}
+		})
+		return total, validThrough, nil
+	}
 
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
@@ -4307,10 +4321,14 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
-		if sseq == 0 {
-			return fs.state.Msgs, validThrough, nil
-		}
 		return fs.state.LastSeq - sseq + 1, validThrough, nil
+	}
+
+	// The remaining paths start after FirstSeq and need the starting block.
+	seqStart, _ := fs.selectMsgBlockWithIndex(sseq)
+	// This should not, but can return -1, so make sure we check to avoid panic below.
+	if seqStart < 0 {
+		seqStart = 0
 	}
 
 	_tsa, _fsa := [32]string{}, [32]string{}
@@ -4337,10 +4355,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
 	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
-		// If we want all and our start sequence is equal or less than first return number of subjects.
-		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough, nil
-		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
 		lbm := make(map[string]bool)
@@ -4518,10 +4532,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			start = psi.fblk
 		}
 	})
-	// See if we were asked for all, if so we are done.
-	if sseq <= fs.state.FirstSeq {
-		return total, validThrough, nil
-	}
 
 	// If we are here we need to calculate partials for the first blocks.
 	firstSubjBlk := fs.bim[start]
@@ -4633,21 +4643,27 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
-	if sseq < fs.state.FirstSeq {
-		sseq = fs.state.FirstSeq
-	}
-	// Track starting for both block for the sseq and staring block that matches any subject.
-	var seqStart int
-	// See if we need to figure out starting block per sseq.
-	if sseq > fs.state.FirstSeq {
-		// This should not, but can return -1, so make sure we check to avoid panic below.
-		if seqStart, _ = fs.selectMsgBlockWithIndex(sseq); seqStart < 0 {
-			seqStart = 0
-		}
-	}
-
 	isAll := sl == nil
+
+	// When starting at the beginning, count directly from stream and subject state.
+	// No message blocks need to be loaded, even if there are sequence gaps.
+	if sseq <= fs.state.FirstSeq {
+		if isAll {
+			if lastPerSubject {
+				return uint64(fs.psim.Size()), validThrough, nil
+			}
+			return fs.state.Msgs, validThrough, nil
+		}
+		stree.IntersectGSL(fs.psim, sl, func(_ []byte, info *psi) bool {
+			if lastPerSubject {
+				total++
+			} else {
+				total += info.total
+			}
+			return true
+		})
+		return total, validThrough, nil
+	}
 
 	// See if filter was provided but its the only subject.
 	if !isAll && fs.psim.Size() == 1 {
@@ -4658,11 +4674,16 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
-		if sseq == 0 {
-			return fs.state.Msgs, validThrough, nil
-		}
 		return fs.state.LastSeq - sseq + 1, validThrough, nil
 	}
+
+	// The remaining paths start after FirstSeq and need the starting block.
+	seqStart, _ := fs.selectMsgBlockWithIndex(sseq)
+	// This should not, but can return -1, so make sure we check to avoid panic below.
+	if seqStart < 0 {
+		seqStart = 0
+	}
+
 	// Setup the isMatch function.
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -4678,10 +4699,6 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
 	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
-		// If we want all and our start sequence is equal or less than first return number of subjects.
-		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough, nil
-		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
 		lbm := make(map[string]bool)
@@ -4864,11 +4881,6 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		}
 		return true
 	})
-
-	// See if we were asked for all, if so we are done.
-	if sseq <= fs.state.FirstSeq {
-		return total, validThrough, nil
-	}
 
 	// If we are here we need to calculate partials for the first blocks.
 	firstSubjBlk := fs.bim[start]
