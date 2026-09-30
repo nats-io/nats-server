@@ -4287,6 +4287,15 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 	wc := subjectHasWildcard(filter)
 
+	// Resolve exact filters once, including those with no retained messages.
+	var info *psi
+	if !isAll && !wc {
+		var ok bool
+		if info, ok = fs.psim.Find(stringToBytes(filter)); !ok {
+			return 0, validThrough, nil
+		}
+	}
+
 	// When starting at the beginning, count directly from stream and subject state.
 	// No message blocks need to be loaded, even if there are sequence gaps.
 	if sseq <= fs.state.FirstSeq {
@@ -4297,13 +4306,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			return fs.state.Msgs, validThrough, nil
 		}
 		if !wc {
-			if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-				if lastPerSubject {
-					return 1, validThrough, nil
-				}
-				return info.total, validThrough, nil
+			if lastPerSubject {
+				return 1, validThrough, nil
 			}
-			return 0, validThrough, nil
+			return info.total, validThrough, nil
 		}
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, info *psi) {
 			if lastPerSubject {
@@ -4317,7 +4323,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
-		_, isAll = fs.psim.Find(stringToBytes(filter))
+		isAll = true
 	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
@@ -4329,6 +4335,24 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// This should not, but can return -1, so make sure we check to avoid panic below.
 	if seqStart < 0 {
 		seqStart = 0
+	}
+
+	// Block indexes can have gaps, and fblk can lag after deletions. Search the
+	// retained blocks for the subject's conservative bounds rather than requiring
+	// the indexed blocks to still exist.
+	blkStart, blkEnd := 0, len(fs.blks)
+	if info != nil {
+		blkStart = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index >= info.fblk })
+		blkEnd = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index > info.lblk })
+		if seqStart >= blkEnd {
+			return 0, validThrough, nil
+		}
+		if seqStart < blkStart {
+			if lastPerSubject {
+				return 1, validThrough, nil
+			}
+			return info.total, validThrough, nil
+		}
 	}
 
 	_tsa, _fsa := [32]string{}, [32]string{}
@@ -4373,6 +4397,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				lbm[string(subj)] = true
 			}
 		})
+
+		// An exact subject whose last block is later needs no correction here.
+		if info != nil && len(lbm) == 0 {
+			return total, validThrough, nil
+		}
 
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
@@ -4436,7 +4465,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
 	if seqStart >= (len(fs.blks) / 2) {
-		for i := seqStart; i < len(fs.blks); i++ {
+		for i := max(seqStart, blkStart); i < blkEnd; i++ {
 			var shouldExpire bool
 			mb := fs.blks[i]
 			// Hold write lock in case we need to load cache.
@@ -4525,13 +4554,17 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
 	start := uint32(math.MaxUint32)
-	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-		total += psi.total
-		// Keep track of start index for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-	})
+	if info != nil {
+		total, start = info.total, info.fblk
+	} else {
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+			total += psi.total
+			// Keep track of start index for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+		})
+	}
 
 	// If we are here we need to calculate partials for the first blocks.
 	firstSubjBlk := fs.bim[start]
@@ -4543,7 +4576,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// Track how many we need to adjust against the total.
 	var adjust uint64
-	for i := 0; i <= seqStart; i++ {
+	for i := blkStart; i <= seqStart && i < blkEnd; i++ {
 		mb := fs.blks[i]
 		// We can skip blks if we know they are below the first one that has any subject matches.
 		if !firstSubjBlkFound {
@@ -4684,6 +4717,45 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		seqStart = 0
 	}
 
+	// Resolve the matching subjects' conservative block bounds once. Block
+	// indexes can have gaps, and first-block tracking can lag after deletions.
+	blkStart, blkEnd := 0, len(fs.blks)
+	start, stop := uint32(math.MaxUint32), uint32(0)
+	var matchedMsgs, matchedSubjects, pendingSubjects uint64
+	var lbm map[string]bool
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
+		lbm = make(map[string]bool)
+	}
+	if sl != nil {
+		bi := fs.blks[seqStart].index
+		stree.IntersectGSL(fs.psim, sl, func(subj []byte, info *psi) bool {
+			matchedMsgs += info.total
+			matchedSubjects++
+			start, stop = min(start, info.fblk), max(stop, info.lblk)
+			if lbm != nil && info.lblk >= bi {
+				pendingSubjects++
+				if info.lblk == bi {
+					lbm[string(subj)] = true
+				}
+			}
+			return true
+		})
+		if matchedSubjects == 0 {
+			return 0, validThrough, nil
+		}
+		blkStart = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index >= start })
+		blkEnd = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index > stop })
+		if seqStart >= blkEnd {
+			return 0, validThrough, nil
+		}
+		if seqStart < blkStart {
+			if lastPerSubject {
+				return matchedSubjects, validThrough, nil
+			}
+			return matchedMsgs, validThrough, nil
+		}
+	}
+
 	// Setup the isMatch function.
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -4701,23 +4773,26 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
-		lbm := make(map[string]bool)
 		mb := fs.blks[seqStart]
 		bi := mb.index
 
-		stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) bool {
-			// If the select blk start is greater than entry's last blk skip.
-			if bi > psi.lblk {
+		if sl != nil {
+			total = pendingSubjects
+		} else {
+			fs.psim.IterFast(func(subj []byte, info *psi) bool {
+				if info.lblk >= bi {
+					total++
+					if info.lblk == bi {
+						lbm[string(subj)] = true
+					}
+				}
 				return true
-			}
-			total++
-			// We will track the subjects that are an exact match to the last block.
-			// This is needed for last block processing.
-			if psi.lblk == bi {
-				lbm[string(subj)] = true
-			}
-			return true
-		})
+			})
+		}
+		// Subjects whose last block is later need no correction in this block.
+		if len(lbm) == 0 {
+			return total, validThrough, nil
+		}
 
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
@@ -4780,7 +4855,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	if seqStart >= (len(fs.blks) / 2) {
-		for i := seqStart; i < len(fs.blks); i++ {
+		for i := max(seqStart, blkStart); i < blkEnd; i++ {
 			var shouldExpire bool
 			mb := fs.blks[i]
 			// Hold write lock in case we need to load cache.
@@ -4872,15 +4947,11 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	}
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
-	start := uint32(math.MaxUint32)
-	stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) bool {
-		total += psi.total
-		// Keep track of start index for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-		return true
-	})
+	if sl != nil {
+		total = matchedMsgs
+	} else {
+		total, start = fs.state.Msgs, fs.blks[0].index
+	}
 
 	// If we are here we need to calculate partials for the first blocks.
 	firstSubjBlk := fs.bim[start]
@@ -4892,7 +4963,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// Track how many we need to adjust against the total.
 	var adjust uint64
-	for i := 0; i <= seqStart; i++ {
+	for i := blkStart; i <= seqStart && i < blkEnd; i++ {
 		mb := fs.blks[i]
 		// We can skip blks if we know they are below the first one that has any subject matches.
 		if !firstSubjBlkFound {
