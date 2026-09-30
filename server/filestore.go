@@ -4466,6 +4466,29 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return total, validThrough, nil
 	}
 
+	// Bound wildcard scans across all matching subjects. Keep the total and
+	// first block so the backward scan can reuse this match.
+	start := uint32(math.MaxUint32)
+	var msgs uint64
+	if wc && !isAll {
+		var stop uint32
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+			msgs += psi.total
+			start, stop = min(start, psi.fblk), max(stop, psi.lblk)
+		})
+		if msgs == 0 {
+			return 0, validThrough, nil
+		}
+		blkStart = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index >= start })
+		blkEnd = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index > stop })
+		if seqStart >= blkEnd {
+			return 0, validThrough, nil
+		}
+		if seqStart < blkStart {
+			return msgs, validThrough, nil
+		}
+	}
+
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
 	if seqStart >= (len(fs.blks) / 2) {
@@ -4570,9 +4593,10 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
-	start := uint32(math.MaxUint32)
 	if info != nil {
 		total, start = info.total, info.fblk
+	} else if wc && !isAll {
+		total = msgs
 	} else {
 		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
 			total += psi.total

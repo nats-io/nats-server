@@ -6900,6 +6900,67 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 	}
 }
 
+func TestFileStoreNumPendingWildcardStopsAtLastBlock(t *testing.T) {
+	sd := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: sd, BlockSize: 1024}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"s.>"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	// A and B write together up to seq 1400, then only B.
+	msg := bytes.Repeat([]byte("X"), 100)
+	for i := 1; i <= 2000; i++ {
+		subj := fmt.Sprintf("s.B.in.%d", i)
+		if i <= 1400 && i%2 == 0 {
+			subj = fmt.Sprintf("s.A.in.%d", i)
+		}
+		_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	// Restart so no block has its subject state loaded.
+	fs.Stop()
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	cacheLoads := func() (cloads uint64) {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		for _, mb := range fs.blks {
+			mb.mu.RLock()
+			cloads += mb.cloads
+			mb.mu.RUnlock()
+		}
+		return cloads
+	}
+	blksBetween := func(first, last uint64) (n uint64) {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		for _, mb := range fs.blks {
+			if atomic.LoadUint64(&mb.last.seq) >= first && atomic.LoadUint64(&mb.first.seq) <= last {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Starting after A's last message needs no block loads.
+	before := cacheLoads()
+	total, _, err := fs.NumPending(1500, "s.A.in.*", false)
+	require_NoError(t, err)
+	require_Equal(t, total, 0)
+	require_Equal(t, cacheLoads()-before, 0)
+
+	// Starting before A's last message should only load up to A's last block.
+	before = cacheLoads()
+	total, _, err = fs.NumPending(1100, "s.A.in.*", false)
+	require_NoError(t, err)
+	require_Equal(t, total, 151)
+	require_True(t, cacheLoads()-before <= blksBetween(1100, 1400))
+}
+
 func TestFileStoreNumPendingCanSkipStartingBlock(t *testing.T) {
 	for _, test := range []struct {
 		name           string
