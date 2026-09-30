@@ -2822,6 +2822,94 @@ func TestAuthCalloutLeafNodeAndConfigMode(t *testing.T) {
 
 }
 
+func TestAuthCalloutLeafNodeWSClientTLSCerts(t *testing.T) {
+	conf := `
+		server_name: HUB
+		listen: "127.0.0.1:-1"
+		accounts {
+			AUTH { users [ {user: "auth", password: "pwd"} ] }
+			A {}
+		}
+		authorization {
+			timeout: 1s
+			auth_callout {
+				# Needs to be a public account nkey, will work for both server config and operator mode.
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				account: AUTH
+				auth_users: [ auth ]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+		websocket: {
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file = "../test/configs/certs/tlsauth/server.pem"
+				key_file = "../test/configs/certs/tlsauth/server-key.pem"
+				ca_file = "../test/configs/certs/tlsauth/ca.pem"
+				verify = true
+			}
+		}
+	`
+	ctlsCh := make(chan *jwt.ClientTLS, 10)
+	handler := func(m *nats.Msg) {
+		user, si, ci, opts, ctls := decodeAuthRequest(t, m.Data)
+		if ci.Kind != "Leafnode" || opts.Username != "leaf" || opts.Password != "pwd" {
+			m.Respond(nil)
+			return
+		}
+		ctlsCh <- ctls
+		ujwt := createAuthUser(t, user, _EMPTY_, "A", "", nil, 0, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	hopts := at.srv.getOpts()
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: "127.0.0.1:-1"
+		server_name: "LEAF"
+		leafnodes {
+			remotes [{
+				url: "wss://leaf:pwd@127.0.0.1:%d"
+				tls {
+					cert_file: "../test/configs/certs/tlsauth/client2.pem"
+					key_file: "../test/configs/certs/tlsauth/client2-key.pem"
+					ca_file: "../test/configs/certs/tlsauth/ca.pem"
+				}
+			}]
+		}
+	`, hopts.Websocket.Port)))
+	lopts := LoadConfig(lconf)
+	// The hub's certificate has no IP SAN, so verify it against a DNS name.
+	lopts.LeafNode.Remotes[0].TLSConfig.ServerName = "localhost"
+	leaf := RunServer(lopts)
+	defer leaf.Shutdown()
+
+	var ctls *jwt.ClientTLS
+	select {
+	case ctls = <-ctlsCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Did not receive auth callout request for websocket leafnode")
+	}
+	checkLeafNodeConnected(t, leaf)
+
+	require_NotEqual(t, ctls, nil)
+	require_NotEqual(t, ctls.Version, _EMPTY_)
+	require_NotEqual(t, ctls.Cipher, _EMPTY_)
+	// Zero since we are verified and will be under verified chains.
+	require_Equal(t, len(ctls.Certs), 0)
+	require_Equal(t, len(ctls.VerifiedChains), 1)
+	// Since we have a CA.
+	require_Equal(t, len(ctls.VerifiedChains[0]), 2)
+	blk, _ := pem.Decode([]byte(ctls.VerifiedChains[0][0]))
+	cert, err := x509.ParseCertificate(blk.Bytes)
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(cert.Subject.String(), "CN=example.com"))
+}
+
 func TestAuthCalloutProxyRequiredInUserNotInAuthJWT(t *testing.T) {
 	conf := `
 		listen: "127.0.0.1:-1"
