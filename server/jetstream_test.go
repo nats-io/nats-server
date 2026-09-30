@@ -15970,7 +15970,7 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	require_NoError(t, err)
 
 	nmsgs := 100
-	for i := 0; i < nmsgs; i++ {
+	for range nmsgs {
 		sendStreamMsg(t, nc, "foo", "OK")
 	}
 	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(time.Second))
@@ -15994,19 +15994,27 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	require_True(t, ci.NumAckPending == keep)
 	require_True(t, ci.NumPending == 0)
 
-	for i := 0; i < nmsgs; i++ {
+	for range nmsgs {
 		sendStreamMsg(t, nc, "foo", "OK")
 	}
 
-	ci, err = js.ConsumerInfo("TEST", "dlc")
-	require_NoError(t, err)
+	// Num pending is updated asynchronously after the publish acks.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "dlc"); err != nil {
+			return err
+		}
+		if ci.NumPending != uint64(nmsgs) {
+			return fmt.Errorf("expected %d pending, got %d", nmsgs, ci.NumPending)
+		}
+		return nil
+	})
 	// Make sure we calculated correctly.
 	// Top 3 will be same.
-	require_True(t, ci.AckFloor.Consumer == uint64(keep))
-	require_True(t, ci.AckFloor.Stream == uint64(keep))
-	require_True(t, ci.NumAckPending == keep)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.AckFloor.Consumer, uint64(keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(keep))
+	require_Equal(t, ci.NumAckPending, keep)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, 0)
 
 	msgs, err := sub.Fetch(keep)
 	require_NoError(t, err)
@@ -16015,30 +16023,29 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Make sure we calculated correctly.
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs))
-	require_True(t, ci.AckFloor.Consumer == uint64(keep))
-	require_True(t, ci.AckFloor.Stream == uint64(keep))
-	require_True(t, ci.NumAckPending == keep)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == keep)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(keep))
+	require_Equal(t, ci.NumAckPending, keep)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, keep)
 
 	// Ack all.
 	for _, m := range msgs {
-		m.Ack()
+		require_NoError(t, m.AckSync())
 	}
-	nc.Flush()
 
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Same for Delivered
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs))
-	require_True(t, ci.AckFloor.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.AckFloor.Stream == uint64(nmsgs))
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(nmsgs))
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, 0)
 
 	msgs, err = sub.Fetch(nmsgs)
 	require_NoError(t, err)
@@ -16046,20 +16053,19 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 
 	// Ack all again
 	for _, m := range msgs {
-		m.Ack()
+		require_NoError(t, m.AckSync())
 	}
-	nc.Flush()
 
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Make sure we calculated correctly.
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs*2+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs*2))
-	require_True(t, ci.AckFloor.Consumer == uint64(nmsgs*2+keep))
-	require_True(t, ci.AckFloor.Stream == uint64(nmsgs*2))
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.NumPending == 0)
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs*2+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs*2))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(nmsgs*2+keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(nmsgs*2))
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumRedelivered, 0)
 }
 
 func TestJetStreamPurgeWithRedeliveredPending(t *testing.T) {
