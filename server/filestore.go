@@ -4271,8 +4271,8 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 		})
 
-		// An exact subject whose last block is later needs no correction here.
-		if info != nil && len(lbm) == 0 {
+		// Subjects whose last block is later need no correction in this block.
+		if len(lbm) == 0 {
 			return total, validThrough, nil
 		}
 

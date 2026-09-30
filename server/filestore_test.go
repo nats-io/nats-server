@@ -6793,6 +6793,64 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 	}
 }
 
+func TestFileStoreNumPendingCanSkipStartingBlock(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		lastPerSubject bool
+		maxMsgsPer     int64
+	}{
+		{"LastPerSubject", true, 0},
+		{"MaxMsgsPerSubjectOne", false, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo.*", "bar.*"}, Storage: FileStorage, MaxMsgsPer: test.maxMsgsPer})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// Keep the first block full of non-matching subjects, with all
+			// matching subjects' last messages in later blocks.
+			msg := bytes.Repeat([]byte("A"), 100)
+			for _, prefix := range []string{"bar", "foo"} {
+				for i := range 20 {
+					_, _, err := fs.StoreMsg(fmt.Sprintf("%s.%d", prefix, i), nil, msg, 0)
+					require_NoError(t, err)
+				}
+			}
+
+			const startSeq = uint64(2)
+			fs.mu.RLock()
+			seqStart, _ := fs.selectMsgBlockWithIndex(startSeq)
+			require_Equal(t, seqStart, 0)
+			mb := fs.blks[seqStart]
+			fs.psim.Match([]byte("foo.*"), func(_ []byte, info *psi) {
+				require_True(t, info.lblk > mb.index)
+			})
+			fs.mu.RUnlock()
+
+			// Start inside an unloaded block so the correction scan would
+			// have to load it without the empty-lbm early return.
+			require_NoError(t, mb.flushPendingMsgs())
+			mb.mu.Lock()
+			require_True(t, startSeq > mb.first.seq && startSeq <= mb.last.seq)
+			mb.clearCacheAndOffset()
+			require_True(t, mb.cacheNotLoaded())
+			loads := mb.cloads
+			mb.mu.Unlock()
+
+			total, validThrough, err := fs.NumPending(startSeq, "foo.*", test.lastPerSubject)
+			require_NoError(t, err)
+			require_Equal(t, total, uint64(20))
+			require_Equal(t, validThrough, uint64(40))
+			mb.mu.RLock()
+			defer mb.mu.RUnlock()
+			require_Equal(t, mb.cloads, loads)
+			require_True(t, mb.cacheNotLoaded())
+		})
+	}
+}
+
 // Since 2.10 we no longer have fss, and the approach for calculating NumPending would branch
 // based on the old fss metadata being present. This meant that calculating NumPending in >= 2.10.x
 // would load all blocks to complete. This test makes sure we do not do that anymore.
