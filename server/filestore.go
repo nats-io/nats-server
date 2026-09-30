@@ -4423,9 +4423,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= lseq {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4467,6 +4471,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	if seqStart >= (len(fs.blks) / 2) {
 		for i := max(seqStart, blkStart); i < blkEnd; i++ {
 			var shouldExpire bool
+			var updateLLTS bool
 			mb := fs.blks[i]
 			// Hold write lock in case we need to load cache.
 			mb.mu.Lock()
@@ -4534,8 +4539,17 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+						updateLLTS = true
+						if end >= lseq {
+							break
+						}
+						seq = end
+						continue
+					}
 					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
+						updateLLTS = false // cacheLookup already updated it.
 					}
 				}
 			}
@@ -4544,6 +4558,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				mb.tryForceExpireCacheLocked()
 			} else {
 				mb.finishedWithCache()
+			}
+			if updateLLTS {
+				mb.llts = ats.AccessTime()
 			}
 			mb.mu.Unlock()
 			total += t
@@ -4625,9 +4642,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= last {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4814,9 +4835,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= lseq {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4920,9 +4945,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if mb.dmap.Exists(seq) {
-						// Optimisation to avoid calling cacheLookup which hits time.Now().
+					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+						// Skip the deleted span without calling cacheLookup, which hits time.Now().
 						updateLLTS = true
+						if end >= lseq {
+							break
+						}
+						seq = end
 						continue
 					}
 					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
@@ -5012,9 +5041,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= last {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
