@@ -442,6 +442,46 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	}
 }
 
+func TestConfigReloadTLSPinnedCertsDisconnectsClient(t *testing.T) {
+	const config = `
+		host: localhost
+		port: -1
+		tls {
+			ca_file: "../test/configs/certs/ca.pem"
+			cert_file: "../test/configs/certs/server-cert.pem"
+			key_file: "../test/configs/certs/server-key.pem"
+			verify: true
+			pinned_certs: ["%s"]
+		}
+	`
+	const (
+		clientCertPin = "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+		otherCertPin  = "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+	)
+
+	conf := createConfFile(t, fmt.Appendf(nil, config, clientCertPin))
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	nc, err := nats.Connect(srv.ClientURL(),
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.ClientCert("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem"),
+		nats.NoReconnect(),
+	)
+	require_NoError(t, err)
+	defer nc.Close()
+
+	require_NoError(t, os.WriteFile(conf, fmt.Appendf(nil, config, otherCertPin), 0660))
+	require_NoError(t, srv.Reload())
+
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsClosed() {
+			return fmt.Errorf("client with removed certificate pin is still connected")
+		}
+		return nil
+	})
+}
+
 // Ensure Reload supports enabling TLS. Test this by starting a server without
 // TLS enabled, connect to it to verify, reload config with TLS enabled, ensure
 // reconnect fails, then ensure reconnect succeeds when using secure.
