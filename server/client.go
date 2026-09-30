@@ -1648,7 +1648,9 @@ func (c *client) readLoop(pre []byte) {
 			atomic.AddInt64(&c.inMsgs, inMsgs)
 			atomic.AddInt64(&c.inBytes, inBytes)
 
-			if acc != nil {
+			// A per-account route has its account set, but routed messages were
+			// already added to the account's stats in processInboundRoutedMsg.
+			if acc != nil && c.kind != ROUTER {
 				acc.stats.Lock()
 				acc.stats.inMsgs += inMsgs
 				acc.stats.inBytes += inBytes
