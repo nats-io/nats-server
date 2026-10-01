@@ -45,6 +45,7 @@ type RaftNode interface {
 	CreateSnapshotCheckpoint(force bool) (RaftNodeCheckpoint, error)
 	SendSnapshot(snap []byte) error
 	NeedSnapshot() bool
+	SnapshotInCurrentTerm() bool
 	SendHeartbeat()
 	Applied(index uint64) (entries uint64, bytes uint64)
 	Processed(index uint64, applied uint64) (entries uint64, bytes uint64)
@@ -207,6 +208,7 @@ type raft struct {
 	processed uint64 // Index of the most recently processed commit
 	applied   uint64 // Index of the most recently applied commit
 	papplied  uint64 // First sequence of our log, matches when we last installed a snapshot.
+	sterm     uint64 // Term in which we last installed a snapshot
 
 	membChange *membChange // Uncommitted membership change entry at a specific log index.
 
@@ -1724,6 +1726,7 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	}
 	// Remember our latest snapshot file.
 	n.snapfile = sfile
+	n.sterm = n.term
 	if _, err := n.wal.Compact(snap.lastIndex + 1); err != nil {
 		n.setWriteErrLocked(err)
 		return err
@@ -1977,6 +1980,13 @@ func (n *raft) NeedSnapshot() bool {
 	n.RLock()
 	defer n.RUnlock()
 	return n.snapfile == _EMPTY_ && n.applied > 0
+}
+
+// SnapshotInCurrentTerm returns whether we installed a snapshot in the current term since starting.
+func (n *raft) SnapshotInCurrentTerm() bool {
+	n.RLock()
+	defer n.RUnlock()
+	return n.snapfile != _EMPTY_ && n.sterm == n.term
 }
 
 const (
@@ -2377,7 +2387,7 @@ func (n *raft) StepDown(preferred ...string) error {
 		var isHealthy bool
 		if ps, ok := n.peers[maybeLeader]; ok {
 			si, ok := n.s.nodeToInfo.Load(maybeLeader)
-			isHealthy = ok && !si.(nodeInfo).offline && time.Since(ps.ts) < hbInterval*3
+			isHealthy = ok && !si.(nodeInfo).offline && withinLiveWindow(ps.ts)
 		}
 		if !isHealthy {
 			maybeLeader = noLeader
@@ -2392,7 +2402,7 @@ func (n *raft) StepDown(preferred ...string) error {
 				continue
 			}
 			si, ok := n.s.nodeToInfo.Load(peer)
-			isHealthy := ok && !si.(nodeInfo).offline && time.Since(ps.ts) < hbInterval*3
+			isHealthy := ok && !si.(nodeInfo).offline && withinLiveWindow(ps.ts)
 			if isHealthy {
 				maybeLeader = peer
 				break

@@ -296,15 +296,14 @@ func (sa *streamAssignment) desiredOrigin() *desiredRaftGroupOrigin {
 	return sa.legacyMoveOrigin()
 }
 
-// isR1ScaleUpSource reports whether the given peer is the source for an
-// in-progress R1 scale-up.
-func (sa *streamAssignment) isR1ScaleUpSource(peer string) bool {
+// isR1ScaleUpSource reports whether we're the source of an in-progress R1 scale up, our Raft group's only member
+// while the desired peers add another, based on membership since the desired origin can't identify it after stacked updates.
+// Lock should be held.
+func (sa *streamAssignment) isR1ScaleUpSource(ourID string, members []*Peer) bool {
 	if sa == nil || sa.Group == nil || sa.Group.Desired == nil {
 		return false
 	}
-	d := sa.Group.Desired
-	return d.Origin != nil && d.Origin.Replicas == 1 && len(d.Peers) > 1 &&
-		len(d.Origin.Peers) == 1 && d.Origin.Peers[0] == peer
+	return len(members) == 1 && members[0].ID == ourID && slices.ContainsFunc(sa.Group.Desired.Peers, func(p string) bool { return p != ourID })
 }
 
 // moveInFlight returns whether a move is still converging, including one that was
@@ -2420,6 +2419,11 @@ func (js *jetStream) monitorCluster() {
 			return
 		case <-aq.ch:
 			ces := aq.pop()
+			// Don't apply entries while shutting down, they replay after restart.
+			if js.isShuttingDown() {
+				aq.recycle(&ces)
+				continue
+			}
 			for _, ce := range ces {
 				if recovering && ru == nil {
 					ru = &recoveryUpdates{
@@ -4156,7 +4160,11 @@ func prepareStreamRecovery(mset *stream, n RaftNode) error {
 		// the existing R1 history. Preserve the store if
 		// the source has restarted before the initial snapshot
 		// was installed
-		if mset.streamAssignment().isR1ScaleUpSource(n.ID()) {
+		sa, members := mset.streamAssignment(), n.Peers()
+		mset.js.mu.RLock()
+		r1ScaleUpSource := sa.isR1ScaleUpSource(n.ID(), members)
+		mset.js.mu.RUnlock()
+		if r1ScaleUpSource {
 			return nil
 		}
 	}
@@ -5010,6 +5018,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	// Store whether any peers are currently being caught up, in which case they're
 	// not current yet and we need to wait before removing peers.
 	catchups := mset.catchupPeers()
+	members := n.Peers()
 
 	// Snapshot the assignment state we need up front, so the Raft reads below don't
 	// contend for Raft locks while holding the JetStream lock.
@@ -5030,6 +5039,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 	// Peers we can't drop yet; they still host a consumer.
 	hostedPeers := sa.consumerHostedPeers()
 	desiredID, desiredScaleDown, desiredPeers, desiredMembers, needDesired := sa.Group.desiredSnapshot(leaderTerm)
+	growing := sa.isR1ScaleUpSource(ourPeerId, members)
 	js.mu.RUnlock()
 
 	update := desiredAssignmentUpdate{Term: leaderTerm, ID: desiredID}
@@ -5046,14 +5056,17 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		return mstat(MigrationStatusMeta, "recording leadership term with meta leader")
 	}
 	// A snapshot is required. Automatically installs a snapshot for a R1 scaleup.
-	if n.NeedSnapshot() {
+	// Also when growing from one after a restart, our store can hold writes our log doesn't.
+	needSnapshot := n.NeedSnapshot()
+	if needSnapshot || (growing && !n.SnapshotInCurrentTerm()) {
 		if err := mset.flushAllPending(); err != nil {
 			if errors.Is(err, ErrStoreClosed) {
 				return mstat(MigrationStatusUnavailable, "shutting down")
 			}
 			return mstat(MigrationStatusSnapshot, "waiting to flush pending state for snapshot").withErr(err)
 		}
-		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
+		// Best effort when growing, nothing may have been applied since the last snapshot.
+		if err := n.InstallSnapshot(mset.stateSnapshot(), true); err != nil && (needSnapshot || !errors.Is(err, errNoSnapAvailable)) {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err)
 		}
 		// The snapshot is installed, continue right away so new peers can be added
@@ -5178,37 +5191,28 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 		//   transfer leadership to a peer that's current, so it's what we can step down to.
 		// - caughtUpDesired: desired peers that are caught up, they might not all be
 		//   current. We use this where we only need them to have the data.
-		// - copiesAfterRemoval: whether we have sufficient copies of the data after
-		//   having removed the peer, so it's tallied without it.
 		var currentDesired []string
-		var caughtUpDesired, copiesAfterRemoval int
+		var caughtUpDesired int
 		for _, p := range actual {
-			// A peer only counts once it told us its store holds the stream, being current
-			// on the log is not enough.
-			if p.ID != ourPeerId && (slices.Contains(catchups, p.ID) || !positions.isCaughtUp(p.ID)) {
+			if !slices.Contains(desiredPeers, p.ID) {
 				continue
 			}
-			if slices.Contains(desiredPeers, p.ID) {
-				caughtUpDesired++
-				if p.Current {
-					currentDesired = append(currentDesired, p.ID)
-				}
+			// A peer only counts once it told us its store holds the stream, and we caught it up
+			// on the log since becoming leader.
+			if p.ID != ourPeerId && (slices.Contains(catchups, p.ID) || !positions.isCaughtUp(p.ID) || !n.IsFollowerCaughtUp(p.ID)) {
+				continue
 			}
-			if p.ID != remove {
-				copiesAfterRemoval++
+			caughtUpDesired++
+			if p.Current {
+				currentDesired = append(currentDesired, p.ID)
 			}
 		}
-		quorum := len(desiredPeers)/2 + 1
 		// We only need to weigh the peers we're keeping, we already have Raft quorum, or
 		// we couldn't have grown the group to get here. Peers outside the desired set are
-		// on their way out, and we don't want them to block us.
-		if caughtUpDesired < quorum {
+		// on their way out, and we don't want them to block us. Past quorum, we still keep every
+		// copy of the stream while a desired peer is catching up, unless it stalls.
+		if caughtUpDesired < len(desiredPeers)/2+1 || positions.holdForCatchup(ourPeerId, remove, actual, desiredPeers, catchups) {
 			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
-		}
-		// Backstop for peers that are neither catching up nor caught up, they're down or
-		// haven't started.
-		if copiesAfterRemoval < quorum {
-			return mstat(MigrationStatusCatchup, "waiting for more peers to catch up")
 		}
 		// The group left after the removal must still be able to commit.
 		if !s.canRemovePeer(ourPeerId, remove, actual) {
@@ -6188,9 +6192,15 @@ const (
 	migrateFastCheckInterval     = 50 * time.Millisecond
 	migrateFallbackCheckInterval = 500 * time.Millisecond
 	migrateMetaRetryInterval     = 5 * time.Second
+)
 
+// Variables so tests can shorten them.
+var (
 	// migratePosAskInterval is how often a migrating leader re-asks peers for their stream state.
 	migratePosAskInterval = 2 * time.Second
+
+	// migrateCatchupStall is how long a catching up desired peer may go without progress before we stop waiting for it.
+	migrateCatchupStall = 3 * migratePosAskInterval
 )
 
 // Determines if we should send lost quorum advisory. We throttle these after first one.
@@ -6897,6 +6907,9 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 						if osa.Group.node != nil && osa.Group.node != sa.Group.node {
 							osa.Group.node.Delete()
 							osa.Group.node = nil
+							// Wait for the old group's monitor to exit, so we can start one for the new group.
+							mset.stopMonitoring()
+							alreadyRunning = false
 						}
 					}
 				}
@@ -7090,6 +7103,8 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 				sa.unsupported = osa.unsupported
 			}
 		}
+		// Carry over the consumers only the stored assignment knows.
+		sa.consumers = osa.consumers
 		// Carry over the running node, the decoded assignment doesn't have it.
 		if sa.Group != nil && osa.Group != nil {
 			sa.Group.node = osa.Group.node
@@ -7168,16 +7183,12 @@ func (js *jetStream) processClusterDeleteStream(sa *streamAssignment, isMember, 
 	// 2) node was nil (and couldn't be deleted)
 	if !stopped || node == nil {
 		if sacc := s.SystemAccount(); sacc != nil {
-			saccName := sacc.GetName()
-			os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, sa.Group.Name))
+			js.deleteRaftGroupStore(sacc, sa.Group.Name)
 			// cleanup dependent consumer groups
 			if !stopped {
 				for _, ca := range sa.consumers {
 					// Make sure we cleanup any possible running nodes for the consumers.
-					if isMember && ca.Group != nil && ca.Group.node != nil {
-						ca.Group.node.Delete()
-					}
-					os.RemoveAll(filepath.Join(js.config.StoreDir, saccName, defaultStoreDirName, ca.Group.Name))
+					js.deleteRaftGroupStore(sacc, ca.Group.Name)
 				}
 			}
 		}
@@ -7837,6 +7848,15 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	}
 }
 
+// deleteRaftGroupStore removes a Raft group's store, through its node if still running.
+func (js *jetStream) deleteRaftGroupStore(sacc *Account, group string) {
+	if n := js.srv.lookupRaftNode(group); n != nil {
+		n.Delete()
+		return
+	}
+	os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, group))
+}
+
 func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLeader bool) {
 	if ca == nil {
 		return
@@ -7882,7 +7902,7 @@ func (js *jetStream) processClusterDeleteConsumer(ca *consumerAssignment, wasLea
 	// 2) node was nil (and couldn't be deleted)
 	if !stopped || node == nil {
 		if sacc := s.SystemAccount(); sacc != nil {
-			os.RemoveAll(filepath.Join(js.config.StoreDir, sacc.GetName(), defaultStoreDirName, ca.Group.Name))
+			js.deleteRaftGroupStore(sacc, ca.Group.Name)
 		}
 	}
 
@@ -8512,6 +8532,16 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining, nil)
 		if remove == _EMPTY_ {
 			return mstat(MigrationStatusBlocked, "waiting to select a peer to remove")
+		}
+		// A peer only counts once we caught it up on the log since becoming leader.
+		var caughtUpDesired int
+		for _, p := range actual {
+			if slices.Contains(desiredPeers, p.ID) && n.IsFollowerCaughtUp(p.ID) {
+				caughtUpDesired++
+			}
+		}
+		if caughtUpDesired < len(desiredPeers)/2+1 {
+			return mstat(MigrationStatusCatchup, "waiting for desired peers to catch up")
 		}
 		// The group left after the removal must still be able to commit.
 		if !s.canRemovePeer(ourPeerId, remove, actual) {
@@ -11609,13 +11639,12 @@ func (s *Server) selectPeerToRemove(curLeader string, current []*Peer, remaining
 // voters; we always count ourselves. This is the removal counterpart to the
 // quorum check in selectPeerToAdd.
 func (s *Server) canRemovePeer(ourPeerId, remove string, actual []*Peer) bool {
-	cutoff := time.Now().Add(-hbInterval * 3)
 	var voters int
 	for _, p := range actual {
 		if p.ID == remove {
 			continue
 		}
-		heard := p.ID == ourPeerId || (!p.Last.IsZero() && p.Last.After(cutoff))
+		heard := p.ID == ourPeerId || withinLiveWindow(p.Last)
 		if p.Current && heard {
 			voters++
 		}
@@ -11633,8 +11662,6 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	if len(candidates) == 0 {
 		return _EMPTY_, false
 	}
-	cutoff := time.Now().Add(-hbInterval * 3)
-	heard := func(ts time.Time) bool { return !ts.IsZero() && ts.After(cutoff) }
 	online := func(peer string) bool {
 		si, ok := s.nodeToInfo.Load(peer)
 		return ok && si != nil && !si.(nodeInfo).offline
@@ -11660,7 +11687,7 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	// still reach quorum after the group has grown.
 	live := 0
 	for _, p := range current {
-		if p.ID == ourPeerId || (online(p.ID) && heard(p.Last)) {
+		if p.ID == ourPeerId || (online(p.ID) && withinLiveWindow(p.Last)) {
 			live++
 		}
 	}
@@ -13269,18 +13296,49 @@ func (mset *stream) catchupPeers() []string {
 // peerPositions is what the members of a group have told the leader about their stream state.
 // Owned by the stream's monitor routine, so it needs no locking.
 type peerPositions struct {
-	bar     uint64            // Minimum sequence peers must store to be considered caught up.
-	asked   time.Time         // When we last asked, so we don't request on every tick.
-	seqs    map[string]uint64 // Where each peer last said its store was.
-	retried bool              // Whether the free first retry is used up, later ones wait out migratePosAskInterval.
-	reply   string            // Inbox the answers come back on, empty while not listening.
-	sub     *subscription     // Subscription used to receive replies.
+	bar      uint64            // Minimum sequence peers must store to be considered caught up.
+	asked    time.Time         // When we last asked, so we don't request on every tick.
+	progress time.Time         // When a peer that's behind last reported progress, zero while not holding.
+	seqs     map[string]uint64 // Where each peer last said its store was.
+	retried  bool              // Whether the free first retry is used up, later ones wait out migratePosAskInterval.
+	reply    string            // Inbox the answers come back on, empty while not listening.
+	sub      *subscription     // Subscription used to receive replies.
 }
 
 // isCaughtUp reports whether a peer has caught up to at least the recorded bar.
 func (pos *peerPositions) isCaughtUp(peer string) bool {
 	seq, ok := pos.seqs[peer]
 	return ok && seq >= pos.bar
+}
+
+// isBehind reports whether a peer told us its store is short of the recorded bar.
+func (pos *peerPositions) isBehind(peer string) bool {
+	seq, ok := pos.seqs[peer]
+	return ok && seq < pos.bar
+}
+
+// holdForCatchup reports whether removing a live peer should wait for live desired peers
+// that are still catching up, for as long as they keep making progress.
+func (pos *peerPositions) holdForCatchup(ourPeerId, remove string, actual []*Peer, desiredPeers, catchups []string) bool {
+	live := func(p *Peer) bool { return p.ID == ourPeerId || withinLiveWindow(p.Last) }
+	var removeLive, behind bool
+	for _, p := range actual {
+		if p.ID == remove {
+			removeLive = live(p)
+		} else if p.ID != ourPeerId && live(p) && slices.Contains(desiredPeers, p.ID) &&
+			(slices.Contains(catchups, p.ID) || pos.isBehind(p.ID)) {
+			behind = true
+		}
+	}
+	// Removing a peer that's down doesn't cost us a copy.
+	if !removeLive || !behind {
+		pos.progress = time.Time{}
+		return false
+	}
+	if pos.progress.IsZero() {
+		pos.progress = time.Now()
+	}
+	return time.Since(pos.progress) < migrateCatchupStall
 }
 
 // record folds an answer in, reporting whether a peer we could not vouch for now is.
@@ -13291,6 +13349,10 @@ func (pos *peerPositions) record(resp *clusterStreamInfoResponse) bool {
 	was := pos.isCaughtUp(resp.Peer)
 	if pos.seqs == nil {
 		pos.seqs = make(map[string]uint64)
+	}
+	// A peer that's behind storing more than before is making progress.
+	if seq, ok := pos.seqs[resp.Peer]; ok && seq < pos.bar && resp.State.LastSeq > seq {
+		pos.progress = time.Now()
 	}
 	pos.seqs[resp.Peer] = resp.State.LastSeq
 	return !was && pos.isCaughtUp(resp.Peer)
