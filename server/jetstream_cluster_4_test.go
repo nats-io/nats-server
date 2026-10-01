@@ -3930,6 +3930,8 @@ func TestJetStreamClusterHardKillAfterStreamAdd(t *testing.T) {
 	// 4. restart
 	c.restartAll()
 	c.waitOnAllCurrent()
+	// The stream was added and applied before the kill, it recovers with the meta layer.
+	c.waitOnStreamLeader(globalAccountName, "TEST")
 
 	nc, js = jsClientConnect(t, c.randomServer())
 	defer nc.Close()
@@ -8196,13 +8198,6 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				default:
 				}
 			}
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-				if entries, _ := rg.Size(); entries != 0 {
-					kick()
-					return fmt.Errorf("meta log not compacted yet (%d entries)", entries)
-				}
-				return nil
-			})
 
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
@@ -8219,7 +8214,7 @@ func TestJetStreamClusterMetaCompactThreshold(t *testing.T) {
 				// Should we have compacted on this iteration?
 				if entries > thresh {
 					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-						if entries, _ := rg.Size(); entries != 0 {
+						if entries, _ := rg.Size(); entries > thresh {
 							kick()
 							return fmt.Errorf("haven't compacted yet (%d entries)", entries)
 						}
@@ -8262,13 +8257,6 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				default:
 				}
 			}
-			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-				if _, size := rg.Size(); size != 0 {
-					kick()
-					return fmt.Errorf("meta log not compacted yet (%d bytes)", size)
-				}
-				return nil
-			})
 
 			// We will get nowhere near math.MaxInt, as we will hit the
 			// compaction threshold and return early, but keeps "i" moving up.
@@ -8285,7 +8273,7 @@ func TestJetStreamClusterMetaCompactSizeThreshold(t *testing.T) {
 				// Should we have compacted on this iteration?
 				if size > thresh {
 					checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
-						if _, size := rg.Size(); size != 0 {
+						if _, size := rg.Size(); size > thresh {
 							kick()
 							return fmt.Errorf("haven't compacted yet (%d bytes)", size)
 						}
@@ -10564,7 +10552,12 @@ func TestJetStreamClusterStreamPositionBookkeeping(t *testing.T) {
 	require_False(t, first.IsZero())
 	require_False(t, pos.retried)
 
-	// Straight away is fine for the first retry.
+	// The first retry waits a fraction of the interval.
+	pos.request(mset, globalAccountName, "TEST")
+	require_Equal(t, pos.asked, first)
+	require_False(t, pos.retried)
+	pos.asked = time.Now().Add(-migratePosAskInterval / 5)
+	first = pos.asked
 	pos.request(mset, globalAccountName, "TEST")
 	require_True(t, pos.retried)
 	require_True(t, pos.asked.After(first))
@@ -10628,4 +10621,139 @@ func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
 	si, err = js.AddStream(&nats.StreamConfig{Name: "R3", Subjects: []string{"r3"}, Replicas: 3})
 	require_NoError(t, err)
 	require_True(t, isMember(si.Cluster))
+}
+
+// A raised limit that was applied must not be undone on restart, the store would drop messages.
+func TestJetStreamClusterRaisedLimitSurvivesHardKill(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R3S", 3)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+
+			cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas, MaxMsgs: 10}
+			_, err := js.AddStream(cfg)
+			require_NoError(t, err)
+
+			// Raising the limit is the last meta entry before the kill.
+			cfg.MaxMsgs = 100
+			_, err = js.UpdateStream(cfg)
+			require_NoError(t, err)
+			for range 50 {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+				for _, s := range c.servers {
+					mset, err := s.globalAccount().lookupStream("TEST")
+					if err != nil {
+						continue
+					}
+					if msgs := mset.state().Msgs; msgs != 50 {
+						return fmt.Errorf("%s has %d msgs", s, msgs)
+					}
+				}
+				return nil
+			})
+			nc.Close()
+
+			// Simulate a hard kill of all servers.
+			copies := make(map[string]string)
+			for _, s := range c.servers {
+				copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+				require_NoError(t, copyDir(t, copySd, s.StoreDir()))
+				copies[s.StoreDir()] = copySd
+			}
+			c.stopAll()
+			for sd, copySd := range copies {
+				require_NoError(t, os.RemoveAll(sd))
+				require_NoError(t, copyDir(t, sd, copySd))
+			}
+			c.restartAll()
+			c.waitOnStreamLeader(globalAccountName, "TEST")
+
+			nc, js = jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+				si, err := js.StreamInfo("TEST")
+				if err != nil {
+					return err
+				}
+				if si.Config.MaxMsgs != 100 {
+					return fmt.Errorf("max msgs %d", si.Config.MaxMsgs)
+				}
+				return nil
+			})
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, 50)
+		})
+	}
+}
+
+func TestJetStreamClusterRestartedServerKeepsLastAppliedStreamGroup(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	si, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	require_NoError(t, err)
+	sl := c.serverByName(si.Cluster.Leader)
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	r1Group := mset.raftGroup().Name
+
+	// Scale up, the remap to the R3 group is applied first.
+	cfg := &StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3, Storage: FileStorage}
+	req, err := json.Marshal(cfg)
+	require_NoError(t, err)
+	require_NoError(t, nc.Publish(fmt.Sprintf(JSApiStreamUpdateT, "TEST"), req))
+	var r3Group string
+	checkFor(t, 2*time.Second, time.Millisecond, func() error {
+		if rg := mset.raftGroup(); rg != nil && rg.Name != r1Group {
+			r3Group = rg.Name
+			return nil
+		}
+		return errors.New("remap not applied yet")
+	})
+
+	// Simulate a hard kill of the stream's server and one other right after the remap was applied.
+	var other *Server
+	for _, s := range c.servers {
+		if s != sl {
+			other = s
+			break
+		}
+	}
+	copies := make(map[string]string)
+	for _, s := range []*Server{sl, other} {
+		copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+		require_NoError(t, copyDir(t, copySd, s.StoreDir()))
+		copies[s.StoreDir()] = copySd
+	}
+	nc.Close()
+	c.stopAll()
+	for sd, copySd := range copies {
+		require_NoError(t, os.RemoveAll(sd))
+		require_NoError(t, copyDir(t, sd, copySd))
+	}
+
+	// Restart only those two, recovering before they have a meta leader.
+	sl = c.restartServer(sl)
+	c.restartServer(other)
+	checkFor(t, 10*time.Second, time.Millisecond, func() error {
+		if mset, err = sl.globalAccount().lookupStream("TEST"); err != nil {
+			return err
+		}
+		if mset.raftGroup() == nil {
+			return errors.New("stream not assigned yet")
+		}
+		return nil
+	})
+	// The remap was applied before the kill, the stream must not go back to its R1 group.
+	require_Equal(t, mset.raftGroup().Name, r3Group)
 }

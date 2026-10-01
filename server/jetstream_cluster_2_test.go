@@ -7398,7 +7398,13 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 	// We want to make sure we do not send unnecessary skip msgs when we know we do not have all of these messages.
 	ncs, _ := jsClientConnect(t, sl, nats.UserInfo("admin", "s3cr3t!"))
 	defer nc.Close()
-	sub, err := ncs.SubscribeSync("$JSC.R.>")
+	// Stream info answers to the leader share the reply prefix, only count catchup msgs.
+	var catchupMsgs atomic.Int64
+	_, err = ncs.Subscribe("$JSC.R.>", func(msg *nats.Msg) {
+		if len(msg.Data) == 0 || msg.Data[0] != '{' {
+			catchupMsgs.Add(1)
+		}
+	})
 	require_NoError(t, err)
 
 	// Now scale up to R3.
@@ -7412,7 +7418,7 @@ func TestJetStreamClusterStreamResetWithLargeFirstSeq(t *testing.T) {
 
 	// Make sure we only sent the number of catchup msgs we expected.
 	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
-		if nmsgs, _, _ := sub.Pending(); nmsgs != (cfg.Replicas-1)*(num+1) {
+		if nmsgs := int(catchupMsgs.Load()); nmsgs != (cfg.Replicas-1)*(num+1) {
 			return fmt.Errorf("expected %d catchup msgs, but got %d", (cfg.Replicas-1)*(num+1), nmsgs)
 		}
 		return nil
@@ -9032,17 +9038,21 @@ func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
 			peers[id] = &lps{ts: ts}
 			s.nodeToInfo.Store(id, nodeInfo{})
 		}
-		for id := range observed {
+		// Observed learners have caught up, unless a test says otherwise.
+		learners := make(map[string]*lps, len(observed))
+		for id, ts := range observed {
 			s.nodeToInfo.Store(id, nodeInfo{})
+			learners[id] = &lps{ts: ts, li: 1}
 		}
-		return &raft{peers: peers, observed: observed}
+		return &raft{peers: peers, observed: learners}
 	}
 	selectFor := func(n *raft, candidates []string) string {
 		var current []*Peer
 		for id, ps := range n.peers {
 			current = append(current, &Peer{ID: id, Last: ps.ts})
 		}
-		return s.selectPeerToAdd(n, "A", current, candidates)
+		add, _ := s.selectPeerToAdd(n, "A", current, candidates)
+		return add
 	}
 
 	// No candidates to add.
@@ -9061,6 +9071,22 @@ func TestJetStreamClusterSelectPeerToAdd(t *testing.T) {
 	// A candidate heard too long ago doesn't count as heard.
 	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"B": now.Add(-4 * hbInterval)})
 	require_Equal(t, selectFor(n, []string{"B"}), _EMPTY_)
+
+	// A live candidate is only added once caught up.
+	n = newNode(map[string]time.Time{"A": {}}, map[string]time.Time{"D": now})
+	n.observed["D"].ci = 2
+	add, catchingUp := s.selectPeerToAdd(n, "A", nil, []string{"D"})
+	require_Equal(t, add, _EMPTY_)
+	require_True(t, catchingUp)
+
+	// A live candidate catching up is waited for, rather than adding an unheard one.
+	n = newNode(map[string]time.Time{"A": {}, "B": now, "C": now}, map[string]time.Time{"D": now})
+	n.observed["D"].ci = 2
+	require_Equal(t, selectFor(n, []string{"D", "E"}), _EMPTY_)
+
+	// Once caught up, the live candidate is preferred.
+	n.observed["D"].li = 2
+	require_Equal(t, selectFor(n, []string{"D", "E"}), "D")
 
 	// An unheard candidate can't be added to a group that would then require
 	// a quorum larger than its live members, e.g. growing R1 with an offline
