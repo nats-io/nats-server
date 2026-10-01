@@ -53,6 +53,7 @@ type RaftNode interface {
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
+	LogDrained() bool
 	Leader() bool
 	LeaderSince() *time.Time
 	Quorum() bool
@@ -2502,6 +2503,20 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 	n.RLock()
 	defer n.RUnlock()
 	return n.pindex, n.commit, n.applied
+}
+
+// LogDrained returns whether everything committed was applied, and as leader, everything proposed was committed.
+func (n *raft) LogDrained() bool {
+	// Holding the lock keeps our state and progress, and popped proposals from being added to the log.
+	n.RLock()
+	defer n.RUnlock()
+	if n.applied < n.commit {
+		return false
+	} else if n.State() != Leader {
+		return true
+	}
+	// Check the queue first, popping moves its proposals to in progress under the queue's lock.
+	return n.prop.len() == 0 && n.prop.inProgress() == 0 && n.commit >= n.pindex
 }
 
 // Size returns number of entries and total bytes for our WAL.

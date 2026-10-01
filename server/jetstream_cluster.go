@@ -6281,7 +6281,7 @@ func (mset *stream) switchToLocal(n RaftNode) bool {
 	// Anything that decided to propose before we started switching is done once we get clMu.
 	mset.clMu.Lock()
 	mset.clMu.Unlock()
-	if !raftLogApplied(n) {
+	if !n.LogDrained() {
 		return false
 	}
 
@@ -6291,7 +6291,7 @@ func (mset *stream) switchToLocal(n RaftNode) bool {
 	defer mset.mu.Unlock()
 	mset.clMu.Lock()
 	// Our own proposals don't wait for the switch, check again.
-	switched := raftLogApplied(n)
+	switched := n.LogDrained()
 	if switched {
 		mset.localWrites = true
 		mset.clearClusteredWriteStateLocked()
@@ -6304,13 +6304,6 @@ func (mset *stream) switchToLocal(n RaftNode) bool {
 		mset.endSwitchLocked()
 	}
 	return switched
-}
-
-// raftLogApplied returns whether everything committed is applied, and for a leader,
-// everything proposed is committed.
-func raftLogApplied(n RaftNode) bool {
-	pindex, commit, applied := n.Progress()
-	return applied >= commit && (!n.Leader() || commit >= pindex)
 }
 
 // endSwitchLocked ends a switch to local writes, done or abandoned, and releases what waited.
@@ -9336,7 +9329,7 @@ func (o *consumer) switchToLocal(n RaftNode) bool {
 	}
 	o.switching.Store(true)
 	// Don't switch once closed or after a write error, updates stay queued.
-	if o.closed || o.werr != nil || o.forwarding || !raftLogApplied(n) {
+	if o.closed || o.werr != nil || o.forwarding || !n.LogDrained() {
 		o.mu.Unlock()
 		return false
 	}

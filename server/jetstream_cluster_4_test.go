@@ -12815,3 +12815,66 @@ func TestJetStreamClusterScaleDownToR1RunsLocalBeforeFinalizing(t *testing.T) {
 		require_NoError(t, m.AckSync())
 	}
 }
+
+func TestJetStreamClusterPurgeAndDeleteRacingSwitchToReplicatedGoThroughLog(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	checkMsgs := func(msgs uint64) {
+		t.Helper()
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				mset, err := s.globalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				if state := mset.state(); state.Msgs != msgs {
+					return fmt.Errorf("%s: expected %d msgs, got %d", s.Name(), msgs, state.Msgs)
+				}
+			}
+			return nil
+		})
+	}
+	checkMsgs(10)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	setLocalWrites := func(local bool) {
+		mset.mu.Lock()
+		mset.clMu.Lock()
+		mset.localWrites = local
+		mset.clMu.Unlock()
+		mset.mu.Unlock()
+	}
+	// The request decides writes are local, then waits for the isolation lock. Meanwhile
+	// writes switch to replicated, like switchToReplicated does while holding it.
+	raceSwitch := func(request func() error) {
+		t.Helper()
+		setLocalWrites(true)
+		mset.isolateMu.Lock()
+		errCh := make(chan error, 1)
+		go func() { errCh <- request() }()
+		time.Sleep(100 * time.Millisecond)
+		setLocalWrites(false)
+		mset.isolateMu.Unlock()
+		require_NoError(t, <-errCh)
+	}
+
+	// The delete must be proposed instead, so every replica removes the message.
+	raceSwitch(func() error { return js.DeleteMsg("TEST", 5) })
+	checkMsgs(9)
+
+	// Same for a purge.
+	raceSwitch(func() error { return js.PurgeStream("TEST") })
+	checkMsgs(0)
+}

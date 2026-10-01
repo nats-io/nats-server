@@ -10606,3 +10606,50 @@ func TestNRGScaleUpPeerObserverUntilAdded(t *testing.T) {
 		})
 	}
 }
+
+func TestNRGLogDrainedWithPoppedProposal(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 1, newStateAdder)
+	n := rg.waitOnLeader().node().(*raft)
+	waitDrained := func() {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if !n.LogDrained() {
+				return errors.New("log not drained")
+			}
+			return nil
+		})
+	}
+	waitDrained()
+
+	// Hold the lock, the leader loop pops the proposal but can't add it to the log.
+	var pindex uint64
+	for popped := false; !popped; {
+		n.Lock()
+		pindex = n.pindex
+		n.prop.push(newProposedEntry(newEntry(EntryNormal, binary.AppendVarint(nil, 1)), _EMPTY_, n.term))
+		for start := time.Now(); !popped && time.Since(start) < 100*time.Millisecond; {
+			popped = n.prop.len() == 0 && n.prop.inProgress() > 0
+			time.Sleep(time.Millisecond)
+		}
+		// The leader loop was waiting on the lock itself, try again.
+		if !popped {
+			n.Unlock()
+			waitDrained()
+		}
+	}
+
+	// A reader waiting on the lock gets it before the leader loop adds the proposal to the log.
+	drained := make(chan bool, 1)
+	go func() { drained <- n.LogDrained() }()
+	time.Sleep(50 * time.Millisecond)
+	n.Unlock()
+	require_False(t, <-drained)
+
+	// Once drained, the log includes the proposal.
+	waitDrained()
+	index, _, _ := n.Progress()
+	require_True(t, index > pindex)
+}
