@@ -14547,8 +14547,9 @@ func (o *consumerFileStore) Stop() error {
 		return err
 	}
 
+	// Wait for an in-progress flush, even if not dirty, so the state is on disk when we return.
+	o.waitOnFlusher()
 	if len(buf) > 0 {
-		o.waitOnFlusher()
 		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 	}
 	return err
