@@ -14612,6 +14612,37 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 	}
 }
 
+func TestFileStoreConsumerNoMetaWriteAfterClose(t *testing.T) {
+	for _, op := range []string{"Stop", "Delete"} {
+		t.Run(op, func(t *testing.T) {
+			// Writes after close would end up in the working directory.
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "TEST", Storage: FileStorage, Subjects: []string{"foo"}})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			cfg := ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit}
+			obs, err := fs.ConsumerStore("CONSUMER", time.Time{}, &cfg)
+			require_NoError(t, err)
+			o := obs.(*consumerFileStore)
+
+			if op == "Stop" {
+				require_NoError(t, o.Stop())
+			} else {
+				require_NoError(t, o.Delete())
+			}
+			require_Error(t, o.UpdateConfig(&cfg), ErrStoreClosed)
+			require_Error(t, o.updateConfig(cfg), ErrStoreClosed)
+
+			entries, err := os.ReadDir(cwd)
+			require_NoError(t, err)
+			require_Len(t, len(entries), 0)
+		})
+	}
+}
+
 func TestFileStoreDontLoadSubjectStateIfNotPurged(t *testing.T) {
 	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
 	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}}
