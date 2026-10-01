@@ -8911,8 +8911,7 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 		require_NoError(t, o.raftNode().InstallSnapshot(state, false))
 		consumerGroup := o.raftNode().Group()
 
-		// Stop stream/consumer leader, and clear state on the followers except for meta.
-		sl.Shutdown()
+		// Clear state on the followers except for meta, and stop stream/consumer leader.
 		for _, s := range c.servers {
 			if s == sl {
 				continue
@@ -8925,6 +8924,8 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 				require_NoError(t, os.RemoveAll(filepath.Join(sd, DEFAULT_SYSTEM_ACCOUNT, defaultStoreDirName, consumerGroup)))
 			}
 		}
+		// Stop the leader last, otherwise its stepdown on shutdown lets a follower get ahead of its log.
+		sl.Shutdown()
 
 		// Restart all servers except the leader.
 		for _, s := range c.servers {
