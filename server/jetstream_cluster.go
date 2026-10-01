@@ -11629,6 +11629,10 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
+	// Set ScaleUp to prevent other members from winning the initial election.
+	// The preferred node clears its ScaleUp state through CampaignImmediately
+	// in createRaftGroup.
+	rg.ScaleUp = true
 	if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(sa)); err != nil {
 		return
 	}
