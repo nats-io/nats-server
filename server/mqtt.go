@@ -466,6 +466,7 @@ type mqttReader struct {
 	pos    int
 	pstart int
 	pbuf   []byte
+	owned  bool // buf is backed by pbuf, not the caller's read buffer
 }
 
 type mqttWriter struct {
@@ -6698,11 +6699,10 @@ func mqttNeedSubForLevelUp(subject string) bool {
 //////////////////////////////////////////////////////////////////////////////
 
 func (r *mqttReader) reset(buf []byte) {
-	if l := len(r.pbuf); l > 0 {
-		tmp := make([]byte, l+len(buf))
-		copy(tmp, r.pbuf)
-		copy(tmp[l:], buf)
-		buf = tmp
+	r.owned = len(r.pbuf) > 0
+	if r.owned {
+		// Append to the partial packet so a trickled packet isn't copied in full on every read.
+		buf = append(r.pbuf, buf...)
 		r.pbuf = nil
 	}
 	r.buf = buf
@@ -6742,8 +6742,12 @@ func (r *mqttReader) readPacketLen(pt byte, maxLen int32) (int, bool, error) {
 			return v, true, nil
 		}
 	}
-	r.pbuf = make([]byte, len(r.buf)-r.pstart)
-	copy(r.pbuf, r.buf[r.pstart:])
+	// Reuse our own buffer if it still holds only this partial packet.
+	if r.owned && r.pstart == 0 {
+		r.pbuf = r.buf
+	} else {
+		r.pbuf = copyBytes(r.buf[r.pstart:])
+	}
 	return 0, false, nil
 }
 
