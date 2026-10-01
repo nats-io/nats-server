@@ -4792,7 +4792,7 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 100
-		ttl := 200 * time.Millisecond
+		ttl := 400 * time.Millisecond
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxAge: ttl}
 		created := time.Now()
 		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -4802,12 +4802,14 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 		// These are in first block.
 		fs.StoreMsg("A", nil, msg, 0)
 		fs.StoreMsg("B", nil, msg, 0)
-		time.Sleep(ttl / 2)
+		stored := time.Now()
+		// Leave a large margin so C doesn't expire as well if the restart is slow.
+		time.Sleep(ttl * 3 / 4)
 		// This one in 2nd block.
 		fs.StoreMsg("C", nil, msg, 0)
 
 		fs.Stop()
-		time.Sleep(ttl/2 + 10*time.Millisecond)
+		time.Sleep(time.Until(stored.Add(ttl + 10*time.Millisecond)))
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -15179,6 +15181,37 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 		err = obs.Delete()
 		require_NoError(t, err)
 		wg.Wait()
+	}
+}
+
+func TestFileStoreConsumerNoMetaWriteAfterClose(t *testing.T) {
+	for _, op := range []string{"Stop", "Delete"} {
+		t.Run(op, func(t *testing.T) {
+			// Writes after close would end up in the working directory.
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "TEST", Storage: FileStorage, Subjects: []string{"foo"}})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			cfg := ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit}
+			obs, err := fs.ConsumerStore("CONSUMER", time.Time{}, &cfg)
+			require_NoError(t, err)
+			o := obs.(*consumerFileStore)
+
+			if op == "Stop" {
+				require_NoError(t, o.Stop())
+			} else {
+				require_NoError(t, o.Delete())
+			}
+			require_Error(t, o.UpdateConfig(&cfg), ErrStoreClosed)
+			require_Error(t, o.updateConfig(cfg), ErrStoreClosed)
+
+			entries, err := os.ReadDir(cwd)
+			require_NoError(t, err)
+			require_Len(t, len(entries), 0)
+		})
 	}
 }
 

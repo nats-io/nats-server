@@ -7028,8 +7028,10 @@ func TestJetStreamClusterEncryptedDoubleSnapshotBug(t *testing.T) {
 	nl := c.randomNonStreamLeader("$G", "TEST")
 	mset, err := nl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	err = mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
-	require_NoError(t, err)
+	// The follower might not have applied any entries yet, so retry until a snapshot can be made.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		return mset.raftNode().InstallSnapshot(mset.stateSnapshot(), false)
+	})
 
 	_, err = js.Publish("foo", []byte("SNAP2"))
 	require_NoError(t, err)
@@ -8909,8 +8911,7 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 		require_NoError(t, o.raftNode().InstallSnapshot(state, false))
 		consumerGroup := o.raftNode().Group()
 
-		// Stop stream/consumer leader, and clear state on the followers except for meta.
-		sl.Shutdown()
+		// Clear state on the followers except for meta, and stop stream/consumer leader.
 		for _, s := range c.servers {
 			if s == sl {
 				continue
@@ -8923,6 +8924,8 @@ func TestJetStreamClusterDesyncAfterFailedScaleUp(t *testing.T) {
 				require_NoError(t, os.RemoveAll(filepath.Join(sd, DEFAULT_SYSTEM_ACCOUNT, defaultStoreDirName, consumerGroup)))
 			}
 		}
+		// Stop the leader last, otherwise its stepdown on shutdown lets a follower get ahead of its log.
+		sl.Shutdown()
 
 		// Restart all servers except the leader.
 		for _, s := range c.servers {

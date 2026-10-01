@@ -6109,7 +6109,9 @@ func TestJetStreamSuperClusterConsumerAckSubjectWithStreamImportProtocolError(t 
 	waitForOutboundGateways(t, s2, 1, 2*time.Second)
 
 	meta := s2.getJetStream().getMetaGroup()
-	require_NoError(t, meta.CampaignImmediately())
+	if err := meta.CampaignImmediately(); err != nil {
+		require_Error(t, err, errAlreadyLeader)
+	}
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		if !s1.JetStreamIsLeader() && !s2.JetStreamIsLeader() {
 			return fmt.Errorf("neither server is leader")
@@ -6379,6 +6381,16 @@ func TestJetStreamClusterConsumerMoveWaitsForQuorumUntilPeerRemoved(t *testing.T
 
 	// Take down two of the three peers we're moving to. The group can't shrink onto
 	// what's left without losing the ability to commit, so it must wait.
+	// Keep the meta leader up, a meta election could otherwise outlast the checks below.
+	if ml := sc.leader(); ml != nil && slices.Contains(target[:2], ml.NodeName()) {
+		require_NoError(t, ml.getJetStream().getMetaGroup().StepDown(probe.NodeName()))
+		checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+			if l := sc.leader(); l != probe {
+				return errors.New("meta leader not moved yet")
+			}
+			return nil
+		})
+	}
 	var down []string
 	for _, p := range target[:2] {
 		name := probe.serverNameForNode(p)

@@ -14154,8 +14154,13 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 }
 
 func (o *consumerFileStore) writeState(buf []byte) error {
-	// Check if we have the index file open.
 	o.mu.Lock()
+	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
+	if o.closed {
+		o.mu.Unlock()
+		return ErrStoreClosed
+	}
+	// Check if we have the index file open.
 	if o.writing || len(buf) == 0 {
 		o.mu.Unlock()
 		return nil
@@ -14199,6 +14204,10 @@ func (o *consumerFileStore) updateConfig(cfg ConsumerConfig) error {
 // Write out the consumer meta data, i.e. state.
 // Lock should be held.
 func (cfs *consumerFileStore) writeConsumerMeta() error {
+	// Don't write after being stopped or deleted, otherwise we'd write into the working directory.
+	if cfs.closed {
+		return ErrStoreClosed
+	}
 	meta := filepath.Join(cfs.odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -14547,8 +14556,9 @@ func (o *consumerFileStore) Stop() error {
 		return err
 	}
 
+	// Wait for an in-progress flush, even if not dirty, so the state is on disk when we return.
+	o.waitOnFlusher()
 	if len(buf) > 0 {
-		o.waitOnFlusher()
 		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 	}
 	return err
