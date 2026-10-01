@@ -1135,11 +1135,11 @@ func TestLameDuckMode(t *testing.T) {
 
 	stopClientsAndSrvB(ncs)
 
-	optsA.LeafNode.Port = 0
-	optsA.LeafNode.Remotes = nil
-	optsA.Cluster.Name = ""
-	optsB.Cluster.Name = ""
+	optsA = DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
+	optsA.Cluster.Host = "127.0.0.1"
 	optsA.LameDuckDuration = time.Second
+	optsB = DefaultOptions()
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
