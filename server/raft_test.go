@@ -6329,7 +6329,7 @@ func TestNRGProposeRemovePeerAll(t *testing.T) {
 	for i, follower := range followers {
 		require_NoError(t, leader.node().ProposeRemovePeer(follower.node().ID()))
 		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-			if peers = leader.node().Peers(); len(peers) == 2-i {
+			if n := leader.node(); len(n.Peers()) == 2-i && !n.MembershipChangeInProgress() {
 				return nil
 			}
 			return errors.New("membership still in progress")
