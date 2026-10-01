@@ -11577,3 +11577,265 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 		}
 	}
 }
+
+func TestJetStreamClusterPlacementPeersWhileConverging(t *testing.T) {
+	origin := []string{"A1", "A2", "A3"}
+	target := []string{"B1", "B2", "B3"}
+	moving := append(copyStrings(origin), target...)
+	for _, test := range []struct {
+		name    string
+		peers   []string
+		desired *desiredRaftGroup
+		want    []string
+	}{
+		{
+			name:  "stable",
+			peers: origin,
+			want:  origin,
+		},
+		{
+			name:    "no members recorded",
+			peers:   moving,
+			desired: &desiredRaftGroup{Peers: target, Move: true, Origin: &desiredRaftGroupOrigin{Peers: origin}},
+			want:    moving,
+		},
+		{
+			name:    "move before quorum",
+			peers:   moving,
+			desired: &desiredRaftGroup{Peers: target, Move: true, Origin: &desiredRaftGroupOrigin{Peers: origin}, Members: append(copyStrings(origin), "B1")},
+			want:    origin,
+		},
+		{
+			name:    "move after quorum",
+			peers:   moving,
+			desired: &desiredRaftGroup{Peers: target, Move: true, Origin: &desiredRaftGroupOrigin{Peers: origin}, Members: append(copyStrings(origin), "B1", "B2")},
+			want:    target,
+		},
+		{
+			name:    "move keeps overlapping origin peer",
+			peers:   []string{"A1", "A2", "A3", "B1", "B2"},
+			desired: &desiredRaftGroup{Peers: []string{"A1", "B1", "B2"}, Move: true, Origin: &desiredRaftGroupOrigin{Peers: origin}, Members: origin},
+			want:    origin,
+		},
+		{
+			name:    "overlapping move before its new peer is added",
+			peers:   origin,
+			desired: &desiredRaftGroup{Peers: []string{"A2", "A3", "B1"}, Move: true, Origin: &desiredRaftGroupOrigin{Peers: origin}, Members: origin},
+			want:    origin,
+		},
+		{
+			name:    "cancel move back to origin",
+			peers:   moving,
+			desired: &desiredRaftGroup{Peers: origin, Move: true, CancelMove: true, Origin: &desiredRaftGroupOrigin{Peers: origin}, Members: append(copyStrings(origin), "B1")},
+			want:    origin,
+		},
+		{
+			name:    "scale up before quorum",
+			peers:   []string{"A1", "B1", "C1"},
+			desired: &desiredRaftGroup{Peers: []string{"A1", "B1", "C1"}, Origin: &desiredRaftGroupOrigin{Peers: []string{"A1"}}, Members: []string{"A1"}},
+			want:    []string{"A1", "B1", "C1"},
+		},
+		{
+			name:    "scale up after quorum",
+			peers:   []string{"A1", "B1", "C1"},
+			desired: &desiredRaftGroup{Peers: []string{"A1", "B1", "C1"}, Origin: &desiredRaftGroupOrigin{Peers: []string{"A1"}}, Members: []string{"A1", "B1"}},
+			want:    []string{"A1", "B1", "C1"},
+		},
+		{
+			name:    "scale down",
+			peers:   moving,
+			desired: &desiredRaftGroup{Peers: moving, ScaleDown: true, Members: origin},
+			want:    moving,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sa := &streamAssignment{Group: &raftGroup{Peers: test.peers, Desired: test.desired}}
+			require_True(t, slices.Equal(sa.placementPeers(), test.want))
+		})
+	}
+}
+
+func TestJetStreamClusterRemapConsumerHeldUntilDesiredMembersQuorum(t *testing.T) {
+	origin := []string{"A1", "A2", "A3"}
+	target := []string{"B1", "B2", "B3"}
+
+	js := &jetStream{cluster: &jetStreamCluster{}}
+	newAssignments := func(members, consumerPeers []string, replicas int) (*streamAssignment, *consumerAssignment) {
+		sa := &streamAssignment{
+			Config: &StreamConfig{Name: "TEST", Replicas: 3, Retention: LimitsPolicy},
+			Group: &raftGroup{
+				Name:  "S",
+				Peers: append(copyStrings(origin), target...),
+				Desired: &desiredRaftGroup{
+					ID:      "ID",
+					Peers:   target,
+					Move:    true,
+					Origin:  &desiredRaftGroupOrigin{Peers: origin, Replicas: 3},
+					Members: members,
+				},
+			},
+		}
+		ca := &consumerAssignment{
+			Name:   "CONSUMER",
+			Stream: "TEST",
+			Config: &ConsumerConfig{Durable: "CONSUMER", Replicas: replicas},
+			Group:  &raftGroup{Name: "C", Peers: consumerPeers},
+		}
+		sa.consumers = map[string]*consumerAssignment{ca.Name: ca}
+		js.cluster.streams = map[string]map[string]*streamAssignment{globalAccountName: {sa.Config.Name: sa}}
+		return sa, ca
+	}
+
+	// Without a quorum of desired peers holding the stream's data, consumers stay put.
+	sa, _ := newAssignments(append(copyStrings(origin), "B1"), []string{"A2"}, 1)
+	consumers, deleted, done := js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_Len(t, len(deleted), 0)
+	require_False(t, done)
+
+	// A peer that must be dropped can't wait for that.
+	sa, _ = newAssignments(append(copyStrings(origin), "B1"), []string{"A2"}, 1)
+	sa.Group.Peers = slices.DeleteFunc(sa.Group.Peers, func(p string) bool { return p == "A2" })
+	consumers, _, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 1)
+	require_False(t, done)
+	require_False(t, slices.Contains(consumers[0].Group.Peers, "A2"))
+
+	// A quorum of members doesn't count until all desired peers are stream peers.
+	sa, _ = newAssignments(append(copyStrings(origin), "B1", "B2"), []string{"A2"}, 1)
+	sa.Group.Peers = slices.DeleteFunc(sa.Group.Peers, func(p string) bool { return p == "B3" })
+	consumers, _, done = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 0)
+	require_False(t, done)
+
+	// Once a quorum are members, a R1 consumer only moves to a member.
+	for range 20 {
+		sa, _ = newAssignments(append(copyStrings(origin), "B1", "B2"), []string{"A2"}, 1)
+		consumers, _, done = js.remapConsumerAssignments(globalAccountName, sa)
+		require_Len(t, len(consumers), 1)
+		require_False(t, done)
+		desired := consumers[0].Group.Desired.Peers
+		require_Len(t, len(desired), 1)
+		require_True(t, desired[0] == "B1" || desired[0] == "B2")
+		require_True(t, slices.Equal(consumers[0].Group.Peers, []string{"A2"}))
+	}
+
+	// A R3 consumer is placed on all desired peers, including the one that's still catching up.
+	sa, _ = newAssignments(append(copyStrings(origin), "B1", "B2"), origin, 3)
+	consumers, _, _ = js.remapConsumerAssignments(globalAccountName, sa)
+	require_Len(t, len(consumers), 1)
+	desired := copyStrings(consumers[0].Group.Desired.Peers)
+	slices.Sort(desired)
+	require_True(t, slices.Equal(desired, target))
+}
+
+func TestJetStreamClusterReconcileDesiredMembersOnlyGrow(t *testing.T) {
+	newGroup := func() *raftGroup {
+		return &raftGroup{
+			Name:  "S",
+			Peers: []string{"A", "B", "C", "D"},
+			Desired: &desiredRaftGroup{
+				ID:      "ID",
+				Term:    1,
+				Peers:   []string{"B", "C", "D"},
+				Members: []string{"A", "B", "C"},
+			},
+		}
+	}
+	update := func(metaPeers, members []string) desiredAssignmentUpdate {
+		return desiredAssignmentUpdate{ID: "ID", Term: 1, MetaPeers: metaPeers, Members: members}
+	}
+
+	// A member that isn't reported stays, a newly reported one is added.
+	ng := newGroup().reconcileDesiredState(update([]string{"A", "B", "C", "D"}, []string{"A", "D"}), 3, false)
+	require_NotNil(t, ng)
+	require_True(t, slices.Equal(ng.Desired.Members, []string{"A", "B", "C", "D"}))
+
+	// Nothing changes if no new members are reported.
+	ng = newGroup().reconcileDesiredState(update([]string{"A", "B", "C", "D"}, []string{"A"}), 3, false)
+	require_True(t, ng == nil)
+
+	// A member leaves together with the assignment.
+	ng = newGroup().reconcileDesiredState(update([]string{"B", "C", "D"}, []string{"B"}), 3, false)
+	require_NotNil(t, ng)
+	require_True(t, slices.Equal(ng.Desired.Members, []string{"B", "C"}))
+
+	// A reported peer that isn't part of the assignment isn't added.
+	ng = newGroup().reconcileDesiredState(update([]string{"A", "B", "C"}, []string{"D"}), 3, false)
+	require_NotNil(t, ng)
+	require_True(t, slices.Equal(ng.Desired.Members, []string{"A", "B", "C"}))
+}
+
+func TestJetStreamClusterLegacyMoveSeedsDesiredMembers(t *testing.T) {
+	rg := &raftGroup{Name: "S", Peers: []string{"A1", "A2", "A3", "B1", "B2", "B3"}}
+	ng := rg.reconcileDesiredState(desiredAssignmentUpdate{Term: 1}, 3, false)
+	require_NotNil(t, ng)
+	require_NotNil(t, ng.Desired)
+	require_True(t, ng.Desired.Move)
+	require_True(t, slices.Equal(ng.Desired.Peers, []string{"B1", "B2", "B3"}))
+	// Only the peers the legacy move started from are known to hold the data.
+	require_True(t, slices.Equal(ng.Desired.Members, []string{"A1", "A2", "A3"}))
+}
+
+func TestJetStreamClusterStepDownCandidatesAndPreferMembers(t *testing.T) {
+	actual := []*Peer{
+		{ID: "L", Current: true},
+		{ID: "B1", Current: true},
+		{ID: "B2", Current: false},
+		{ID: "B3", Current: true},
+		{ID: "A2", Current: true},
+	}
+	desired := []string{"B1", "B2", "B3"}
+
+	// Only current desired peers holding the stream's data, never ourselves.
+	require_True(t, slices.Equal(stepDownCandidates("L", actual, desired, []string{"B1", "B2"}), []string{"B1"}))
+	// Without members the stream isn't converging, so every current desired peer holds its data.
+	require_True(t, slices.Equal(stepDownCandidates("L", actual, desired, nil), []string{"B1", "B3"}))
+
+	// Desired peers that are members come first, the order is kept otherwise.
+	d := &desiredRaftGroup{Peers: desired, Members: []string{"A1", "B2", "B3"}}
+	peers := []string{"A1", "B1", "B2", "A2", "B3"}
+	d.preferMembers(peers)
+	require_True(t, slices.Equal(peers, []string{"B2", "B3", "A1", "B1", "A2"}))
+
+	// Without members the order is left alone.
+	peers = []string{"A1", "B1", "B2"}
+	(&desiredRaftGroup{Peers: desired}).preferMembers(peers)
+	require_True(t, slices.Equal(peers, []string{"A1", "B1", "B2"}))
+}
+
+func TestJetStreamClusterSetPreferredMember(t *testing.T) {
+	s := &Server{}
+	for _, p := range []string{"B1", "B2", "B3"} {
+		s.nodeToInfo.Store(p, nodeInfo{})
+	}
+	s.nodeToInfo.Store("B4", nodeInfo{offline: true})
+	s.nodeToInfo.Store("B5", nodeInfo{offline: true})
+
+	// Only members are preferred while the stream converges.
+	d := &desiredRaftGroup{Peers: []string{"B1", "B2", "B3"}, Members: []string{"B1", "B2"}}
+	for range 50 {
+		rg := &raftGroup{Peers: []string{"B1", "B2", "B3"}}
+		rg.setPreferredMember(s, d)
+		require_True(t, rg.Preferred == "B1" || rg.Preferred == "B2")
+	}
+
+	// An offline member is still preferred over an online peer that isn't a member.
+	rg := &raftGroup{Peers: []string{"B3", "B4", "B5"}}
+	rg.setPreferredMember(s, &desiredRaftGroup{Members: []string{"B4", "B5"}})
+	require_True(t, rg.Preferred == "B4" || rg.Preferred == "B5")
+
+	// Without a member there's no preferred leader.
+	rg = &raftGroup{Peers: []string{"B1", "B2"}, Preferred: "B1"}
+	rg.setPreferredMember(s, &desiredRaftGroup{Members: []string{"B3"}})
+	require_Equal(t, rg.Preferred, _EMPTY_)
+
+	// Without members the stream isn't converging, so any online peer works.
+	seen := make(map[string]struct{})
+	for range 100 {
+		rg = &raftGroup{Peers: []string{"B1", "B2", "B3"}}
+		rg.setPreferredMember(s, &desiredRaftGroup{Peers: []string{"B1", "B2", "B3"}})
+		seen[rg.Preferred] = struct{}{}
+	}
+	require_Len(t, len(seen), 3)
+}
