@@ -5986,6 +5986,11 @@ func (n *raft) switchToLeader() {
 	n.updateLeader(n.id)
 	n.switchState(Leader)
 
+	// A previous leader's bootstrap peer state may not have included us, and only we can add ourselves now.
+	if !n.managed && n.peers[n.id] == nil {
+		n.addPeer(n.id)
+	}
+
 	// To send out our initial peer state.
 	// In our implementation this is equivalent to sending a NOOP-entry upon becoming leader.
 	// Wait for this message (and potentially more) to be applied.

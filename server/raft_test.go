@@ -231,6 +231,45 @@ func TestNRGRecoverFromFollowingNoLeader(t *testing.T) {
 	require_NotEqual(t, rg.leader().node().Term(), term)
 }
 
+func TestNRGLeaderNotInOwnPeerSetAddsItself(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createMemRaftGroup("TEST", 3, newStateAdder)
+	rg.waitOnLeader()
+
+	leader := rg.leader().node().(*raft)
+	follower := rg.nonLeader().node().(*raft)
+
+	// Simulate a bootstrap peer state from a leader that didn't know about us yet,
+	// which replaces our peer set with one that doesn't include ourselves.
+	follower.Lock()
+	peers := slices.DeleteFunc(follower.peerNames(), func(p string) bool { return p == follower.id })
+	follower.processPeerState(&peerState{knownPeers: peers, clusterSize: 3})
+	follower.Unlock()
+	require_Len(t, len(follower.Peers()), 2)
+
+	// Once we become leader we must be a member again, and tell the others.
+	require_NoError(t, leader.StepDown(follower.id))
+	rg.waitOnLeader()
+	require_True(t, rg.leader().node() == follower)
+	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+		for _, sm := range rg {
+			n := sm.node().(*raft)
+			if peers := n.Peers(); len(peers) != 3 {
+				return fmt.Errorf("%s has %d peers", n.ID(), len(peers))
+			}
+			n.RLock()
+			_, removed := n.removed[follower.id]
+			n.RUnlock()
+			if removed {
+				return fmt.Errorf("%s still has the leader marked as removed", n.ID())
+			}
+		}
+		return nil
+	})
+}
+
 func TestNRGInlineStepdown(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
