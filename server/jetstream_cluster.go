@@ -3117,6 +3117,64 @@ func (d *desiredRaftGroup) removeMembers(peers, remaining []string) {
 	}
 }
 
+// membersQuorum reports whether all desired peers are part of the given peers,
+// and a quorum of them are members.
+// Lock should be held.
+func (d *desiredRaftGroup) membersQuorum(peers []string) bool {
+	// Wait for all desired peers to be part of the given peers.
+	if slices.ContainsFunc(d.Peers, func(p string) bool { return !slices.Contains(peers, p) }) {
+		return false
+	}
+	var members int
+	for _, p := range d.Peers {
+		if slices.Contains(d.Members, p) {
+			members++
+		}
+	}
+	return members >= len(d.Peers)/2+1
+}
+
+// placementPeers returns the stream peers a new consumer can be placed on. While the stream converges,
+// these are its desired peers once they're all stream peers and a quorum of them are members. Before that
+// a move only uses the peers it started from, so a consumer never spans both.
+// Lock should be held.
+func (sa *streamAssignment) placementPeers() []string {
+	d := sa.Group.Desired
+	if d == nil || d.ScaleDown || d.Members == nil {
+		return copyStrings(sa.Group.Peers)
+	}
+	quorum := d.membersQuorum(sa.Group.Peers)
+	var peers []string
+	for _, p := range sa.Group.Peers {
+		desired := slices.Contains(d.Peers, p)
+		if quorum && desired {
+			peers = append(peers, p)
+		} else if !quorum && (!d.Move || d.Origin == nil || slices.Contains(d.Origin.Peers, p)) {
+			peers = append(peers, p)
+		}
+	}
+	return peers
+}
+
+// preferMembers moves the desired peers that are members to the front, keeping the order otherwise.
+// Lock should be held.
+func (d *desiredRaftGroup) preferMembers(peers []string) {
+	if d == nil || d.Members == nil {
+		return
+	}
+	member := func(p string) bool { return slices.Contains(d.Peers, p) && slices.Contains(d.Members, p) }
+	slices.SortStableFunc(peers, func(a, b string) int {
+		switch am, bm := member(a), member(b); {
+		case am == bm:
+			return 0
+		case am:
+			return -1
+		default:
+			return 1
+		}
+	})
+}
+
 // isScaleUpPeer reports whether the given peer runs a Raft node
 // for this group without being a member yet.
 // Lock should be held.
@@ -3880,14 +3938,27 @@ func (rg *raftGroup) isMember(id string) bool {
 }
 
 func (rg *raftGroup) setPreferred(s *Server) {
+	rg.setPreferredMember(s, nil)
+}
+
+// setPreferredMember picks a preferred leader, limited to the stream's members while it converges, as only they hold its data.
+// Lock should be held.
+func (rg *raftGroup) setPreferredMember(s *Server, d *desiredRaftGroup) {
 	if rg == nil || len(rg.Peers) == 0 {
 		return
 	}
-	if len(rg.Peers) == 1 {
-		rg.Preferred = rg.Peers[0]
+	peers := rg.Peers
+	if d != nil && d.Members != nil {
+		peers = slices.DeleteFunc(copyStrings(peers), func(p string) bool { return !slices.Contains(d.Members, p) })
+	}
+	if len(peers) == 0 {
+		// Without a member, don't campaign immediately and leave it to an election.
+		rg.Preferred = _EMPTY_
+	} else if len(peers) == 1 {
+		rg.Preferred = peers[0]
 	} else {
 		var online []string
-		for _, p := range rg.Peers {
+		for _, p := range peers {
 			si, ok := s.nodeToInfo.Load(p)
 			if !ok || si == nil {
 				continue
@@ -3901,8 +3972,8 @@ func (rg *raftGroup) setPreferred(s *Server) {
 
 		if len(online) == 0 {
 			// No online servers, just randomly select a peer for the preferred.
-			pi := rand.Int32N(int32(len(rg.Peers)))
-			rg.Preferred = rg.Peers[pi]
+			pi := rand.Int32N(int32(len(peers)))
+			rg.Preferred = peers[pi]
 		} else if len(online) == 1 {
 			// Only one online server.
 			rg.Preferred = online[0]
@@ -5234,7 +5305,7 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
-		// member is already in the desired peer set so any successor works.
+		// member is already in the desired peer set.
 		if remove != ourPeerId {
 			err := n.ProposeRemovePeer(remove)
 			name := s.serverNameForNode(remove)
@@ -5243,7 +5314,13 @@ func (js *jetStream) runStreamMigration(mset *stream, sa *streamAssignment, n Ra
 			}
 			return mstat(MigrationStatusMembership, "removing peer %s", name).withErr(err)
 		}
-		err := n.StepDown()
+		// Wait for a successor that holds the stream's data, rather than leave it to an election.
+		candidates := stepDownCandidates(ourPeerId, actual, desiredPeers, desiredMembers)
+		preferred := s.selectStepDownPreferred(ourPeerId, actual, candidates)
+		if preferred == _EMPTY_ {
+			return mstat(MigrationStatusMembership, "waiting for a desired peer to step down to")
+		}
+		err := n.StepDown(preferred)
 		return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 	}
 
@@ -6191,11 +6268,13 @@ const lostQuorumAdvInterval = 10 * time.Second
 const (
 	migrateFastCheckInterval     = 50 * time.Millisecond
 	migrateFallbackCheckInterval = 500 * time.Millisecond
-	migrateMetaRetryInterval     = 5 * time.Second
 )
 
 // Variables so tests can shorten them.
 var (
+	// migrateMetaRetryInterval is how long a migrating leader waits to retry a request to the meta leader.
+	migrateMetaRetryInterval = 5 * time.Second
+
 	// migratePosAskInterval is how often a migrating leader re-asks peers for their stream state.
 	migratePosAskInterval = 2 * time.Second
 
@@ -8420,6 +8499,11 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	replicas := ca.Config.replicas(osa.Config)
 	// MUST copy, the stream assignment can be updated once we release below.
 	streamPeers := copyStrings(osa.Group.Peers)
+	// While the stream converges, only its members are known to hold its data.
+	var streamMembers []string
+	if d := osa.Group.Desired; d != nil && d.Members != nil {
+		streamMembers = copyStrings(d.Members)
+	}
 	current := copyStrings(ca.Group.Peers)
 	desiredID, desiredScaleDown, desiredPeers, desiredMembers, needDesired := ca.Group.desiredSnapshot(leaderTerm)
 	js.mu.RUnlock()
@@ -8528,7 +8612,7 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 	if len(remaining) > 0 && peersMatch {
 		// Step down and perform a leader transfer if we'd remove ourselves. We are
 		// selected last, so leadership changes at most once, and every remaining
-		// member is already in the desired peer set so any successor works.
+		// member is already in the desired peer set.
 		remove := s.selectPeerToRemove(ourPeerId, actual, remaining, nil)
 		if remove == _EMPTY_ {
 			return mstat(MigrationStatusBlocked, "waiting to select a peer to remove")
@@ -8548,7 +8632,13 @@ func (js *jetStream) runConsumerMigration(o *consumer, ca *consumerAssignment, n
 			return mstat(MigrationStatusQuorum, "waiting for quorum to remove peer")
 		}
 		if remove == ourPeerId {
-			err := n.StepDown()
+			// Wait for a successor that holds the stream's data, rather than leave it to an election.
+			candidates := stepDownCandidates(ourPeerId, actual, desiredPeers, streamMembers)
+			preferred := s.selectStepDownPreferred(ourPeerId, actual, candidates)
+			if preferred == _EMPTY_ {
+				return mstat(MigrationStatusMembership, "waiting for a desired peer to step down to")
+			}
+			err := n.StepDown(preferred)
 			return mstat(MigrationStatusMembership, "stepping down before removing ourselves").withErr(err)
 		}
 		err := n.ProposeRemovePeer(remove)
@@ -9780,7 +9870,7 @@ func (js *jetStream) processConsumerAssignmentCreate(_ *subscription, _ *client,
 		return
 	}
 	// Pick a preferred leader.
-	rg.setPreferred(s)
+	rg.setPreferredMember(s, sa.Group.Desired)
 	// Inherit cluster from stream.
 	rg.Cluster = sa.Group.Cluster
 	ca.Group = rg
@@ -10286,6 +10376,9 @@ func (ca *consumerAssignment) targetReplicas(scfg *StreamConfig) int {
 func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignment) (consumers, deleted []*consumerAssignment, done bool) {
 	targetPeers := sa.targetPeers()
 	done = true
+	// Consumers only move once all desired peers are stream peers, and a quorum of them are members holding its data.
+	d := sa.Group.Desired
+	holdMoves := d != nil && !d.ScaleDown && d.Members != nil && !d.membersQuorum(sa.Group.Peers)
 	for ca := range js.consumerAssignmentsOrInflightSeq(accName, sa.Config.Name) {
 		if ca.Config == nil || ca.unsupported != nil {
 			continue
@@ -10319,20 +10412,23 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		} else if size > target {
 			size = target
 		}
-		// Leave the consumer alone if its peer set is unaffected.
-		if kept == len(consumerPeers) && kept == size {
-			// If the consumer has any peers the stream no longer has, or that still need
-			// to be peer-removed, we can't skip.
-			removals := slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
-				if !slices.Contains(sa.Group.Peers, p) {
-					return true
-				}
-				return sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Removed, p) &&
-					(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
-			})
-			if !removals {
-				continue
+		// If the consumer has any peers the stream no longer has, or that still need
+		// to be peer-removed, we can't skip.
+		removals := slices.ContainsFunc(ca.Group.Peers, func(p string) bool {
+			if !slices.Contains(sa.Group.Peers, p) {
+				return true
 			}
+			return sa.Group.Desired != nil && slices.Contains(sa.Group.Desired.Removed, p) &&
+				(ca.Group.Desired == nil || !slices.Contains(ca.Group.Desired.Removed, p))
+		})
+		// Leave the consumer alone if its peer set is unaffected.
+		if kept == len(consumerPeers) && kept == size && !removals {
+			continue
+		}
+		// Removals can't wait, but a move is held until enough desired peers are members.
+		if holdMoves && !removals {
+			done = false
+			continue
 		}
 
 		// Drop peers that are no longer part of the stream. If moving, the tail MUST be the new peer set.
@@ -10346,6 +10442,8 @@ func (js *jetStream) remapConsumerAssignments(accName string, sa *streamAssignme
 		if len(newPeers) < target {
 			backfill := copyStrings(targetPeers)
 			rand.Shuffle(len(backfill), func(i, j int) { backfill[i], backfill[j] = backfill[j], backfill[i] })
+			// Members hold the stream's data, the other desired peers only fill up what's left.
+			sa.Group.Desired.preferMembers(backfill)
 			for _, p := range backfill {
 				if len(newPeers) >= target {
 					break
@@ -11697,6 +11795,18 @@ func (s *Server) selectPeerToAdd(n RaftNode, ourPeerId string, current []*Peer, 
 	return _EMPTY_, false
 }
 
+// stepDownCandidates returns the current desired peers, other than ourselves, that hold the stream's
+// data. Nil members means the stream isn't converging, so all of its peers hold it.
+func stepDownCandidates(ourPeerId string, actual []*Peer, desiredPeers, members []string) []string {
+	var candidates []string
+	for _, p := range actual {
+		if p.ID != ourPeerId && p.Current && slices.Contains(desiredPeers, p.ID) && (members == nil || slices.Contains(members, p.ID)) {
+			candidates = append(candidates, p.ID)
+		}
+	}
+	return candidates
+}
+
 // selectStepDownPreferred picks the peer to transfer leadership to before the
 // current leader removes itself from the group: the most preferable member of
 // the desired peer set. Empty if no desired peer is part of the group yet.
@@ -12222,12 +12332,12 @@ func decodeDeleteRange(buf []byte) (*DeleteRange, error) {
 
 // createGroupForConsumer will create a new group from same peer set as the stream.
 func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *streamAssignment) (*raftGroup, *selectPeerError) {
-	if len(sa.Group.Peers) == 0 || cfg.Replicas > len(sa.Group.Peers) {
+	replicas := cfg.replicas(sa.Config)
+	// While the stream converges, a consumer must not span the peers it moves from and to.
+	peers := sa.placementPeers()
+	if len(peers) == 0 || cfg.Replicas > len(sa.Group.Peers) || replicas > len(peers) {
 		return nil, &selectPeerError{misc: true}
 	}
-
-	replicas := cfg.replicas(sa.Config)
-	peers := copyStrings(sa.Group.Peers)
 	var _ss [5]string
 	active := _ss[:0]
 
@@ -12260,6 +12370,8 @@ func (cc *jetStreamCluster) createGroupForConsumer(cfg *ConsumerConfig, sa *stre
 				n++
 			}
 		}
+		// While the stream converges, prefer its desired peers that are members, as they hold its data.
+		sa.Group.Desired.preferMembers(active)
 		peers = active[:replicas]
 	}
 	storage := sa.Config.Storage
@@ -12482,7 +12594,7 @@ func (s *Server) jsClusteredConsumerRequest(ci *ClientInfo, acc *Account, subjec
 			return
 		}
 		// Pick a preferred leader.
-		rg.setPreferred(s)
+		rg.setPreferredMember(s, sa.Group.Desired)
 
 		// Inherit cluster from stream.
 		rg.Cluster = sa.Group.Cluster
