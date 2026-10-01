@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -94,6 +95,9 @@ const (
 
 	// Maximum payload size of a control packet
 	mqttMaxPayloadSize = 0xFFFFFFF
+
+	// Packet overhead allowed above max_payload once connected: fixed header (5), largest topic or filter (2+65535) and packet identifier (2).
+	mqttMaxPacketOverhead = 5 + 2 + 65535 + 2
 
 	// Topic/Filter characters
 	mqttTopicLevelSep = '/'
@@ -809,18 +813,17 @@ func (c *client) mqttParse(buf []byte) error {
 			break
 		}
 
-		maxLen := int32(jwt.NoLimit)
-		if !connected {
-			maxLen = atomic.LoadInt32(&c.mpay)
+		mpay := atomic.LoadInt32(&c.mpay)
+		maxLen := mpay
+		if connected && maxLen != jwt.NoLimit && maxLen <= math.MaxInt32-mqttMaxPacketOverhead {
+			// Allow room for a topic or filter, which is not capped by max_payload.
+			maxLen += mqttMaxPacketOverhead
 		}
-		pl, complete, err = r.readPacketLen(maxLen)
+		pl, complete, err = r.readPacketLen(pt, maxLen)
 		if err != nil || !complete {
 			if err == ErrMaxPayload {
-				c.maxPayloadViolation(pl, maxLen)
+				c.maxPayloadViolation(pl, mpay)
 			}
-			break
-		}
-		if err = mqttCheckRemainingLength(pt, pl); err != nil {
 			break
 		}
 
@@ -6051,12 +6054,16 @@ func (r *mqttReader) readByte(field string) (byte, error) {
 	return b, nil
 }
 
-func (r *mqttReader) readPacketLen(maxLen int32) (int, bool, error) {
+func (r *mqttReader) readPacketLen(pt byte, maxLen int32) (int, bool, error) {
 	v, complete, err := r.readVarInt()
 	if err != nil {
 		return 0, false, err
 	}
 	if complete {
+		// Reject invalid lengths before buffering a partial packet.
+		if err = mqttCheckRemainingLength(pt, v); err != nil {
+			return 0, false, err
+		}
 		packetEnd := r.pos + v
 		packetLen := packetEnd - r.pstart
 		if maxLen != jwt.NoLimit && int64(packetLen) > int64(maxLen) {
