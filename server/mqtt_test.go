@@ -3303,7 +3303,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sess := mqttSession{}
 
 	sess.last_pi = 0xFFFF
-	pi := sess.trackPublishRetained("foo")
+	pi := sess.trackPublishRetained("foo", 1)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -3312,13 +3312,13 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	for i := 1; i <= 0xFFFF; i++ {
 		sess.pendingPublish[uint16(i)] = p
 	}
-	pi, _ = sess.trackPublish("test", "test")
+	pi, _ = sess.trackPublish("test", "test", 1)
 	if pi != 0 {
 		t.Fatalf("Expected 0, got %v", pi)
 	}
 
 	delete(sess.pendingPublish, 1234)
-	pi = sess.trackPublishRetained("foo")
+	pi = sess.trackPublishRetained("foo", 1)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -10969,4 +10969,64 @@ func TestMQTTDeleteMsgRequestEncoding(t *testing.T) {
 			t.Fatalf("seq %v: got %s, expected %s", seq, got, expected)
 		}
 	}
+}
+
+func TestMQTTQoS2UntrackedPubRecNotStored(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cp, rp := testMQTTConnect(t, &mqttConnInfo{clientID: "pub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 2, false, true, "baz", 1, []byte("retained"))
+
+	c, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}, {filter: "bar", qos: 1}}, []byte{2, 1})
+	testMQTTFlush(t, c, nil, r)
+
+	// PUBRECs for a PI that was never delivered get a PUBREL, but must not store one.
+	for range 100 {
+		testMQTTSendPIPacket(mqttPacketPubRec, t, c, 100)
+		testMQTTReadPIPacket(mqttPacketPubRel, t, r, 100)
+	}
+
+	// A PUBREC for a QoS1 delivery must not store a PUBREL, the PUBACK still works.
+	testMQTTPublish(t, cp, rp, 1, false, false, "bar", 1, []byte("qos1"))
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "bar", mqttPubQos1, []byte("qos1"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi)
+	testMQTTExpectNothing(t, r)
+
+	// A genuine QoS2 delivery must still result in a PUBREL.
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("data"))
+	pi = testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("data"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+
+	// A retained QoS2 delivery must also result in a PUBREL.
+	testMQTTSub(t, 2, c, r, []*mqttFilter{{filter: "baz", qos: 2}}, []byte{2})
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "baz", mqttPubQoS2|mqttPubFlagRetain, []byte("retained"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, rpi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, rpi)
+
+	// A QoS2 delivery in flight during UNSUBSCRIBE must still complete [MQTT-3.10.4-3].
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("unsub"))
+	upi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("unsub"))
+	testMQTTUnsub(t, 3, c, r, []*mqttFilter{{filter: "foo"}})
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, upi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, upi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, upi)
+
+	// Only the genuine PUBRELs were stored.
+	mset, err := s.GlobalAccount().lookupStream(mqttOutStreamName)
+	require_NoError(t, err)
+	require_Equal(t, mset.state().Msgs, 2)
+
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, rpi)
+	testMQTTExpectNothing(t, r)
 }
