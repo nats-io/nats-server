@@ -13692,6 +13692,45 @@ func TestJetStreamRestoreBadStream(t *testing.T) {
 	}
 }
 
+func TestJetStreamRestoreFormatDetectionBounded(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	req, err := json.Marshal(&JSApiStreamRestoreRequest{Config: StreamConfig{Name: "TEST", Storage: FileStorage}})
+	require_NoError(t, err)
+	var rresp JSApiStreamRestoreResponse
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &rresp))
+	require_True(t, rresp.Error == nil)
+
+	// An S2 stream identifier followed only by skippable padding chunks never yields a preamble.
+	padLen := 64 * 1024
+	padding := make([]byte, s2ChunkHeaderSize+padLen)
+	padding[0], padding[1], padding[2], padding[3] = 0xfe, byte(padLen), byte(padLen>>8), byte(padLen>>16)
+	chunks := [][]byte{[]byte(s2MagicChunk)}
+	for sent := 0; sent <= 2*jsRestoreFormatDetectLimit; sent += len(padding) {
+		chunks = append(chunks, padding)
+	}
+
+	// The empty end-of-stream chunk is sent last and returns the restore error.
+	chunks = append(chunks, nil)
+	for _, chunk := range chunks {
+		msg, err = nc.Request(rresp.DeliverSubject, chunk, 5*time.Second)
+		require_NoError(t, err)
+		if len(msg.Data) == 0 {
+			continue
+		}
+		require_NoError(t, json.Unmarshal(msg.Data, &rresp))
+		break
+	}
+	require_True(t, rresp.Error != nil)
+	require_Contains(t, rresp.Error.Description, "size limit")
+}
+
 func TestJetStreamRemoveExternalSource(t *testing.T) {
 	ho := DefaultTestOptions
 	ho.Port = 4000 //-1
