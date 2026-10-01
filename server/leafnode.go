@@ -1396,6 +1396,15 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// We will process the INFO from the readloop and finish by
 		// sending the CONNECT and finish registration later.
 	} else {
+		// Websocket leafnodes do TLS in the websocket http server, so there is
+		// no TLS initiation below. Mark the handshake as complete, as is done
+		// for websocket clients, so that TLS state (e.g. verified client chains)
+		// is available to auth callout.
+		if c.isWebsocket() {
+			if _, ok := c.nc.(*tls.Conn); ok {
+				c.flags.set(handshakeComplete)
+			}
+		}
 		// Send our info to the other side.
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
