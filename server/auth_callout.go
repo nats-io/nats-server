@@ -291,6 +291,15 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 			return
 		}
 
+		// The scoped template may have introduced a proxy requirement.
+		if arc.ProxyRequired && !trustedProxy {
+			err = ErrAuthProxyRequired
+			c.setAuthError(err)
+			c.authViolation()
+			respCh <- titleCase(err.Error())
+			return
+		}
+
 		// the JWT is cleared, because if in operator mode it may hold the JWT
 		// for the bearer token that connected to the callout if in operator mode
 		// the permissions are already set on the client, this prevents a decode

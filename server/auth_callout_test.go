@@ -1440,6 +1440,97 @@ func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
 	nc.Close()
 }
 
+func TestAuthCalloutScopedUserTemplateProxyRequired(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account with a scoped signing key that requires a proxy.
+	_, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	proxyScope, proxyKp := newScopedRole(t, "proxy", []string{">"}, []string{">"}, false)
+	proxyScope.Template.ProxyRequired = true
+	accClaim.SigningKeys.AddScopedSigner(proxyScope)
+	okScope, okKp := newScopedRole(t, "ok", []string{">"}, []string{">"}, false)
+	accClaim.SigningKeys.AddScopedSigner(okScope)
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	sentinelScope, sentinelKp := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	sentinelCreds := createScopedUser(t, akp, sentinelKp)
+	defer removeFile(t, sentinelCreds)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		var skp nkeys.KeyPair
+		switch opts.Token {
+		case "proxy":
+			skp = proxyKp
+		case "ok":
+			skp = okKp
+		default:
+			m.Respond(nil)
+			return
+		}
+		// The user JWT itself has no constraints, only the scoped template does.
+		ujwt := createAuthUser(t, user, _EMPTY_, tpub, tpub, skp, 0, &jwt.UserPermissionLimits{})
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	nc := ac.Connect(nats.UserCredentials(sentinelCreds), nats.Token("ok"))
+	nc.Close()
+
+	_, err = ac.NewClient(nats.UserCredentials(sentinelCreds), nats.Token("proxy"))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		cz, err := ac.srv.Connz(&ConnzOptions{State: ConnClosed})
+		require_NoError(t, err)
+		for _, ci := range cz.Conns {
+			if ci.Reason == ProxyRequired.String() {
+				return nil
+			}
+		}
+		return errors.New("no connection closed with proxy required reason")
+	})
+}
+
 func TestAuthCalloutScopedUserAssignedAccount(t *testing.T) {
 	testAuthCalloutScopedUser(t, false)
 }
