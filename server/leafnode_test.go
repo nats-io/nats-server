@@ -1651,6 +1651,7 @@ func TestLeafNodeExportPermissionsNotForSpecialSubs(t *testing.T) {
 
 	u, _ := url.Parse(fmt.Sprintf("nats://%s:%d", lo1.LeafNode.Host, lo1.LeafNode.Port))
 	lo2 := DefaultOptions()
+	lo2.Cluster.Name = "LN"
 	lo2.LeafNode.Remotes = []*RemoteLeafOpts{
 		{
 			URLs:        []*url.URL{u},
@@ -13280,4 +13281,42 @@ func TestLeafNodeAccountLeafListReleasesClosedConnections(t *testing.T) {
 	for _, c := range acc.lleafs[len(acc.lleafs):cap(acc.lleafs)] {
 		require_True(t, c == nil)
 	}
+}
+
+func TestLeafNodeWSLeafzReportsWebsocket(t *testing.T) {
+	check := func(t *testing.T, s *Server, want bool) {
+		t.Helper()
+		lz, err := s.Leafz(nil)
+		require_NoError(t, err)
+		require_Equal(t, len(lz.Leafs), 1)
+		require_Equal(t, lz.Leafs[0].Websocket, want)
+	}
+
+	o := testDefaultLeafNodeWSOptions()
+	s := RunServer(o)
+	defer s.Shutdown()
+	lo := testDefaultRemoteLeafNodeWSOptions(t, o, false)
+	ln := RunServer(lo)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, s)
+	checkLeafNodeConnected(t, ln)
+	// Both the accepting and the soliciting side know the link is websocket.
+	check(t, s, true)
+	check(t, ln, true)
+
+	o2 := DefaultOptions()
+	o2.LeafNode.Host = "127.0.0.1"
+	o2.LeafNode.Port = -1
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+	u, _ := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", s2.getOpts().LeafNode.Port))
+	lo2 := DefaultOptions()
+	lo2.Cluster.Name = "LN"
+	lo2.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	ln2 := RunServer(lo2)
+	defer ln2.Shutdown()
+	checkLeafNodeConnected(t, s2)
+	checkLeafNodeConnected(t, ln2)
+	check(t, s2, false)
+	check(t, ln2, false)
 }
