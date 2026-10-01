@@ -4486,6 +4486,11 @@ func (s *Server) lameDuckMode() {
 	s.listener.Close()
 	s.listener = nil
 	expected += s.closeWebsocketServer()
+	if s.leafNodeListener != nil {
+		expected++
+		s.leafNodeListener.Close()
+		s.leafNodeListener = nil
+	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
@@ -4521,7 +4526,7 @@ func (s *Server) lameDuckMode() {
 
 	s.mu.Lock()
 	// Need to recheck few things
-	if s.isShuttingDown() || len(s.clients) == 0 {
+	if s.isShuttingDown() || len(s.clients)+len(s.leafs) == 0 {
 		s.mu.Unlock()
 		// If there is no client, we need to call Shutdown() to complete
 		// the LDMode. If server has been shutdown while lock was released,
@@ -4534,9 +4539,9 @@ func (s *Server) lameDuckMode() {
 	if dur <= 0 {
 		dur = int64(time.Second)
 	}
-	numClients := int64(len(s.clients))
+	numClients := int64(len(s.clients) + len(s.leafs))
 	batch := 1
-	// Sleep interval between each client connection close.
+	// Sleep interval between each client or leaf connection close.
 	var si int64
 	if numClients != 0 {
 		si = dur / numClients
@@ -4554,11 +4559,14 @@ func (s *Server) lameDuckMode() {
 		si = int64(time.Second)
 	}
 
-	// Now capture all clients
-	clients := make([]*client, 0, len(s.clients))
+	clients := make([]*client, 0, len(s.clients)+len(s.leafs))
 	for _, client := range s.clients {
 		clients = append(clients, client)
 	}
+	for _, leaf := range s.leafs {
+		clients = append(clients, leaf)
+	}
+	rand.Shuffle(len(clients), func(i, j int) { clients[i], clients[j] = clients[j], clients[i] })
 	// Now that we know that no new client can be accepted,
 	// send INFO to routes and clients to notify this state.
 	s.sendLDMToRoutes()
