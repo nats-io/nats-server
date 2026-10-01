@@ -447,6 +447,7 @@ type mqttPending struct {
 	sseq         uint64 // stream sequence
 	jsAckSubject string // the ACK subject to send the ack to
 	jsDur        string // JS durable name
+	qos          byte   // QoS the PUBLISH was delivered with
 }
 
 type mqttConnectProto struct {
@@ -2911,7 +2912,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 			return
 		}
 		if qos > 0 {
-			pi = sess.trackPublishRetained(string(sub.sid))
+			pi = sess.trackPublishRetained(string(sub.sid), qos)
 
 			// If we failed to get a PI for this message, send it as a QoS0, the
 			// best we can do?
@@ -3644,7 +3645,7 @@ func mqttRetainedPendingDur(sid string) string {
 // both entries via untrackPublish.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
+func (sess *mqttSession) trackPublishRetained(sid string, qos byte) uint16 {
 	// Make sure we initialize the tracking maps.
 	if sess.pendingPublish == nil {
 		sess.pendingPublish = make(map[uint16]*mqttPending)
@@ -3664,7 +3665,7 @@ func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
 		sess.cpending[dur] = sseqToPi
 	}
 	sseqToPi[uint64(pi)] = pi
-	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi)}
+	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi), qos: qos}
 
 	return pi
 }
@@ -3676,7 +3677,7 @@ func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
 // duplicate delivery attempt.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool) {
+func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string, qos byte) (uint16, bool) {
 	var dup bool
 	var pi uint16
 
@@ -3740,11 +3741,13 @@ func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool)
 			jsDur:        jsDur,
 			sseq:         sseq,
 			jsAckSubject: jsAckSubject,
+			qos:          qos,
 		}
 	} else {
 		ack.jsAckSubject = jsAckSubject
 		ack.sseq = sseq
 		ack.jsDur = jsDur
+		ack.qos = qos
 	}
 
 	return pi, dup
@@ -5563,6 +5566,15 @@ func (c *client) mqttProcessPublishReceived(pi uint16, isPubRec bool) (err error
 		return errMQTTInvalidSession
 	}
 	if isPubRec {
+		// Reply to a PI not delivered as QoS2 without storing the PUBREL, so the client can still complete.
+		if p, ok := sess.pendingPublish[pi]; !ok || p.qos != 2 {
+			sess.mu.Unlock()
+			c.mu.Lock()
+			trace := c.trace
+			c.mu.Unlock()
+			c.mqttEnqueuePubResponse(mqttPacketPubRel, pi, trace)
+			return nil
+		}
 		// The JS ACK subject for the PUBREL will be filled in at the delivery
 		// attempt.
 		sess.trackAsPubRel(pi, _EMPTY_)
@@ -5893,7 +5905,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 		return
 	}
 
-	pi, dup := sess.trackPublish(sub.mqtt.jsDur, reply)
+	pi, dup := sess.trackPublish(sub.mqtt.jsDur, reply, qos)
 	sess.mu.Unlock()
 
 	if pi == 0 {
