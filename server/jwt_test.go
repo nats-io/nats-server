@@ -4672,6 +4672,53 @@ func TestJWTLimitsTemplate(t *testing.T) {
 	})
 }
 
+func TestJWTScopedSigningKeyTemplateProxyRequired(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aSignScopedKp, aSignScopedPub := createKey(t)
+	signer := jwt.NewUserScope()
+	signer.Key = aSignScopedPub
+	signer.Template.ProxyRequired = true
+	claim.SigningKeys.AddScopedSigner(signer)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		listen: 127.0.0.1:-1
+		operator: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+    `, ojwt, aPub, aJwt))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &captureProxyRequiredLogger{ch: make(chan string, 1)}
+	s.SetLogger(l, true, false)
+
+	// The user JWT itself doesn't require a proxy, only the scoped template does.
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject = upub
+	uclaim.SetScoped(true)
+	uclaim.IssuerAccount = aPub
+	require_False(t, uclaim.ProxyRequired)
+	ujwt, err := uclaim.Encode(aSignScopedKp)
+	require_NoError(t, err)
+	creds := genCredsFile(t, ujwt, seed)
+
+	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	select {
+	case <-l.ch:
+	case <-time.After(time.Second):
+		t.Fatal("Expected proxy required error")
+	}
+}
+
 func TestJWTNoOperatorMode(t *testing.T) {
 	for _, login := range []bool{true, false} {
 		t.Run("", func(t *testing.T) {
