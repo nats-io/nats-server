@@ -302,6 +302,10 @@ type RemoteLeafOpts struct {
 		Password string `json:"-"`
 		// Timeout for proxy connection
 		Timeout time.Duration `json:"-"`
+		// TLSConfig for the connection to an https proxy, nil uses system roots
+		TLSConfig *tls.Config `json:"-"`
+		// TLSTimeout for the TLS handshake with an https proxy, in seconds, defaults to DEFAULT_LEAF_TLS_TIMEOUT
+		TLSTimeout float64 `json:"-"`
 	}
 
 	tlsConfigOpts *TLSConfigOpts
@@ -3064,6 +3068,26 @@ func parseLeafUsers(mv any, errors *[]error) ([]*User, error) {
 	return users, nil
 }
 
+// proxyTLSSupportedKeys are the TLS options that apply to the client connection to a proxy.
+var proxyTLSSupportedKeys = map[string]struct{}{
+	"cert_file":                    {},
+	"key_file":                     {},
+	"ca_file":                      {},
+	"insecure":                     {},
+	"cipher_suites":                {},
+	"allow_insecure_cipher_suites": {},
+	"curve_preferences":            {},
+	"min_version":                  {},
+	"timeout":                      {},
+	"cert_store":                   {},
+	"cert_match_by":                {},
+	"cert_match":                   {},
+	"cert_match_skip_invalid":      {},
+	"ca_certs_match":               {},
+	"certs":                        {},
+	"certificates":                 {},
+}
+
 func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteLeafOpts, error) {
 	var lt token
 	defer convertPanicToErrorList(&lt, errors)
@@ -3231,6 +3255,33 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 						remote.Proxy.Password = pv.(string)
 					case "timeout":
 						remote.Proxy.Timeout = parseDuration("proxy timeout", tk, pv, errors, warnings)
+					case "tls":
+						var unsupported bool
+						tlsMap, _ := pv.(map[string]any)
+						for tlsKey, tlsValue := range tlsMap {
+							ttk, _ := unwrapValue(tlsValue, &lt)
+							if _, ok := proxyTLSSupportedKeys[strings.ToLower(tlsKey)]; !ok {
+								*errors = append(*errors, &configErr{ttk, fmt.Sprintf("%q is not supported for proxy TLS", tlsKey)})
+								unsupported = true
+							}
+						}
+						if unsupported {
+							continue
+						}
+						tc, err := parseTLS(tk, true)
+						if err != nil {
+							*errors = append(*errors, err)
+							continue
+						}
+						tlsConfig, err := GenTLSConfig(tc)
+						if err != nil {
+							*errors = append(*errors, &configErr{tk, err.Error()})
+							continue
+						}
+						// Used as a client, so ca_file must populate RootCAs.
+						tlsConfig.RootCAs = tlsConfig.ClientCAs
+						remote.Proxy.TLSConfig = tlsConfig
+						remote.Proxy.TLSTimeout = tc.Timeout
 					default:
 						if !tk.IsUsedVariable() {
 							err := &unknownConfigFieldErr{
