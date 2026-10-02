@@ -3522,6 +3522,170 @@ func TestAuthCalloutOperatorModeMismatchedCalloutCreds(t *testing.T) {
 	require_True(t, s.Running())
 }
 
+func TestAuthCalloutOperatorModeResponseIssuerAccountRequiresKnownSigner(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account with a signing key.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+	skKp, skPub := createKey(t)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.SigningKeys.Add(skPub)
+	authClaim.EnableExternalAuthorization(upub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+	`, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	const (
+		accountToken      = "--ACCOUNT--"
+		signingKeyToken   = "--SK--"
+		forgedToken       = "--FORGED--"
+		wrongAccountToken = "--WRONG-ACCOUNT--"
+	)
+
+	// A key that is neither the AUTH account nor one of its signing keys.
+	forgedKp, _ := createKey(t)
+	// An account that is not the AUTH account.
+	_, otherPub := createKey(t)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, "user", apub, "", akp, 0, nil)
+		cr := jwt.NewAuthorizationResponseClaims(user)
+		cr.Audience = si.ID
+		cr.Jwt = ujwt
+		signer := akp
+		switch opts.Token {
+		case signingKeyToken:
+			cr.IssuerAccount = apub
+			signer = skKp
+		case forgedToken:
+			// Asserts the AUTH account as issuer but is signed by an unknown key.
+			cr.IssuerAccount = apub
+			signer = forgedKp
+		case wrongAccountToken:
+			// Signed by the AUTH account but asserts another account as issuer.
+			cr.IssuerAccount = otherPub
+		}
+		token, err := cr.Encode(signer)
+		require_NoError(t, err)
+		m.Respond([]byte(token))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	ucreds := createBasicAccountUser(t, akp)
+	defer removeFile(t, ucreds)
+
+	// Responses signed by the account or its signing key are accepted.
+	ac.Connect(nats.UserCredentials(ucreds), nats.Token(accountToken)).Close()
+	ac.Connect(nats.UserCredentials(ucreds), nats.Token(signingKeyToken)).Close()
+
+	l := &captureWarnLogger{warn: make(chan string, 10)}
+	ac.srv.SetLogger(l, false, false)
+
+	for _, test := range []struct {
+		token, warn string
+	}{
+		// A response signed by an unknown key must be rejected, even if it asserts the AUTH account.
+		{forgedToken, "signing key is unknown"},
+		// A response asserting another account as issuer must be rejected.
+		{wrongAccountToken, fmt.Sprintf("issuer account %q is not the callout account", otherPub)},
+	} {
+		ac.RequireConnectError(nats.UserCredentials(ucreds), nats.Token(test.token))
+		select {
+		case w := <-l.warn:
+			require_Contains(t, w, test.warn)
+		case <-time.After(time.Second):
+			t.Fatalf("Expected a warning for %q", test.token)
+		}
+	}
+}
+
+func TestAuthCalloutResponseRequiresConfiguredIssuer(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			users: [ { user: "auth", password: "pwd" } ]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`
+
+	const (
+		issuerToken      = "--ISSUER--"
+		forgedToken      = "--FORGED--"
+		forgedErrorToken = "--FORGED-ERROR--"
+	)
+
+	// A key that is not the configured issuer.
+	forgedKp, _ := createKey(t)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		if opts.Token == issuerToken {
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 0, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+			return
+		}
+		cr := jwt.NewAuthorizationResponseClaims(user)
+		cr.Audience = si.ID
+		if opts.Token == forgedErrorToken {
+			cr.Error = "denied"
+		} else {
+			cr.Jwt = createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 0, nil)
+		}
+		token, err := cr.Encode(forgedKp)
+		require_NoError(t, err)
+		m.Respond([]byte(token))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	l := &captureWarnLogger{warn: make(chan string, 10)}
+	ac.srv.SetLogger(l, false, false)
+
+	// A response signed by the configured issuer is accepted.
+	ac.Connect(nats.Token(issuerToken)).Close()
+
+	// A response signed by another key must be rejected, also before processing an error.
+	for _, token := range []string{forgedToken, forgedErrorToken} {
+		ac.RequireConnectError(nats.Token(token))
+		select {
+		case w := <-l.warn:
+			require_Contains(t, w, "signing key is unknown")
+		case <-time.After(time.Second):
+			t.Fatalf("Expected a warning for %q", token)
+		}
+	}
+}
+
 func TestAuthCalloutLeafNodeOperatorModeMismatchedCreds(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
