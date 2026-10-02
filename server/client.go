@@ -5357,7 +5357,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// delivery subject for clients
 	var dsubj []byte
 	// Used as scratch if mapping
-	var _dsubj [128]byte
+	var _dsubj []byte
 
 	// For stats, we will keep track of the number of messages that have been
 	// delivered and then multiply by the size of that message and update
@@ -5457,6 +5457,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// If this message was a service import do not re-export to an exported stream.
 			if flags&pmrMsgImportedFromService != 0 {
 				continue
+			}
+			if _dsubj == nil {
+				_dsubj = make([]byte, 0, 128)
 			}
 			if sub.im.tr != nil {
 				to := sub.im.tr.TransformSubject(bytesToString(subject))
@@ -5683,6 +5686,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				// If this message was a service import do not re-export to an exported stream.
 				if flags&pmrMsgImportedFromService != 0 {
 					continue
+				}
+				if _dsubj == nil {
+					_dsubj = make([]byte, 0, 128)
 				}
 				if sub.im.tr != nil {
 					to := sub.im.tr.TransformSubject(bytesToString(subject))
