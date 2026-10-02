@@ -5941,6 +5941,11 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	needDelete := accStreams != nil && accStreams[stream] != nil
 	if needDelete {
 		osa := accStreams[stream]
+		if osa.Group != nil && osa.Group.node != nil {
+			// Check if we were leader of a node that was already deleted
+			n := osa.Group.node
+			wasLeader = wasLeader || (n.IsDeleted() && n.GroupLeader() == n.ID())
+		}
 		if osa.unsupported != nil {
 			osa.unsupported.closeInfoSub(js.srv)
 			// Remember we used to be unsupported, just so we can send a successful delete response.

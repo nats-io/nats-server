@@ -9422,6 +9422,42 @@ func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
 	require_True(t, isMember(si.Cluster))
 }
 
+func TestJetStreamClusterStreamDeleteAfterRestoreStall(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	l := &captureWarnLogger{warn: make(chan string, 16)}
+	for _, s := range c.servers {
+		s.SetLogger(l, false, false)
+	}
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	r, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"),
+		[]byte(`{"config":{"name":"TEST","num_replicas":3,"storage":"file"}}`), 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamRestoreResponse
+	require_NoError(t, json.Unmarshal(r.Data, &resp))
+	require_Equal(t, resp.Type, JSApiStreamRestoreResponseType)
+	require_True(t, resp.Error == nil && resp.DeliverSubject != _EMPTY_)
+
+	// Send no chunks. Wait for the watchdog to fail the restore and stop its leader.
+	deadline := time.After(10 * time.Second)
+waitForStall:
+	for {
+		select {
+		case warning := <-l.warn:
+			if strings.Contains(warning, "Stream restore failed for") && strings.Contains(warning, "is stalled") {
+				break waitForStall
+			}
+		case <-deadline:
+			t.Fatal("restore did not stall")
+		}
+	}
+
+	// Deleting the failed assignment must reply even though its leader has stopped.
+	require_NoError(t, js.DeleteStream("TEST", nats.MaxWait(time.Second)))
+}
+
 // Non-preferred restore members must wait for the preferred receiver to start.
 // After it starts, a real snapshot must restore and all replicas must catch up.
 func TestJetStreamClusterRestoreWaitsForPreferredReceiver(t *testing.T) {
