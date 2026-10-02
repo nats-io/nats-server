@@ -152,9 +152,9 @@ func getCounterArrayData(counter PDH_HCOUNTER) ([]float64, error) {
 	initialBuf := make([]PDH_FMT_COUNTERVALUE_ITEM_DOUBLE, 1)
 	ret := pdhGetFormattedCounterArrayDouble(counter, &bufSize, &bufCount, &initialBuf[0])
 	if ret == PDH_MORE_DATA {
-		// we'll likely never get here, but be safe.
-		if bufCount > maxQuerySize {
-			bufCount = maxQuerySize
+		// Never let the pdh API write past the end of our buffer.
+		if maxSize := uint32(unsafe.Sizeof(counterResults)); bufSize > maxSize {
+			bufSize = maxSize
 		}
 		ret = pdhGetFormattedCounterArrayDouble(counter, &bufSize, &bufCount, &counterResults[0])
 		if ret == 0 {
