@@ -9392,8 +9392,9 @@ func TestLeafNodeSlowConsumer(t *testing.T) {
 	br := bufio.NewReader(c)
 	br.ReadLine()
 	for i := 0; i < 10; i++ {
+		// The server may already have closed us as a slow consumer.
 		if _, err := c.Write([]byte("PING\r\n")); err != nil {
-			t.Fatalf("Unexpected error writing PING: %v", err)
+			break
 		}
 	}
 	defer c.Close()
