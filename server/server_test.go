@@ -1012,6 +1012,7 @@ func TestLameDuckMode(t *testing.T) {
 	optsA := DefaultOptions()
 	testSetLDMGracePeriod(optsA, time.Nanosecond)
 	optsA.Cluster.Host = "127.0.0.1"
+	optsA.Cluster.Name = "ldm-test"
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -1021,16 +1022,50 @@ func TestLameDuckMode(t *testing.T) {
 		t.Fatalf("Server should have shutdown")
 	}
 
-	optsA.LameDuckDuration = 10 * time.Nanosecond
+	optsA = DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.Cluster.Name = "ldm-test"
+	optsA.LameDuckDuration = 2 * time.Second
+	optsA.LeafNode.Host = "127.0.0.1"
+	optsA.LeafNode.Port = -1
+	optsA.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	optsHub := DefaultOptions()
+	optsHub.LeafNode.Host = "127.0.0.1"
+	optsHub.LeafNode.Port = -1
+	srvHub := RunServer(optsHub)
+	defer srvHub.Shutdown()
+	hubURL, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", optsHub.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing hub leafnode URL: %v", err)
+	}
+	optsA.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{hubURL}}}
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
 	optsB := DefaultOptions()
+	optsB.Cluster.Name = "ldm-test"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvA, srvB)
+	checkLeafNodeConnectedCount(t, srvA, 1)
+	checkLeafNodeConnected(t, srvHub)
+
+	leafURL, err := url.Parse(fmt.Sprintf("nats://%s", srvA.leafNodeInfo.IP))
+	if err != nil {
+		t.Fatalf("Error parsing leafnode URL: %v", err)
+	}
+	optsLeaf := DefaultOptions()
+	optsLeaf.Cluster.Name = "leaf-spoke"
+	optsLeaf.LeafNode.Port = -1
+	optsLeaf.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	optsLeaf.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+	srvLeaf := RunServer(optsLeaf)
+	defer srvLeaf.Shutdown()
+	checkLeafNodeConnectedCount(t, srvA, 2)
+	checkLeafNodeConnected(t, srvLeaf)
 
 	total := 50
 	connectClients := func() []*nats.Conn {
@@ -1049,6 +1084,8 @@ func TestLameDuckMode(t *testing.T) {
 		for _, nc := range ncs {
 			nc.Close()
 		}
+		srvLeaf.Shutdown()
+		srvHub.Shutdown()
 		srvB.Shutdown()
 	}
 
@@ -1063,13 +1100,19 @@ func TestLameDuckMode(t *testing.T) {
 	srvA.lameDuckMode()
 	// Wait that shutdown completes
 	elapsed := time.Since(start)
-	// It should have taken more than the allotted time of 10ms since we had 50 clients.
-	if elapsed <= optsA.LameDuckDuration {
-		t.Fatalf("Expected to take more than %v, got %v", optsA.LameDuckDuration, elapsed)
+	// The clients and both leaf connections should share the paced drain window.
+	if elapsed < optsA.LameDuckDuration/2 {
+		t.Fatalf("Expected paced shutdown to take at least %v, got %v", optsA.LameDuckDuration/2, elapsed)
 	}
 
 	checkClientsCount(t, srvA, 0)
 	checkClientsCount(t, srvB, total)
+	if got := srvA.NumLeafNodes(); got != 0 {
+		t.Fatalf("Expected lame duck mode to close leaf connection, got %d remaining", got)
+	}
+	if got := srvHub.NumLeafNodes(); got != 0 {
+		t.Fatalf("Expected outbound leaf connection to remain shed during lame duck mode, got %d replacement(s)", got)
+	}
 
 	// Check closed status on server A
 	// Connections are saved in go routines, so although we have evaluated the number
@@ -1077,14 +1120,14 @@ func TestLameDuckMode(t *testing.T) {
 	// need a bit more time.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
 		cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
-		if n := len(cz.Conns); n != total {
-			return fmt.Errorf("expected %v closed connections, got %v", total, n)
+		if n := len(cz.Conns); n != total+2 {
+			return fmt.Errorf("expected %v closed connections, got %v", total+2, n)
 		}
 		return nil
 	})
 	cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
-	if n := len(cz.Conns); n != total {
-		t.Fatalf("Expected %v closed connections, got %v", total, n)
+	if n := len(cz.Conns); n != total+2 {
+		t.Fatalf("Expected %v closed connections, got %v", total+2, n)
 	}
 	for _, c := range cz.Conns {
 		checkReason(t, c.Reason, ServerShutdown)
@@ -1092,7 +1135,11 @@ func TestLameDuckMode(t *testing.T) {
 
 	stopClientsAndSrvB(ncs)
 
+	optsA = DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
+	optsA.Cluster.Host = "127.0.0.1"
 	optsA.LameDuckDuration = time.Second
+	optsB = DefaultOptions()
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
