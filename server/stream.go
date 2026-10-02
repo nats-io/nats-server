@@ -301,12 +301,14 @@ func (ack BatchFlowAck) MarshalJSON() ([]byte, error) {
 }
 
 // BatchFlowGap is used for reporting gaps when fast batch publishing into a stream.
+// A forward gap means messages were lost, a backward gap means a message was duplicated or reordered.
 // This message is purely informational and could technically be lost without the client receiving it.
 type BatchFlowGap struct {
 	// Type: "gap"
 	Type string `json:"type"`
 	// ExpectedLastSequence is the sequence expected to be received next.
-	// Messages starting from ExpectedLastSequence up to (but not including) CurrentSequence were lost.
+	// If CurrentSequence is higher, messages starting from ExpectedLastSequence up to (but not including) CurrentSequence were lost.
+	// If CurrentSequence is lower or equal, it's a backward gap and the batch is ended, the PubAck confirms what was persisted.
 	ExpectedLastSequence uint64 `json:"last_seq"`
 	// CurrentSequence is the sequence of the message that just came in and detected the gap.
 	CurrentSequence uint64 `json:"seq"`
@@ -394,7 +396,7 @@ type DesiredClusterInfoOrigin struct {
 	Replicas int `json:"replicas"`
 	// Original placement before it was updated.
 	Placement *Placement `json:"placement,omitempty"`
-	// When changing between retention policies, this retention remains active until unset.
+	// Original retention before it was updated.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
@@ -8004,8 +8006,8 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Detect gaps.
 	b.lseq++
 	if b.lseq != batch.seq || cleanup {
-		// If a forward gap is detected, we always report about it.
-		if batch.seq > b.lseq {
+		// If a forward or backward gap is detected, we always report about it.
+		if batch.seq != b.lseq {
 			buf, _ := BatchFlowGap{ExpectedLastSequence: b.lseq, CurrentSequence: batch.seq}.MarshalJSON()
 			outq.sendMsg(reply, buf)
 		}

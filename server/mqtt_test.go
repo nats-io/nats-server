@@ -120,7 +120,7 @@ func testMQTTReadPacket(t testing.TB, r *mqttReader) (byte, int) {
 			t.Fatalf("Error reading packet: %v", err)
 		}
 		var complete bool
-		pl, complete, err = r.readPacketLen(MAX_PAYLOAD_SIZE)
+		pl, complete, err = r.readPacketLen(b&mqttPacketMask, MAX_PAYLOAD_SIZE)
 		if err != nil {
 			t.Fatalf("Error reading packet: %v", err)
 		}
@@ -219,7 +219,7 @@ func TestMQTTReader(t *testing.T) {
 		if pt := b & mqttPacketMask; pt != mqttPacketPub {
 			t.Fatalf("Unexpected byte: %v", b)
 		}
-		pl, complete, err := r.readPacketLen(MAX_PAYLOAD_SIZE)
+		pl, complete, err := r.readPacketLen(mqttPacketPub, MAX_PAYLOAD_SIZE)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -344,11 +344,47 @@ func TestMQTTPacketLenMaxPayloadViolation(t *testing.T) {
 	_, err := r.readByte("packet type")
 	require_NoError(t, err)
 
-	packetLen, complete, err := r.readPacketLen(maxPayload)
+	packetLen, complete, err := r.readPacketLen(mqttPacketConnect, maxPayload)
 	require_Error(t, err, ErrMaxPayload)
 	require_False(t, complete)
 	require_Equal(t, packetLen, w.Len())
 	require_Equal(t, len(r.pbuf), 0)
+}
+
+func TestMQTTPartialPacketNotCopiedOnEveryRead(t *testing.T) {
+	const payloadLen = 64 * 1024
+	w := newMQTTWriter(0)
+	w.WriteByte(mqttPacketPub)
+	w.WriteVarInt(2 + 3 + payloadLen)
+	w.WriteString("foo")
+	w.Write(bytes.Repeat([]byte{'A'}, payloadLen))
+	packet := w.Bytes()
+
+	r := &mqttReader{}
+	var reallocs int
+	var last *byte
+	for i, b := range packet {
+		r.reset([]byte{b})
+		r.pstart = r.pos
+		_, err := r.readByte("packet type")
+		require_NoError(t, err)
+		pl, complete, err := r.readPacketLen(mqttPacketPub, MAX_PAYLOAD_SIZE)
+		require_NoError(t, err)
+		if i == len(packet)-1 {
+			require_True(t, complete)
+			require_Equal(t, pl, 2+3+payloadLen)
+			require_True(t, bytes.Equal(r.buf, packet))
+		} else {
+			require_False(t, complete)
+			require_Equal(t, len(r.pbuf), i+1)
+			if p := &r.pbuf[0]; p != last {
+				reallocs++
+				last = p
+			}
+		}
+	}
+	// Buffer growth should be amortized, not a new allocation and copy per read.
+	require_True(t, reallocs < 100)
 }
 
 func testMQTTDefaultOptions() *Options {
@@ -1932,6 +1968,15 @@ func TestMQTTMalformedRemainingLengthCausesDisconnect(t *testing.T) {
 				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
 				return mc, []byte{mqttPacketPubComp, 3, 0, 1, 0}
+			},
+		},
+		{
+			name: "puback incomplete",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				// Declare the maximum remaining length but only send part of the packet.
+				return mc, []byte{mqttPacketPubAck, 0xff, 0xff, 0xff, 0x7f, 0, 1}
 			},
 		},
 		{
@@ -8764,6 +8809,40 @@ func TestMQTTMaxPayloadDoesNotCapPublishTopic(t *testing.T) {
 
 	testMQTTSendPublishPacket(t, mc, 0, false, false, strings.Repeat("a", 1100), 0, nil)
 	testMQTTFlush(t, mc, nil, r)
+}
+
+func TestMQTTIncompletePacketMaxPayloadViolationDisconnects(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MaxPayload = 1024
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name   string
+		header byte
+	}{
+		{"publish", mqttPacketPub},
+		{"subscribe", mqttPacketSub | mqttSubscribeFlags},
+		{"unsubscribe", mqttPacketUnsub | mqttUnsubscribeFlags},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+			// Declare the maximum remaining length but only send a few bytes.
+			w := newMQTTWriter(0)
+			w.WriteByte(test.header)
+			w.WriteVarInt(mqttMaxPayloadSize)
+			w.WriteString("foo")
+			w.Write(bytes.Repeat([]byte{'A'}, 100))
+
+			_, err := testMQTTWrite(mc, w.Bytes())
+			require_NoError(t, err)
+
+			testMQTTExpectDisconnect(t, mc)
+		})
+	}
 }
 
 func TestMQTTJSApiMapping(t *testing.T) {

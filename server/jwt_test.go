@@ -4672,6 +4672,53 @@ func TestJWTLimitsTemplate(t *testing.T) {
 	})
 }
 
+func TestJWTScopedSigningKeyTemplateProxyRequired(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aSignScopedKp, aSignScopedPub := createKey(t)
+	signer := jwt.NewUserScope()
+	signer.Key = aSignScopedPub
+	signer.Template.ProxyRequired = true
+	claim.SigningKeys.AddScopedSigner(signer)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		listen: 127.0.0.1:-1
+		operator: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+    `, ojwt, aPub, aJwt))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	l := &captureProxyRequiredLogger{ch: make(chan string, 1)}
+	s.SetLogger(l, true, false)
+
+	// The user JWT itself doesn't require a proxy, only the scoped template does.
+	ukp, _ := nkeys.CreateUser()
+	seed, _ := ukp.Seed()
+	upub, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Subject = upub
+	uclaim.SetScoped(true)
+	uclaim.IssuerAccount = aPub
+	require_False(t, uclaim.ProxyRequired)
+	ujwt, err := uclaim.Encode(aSignScopedKp)
+	require_NoError(t, err)
+	creds := genCredsFile(t, ujwt, seed)
+
+	_, err = nats.Connect(s.ClientURL(), nats.UserCredentials(creds))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+	select {
+	case <-l.ch:
+	case <-time.After(time.Second):
+		t.Fatal("Expected proxy required error")
+	}
+}
+
 func TestJWTNoOperatorMode(t *testing.T) {
 	for _, login := range []bool{true, false} {
 		t.Run("", func(t *testing.T) {
@@ -8167,4 +8214,58 @@ func TestJWTUserLimitsOverflowInt32SubPub(t *testing.T) {
 			t.Fatalf("Expected +OK on PUB, got %q", l)
 		}
 	})
+}
+
+// A real account connection limit must still be reported as such, and not
+// as an authentication error.
+func TestJWTAccountMaxConnsStillReportedAsAccountLimit(t *testing.T) {
+	s := opTrustBasicSetup()
+	defer s.Shutdown()
+	buildMemAccResolver(s)
+
+	okp, _ := nkeys.FromSeed(oSeed)
+
+	fooKP, _ := nkeys.CreateAccount()
+	fooPub, _ := fooKP.PublicKey()
+	fooAC := jwt.NewAccountClaims(fooPub)
+	fooAC.Limits.Conn = 1
+	fooJWT, err := fooAC.Encode(okp)
+	require_NoError(t, err)
+	addAccountToMemResolver(s, fooPub, fooJWT)
+
+	c1, cr1, cs1 := createClient(t, s, fooKP)
+	defer c1.close()
+	c1.parseAsync(cs1)
+	l, _ := cr1.ReadString('\n')
+	if !strings.HasPrefix(l, "PONG") {
+		t.Fatalf("Expected PONG, got %q", l)
+	}
+
+	el := &captureErrorLogger{errCh: make(chan string, 10)}
+	s.SetLogger(el, false, false)
+
+	// This one exceeds the account connection limit.
+	c2, cr2, cs2 := createClient(t, s, fooKP)
+	defer c2.close()
+	c2.parseAsync(cs2)
+	l, _ = cr2.ReadString('\n')
+	if !strings.Contains(l, ErrTooManyAccountConnections.Error()) {
+		t.Fatalf("Expected the account connection limit error, got %q", l)
+	}
+
+	// The server must report the limit, not an authentication violation.
+	var errs []string
+	for done := false; !done; {
+		select {
+		case e := <-el.errCh:
+			errs = append(errs, e)
+		case <-time.After(500 * time.Millisecond):
+			done = true
+		}
+	}
+	for _, e := range errs {
+		if strings.Contains(e, ErrAuthentication.Error()) {
+			t.Fatalf("account connection limit was reported as an authentication error: %q", e)
+		}
+	}
 }

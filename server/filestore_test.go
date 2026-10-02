@@ -4685,7 +4685,7 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 100
-		ttl := 200 * time.Millisecond
+		ttl := 400 * time.Millisecond
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage, MaxAge: ttl}
 		created := time.Now()
 		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
@@ -4695,12 +4695,14 @@ func TestFileStoreExpireOnRecoverSubjectAccounting(t *testing.T) {
 		// These are in first block.
 		fs.StoreMsg("A", nil, msg, 0)
 		fs.StoreMsg("B", nil, msg, 0)
-		time.Sleep(ttl / 2)
+		stored := time.Now()
+		// Leave a large margin so C doesn't expire as well if the restart is slow.
+		time.Sleep(ttl * 3 / 4)
 		// This one in 2nd block.
 		fs.StoreMsg("C", nil, msg, 0)
 
 		fs.Stop()
-		time.Sleep(ttl/2 + 10*time.Millisecond)
+		time.Sleep(time.Until(stored.Add(ttl + 10*time.Millisecond)))
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
 		defer fs.Stop()
@@ -6790,6 +6792,64 @@ func TestFileStoreSubjectCorruption(t *testing.T) {
 		var n int
 		_, err := fmt.Sscanf(subj, "foo.%d", &n)
 		require_NoError(t, err)
+	}
+}
+
+func TestFileStoreNumPendingCanSkipStartingBlock(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		lastPerSubject bool
+		maxMsgsPer     int64
+	}{
+		{"LastPerSubject", true, 0},
+		{"MaxMsgsPerSubjectOne", false, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+				StreamConfig{Name: "TEST", Subjects: []string{"foo.*", "bar.*"}, Storage: FileStorage, MaxMsgsPer: test.maxMsgsPer})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// Keep the first block full of non-matching subjects, with all
+			// matching subjects' last messages in later blocks.
+			msg := bytes.Repeat([]byte("A"), 100)
+			for _, prefix := range []string{"bar", "foo"} {
+				for i := range 20 {
+					_, _, err := fs.StoreMsg(fmt.Sprintf("%s.%d", prefix, i), nil, msg, 0)
+					require_NoError(t, err)
+				}
+			}
+
+			const startSeq = uint64(2)
+			fs.mu.RLock()
+			seqStart, _ := fs.selectMsgBlockWithIndex(startSeq)
+			require_Equal(t, seqStart, 0)
+			mb := fs.blks[seqStart]
+			fs.psim.Match([]byte("foo.*"), func(_ []byte, info *psi) {
+				require_True(t, info.lblk > mb.index)
+			})
+			fs.mu.RUnlock()
+
+			// Start inside an unloaded block so the correction scan would
+			// have to load it without the empty-lbm early return.
+			require_NoError(t, mb.flushPendingMsgs())
+			mb.mu.Lock()
+			require_True(t, startSeq > mb.first.seq && startSeq <= mb.last.seq)
+			mb.clearCacheAndOffset()
+			require_True(t, mb.cacheNotLoaded())
+			loads := mb.cloads
+			mb.mu.Unlock()
+
+			total, validThrough, err := fs.NumPending(startSeq, "foo.*", test.lastPerSubject)
+			require_NoError(t, err)
+			require_Equal(t, total, uint64(20))
+			require_Equal(t, validThrough, uint64(40))
+			mb.mu.RLock()
+			defer mb.mu.RUnlock()
+			require_Equal(t, mb.cloads, loads)
+			require_True(t, mb.cacheNotLoaded())
+		})
 	}
 }
 
@@ -14549,6 +14609,37 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 		err = obs.Delete()
 		require_NoError(t, err)
 		wg.Wait()
+	}
+}
+
+func TestFileStoreConsumerNoMetaWriteAfterClose(t *testing.T) {
+	for _, op := range []string{"Stop", "Delete"} {
+		t.Run(op, func(t *testing.T) {
+			// Writes after close would end up in the working directory.
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "TEST", Storage: FileStorage, Subjects: []string{"foo"}})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			cfg := ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit}
+			obs, err := fs.ConsumerStore("CONSUMER", time.Time{}, &cfg)
+			require_NoError(t, err)
+			o := obs.(*consumerFileStore)
+
+			if op == "Stop" {
+				require_NoError(t, o.Stop())
+			} else {
+				require_NoError(t, o.Delete())
+			}
+			require_Error(t, o.UpdateConfig(&cfg), ErrStoreClosed)
+			require_Error(t, o.updateConfig(cfg), ErrStoreClosed)
+
+			entries, err := os.ReadDir(cwd)
+			require_NoError(t, err)
+			require_Len(t, len(entries), 0)
+		})
 	}
 }
 

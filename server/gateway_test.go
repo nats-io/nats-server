@@ -1338,6 +1338,8 @@ func TestGatewayImplicitReconnect(t *testing.T) {
 	// Shutdown s1, remove the gateway from A to B and restart.
 	s1.Shutdown()
 	o1.Gateway.Gateways = o1.Gateway.Gateways[:0]
+	// Only the gateway port needs to be reused, others could be taken in the meantime.
+	o1.Port, o1.Cluster.Port = -1, -1
 	s1 = runGatewayServer(o1)
 	defer s1.Shutdown()
 

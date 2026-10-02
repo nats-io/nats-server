@@ -2799,6 +2799,78 @@ func TestRoutePerAccountImplicit(t *testing.T) {
 	checkClusterFormed(t, s1, s2, s3)
 }
 
+func TestRoutePerAccountInboundStatsCountedOnce(t *testing.T) {
+	tmpl := `
+		port: -1
+		accounts {
+			A { users: [{user: "a", password: "a"}] }
+			B { users: [{user: "b", password: "b"}] }
+		}
+		cluster {
+			port: -1
+			name: "local"
+			accounts: ["A"]
+			%s
+		}
+	`
+	conf1 := createConfFile(t, []byte(fmt.Sprintf(tmpl, _EMPTY_)))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl,
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port))))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	const n = 10
+	payload := []byte("hello")
+
+	// Account A has a dedicated route, account B uses the pool. Messages that
+	// reach s2 only over a route must count once in the account's received
+	// totals either way, matching the route breakdown and the sender's count.
+	for _, acc := range []string{"A", "B"} {
+		t.Run(acc, func(t *testing.T) {
+			user := strings.ToLower(acc)
+			s2nc := natsConnect(t, s2.ClientURL(), nats.UserInfo(user, user))
+			defer s2nc.Close()
+			sub := natsSubSync(t, s2nc, "foo")
+			natsFlush(t, s2nc)
+
+			s1nc := natsConnect(t, s1.ClientURL(), nats.UserInfo(user, user))
+			defer s1nc.Close()
+			checkSubInterest(t, s1, acc, "foo", time.Second)
+
+			for i := 0; i < n; i++ {
+				natsPub(t, s1nc, "foo", payload)
+			}
+			for i := 0; i < n; i++ {
+				natsNexMsg(t, sub, time.Second)
+			}
+
+			checkFor(t, time.Second, 15*time.Millisecond, func() error {
+				stz, err := s2.AccountStatz(&AccountStatzOptions{Accounts: []string{acc}})
+				if err != nil {
+					return err
+				}
+				if len(stz.Accounts) != 1 {
+					return fmt.Errorf("expected 1 account, got %d", len(stz.Accounts))
+				}
+				recv := stz.Accounts[0].Received
+				if recv.Routes == nil || recv.Routes.Msgs != n {
+					return fmt.Errorf("expected %d route msgs received, got %+v", n, recv.Routes)
+				}
+				if recv.Msgs != n || recv.Bytes != int64(n*len(payload)) {
+					return fmt.Errorf("expected %d msgs and %d bytes received, got %d and %d",
+						n, n*len(payload), recv.Msgs, recv.Bytes)
+				}
+				return nil
+			})
+		})
+	}
+}
+
 func TestRoutePerAccountDefaultForSysAccount(t *testing.T) {
 	tmpl := `
 		port: -1
