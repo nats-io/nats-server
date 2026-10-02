@@ -11975,3 +11975,113 @@ func TestJetStreamClusterRestoreWaitsForPreferredReceiver(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, string(message.Data), "restored message")
 }
+
+type delayedRestoreFailureLogger struct {
+	DummyLogger
+	sawFailure    atomic.Bool
+	failurePaused chan struct{}
+	monitorExited chan struct{}
+	resumeFailure <-chan struct{}
+}
+
+func (l *delayedRestoreFailureLogger) Debugf(format string, _ ...any) {
+	switch format {
+	case "Stream restore failed: %v":
+		if l.sawFailure.CompareAndSwap(false, true) {
+			l.failurePaused <- struct{}{}
+			<-l.resumeFailure
+		}
+	case "Exiting stream monitor for '%s > %s' [%s]":
+		if l.sawFailure.Load() {
+			select {
+			case l.monitorExited <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+func TestJetStreamClusterRestoreFailureDoesNotDeleteReplacement(t *testing.T) {
+	// Create a snapshot to restore into the cluster.
+	source := RunBasicJetStreamServer(t)
+	defer source.Shutdown()
+	sourceNC, sourceJS := jsClientConnect(t, source)
+	defer sourceNC.Close()
+	_, err := sourceJS.AddStream(&nats.StreamConfig{Name: "TEST"})
+	require_NoError(t, err)
+	_, err = sourceJS.Publish("TEST", []byte("restored message"))
+	require_NoError(t, err)
+	cfg, state, snapshot := performStreamBackup(t, sourceNC, "TEST")
+	cfg.Replicas = 3
+
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	// Pause the failed restore before it deletes its Raft node or sends its failure report.
+	failurePaused := make(chan struct{}, 1)
+	monitorExited := make(chan struct{}, 1)
+	resumeFailure := make(chan struct{})
+	resumeFailureHandling := sync.OnceFunc(func() { close(resumeFailure) })
+	defer resumeFailureHandling()
+	for _, s := range c.servers {
+		s.SetLogger(&delayedRestoreFailureLogger{
+			failurePaused: failurePaused,
+			monitorExited: monitorExited,
+			resumeFailure: resumeFailure,
+		}, true, false)
+	}
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	req, err := json.Marshal(&JSApiStreamRestoreRequest{Config: cfg, State: state})
+	require_NoError(t, err)
+	_, err = nc.Request(fmt.Sprintf(JSApiStreamRestoreT, cfg.Name), req, 5*time.Second)
+	require_NoError(t, err)
+
+	// Send no chunks so the first restore stalls.
+	select {
+	case <-failurePaused:
+	case <-time.After(10 * time.Second):
+		t.Fatal("restore did not stall")
+	}
+
+	// Delete the failed attempt, then restore the snapshot under the same name.
+	require_NoError(t, js.DeleteStream(cfg.Name))
+	deletionAdvisories, err := nc.SubscribeSync(JSAdvisoryStreamDeletedPre + "." + cfg.Name)
+	require_NoError(t, err)
+
+	require_True(t, performStreamRestore(t, nc, cfg, state, snapshot))
+	checkFor(t, 30*time.Second, 10*time.Millisecond, func() error {
+		si, err := js.StreamInfo(cfg.Name)
+		if err != nil {
+			return err
+		}
+		if si.State.Msgs != state.Msgs || si.Cluster == nil || len(si.Cluster.Replicas) != 2 {
+			return fmt.Errorf("replacement not restored: %+v", si)
+		}
+		for _, peer := range si.Cluster.Replicas {
+			if !peer.Current {
+				return fmt.Errorf("replica %s not current", peer.Name)
+			}
+		}
+		return nil
+	})
+
+	// Let the original restore report its failure after the replacement is current.
+	resumeFailureHandling()
+	select {
+	case <-monitorExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed restore monitor did not exit")
+	}
+
+	// The replacement stream should not be deleted
+	_, err = deletionAdvisories.NextMsg(time.Second)
+	if err == nil {
+		t.Fatal("replacement was deleted after the delayed restore failure")
+	}
+	require_Error(t, err, nats.ErrTimeout)
+	msg, err := js.GetMsg(cfg.Name, 1)
+	require_NoError(t, err)
+	require_Equal(t, string(msg.Data), "restored message")
+}
