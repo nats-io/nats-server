@@ -27305,3 +27305,186 @@ func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
 			friendlyBytes(int64(written)), friendlyBytes(before), friendlyBytes(after))
 	}
 }
+
+func TestJetStreamStreamTransformsAccountFunctions(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	hash := getHash(s.globalAccount().Name)
+
+	cfg := &nats.StreamConfig{
+		Name:             "T",
+		Subjects:         []string{"in.>"},
+		Storage:          nats.FileStorage,
+		SubjectTransform: &nats.SubjectTransformConfig{Source: "in.>", Destination: "{{accountHash()}}.in.>"},
+		RePublish:        &nats.RePublish{Source: ">", Destination: "rp.{{accountHash()}}.>"},
+	}
+	si, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	// The stored configuration holds the resolved literals.
+	require_Equal(t, si.Config.SubjectTransform.Destination, hash+".in.>")
+	require_Equal(t, si.Config.RePublish.Destination, "rp."+hash+".>")
+
+	rpSub := natsSubSync(t, nc, "rp.>")
+	natsFlush(t, nc)
+	_, err = js.Publish("in.a", []byte("m"))
+	require_NoError(t, err)
+	m := natsNexMsg(t, rpSub, time.Second)
+	require_Equal(t, m.Subject, "rp."+hash+"."+hash+".in.a")
+	sm, err := js.GetMsg("T", 1)
+	require_NoError(t, err)
+	require_Equal(t, sm.Subject, hash+".in.a")
+
+	// Mirror and source with transforms.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "M",
+		Storage: nats.FileStorage,
+		Mirror: &nats.StreamSource{
+			Name:              "T",
+			SubjectTransforms: []nats.SubjectTransformConfig{{Source: "{{accountHash()}}.in.>", Destination: "m.{{accountHash()}}.>"}},
+		},
+	})
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:    "S",
+		Storage: nats.FileStorage,
+		Sources: []*nats.StreamSource{{
+			Name:              "T",
+			SubjectTransforms: []nats.SubjectTransformConfig{{Source: "{{accountHash()}}.in.>", Destination: "s.{{accountHash()}}.>"}},
+		}},
+	})
+	require_NoError(t, err)
+	for _, test := range []struct{ stream, subject string }{
+		{"M", "m." + hash + ".a"},
+		{"S", "s." + hash + ".a"},
+	} {
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			si, err := js.StreamInfo(test.stream)
+			if err != nil {
+				return err
+			}
+			if si.State.Msgs != 1 {
+				return fmt.Errorf("expected 1 message in %s, got %d", test.stream, si.State.Msgs)
+			}
+			return nil
+		})
+		sm, err := js.GetMsg(test.stream, 1)
+		require_NoError(t, err)
+		require_Equal(t, sm.Subject, test.subject)
+	}
+	si, err = js.StreamInfo("M")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Mirror.SubjectTransforms[0].Source, hash+".in.>")
+	require_Equal(t, si.Config.Mirror.SubjectTransforms[0].Destination, "m."+hash+".>")
+
+	// Updating with the configured form again is accepted and still stored resolved.
+	cfg.Description = "updated"
+	si, err = js.UpdateStream(cfg)
+	require_NoError(t, err)
+	require_Equal(t, si.Config.RePublish.Destination, "rp."+hash+".>")
+
+	// Survives a restart.
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+	si, err = js.StreamInfo("T")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.SubjectTransform.Destination, hash+".in.>")
+	_, err = js.Publish("in.b", []byte("m"))
+	require_NoError(t, err)
+	sm, err = js.GetMsg("T", 2)
+	require_NoError(t, err)
+	require_Equal(t, sm.Subject, hash+".in.b")
+
+	// Functions that need an import or leafnode context are rejected.
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:      "BAD",
+		Subjects:  []string{"bad.>"},
+		RePublish: &nats.RePublish{Source: ">", Destination: "x.{{account-hash-import()}}.>"},
+	})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "not available")
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:             "BAD",
+		Subjects:         []string{"bad.>"},
+		SubjectTransform: &nats.SubjectTransformConfig{Source: "bad.>", Destination: "{{account-hash-leaf-remote()}}.>"},
+	})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "not available")
+}
+
+func TestJetStreamAccountImportAckV2AccountHash(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		no_auth_user: rip
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q}
+		feature_flags { js_ack_fc_v2: true }
+		accounts: {
+			JS: {
+				jetstream: enabled
+				users: [ {user: dlc, password: foo} ]
+				exports [
+					{ stream: "deliver.ORDERS" }
+					{ service: "$JS.ACK._.{{accountHash()}}.ORDERS.*.>" }
+					{ service: "$JS.FC._.{{accountHash()}}.ORDERS.*.>" }
+				]
+			},
+			IU: {
+				users: [ {user: rip, password: bar} ]
+				imports [
+					{ stream:  { subject: "deliver.ORDERS", account: JS }, to: "d" }
+					{ service: { subject: "$JS.ACK._.{{account-hash-import()}}.ORDERS.*.>", account: JS } }
+					{ service: { subject: "$JS.FC._.{{account-hash-import()}}.ORDERS.*.>", account: JS } }
+				]
+			},
+		}
+	`, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	hash := getHash("JS")
+	acc, err := s.LookupAccount("JS")
+	require_NoError(t, err)
+	acc.mu.RLock()
+	_, hasAck := acc.exports.services["$JS.ACK._."+hash+".ORDERS.*.>"]
+	_, hasFC := acc.exports.services["$JS.FC._."+hash+".ORDERS.*.>"]
+	acc.mu.RUnlock()
+	require_True(t, hasAck)
+	require_True(t, hasFC)
+
+	mset, err := acc.addStream(&StreamConfig{Name: "ORDERS", Subjects: []string{"ORDERS.*"}})
+	require_NoError(t, err)
+	defer mset.delete()
+
+	ncJS := natsConnect(t, s.ClientURL(), nats.UserInfo("dlc", "foo"))
+	defer ncJS.Close()
+	sendStreamMsg(t, ncJS, "ORDERS.foo", "ORDERS-1")
+
+	// This is the rip user, in the account that imports the delivery subject and the ack service.
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "d")
+	natsFlush(t, nc)
+
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "p", DeliverSubject: "deliver.ORDERS", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+	defer o.delete()
+
+	m := natsNexMsg(t, sub, time.Second)
+	require_True(t, strings.HasPrefix(m.Reply, "$JS.ACK._."+hash+".ORDERS.p."))
+	// The ack crosses the account boundary through the imported service, and is acked back.
+	_, err = nc.Request(m.Reply, AckAck, time.Second)
+	require_NoError(t, err)
+	checkFor(t, time.Second, 25*time.Millisecond, func() error {
+		if info := o.info(); info.AckFloor.Consumer != 1 {
+			return fmt.Errorf("ack not processed: %+v", info.AckFloor)
+		}
+		return nil
+	})
+}

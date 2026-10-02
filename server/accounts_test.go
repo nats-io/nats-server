@@ -4718,3 +4718,154 @@ func BenchmarkReverseRespMapRemoval(b *testing.B) {
 		}
 	}
 }
+
+func TestAccountMappingsAccountFunctions(t *testing.T) {
+	s, fooAcc, _ := simpleAccountServer(t)
+	defer s.Shutdown()
+	hash := getHash(fooAcc.Name)
+
+	// In the destination.
+	require_NoError(t, fooAcc.AddMapping("orders.*", "{{accountHash()}}.orders.{{wildcard(1)}}"))
+	ndest, ok := fooAcc.selectMappedSubject("orders.new")
+	require_True(t, ok)
+	require_Equal(t, ndest, hash+".orders.new")
+
+	// In the source.
+	require_NoError(t, fooAcc.AddMapping("in.{{accountHash()}}.*", "out.{{wildcard(1)}}"))
+	ndest, ok = fooAcc.selectMappedSubject("in." + hash + ".x")
+	require_True(t, ok)
+	require_Equal(t, ndest, "out.x")
+	// Removing with the configured form works.
+	require_True(t, fooAcc.RemoveMapping("in.{{accountHash()}}.*"))
+	_, ok = fooAcc.selectMappedSubject("in." + hash + ".x")
+	require_False(t, ok)
+
+	// Functions that need an import or leafnode context are not available in mappings, and arguments are checked.
+	for _, dest := range []string{
+		"{{account-hash-import()}}", "{{account-hash-leaf-remote()}}",
+		"{{accountHash(x)}}", "{{account-hash-import(x)}}", "{{accountHash(a,b)}}",
+	} {
+		require_Error(t, fooAcc.AddMapping("b", dest), ErrInvalidMappingDestination)
+	}
+	require_Error(t, fooAcc.AddMapping("{{account-hash-import()}}", "b"), ErrMappingFunctionNotAvailable)
+}
+
+func TestAccountImportExportAccountFunctions(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			EXP: {
+				users: [ {user: exp, password: pwd} ]
+				exports [
+					{ stream: "events.{{accountHash()}}.>" }
+					{ service: "req.{{accountHash()}}.*" }
+				]
+			}
+			IMP: {
+				users: [ {user: imp, password: pwd} ]
+				imports [
+					{ stream: { subject: "events.{{account-hash-import()}}.>", account: EXP }, prefix: "from.{{accountHash()}}" }
+					{ service: { subject: "req.{{account-hash-import()}}.*", account: EXP }, to: "svc.{{accountHash()}}.*" }
+				]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	expHash, impHash := getHash("EXP"), getHash("IMP")
+	exp, err := s.LookupAccount("EXP")
+	require_NoError(t, err)
+	exp.mu.RLock()
+	_, hasStream := exp.exports.streams["events."+expHash+".>"]
+	_, hasService := exp.exports.services["req."+expHash+".*"]
+	exp.mu.RUnlock()
+	require_True(t, hasStream)
+	require_True(t, hasService)
+
+	ncExp := natsConnect(t, s.ClientURL(), nats.UserInfo("exp", "pwd"))
+	defer ncExp.Close()
+	ncImp := natsConnect(t, s.ClientURL(), nats.UserInfo("imp", "pwd"))
+	defer ncImp.Close()
+
+	// Stream import with a prefix.
+	sub := natsSubSync(t, ncImp, "from."+impHash+".events."+expHash+".>")
+	natsFlush(t, ncImp)
+	natsPub(t, ncExp, "events."+expHash+".a.b", []byte("hello"))
+	m := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, m.Subject, "from."+impHash+".events."+expHash+".a.b")
+
+	// Service import with a wildcard local subject.
+	_, err = ncExp.Subscribe("req."+expHash+".*", func(m *nats.Msg) { m.Respond([]byte("ok")) })
+	require_NoError(t, err)
+	natsFlush(t, ncExp)
+	resp, err := ncImp.Request("svc."+impHash+".hello", nil, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(resp.Data), "ok")
+}
+
+func TestAccountImportExportAccountFunctionsConfigErrors(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		conf     string
+		expected string
+	}{
+		{"import function in export", `accounts: { A: { exports [ { stream: "x.{{account-hash-import()}}" } ] } }`, "not available"},
+		{"leafnode function in import", `accounts: { A: { exports [ { stream: "x.>" } ] }, B: { imports [ { stream: { subject: "x.{{account-hash-leaf-remote()}}", account: A } } ] } }`, "not available"},
+		{"bad arguments", `accounts: { A: { exports [ { service: "x.{{accountHash(a,b)}}" } ] } }`, "too many arguments"},
+		{"mapping", `accounts: { A: { mappings: { "foo": "{{account-hash-import()}}" } } }`, "not available"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte("listen: 127.0.0.1:-1\n"+test.conf))
+			_, err := ProcessConfigFile(conf)
+			require_Error(t, err)
+			require_Contains(t, err.Error(), test.expected)
+		})
+	}
+}
+
+func TestAccountUserPermissionsAccountFunctions(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: {
+				users: [ {user: a, password: pwd, permissions: {
+					publish: { allow: ["ok.>", "{{accountHash()}}.>"], deny: "deny.{{accountHash()}}" }
+					subscribe: { deny: ["deny.{{accountHash()}}.>", "deny.{{accountHash()}} q"] }
+				} } ]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+	hash := getHash("A")
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer nc.Close()
+
+	var c *client
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, cli := range s.clients {
+			c = cli
+			return nil
+		}
+		return fmt.Errorf("client not registered yet")
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require_True(t, c.perms.pub.allow.HasInterest(hash+".foo"))
+	require_True(t, c.perms.pub.deny.HasInterest("deny."+hash))
+	require_False(t, c.perms.pub.deny.HasInterest("deny.{{accountHash()}}"))
+	require_True(t, c.perms.sub.deny.HasInterest("deny."+hash+".x"))
+	require_True(t, c.perms.sub.deny.HasInterest("deny."+hash))
+
+	// The configured (shared) permissions are left untouched.
+	for _, u := range s.getOpts().Users {
+		if u.Username == "a" {
+			require_Equal(t, u.Permissions.Publish.Deny[0], "deny.{{accountHash()}}")
+			require_Equal(t, u.Permissions.Subscribe.Deny[1], "deny.{{accountHash()}} q")
+		}
+	}
+}
