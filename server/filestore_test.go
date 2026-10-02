@@ -10741,9 +10741,25 @@ func TestFileStoreRecoverDoesNotResetStreamState(t *testing.T) {
 }
 
 func TestFileStoreAccessTimeSpinUp(t *testing.T) {
-	// In case running lots of tests.
-	time.Sleep(time.Second)
-	ngr := runtime.NumGoroutine()
+	// Only count the access time Go routine, other tests may still be spinning down theirs.
+	numAtsGoroutines := func() int {
+		buf := make([]byte, 1<<20)
+		for {
+			n := runtime.Stack(buf, true)
+			if n < len(buf) {
+				return strings.Count(string(buf[:n]), "server/ats.Register.func")
+			}
+			buf = make([]byte, 2*len(buf))
+		}
+	}
+
+	// In case running lots of tests, give other filestores a chance to stop.
+	// Another filestore could still be registered, so this is our baseline.
+	baseline := numAtsGoroutines()
+	for start := time.Now(); baseline > 0 && time.Since(start) < 2*time.Second; {
+		time.Sleep(50 * time.Millisecond)
+		baseline = numAtsGoroutines()
+	}
 
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
@@ -10753,12 +10769,16 @@ func TestFileStoreAccessTimeSpinUp(t *testing.T) {
 
 	at := ats.AccessTime()
 	require_True(t, at != 0)
+	require_True(t, numAtsGoroutines() >= 1)
 
 	// Now check we also cleanup.
 	fs.Stop()
-	time.Sleep(2 * ats.TickInterval)
-	ngra := runtime.NumGoroutine()
-	require_Equal(t, ngr, ngra)
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if n := numAtsGoroutines(); n > baseline {
+			return fmt.Errorf("expected access time Go routines to return to %d, got %d", baseline, n)
+		}
+		return nil
+	})
 }
 
 func TestFileStoreUpdateConfigTTLState(t *testing.T) {

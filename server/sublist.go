@@ -175,7 +175,9 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 	}
 
 	var hasInterest bool
-	r := s.Match(subject)
+	// Match under the lock so a concurrent insert or remove can't be missed.
+	s.Lock()
+	r := s.matchNoLock(subject)
 
 	if len(r.psubs)+len(r.qsubs) > 0 {
 		if queue == _EMPTY_ {
@@ -199,7 +201,6 @@ func (s *Sublist) registerNotification(subject, queue string, notify chan<- bool
 	key := keyFromSubjectAndQueue(subject, queue)
 	var err error
 
-	s.Lock()
 	if s.notify == nil {
 		s.notify = &notifyMaps{
 			insert: make(map[string][]chan<- bool),
