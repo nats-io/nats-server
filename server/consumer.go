@@ -3126,20 +3126,26 @@ func (o *consumer) addReplicatedQueuedMsg(pmsg *jsPubMsg) {
 }
 
 // Lock should be held.
-func (o *consumer) updateAcks(dseq, sseq uint64, reply string) {
+func (o *consumer) updateAcks(dseq, sseq uint64, reply string, term bool) {
 	if o.node != nil {
 		// Inline for now, use variable compression.
-		var b [2*binary.MaxVarintLen64 + 1]byte
+		// A trailing byte marks the ack as a term; older versions ignore it
+		// when decoding and apply regular ack semantics.
+		var b [2*binary.MaxVarintLen64 + 2]byte
 		b[0] = byte(updateAcksOp)
 		n := 1
 		n += binary.PutUvarint(b[n:], dseq)
 		n += binary.PutUvarint(b[n:], sseq)
+		if term {
+			b[n] = 1
+			n++
+		}
 		o.propose(b[:n])
 		if reply != _EMPTY_ {
 			o.addAckReply(sseq, reply)
 		}
 	} else if o.store != nil {
-		o.store.UpdateAcks(dseq, sseq)
+		o.store.UpdateAcks(dseq, sseq, term)
 		if reply != _EMPTY_ {
 			// Already locked so send direct.
 			o.outq.sendMsg(reply, nil)
@@ -3854,8 +3860,9 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 	if ackInPlace {
 		reply = _EMPTY_
 	}
-	// Update underlying store.
-	o.updateAcks(dseq, sseq, reply)
+	// Update underlying store. Acks and client terms are regular acks; only
+	// server-side removal of deleted messages is scoped as a term.
+	o.updateAcks(dseq, sseq, reply, false)
 	unlock()
 
 	if ackInPlace {
@@ -5853,7 +5860,7 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 		if mset != nil && mset.ackq != nil && (o.node == nil || o.direct) {
 			mset.ackq.push(seq)
 		} else {
-			o.updateAcks(dseq, seq, _EMPTY_)
+			o.updateAcks(dseq, seq, _EMPTY_, false)
 		}
 	}
 }
@@ -6635,34 +6642,34 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 
 	if o.asflr < sseq {
 		o.asflr = sseq - 1
-		// We need to remove those no longer relevant from pending.
-		for seq, p := range o.pending {
-			if seq <= o.asflr {
-				if p.Sequence > o.adflr {
-					o.adflr = p.Sequence
-					if o.adflr > o.dseq {
-						o.dseq = o.adflr
-					}
+	}
+	// Walk pending regardless of whether the floor moved: a filtered purge can
+	// delete messages above the current floor, and those entries must be dropped
+	// here or a later failed redelivery will terminate them through the ack path.
+	for seq, p := range o.pending {
+		if seq <= o.asflr {
+			// We need to remove those no longer relevant from pending.
+			if p.Sequence > o.adflr {
+				o.adflr = p.Sequence
+				if o.adflr > o.dseq {
+					o.dseq = o.adflr
 				}
+			}
+			delete(o.pending, seq)
+			delete(o.rdc, seq)
+			o.updateAcks(p.Sequence, seq, _EMPTY_, false)
+			// rdq handled below.
+		} else if isWider && store != nil {
+			// Our filtered subject, which could be all, is wider than the underlying purge.
+			// We need to check if the pending items left are still valid.
+			var smv StoreMsg
+			if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
+				// The message is gone, so it will never be delivered again. Remove
+				// it like a term: only this sequence, never the ones below it.
 				delete(o.pending, seq)
 				delete(o.rdc, seq)
-				o.updateAcks(p.Sequence, seq, _EMPTY_)
-				// rdq handled below.
-			} else if isWider && store != nil {
-				// Our filtered subject, which could be all, is wider than the underlying purge.
-				// We need to check if the pending items left are still valid.
-				var smv StoreMsg
-				if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
-					if p.Sequence > o.adflr {
-						o.adflr = p.Sequence
-						if o.adflr > o.dseq {
-							o.dseq = o.adflr
-						}
-					}
-					delete(o.pending, seq)
-					delete(o.rdc, seq)
-					o.updateAcks(p.Sequence, seq, _EMPTY_)
-				}
+				o.moveAckFloor(p.Sequence, seq)
+				o.updateAcks(p.Sequence, seq, _EMPTY_, true)
 			}
 		}
 	}
@@ -7027,7 +7034,7 @@ func (o *consumer) decStreamPending(sseq uint64, subj string) {
 	} else if _, ok := o.rdc[sseq]; ok && o.isLeader() {
 		delete(o.rdc, sseq)
 		// Pass 0 as the delivered sequence to only remove the redelivered state.
-		o.updateAcks(0, sseq, _EMPTY_)
+		o.updateAcks(0, sseq, _EMPTY_, false)
 	}
 
 	o.mu.Unlock()
