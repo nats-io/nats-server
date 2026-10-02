@@ -215,6 +215,10 @@ type desiredRaftGroup struct {
 	// can't reach quorum may only evict what's recorded here.
 	Removed []string `json:"removed,omitempty"`
 
+	// Members are the Raft members known to hold the group's data, as reported by the group leader.
+	// It only grows, a peer leaves it together with the assignment. A peer not in it observes until added.
+	Members []string `json:"members,omitempty"`
+
 	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
 }
 
@@ -226,7 +230,8 @@ type desiredRaftGroupOrigin struct {
 	Cluster   string     `json:"cluster,omitempty"`
 	Replicas  int        `json:"replicas"`
 	Placement *Placement `json:"placement,omitempty"`
-	// When changing between retention policies, this retention remains active until unset.
+	// When changing between retention policies, this is the origin retention.
+	// While recorded the stream acts under Limits retention until converged.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
@@ -248,11 +253,14 @@ func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
 		return cfg
 	}
 	newCfg := cfg.clone()
-	if rg.Desired.Origin.Placement != nil {
-		newCfg.Placement = rg.Desired.Origin.Placement.clone()
-	}
+	// The origin always records the placement it started from, nil included, so an
+	// unconstrained origin must be restored just the same.
+	newCfg.Placement = rg.Desired.Origin.Placement.clone()
 	if rg.Desired.Origin.Retention != nil {
-		newCfg.Retention = *rg.Desired.Origin.Retention
+		// Any retention change means the stream acts under Limits until converged.
+		// Either we're moving from Limits to Interest, and we only apply Interest at the end.
+		// Or, we're moving from Interest to Limits, and must release the Interest restrictions prior to converging.
+		newCfg.Retention = LimitsPolicy
 	}
 	return newCfg
 }
