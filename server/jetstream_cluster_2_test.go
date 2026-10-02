@@ -5301,6 +5301,22 @@ func TestJetStreamClusterStreamAdvisories(t *testing.T) {
 			t.Fatalf("Got an unexpected error response: %+v", resresp.Error)
 		}
 
+		// The restore subscription may live on another server, so retry until its interest has propagated.
+		sendChunk := func(data []byte) *nats.Msg {
+			t.Helper()
+			var rmsg *nats.Msg
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				var err error
+				rmsg, err = nc.Request(resresp.DeliverSubject, data, time.Second)
+				if errors.Is(err, nats.ErrNoResponders) {
+					return err
+				}
+				require_NoError(t, err)
+				return nil
+			})
+			return rmsg
+		}
+
 		// Send our snapshot back in to restore the stream.
 		// Can be any size message.
 		var chunk [1024]byte
@@ -5309,12 +5325,9 @@ func TestJetStreamClusterStreamAdvisories(t *testing.T) {
 			if err != nil {
 				break
 			}
-			nc.Request(resresp.DeliverSubject, chunk[:n], time.Second)
+			sendChunk(chunk[:n])
 		}
-		rmsg, err = nc.Request(resresp.DeliverSubject, nil, time.Second)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
+		rmsg = sendChunk(nil)
 		resresp.Error = nil
 		json.Unmarshal(rmsg.Data, &resresp)
 		if resresp.Error != nil {
