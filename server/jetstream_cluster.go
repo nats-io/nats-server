@@ -6954,6 +6954,10 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			osa := mset.streamAssignment()
 			// If we already have a stream assignment and they are the same exact config, short circuit here.
 			if osa != nil {
+				// Set the index name on both to ensure the DeepEqual works.
+				js.mu.Lock()
+				matchSourceIndexNames(sa.Config, osa.Config)
+				js.mu.Unlock()
 				if reflect.DeepEqual(osa.Config, sa.Config) {
 					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) &&
 						reflect.DeepEqual(sa.Group.Desired, osa.Group.Desired) {
@@ -11046,16 +11050,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
 		// Set the index name on both to ensure the DeepEqual works
-		currentIName := make(map[string]struct{})
-		for _, s := range osa.Config.Sources {
-			currentIName[s.iname] = struct{}{}
-		}
-		for _, s := range cfg.Sources {
-			s.setIndexName()
-			if _, ok := currentIName[s.iname]; !ok {
-				s.iname = _EMPTY_
-			}
-		}
+		matchSourceIndexNames(cfg, osa.Config)
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
