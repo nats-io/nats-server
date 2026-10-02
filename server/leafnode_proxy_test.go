@@ -16,6 +16,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strings"
@@ -251,91 +252,24 @@ func TestLeafNodeHttpProxyConfigParsing(t *testing.T) {
 	}
 }
 
-func TestLeafNodeHttpProxyConfigWarnings(t *testing.T) {
-	testCases := []struct {
-		name          string
-		config        string
-		expectWarning bool
-		warningMatch  string
-	}{
-		{
-			name: "proxy with only TCP URLs",
-			config: `
-				leafnodes {
-					remotes = [
-						{
-							url: "nats://127.0.0.1:7422"
-							proxy {
-								url: "http://proxy.example.com:8080"
-							}
-						}
-					]
-				}
-			`,
-			expectWarning: true,
-			warningMatch:  "proxy configuration will be ignored",
-		},
-		{
-			name: "proxy with mixed TCP and WebSocket URLs",
-			config: `
-				leafnodes {
-					remotes = [
-						{
-							urls: ["nats://127.0.0.1:7422", "ws://127.0.0.1:8080"]
-							proxy {
-								url: "http://proxy.example.com:8080"
-							}
-						}
-					]
-				}
-			`,
-			expectWarning: true,
-			warningMatch:  "proxy configuration will only be used for WebSocket URLs",
-		},
-		{
-			name: "proxy with only WebSocket URLs",
-			config: `
-				leafnodes {
-					remotes = [
-						{
-							url: "ws://127.0.0.1:7422"
-							proxy {
-								url: "http://proxy.example.com:8080"
-							}
-						}
-					]
-				}
-			`,
-			expectWarning: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			configFile := createConfFile(t, []byte(tc.config))
-
-			opts, err := ProcessConfigFile(configFile)
-
-			if tc.expectWarning {
-				// With ProcessConfigFile, warnings don't cause errors
-				// The configuration should be valid but might log warnings
-				if err != nil {
-					t.Fatalf("Expected valid configuration with warnings, but got error: %v", err)
-				}
-				if opts == nil {
-					t.Fatal("Expected valid options but got nil")
-				}
-				// Note: With ProcessConfigFile, warnings are filtered out and not returned as errors
-				// The test verifies that the configuration is valid despite having warning conditions
-			} else {
-				// No warnings expected - should parse successfully
-				if err != nil {
-					t.Fatalf("Expected no error but got: %v", err)
-				}
-				if opts == nil {
-					t.Fatal("Expected valid options but got nil")
-				}
+func TestLeafNodeHttpProxyNoSchemeWarnings(t *testing.T) {
+	// The proxy is used for all remote URL schemes, so none of them should warn.
+	for _, urls := range [][]string{
+		{"nats://127.0.0.1:7422"},
+		{"nats://127.0.0.1:7422", "ws://127.0.0.1:8080"},
+		{"ws://127.0.0.1:7422"},
+	} {
+		t.Run(strings.Join(urls, ","), func(t *testing.T) {
+			remote := &RemoteLeafOpts{}
+			for _, u := range urls {
+				pu, err := url.Parse(u)
+				require_NoError(t, err)
+				remote.URLs = append(remote.URLs, pu)
 			}
+			remote.Proxy.URL = "http://proxy.example.com:8080"
+			warnings, err := validateLeafNodeProxyOptions(remote)
+			require_NoError(t, err)
+			require_Len(t, len(warnings), 0)
 		})
 	}
 }
@@ -716,6 +650,37 @@ func TestLeafNodeHttpProxyTunnelWithAuth(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Server goroutine didn't complete in time, but test data was exchanged successfully")
 	}
+}
+
+func TestLeafNodeHttpProxyTunnelKeepsBufferedBytes(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require_NoError(t, err)
+	defer l.Close()
+
+	// The proxy sends the CONNECT response and the target's first bytes in one write.
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		if _, err := conn.Read(buf); err != nil {
+			return
+		}
+		conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\nINFO {}\r\n"))
+		time.Sleep(time.Second)
+	}()
+
+	conn, err := establishHTTPProxyTunnel("http://"+l.Addr().String(), "127.0.0.1:7422", 5*time.Second, _EMPTY_, _EMPTY_)
+	require_NoError(t, err)
+	defer conn.Close()
+
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, len("INFO {}\r\n"))
+	_, err = io.ReadFull(conn, buf)
+	require_NoError(t, err)
+	require_Equal(t, string(buf), "INFO {}\r\n")
 }
 
 func TestLeafNodeHttpProxyTunnelFailsWithoutAuth(t *testing.T) {

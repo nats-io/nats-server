@@ -409,26 +409,9 @@ func validateLeafNodeProxyOptions(remote *RemoteLeafOpts) ([]string, error) {
 		return warnings, fmt.Errorf("proxy username and password must both be specified or both be empty")
 	}
 
-	if len(remote.URLs) > 0 {
-		hasWebSocketURL := false
-		hasNonWebSocketURL := false
-
-		for _, remoteURL := range remote.URLs {
-			if remoteURL.Scheme == wsSchemePrefix || remoteURL.Scheme == wsSchemePrefixTLS {
-				hasWebSocketURL = true
-				if (remoteURL.Scheme == wsSchemePrefixTLS) &&
-					remote.TLSConfig == nil && !remote.TLS {
-					return warnings, fmt.Errorf("proxy is configured but remote URL %s requires TLS and no TLS configuration is provided. When using proxy with TLS endpoints, ensure TLS is properly configured for the leafnode remote", remoteURL.String())
-				}
-			} else {
-				hasNonWebSocketURL = true
-			}
-		}
-
-		if !hasWebSocketURL {
-			warnings = append(warnings, "proxy configuration will be ignored: proxy settings only apply to WebSocket connections (ws:// or wss://), but all configured URLs use TCP connections (nats://)")
-		} else if hasNonWebSocketURL {
-			warnings = append(warnings, "proxy configuration will only be used for WebSocket URLs: proxy settings do not apply to TCP connections (nats://)")
+	for _, remoteURL := range remote.URLs {
+		if remoteURL.Scheme == wsSchemePrefixTLS && remote.TLSConfig == nil && !remote.TLS {
+			return warnings, fmt.Errorf("proxy is configured but remote URL %s requires TLS and no TLS configuration is provided. When using proxy with TLS endpoints, ensure TLS is properly configured for the leafnode remote", remoteURL.String())
 		}
 	}
 
@@ -651,7 +634,8 @@ func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration
 		return nil, fmt.Errorf("failed to write CONNECT request: %v", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to read proxy response: %v", err)
@@ -672,6 +656,11 @@ func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration
 		return nil, fmt.Errorf("failed to clear deadline: %v", err)
 	}
 
+	// Keep bytes the target sent along with the CONNECT response, like a hub's INFO.
+	if n := br.Buffered(); n > 0 {
+		pre, _ := br.Peek(n)
+		return &tlsMixConn{Conn: conn, pre: bytes.NewBuffer(pre)}, nil
+	}
 	return conn, nil
 }
 
@@ -796,17 +785,8 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 
 				// Check if proxy is configured
 				if proxyURL != _EMPTY_ {
-					targetHost := rURL.Host
-					// If URL doesn't include port, add the default port for the scheme
-					if rURL.Port() == _EMPTY_ {
-						defaultPort := "80"
-						if rURL.Scheme == wsSchemePrefixTLS {
-							defaultPort = "443"
-						}
-						targetHost = net.JoinHostPort(rURL.Hostname(), defaultPort)
-					}
-
-					conn, err = establishHTTPProxyTunnel(proxyURL, targetHost, proxyTimeout, proxyUsername, proxyPassword)
+					// Remote URLs always have a port, see setBaselineOptions.
+					conn, err = establishHTTPProxyTunnel(proxyURL, rURL.Host, proxyTimeout, proxyUsername, proxyPassword)
 				} else {
 					// Direct connection
 					conn, err = dialer("tcp", url, dialTimeout)
