@@ -22340,6 +22340,20 @@ func TestJetStreamAllowMsgCounter(t *testing.T) {
 			require_Error(t, err, NewJSMessageIncrInvalidError())
 		}
 
+		// Wait for all replicas to have applied all messages.
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			for _, cs := range servers {
+				mset, err := cs.globalAccount().lookupStream("TEST")
+				if err != nil {
+					return err
+				}
+				if lseq := mset.lastSeq(); lseq != 6 {
+					return fmt.Errorf("expected last seq 6 on %s, got %d", cs.Name(), lseq)
+				}
+			}
+			return nil
+		})
+
 		// Manually break a counter in storage.
 		for _, cs := range servers {
 			mset, err := cs.globalAccount().lookupStream("TEST")
