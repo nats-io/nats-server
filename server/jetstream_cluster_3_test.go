@@ -9159,21 +9159,47 @@ func TestJetStreamClusteredStreamCreateIdempotentWithSources(t *testing.T) {
 	_, err = js.AddStream(cfg)
 	require_NoError(t, err)
 
-	// Step down the stream leader until it lands on the meta leader.
-	// This ensures the meta leader's stored assignment has iname populated
-	// via the shared StreamSource pointer.
+	// The leadership transfer is best-effort and another peer could win the election, so retry.
+	stepDownTo := func(target *Server) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			c.waitOnStreamLeader(globalAccountName, "SOURCED")
+			sl := c.streamLeader(globalAccountName, "SOURCED")
+			if sl == nil {
+				return errors.New("no stream leader")
+			} else if sl == target {
+				return nil
+			}
+			mset, err := sl.globalAccount().lookupStream("SOURCED")
+			require_NoError(t, err)
+			// The stream leader could have changed in the meantime.
+			if err = mset.raftNode().StepDown(target.Node()); err != nil && err != errNotLeader {
+				return err
+			}
+			return fmt.Errorf("stream leader is %s, expected %s", sl.Name(), target.Name())
+		})
+	}
+
+	// Move the stream leader across all servers, ending on the meta leader.
+	// This ensures all stored assignments have iname populated via the shared StreamSource pointer.
 	ml := c.leader()
 	require_NotNil(t, ml)
-	sl := c.streamLeader(globalAccountName, "SOURCED")
-	require_NotNil(t, sl)
-	if sl != ml {
-		mset, err := sl.globalAccount().lookupStream("SOURCED")
-		require_NoError(t, err)
-		require_NoError(t, mset.raftNode().StepDown(ml.Node()))
-		c.waitOnStreamLeader(globalAccountName, "SOURCED")
-		sl = c.streamLeader(globalAccountName, "SOURCED")
+	for _, s := range c.servers {
+		if s != ml {
+			stepDownTo(s)
+		}
 	}
-	require_Equal(t, ml, sl)
+	stepDownTo(ml)
+
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("SOURCED")
+		require_NoError(t, err)
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		iname := mset.streamAssignment().Config.Sources[0].iname
+		sjs.mu.RUnlock()
+		require_NotEqual(t, iname, _EMPTY_)
+	}
 
 	// The second create should be idempotent, and succeed even though iname was set.
 	_, err = js.AddStream(cfg)
