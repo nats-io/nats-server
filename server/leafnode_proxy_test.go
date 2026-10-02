@@ -780,6 +780,34 @@ func TestLeafNodeHttpProxyValidationProgrammatic(t *testing.T) {
 			err: nil, // No error expected for empty URL
 		},
 		{
+			name: "proxy options without proxy URL",
+			setupOptions: func() *Options {
+				opts := &Options{}
+				opts.LeafNode.Remotes = []*RemoteLeafOpts{
+					{
+						URLs: []*url.URL{{Scheme: wsSchemePrefix, Host: "127.0.0.1:7422"}},
+					},
+				}
+				opts.LeafNode.Remotes[0].Proxy.Timeout = 5 * time.Second
+				return opts
+			},
+			err: errors.New("proxy URL must be specified when other proxy options are set"),
+		},
+		{
+			name: "proxy tls config without proxy URL",
+			setupOptions: func() *Options {
+				opts := &Options{}
+				opts.LeafNode.Remotes = []*RemoteLeafOpts{
+					{
+						URLs: []*url.URL{{Scheme: wsSchemePrefix, Host: "127.0.0.1:7422"}},
+					},
+				}
+				opts.LeafNode.Remotes[0].Proxy.TLSConfig = &tls.Config{}
+				return opts
+			},
+			err: errors.New("proxy URL must be specified when other proxy options are set"),
+		},
+		{
 			name: "invalid proxy URL parse failure",
 			setupOptions: func() *Options {
 				opts := &Options{}
@@ -1001,6 +1029,16 @@ func TestLeafNodeHttpProxyTLSConfigParsing(t *testing.T) {
 			proxy: `url: "https://proxy.example.com:3128"
 				tls { foo: bar }`,
 			err: `"foo" is not supported for proxy TLS`,
+		},
+		{
+			name:  "tls block without proxy url",
+			proxy: `tls { ca_file: "../test/configs/certs/ca.pem" }`,
+			err:   "proxy URL must be specified when other proxy options are set",
+		},
+		{
+			name:  "credentials without proxy url",
+			proxy: `username: "user", password: "pass"`,
+			err:   "proxy URL must be specified when other proxy options are set",
 		},
 		{
 			name: "https with client tls options",

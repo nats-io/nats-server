@@ -385,6 +385,11 @@ func validateLeafNodeProxyOptions(remote *RemoteLeafOpts) ([]string, error) {
 	var warnings []string
 
 	if remote.Proxy.URL == _EMPTY_ {
+		// Without a URL the proxy is not used, so any other proxy option is a mistake.
+		if remote.Proxy.Username != _EMPTY_ || remote.Proxy.Password != _EMPTY_ || remote.Proxy.Timeout != 0 ||
+			remote.Proxy.TLSConfig != nil || remote.Proxy.TLSTimeout != 0 {
+			return warnings, fmt.Errorf("proxy URL must be specified when other proxy options are set")
+		}
 		return warnings, nil
 	}
 
