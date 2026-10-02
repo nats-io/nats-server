@@ -1193,6 +1193,21 @@ func (ssi *StreamSource) setIndexName() {
 	ssi.iname = ssi.composeIName()
 }
 
+// matchSourceIndexNames sets the index names on cfg's sources only if they are also set on ocfg's sources.
+// The index name is not encoded, so this ensures a DeepEqual of both configs can succeed.
+func matchSourceIndexNames(cfg *StreamConfig, ocfg *StreamConfig) {
+	currentIName := make(map[string]struct{}, len(ocfg.Sources))
+	for _, s := range ocfg.Sources {
+		currentIName[s.iname] = struct{}{}
+	}
+	for _, s := range cfg.Sources {
+		s.setIndexName()
+		if _, ok := currentIName[s.iname]; !ok {
+			s.iname = _EMPTY_
+		}
+	}
+}
+
 // Composes the consumer index name. Contains the stream name and consumer name used for durable sourcing (if any).
 // When the stream is external we will use the api prefix as part of the index name
 // (as the same stream and consumer names could be used in multiple JS domains)
