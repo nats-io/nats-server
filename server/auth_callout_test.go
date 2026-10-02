@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -1826,6 +1827,326 @@ func TestAuthCalloutAuthUserFailDoesNotInvokeCallout(t *testing.T) {
 	if atomic.LoadUint32(&callouts) != 0 {
 		t.Fatalf("Expected callout to not be called")
 	}
+}
+
+func TestAuthCalloutSingleAuthUser(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			user: "auth"
+			password: "pwd"
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	// The auth user must not be sent to the callout, otherwise it can't connect.
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+	require_Equal(t, atomic.LoadUint32(&callouts), 0)
+
+	// The auth user with a wrong password is rejected without the callout.
+	ac.RequireConnectError(nats.UserInfo("auth", "zzz"))
+	require_Equal(t, atomic.LoadUint32(&callouts), 0)
+
+	// Any other user goes through the callout.
+	ac.RequireConnectError(nats.UserInfo("other", "pwd"))
+	require_Equal(t, atomic.LoadUint32(&callouts), 1)
+}
+
+func TestAuthCalloutWebsocketOverrideAuthUser(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			user: "other"
+			password: "pwd"
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+			authorization {
+				username: "auth"
+				password: "pwd"
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	ac := &authTest{t: t}
+	ac.conf = createConfFile(t, []byte(conf))
+	ac.srv, _ = RunServerWithConfig(ac.conf)
+	defer ac.Cleanup()
+
+	// The websocket auth user must not be sent to the callout, otherwise it can't connect.
+	ac.authClient = ac.WSConnect(nats.UserInfo("auth", "pwd"))
+	_, err := ac.authClient.Subscribe(AuthCalloutSubject, handler)
+	require_NoError(t, err)
+	require_NoError(t, ac.authClient.Flush())
+	require_Equal(t, atomic.LoadUint32(&callouts), 0)
+
+	// The websocket auth user's credentials on the regular listener go through the callout.
+	ac.RequireConnectError(nats.UserInfo("auth", "pwd"))
+	require_Equal(t, atomic.LoadUint32(&callouts), 1)
+}
+
+func TestAuthCalloutAuthUserNkeyInjectionDoesNotSkipCallout(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			users: [
+				{ user: "auth", password: "pwd" }
+				{ user: "ordinary", password: "valid_pass" }
+			]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// Raw TCP connection since the client library refuses an nkey without a server nonce.
+	c, err := net.Dial("tcp", ac.srv.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	// Inject an auth user as nkey in the CONNECT options, this must not skip the callout.
+	_, err = c.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ordinary\",\"pass\":\"valid_pass\",\"nkey\":\"auth\"}\r\nPING\r\n"))
+	require_NoError(t, err)
+
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	line, err := br.ReadString('\n')
+	require_NoError(t, err)
+	require_False(t, strings.HasPrefix(line, "PONG"))
+	require_Contains(t, line, "Authorization Violation")
+
+	if atomic.LoadUint32(&callouts) != 1 {
+		t.Fatalf("Expected callout to be called")
+	}
+}
+
+func TestAuthCalloutOperatorModeAuthUserFailDoesNotInvokeCallout(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+	`, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	contents, err := os.ReadFile(creds)
+	require_NoError(t, err)
+	ujwt, err := jwt.ParseDecoratedJWT(contents)
+	require_NoError(t, err)
+
+	// Raw TCP connection since the client library always signs the nonce.
+	c, err := net.Dial("tcp", ac.srv.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+
+	// The auth service user's JWT without a valid nonce signature must be rejected without the callout.
+	_, err = fmt.Fprintf(c, "CONNECT {\"verbose\":false,\"jwt\":%q}\r\nPING\r\n", ujwt)
+	require_NoError(t, err)
+
+	// Must be rejected immediately, not after waiting for the callout to time out.
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(time.Second)))
+	line, err := br.ReadString('\n')
+	require_NoError(t, err)
+	require_Contains(t, line, "Authorization Violation")
+
+	if atomic.LoadUint32(&callouts) != 0 {
+		t.Fatalf("Expected callout to not be called")
+	}
+}
+
+func TestAuthCalloutOperatorModeAuthUserNkeyInjectionDoesNotSkipCallout(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	// The authorized user for the service.
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+	`, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	// An ordinary user in the AUTH account, which must go through the callout.
+	ukp, _ := nkeys.CreateUser()
+	upubOrdinary, _ := ukp.PublicKey()
+	uclaim := newJWTTestUserClaims()
+	uclaim.Name = "ordinary"
+	uclaim.Subject = upubOrdinary
+	ujwt, err := uclaim.Encode(akp)
+	require_NoError(t, err)
+
+	// Raw TCP connection since the client library doesn't allow sending both a JWT and an nkey.
+	c, err := net.Dial("tcp", ac.srv.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+
+	br := bufio.NewReader(c)
+	l, err := br.ReadString('\n')
+	require_NoError(t, err)
+	var info Info
+	require_NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(l), "INFO ")), &info))
+	sig, err := ukp.Sign([]byte(info.Nonce))
+	require_NoError(t, err)
+
+	// Inject the auth service user as nkey in the CONNECT options, this must not skip the callout.
+	cs := fmt.Sprintf("CONNECT {\"verbose\":false,\"jwt\":%q,\"sig\":%q,\"nkey\":%q}\r\nPING\r\n",
+		ujwt, base64.RawURLEncoding.EncodeToString(sig), upub)
+	_, err = c.Write([]byte(cs))
+	require_NoError(t, err)
+
+	require_NoError(t, c.SetReadDeadline(time.Now().Add(2*time.Second)))
+	line, err := br.ReadString('\n')
+	require_NoError(t, err)
+	require_False(t, strings.HasPrefix(line, "PONG"))
+	require_Contains(t, line, "Authorization Violation")
+
+	if atomic.LoadUint32(&callouts) != 1 {
+		t.Fatalf("Expected callout to be called")
+	}
+}
+
+func TestAuthCalloutEmptyAuthUserDoesNotSkipCallout(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			user: "auth"
+			password: "pwd"
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth, "" ]
+			}
+		}
+		websocket {
+			listen: "127.0.0.1:-1"
+			no_tls: true
+			authorization {
+				token: "secret"
+			}
+		}
+	`
+	callouts := uint32(0)
+	handler := func(m *nats.Msg) {
+		atomic.AddUint32(&callouts, 1)
+		// Nil response signals no authentication.
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer ac.Cleanup()
+
+	// A token has no user, which must not match an empty auth user and skip the callout.
+	_, err := ac.WSNewClient(nats.Token("secret"))
+	require_Error(t, err)
+	require_Equal(t, atomic.LoadUint32(&callouts), 1)
 }
 
 func TestAuthCalloutAuthErrEvents(t *testing.T) {
