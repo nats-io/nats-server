@@ -7178,6 +7178,11 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	needDelete := accStreams != nil && accStreams[stream] != nil
 	if needDelete {
 		osa := accStreams[stream]
+		if osa.Group != nil && osa.Group.node != nil {
+			// Check if we were leader of a node that was already deleted
+			n := osa.Group.node
+			wasLeader = wasLeader || (n.IsDeleted() && n.GroupLeader() == n.ID())
+		}
 		if osa.unsupported != nil {
 			osa.unsupported.closeInfoSub(js.srv)
 			// Remember we used to be unsupported, just so we can send a successful delete response.
@@ -9268,7 +9273,9 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	}
 
 	if sa := js.streamAssignmentOrInflight(result.Account, result.Stream); sa != nil && !sa.reassigning {
-		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
+		// A delayed restore failure may refer to an earlier assignment with the same name.
+		// Leave failed restore assignments for explicit cleanup.
+		canDelete := !result.Update && result.Restore == nil && time.Since(sa.Created) < 5*time.Second
 
 		// See if we should retry in case this cluster is full but there are others.
 		if cfg, ci := sa.Config, sa.Client; cfg != nil && ci != nil && isInsufficientResourcesErr(result.Response) && canDelete {
