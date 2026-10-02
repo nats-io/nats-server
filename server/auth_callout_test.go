@@ -1608,6 +1608,76 @@ func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 	defer nc.Close()
 }
 
+func TestAuthCalloutOperatorModeStampedTrustedKeys(t *testing.T) {
+	// Operator mode through trusted keys stamped in the binary, instead of an operator in the config.
+	opub, err := oKp.PublicKey()
+	require_NoError(t, err)
+	trustedKeys = opub
+	defer func() { trustedKeys = _EMPTY_ }()
+
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH callout service account with a signing key.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+	skKp, skPub := createKey(t)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.SigningKeys.Add(skPub)
+	authClaim.EnableExternalAuthorization(upub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		system_account: %s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+			%s: %s
+		}
+	`, spub, apub, authJwt, spub, sysJwt)
+
+	const signingKeyToken = "--SK--"
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		signer := akp
+		var issuerAccount string
+		if opts.Token == signingKeyToken {
+			signer, issuerAccount = skKp, apub
+		}
+		cr := jwt.NewAuthorizationResponseClaims(user)
+		cr.Audience = si.ID
+		cr.Jwt = createAuthUser(t, user, "user", apub, issuerAccount, signer, 0, nil)
+		cr.IssuerAccount = issuerAccount
+		token, err := cr.Encode(signer)
+		require_NoError(t, err)
+		m.Respond([]byte(token))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+	require_Len(t, len(ac.srv.getOpts().TrustedKeys), 0)
+
+	ucreds := createBasicAccountUser(t, akp)
+	defer removeFile(t, ucreds)
+
+	// Responses signed by the account or its signing key are accepted, as in operator mode.
+	ac.Connect(nats.UserCredentials(ucreds)).Close()
+	ac.Connect(nats.UserCredentials(ucreds), nats.Token(signingKeyToken)).Close()
+}
+
 func TestAuthCalloutOperatorModeEncryption(t *testing.T) {
 	_, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)

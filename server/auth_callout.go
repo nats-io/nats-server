@@ -42,7 +42,7 @@ func titleCase(m string) string {
 
 // Process a callout on this client's behalf.
 func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool, ujwt string) (authorized bool, errStr string) {
-	isOperatorMode := len(opts.TrustedKeys) > 0
+	isOperatorMode := s.trustedKeys != nil
 
 	// this is the account the user connected in, or the one running the callout
 	var acc *Account
