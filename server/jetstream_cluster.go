@@ -9273,7 +9273,9 @@ func (js *jetStream) processStreamAssignmentResults(sub *subscription, c *client
 	}
 
 	if sa := js.streamAssignmentOrInflight(result.Account, result.Stream); sa != nil && !sa.reassigning {
-		canDelete := !result.Update && time.Since(sa.Created) < 5*time.Second
+		// A delayed restore failure may refer to an earlier assignment with the same name.
+		// Leave failed restore assignments for explicit cleanup.
+		canDelete := !result.Update && result.Restore == nil && time.Since(sa.Created) < 5*time.Second
 
 		// See if we should retry in case this cluster is full but there are others.
 		if cfg, ci := sa.Config, sa.Client; cfg != nil && ci != nil && isInsufficientResourcesErr(result.Response) && canDelete {
