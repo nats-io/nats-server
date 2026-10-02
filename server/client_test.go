@@ -5193,3 +5193,77 @@ func TestClientMsgsMetric(t *testing.T) {
 		t.Fatalf("Did not get expected outClientMsg/Bytes for message sent on qsub")
 	}
 }
+
+func newProcessMsgResultsTestClient(s *Server, acc *Account, nc net.Conn) *client {
+	c := &client{srv: s, acc: acc, kind: CLIENT, nc: nc}
+	c.initClient()
+	return c
+}
+
+func flushProcessMsgResultsTestClient(t *testing.T, c *client, nc *testConnWritePartial) []byte {
+	t.Helper()
+	c.mu.Lock()
+	c.flushOutbound()
+	c.mu.Unlock()
+	return append([]byte(nil), nc.buf.Bytes()...)
+}
+
+func TestProcessMsgResultsLazySubjectScratch(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	defer s.Shutdown()
+	acc := NewAccount("A")
+	c := newProcessMsgResultsTestClient(s, acc, nil)
+	r := &SublistResult{}
+	msg, subject := []byte("payload"+CR_LF), []byte("published")
+
+	if allocs := testing.AllocsPerRun(100, func() {
+		c.processMsgResults(acc, r, msg, nil, subject, nil, pmrNoFlag)
+	}); allocs != 0 {
+		t.Fatalf("Expected no scratch allocation without mapped subscriptions, got %g allocations per call", allocs)
+	}
+}
+
+func TestProcessMsgResultsMappedSubjectScratchLongDeliver(t *testing.T) {
+	for _, queueMode := range []bool{false, true} {
+		name := "psubs"
+		if queueMode {
+			name = "qsubs"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := defaultServerOptions
+			s := New(&opts)
+			defer s.Shutdown()
+			acc := NewAccount("A")
+			sender := newProcessMsgResultsTestClient(s, acc, nil)
+			const payload = "payload"
+			targets := []string{"mapped." + strings.Repeat("a", 129), "mapped." + strings.Repeat("b", 129)}
+			conns := []*testConnWritePartial{{}, {}}
+			subs := make([]*subscription, 2)
+			for i := range subs {
+				receiver := newProcessMsgResultsTestClient(s, NewAccount("B"), conns[i])
+				subs[i] = &subscription{
+					client: receiver,
+					sid:    []byte(fmt.Sprint(i + 1)),
+					queue:  []byte(fmt.Sprintf("workers-%d", i+1)),
+					im:     &streamImport{to: targets[i]},
+				}
+			}
+			r := &SublistResult{}
+			if queueMode {
+				r.qsubs = [][]*subscription{{subs[0]}, {subs[1]}}
+			} else {
+				r.psubs = subs
+			}
+			sender.pa = pubArg{size: len(payload), szb: []byte(fmt.Sprint(len(payload)))}
+			sender.processMsgResults(acc, r, []byte(payload+CR_LF), []byte(targets[0]), []byte("deliver.ORDERS"), nil, pmrNoFlag)
+
+			for i, sub := range subs {
+				want := fmt.Sprintf("MSG %s %s %d\r\n%s\r\n", targets[0], sub.sid, len(payload), payload)
+				if got := string(flushProcessMsgResultsTestClient(t, sub.client, conns[i])); got != want {
+					t.Errorf("Mapped recipient %q: got %q, want %q", sub.im.to, got, want)
+				}
+			}
+		})
+	}
+}
