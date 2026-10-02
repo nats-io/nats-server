@@ -453,6 +453,9 @@ func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
 	case <-s.quitCh:
 		return
 	}
+	if !s.isRunning() || s.isLameDuckMode() {
+		return
+	}
 	clearInProgress = !connectToRemoteLeafNode(s, remote, false)
 }
 
@@ -776,7 +779,7 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 	reconnectTimer.Stop()
 	defer stopAndClearTimer(&reconnectTimer)
 
-	for s.isRunning() && remote.stillValid() {
+	for s.isRunning() && !s.isLameDuckMode() && remote.stillValid() {
 		rURL := remote.pickNextURL()
 		url, err := s.getRandomIP(resolver, rURL.Host, nil)
 		if err == nil {
@@ -1068,7 +1071,15 @@ func (s *Server) startLeafNodeAcceptLoop() {
 	if warn {
 		s.Warnf(leafnodeTLSInsecureWarning)
 	}
-	go s.acceptConnections(l, "Leafnode", func(conn net.Conn) { s.createLeafNode(conn, nil, nil, nil) }, nil)
+	go s.acceptConnections(l, "Leafnode", func(conn net.Conn) { s.createLeafNode(conn, nil, nil, nil) },
+		func(_ error) bool {
+			if s.isLameDuckMode() {
+				s.ldmCh <- true
+				<-s.quitCh
+				return true
+			}
+			return false
+		})
 	s.mu.Unlock()
 }
 
@@ -1396,6 +1407,15 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// We will process the INFO from the readloop and finish by
 		// sending the CONNECT and finish registration later.
 	} else {
+		// Websocket leafnodes do TLS in the websocket http server, so there is
+		// no TLS initiation below. Mark the handshake as complete, as is done
+		// for websocket clients, so that TLS state (e.g. verified client chains)
+		// is available to auth callout.
+		if c.isWebsocket() {
+			if _, ok := c.nc.(*tls.Conn); ok {
+				c.flags.set(handshakeComplete)
+			}
+		}
 		// Send our info to the other side.
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
@@ -1967,6 +1987,10 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 
 	var old *client
 	s.mu.Lock()
+	if s.ldm {
+		s.mu.Unlock()
+		return false
+	}
 	// We check for empty because in some test we may send empty CONNECT{}
 	if checkForDup && srvName != _EMPTY_ {
 		for _, ol := range s.leafs {
@@ -2348,7 +2372,10 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// Add in the leafnode here since we passed through auth at this point.
-	s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true)
+	if !s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true) {
+		c.closeConnection(ServerShutdown)
+		return nil
+	}
 
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.

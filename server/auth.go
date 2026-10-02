@@ -1048,6 +1048,10 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 				c.Debugf("User JWT generated invalid permissions")
 				return false
 			}
+			// The scoped template may have introduced a proxy requirement.
+			if proxyRequired = juc.ProxyRequired; proxyRequired && !trustedProxy {
+				return setProxyAuthError(ErrAuthProxyRequired)
+			}
 		}
 		if acc.IsExpired() {
 			c.Debugf("Account JWT has expired")

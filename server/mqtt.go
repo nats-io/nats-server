@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -95,6 +96,9 @@ const (
 
 	// Maximum payload size of a control packet
 	mqttMaxPayloadSize = 0xFFFFFFF
+
+	// Packet overhead allowed above max_payload once connected: fixed header (5), largest topic or filter (2+65535) and packet identifier (2).
+	mqttMaxPacketOverhead = 5 + 2 + 65535 + 2
 
 	// Topic/Filter characters
 	mqttTopicLevelSep = '/'
@@ -443,6 +447,7 @@ type mqttPending struct {
 	sseq         uint64 // stream sequence
 	jsAckSubject string // the ACK subject to send the ack to
 	jsDur        string // JS durable name
+	qos          byte   // QoS the PUBLISH was delivered with
 }
 
 type mqttConnectProto struct {
@@ -462,6 +467,7 @@ type mqttReader struct {
 	pos    int
 	pstart int
 	pbuf   []byte
+	owned  bool // buf is backed by pbuf, not the caller's read buffer
 }
 
 type mqttWriter struct {
@@ -833,18 +839,17 @@ func (c *client) mqttParse(buf []byte) error {
 			break
 		}
 
-		maxLen := int32(jwt.NoLimit)
-		if !connected {
-			maxLen = atomic.LoadInt32(&c.mpay)
+		mpay := atomic.LoadInt32(&c.mpay)
+		maxLen := mpay
+		if connected && maxLen != jwt.NoLimit && maxLen <= math.MaxInt32-mqttMaxPacketOverhead {
+			// Allow room for a topic or filter, which is not capped by max_payload.
+			maxLen += mqttMaxPacketOverhead
 		}
-		pl, complete, err = r.readPacketLen(maxLen)
+		pl, complete, err = r.readPacketLen(pt, maxLen)
 		if err != nil || !complete {
 			if err == ErrMaxPayload {
-				c.maxPayloadViolation(pl, maxLen)
+				c.maxPayloadViolation(pl, mpay)
 			}
-			break
-		}
-		if err = mqttCheckRemainingLength(pt, pl); err != nil {
 			break
 		}
 
@@ -2907,7 +2912,7 @@ func (as *mqttAccountSessionManager) serializeRetainedMsgsForSub(rms map[string]
 			return
 		}
 		if qos > 0 {
-			pi = sess.trackPublishRetained(string(sub.sid))
+			pi = sess.trackPublishRetained(string(sub.sid), qos)
 
 			// If we failed to get a PI for this message, send it as a QoS0, the
 			// best we can do?
@@ -3640,7 +3645,7 @@ func mqttRetainedPendingDur(sid string) string {
 // both entries via untrackPublish.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
+func (sess *mqttSession) trackPublishRetained(sid string, qos byte) uint16 {
 	// Make sure we initialize the tracking maps.
 	if sess.pendingPublish == nil {
 		sess.pendingPublish = make(map[uint16]*mqttPending)
@@ -3660,7 +3665,7 @@ func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
 		sess.cpending[dur] = sseqToPi
 	}
 	sseqToPi[uint64(pi)] = pi
-	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi)}
+	sess.pendingPublish[pi] = &mqttPending{jsDur: dur, sseq: uint64(pi), qos: qos}
 
 	return pi
 }
@@ -3672,7 +3677,7 @@ func (sess *mqttSession) trackPublishRetained(sid string) uint16 {
 // duplicate delivery attempt.
 //
 // Lock held on entry
-func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool) {
+func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string, qos byte) (uint16, bool) {
 	var dup bool
 	var pi uint16
 
@@ -3736,11 +3741,13 @@ func (sess *mqttSession) trackPublish(jsDur, jsAckSubject string) (uint16, bool)
 			jsDur:        jsDur,
 			sseq:         sseq,
 			jsAckSubject: jsAckSubject,
+			qos:          qos,
 		}
 	} else {
 		ack.jsAckSubject = jsAckSubject
 		ack.sseq = sseq
 		ack.jsDur = jsDur
+		ack.qos = qos
 	}
 
 	return pi, dup
@@ -5559,6 +5566,15 @@ func (c *client) mqttProcessPublishReceived(pi uint16, isPubRec bool) (err error
 		return errMQTTInvalidSession
 	}
 	if isPubRec {
+		// Reply to a PI not delivered as QoS2 without storing the PUBREL, so the client can still complete.
+		if p, ok := sess.pendingPublish[pi]; !ok || p.qos != 2 {
+			sess.mu.Unlock()
+			c.mu.Lock()
+			trace := c.trace
+			c.mu.Unlock()
+			c.mqttEnqueuePubResponse(mqttPacketPubRel, pi, trace)
+			return nil
+		}
 		// The JS ACK subject for the PUBREL will be filled in at the delivery
 		// attempt.
 		sess.trackAsPubRel(pi, _EMPTY_)
@@ -5889,7 +5905,7 @@ func mqttDeliverMsgCbQoS12(sub *subscription, pc *client, _ *Account, subject, r
 		return
 	}
 
-	pi, dup := sess.trackPublish(sub.mqtt.jsDur, reply)
+	pi, dup := sess.trackPublish(sub.mqtt.jsDur, reply, qos)
 	sess.mu.Unlock()
 
 	if pi == 0 {
@@ -6695,11 +6711,10 @@ func mqttNeedSubForLevelUp(subject string) bool {
 //////////////////////////////////////////////////////////////////////////////
 
 func (r *mqttReader) reset(buf []byte) {
-	if l := len(r.pbuf); l > 0 {
-		tmp := make([]byte, l+len(buf))
-		copy(tmp, r.pbuf)
-		copy(tmp[l:], buf)
-		buf = tmp
+	r.owned = len(r.pbuf) > 0
+	if r.owned {
+		// Append to the partial packet so a trickled packet isn't copied in full on every read.
+		buf = append(r.pbuf, buf...)
 		r.pbuf = nil
 	}
 	r.buf = buf
@@ -6720,12 +6735,16 @@ func (r *mqttReader) readByte(field string) (byte, error) {
 	return b, nil
 }
 
-func (r *mqttReader) readPacketLen(maxLen int32) (int, bool, error) {
+func (r *mqttReader) readPacketLen(pt byte, maxLen int32) (int, bool, error) {
 	v, complete, err := r.readVarInt()
 	if err != nil {
 		return 0, false, err
 	}
 	if complete {
+		// Reject invalid lengths before buffering a partial packet.
+		if err = mqttCheckRemainingLength(pt, v); err != nil {
+			return 0, false, err
+		}
 		packetEnd := r.pos + v
 		packetLen := packetEnd - r.pstart
 		if maxLen != jwt.NoLimit && int64(packetLen) > int64(maxLen) {
@@ -6735,8 +6754,12 @@ func (r *mqttReader) readPacketLen(maxLen int32) (int, bool, error) {
 			return v, true, nil
 		}
 	}
-	r.pbuf = make([]byte, len(r.buf)-r.pstart)
-	copy(r.pbuf, r.buf[r.pstart:])
+	// Reuse our own buffer if it still holds only this partial packet.
+	if r.owned && r.pstart == 0 {
+		r.pbuf = r.buf
+	} else {
+		r.pbuf = copyBytes(r.buf[r.pstart:])
+	}
 	return 0, false, nil
 }
 
