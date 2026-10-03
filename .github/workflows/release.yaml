@@ -44,7 +44,7 @@ jobs:
           syft-version: "v1.42.3"
 
       - name: Create release
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
           version: "~> v2"
