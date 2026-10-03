@@ -9556,3 +9556,27 @@ func TestJetStreamClusterRestoreWaitsForPreferredReceiver(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, string(message.Data), "restored message")
 }
+
+func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.JetStream = true
+	o.StoreDir = t.TempDir()
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	// Set up the meta group after a Shutdown has stopped new goroutines from
+	// starting, so the meta monitor is never started. No cluster block is
+	// needed since setupMetaGroup is called directly.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+	require_NoError(t, s.getJetStream().setupMetaGroup())
+
+	// Must not wait for a monitor that is not running.
+	start := time.Now()
+	s.shutdownJetStream()
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("shutdownJetStream took %v", elapsed)
+	}
+}
