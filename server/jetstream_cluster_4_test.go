@@ -12085,3 +12085,61 @@ func TestJetStreamClusterRestoreFailureDoesNotDeleteReplacement(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, string(msg.Data), "restored message")
 }
+
+func TestJetStreamClusterMetaMonitorShutdownRightAfterStart(t *testing.T) {
+	// The meta monitor goroutine can first run after shutdownJetStream has
+	// cleared the meta group state, which used to crash a clustered server
+	// shut down right after it started. A single proc makes that likely.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	for r := range 25 {
+		var wg sync.WaitGroup
+		for i := range 32 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				o := DefaultTestOptions
+				o.Port = -1
+				o.ServerName = fmt.Sprintf("S-%d-%d", r, i)
+				o.JetStream = true
+				o.StoreDir = t.TempDir()
+				o.Cluster.Name = "R1S"
+				o.Cluster.Host = o.Host
+				o.Cluster.Port = -1
+				// Clustered JetStream requires a route, nothing needs to listen on it.
+				o.Routes = RoutesFromStr("nats://127.0.0.1:1")
+				s := RunServer(&o)
+				start := time.Now()
+				s.Shutdown()
+				if elapsed := time.Since(start); elapsed > 5*time.Second {
+					t.Errorf("Shutdown of %s took %v", o.ServerName, elapsed)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.JetStream = true
+	o.StoreDir = t.TempDir()
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	// Set up the meta group after a Shutdown has stopped new goroutines from
+	// starting, so the meta monitor is never started. No cluster block is
+	// needed since setupMetaGroup is called directly.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+	require_NoError(t, s.getJetStream().setupMetaGroup())
+
+	// Must not wait for a monitor that is not running.
+	start := time.Now()
+	s.shutdownJetStream()
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("shutdownJetStream took %v", elapsed)
+	}
+}

@@ -1427,6 +1427,7 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	c := s.createInternalJetStreamClient()
+	qch, stopped := make(chan struct{}), make(chan struct{})
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -1435,8 +1436,8 @@ func (js *jetStream) setupMetaGroup() error {
 		streams: make(map[string]map[string]*streamAssignment),
 		s:       s,
 		c:       c,
-		qch:     make(chan struct{}),
-		stopped: make(chan struct{}),
+		qch:     qch,
+		stopped: stopped,
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
@@ -1447,13 +1448,18 @@ func (js *jetStream) setupMetaGroup() error {
 
 	// Set to true before we start.
 	js.metaRecovering = true
-	js.srv.startGoRoutine(
-		js.monitorCluster,
+	// Pass the node and channels to the monitor, shutdownJetStream can clear
+	// them from js.cluster before the monitor goroutine first runs.
+	if !js.srv.startGoRoutine(
+		func() { js.monitorCluster(n, qch, stopped) },
 		pprofLabels{
 			"type":    "metaleader",
 			"account": sysAcc.Name,
 		},
-	)
+	) {
+		// Shutting down, shutdownJetStream must not wait for a monitor that never ran.
+		close(stopped)
+	}
 	return nil
 }
 
@@ -1953,16 +1959,6 @@ func (js *jetStream) clusterQuitC() chan struct{} {
 	return nil
 }
 
-// Return the cluster stopped chan.
-func (js *jetStream) clusterStoppedC() chan struct{} {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	if js.cluster != nil {
-		return js.cluster.stopped
-	}
-	return nil
-}
-
 // Mark that the meta layer is recovering.
 func (js *jetStream) setMetaRecovering() {
 	js.mu.Lock()
@@ -2169,9 +2165,9 @@ func (js *jetStream) getOrphans() (streams []*stream, consumers []*consumer) {
 	return streams, consumers
 }
 
-func (js *jetStream) monitorCluster() {
-	s, n := js.server(), js.getMetaGroup()
-	qch, stopped, rqch, lch, aq := js.clusterQuitC(), js.clusterStoppedC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+func (js *jetStream) monitorCluster(n RaftNode, qch, stopped chan struct{}) {
+	s := js.server()
+	rqch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
 	defer close(stopped)
