@@ -1484,6 +1484,33 @@ func (s *Server) configureAccounts(reloading bool) (map[string]struct{}, error) 
 		s.mu.Unlock()
 		s.addSystemAccountExports(sysAcc)
 		s.mu.Lock()
+		// On reload the system account's exports were rebuilt from the
+		// options above, which dropped the internally added ones (such as
+		// the JetStream API export) until addSystemAccountExports put them
+		// back. Imports resolved in between were left with a nil export,
+		// so re-resolve them now that every export exists again.
+		if reloading {
+			s.accounts.Range(func(_, v any) bool {
+				acc := v.(*Account)
+				acc.mu.Lock()
+				for _, sis := range acc.imports.services {
+					for _, si := range sis {
+						if si.se != nil || si.acc == nil {
+							continue
+						}
+						if si.acc == acc {
+							si.se = acc.getServiceExport(si.to)
+							continue
+						}
+						si.acc.mu.RLock()
+						si.se = si.acc.getServiceExport(si.to)
+						si.acc.mu.RUnlock()
+					}
+				}
+				acc.mu.Unlock()
+				return true
+			})
+		}
 	}
 
 	return awcsti, nil
@@ -4459,6 +4486,11 @@ func (s *Server) lameDuckMode() {
 	s.listener.Close()
 	s.listener = nil
 	expected += s.closeWebsocketServer()
+	if s.leafNodeListener != nil {
+		expected++
+		s.leafNodeListener.Close()
+		s.leafNodeListener = nil
+	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
 	gp := opts.LameDuckGracePeriod
@@ -4494,7 +4526,7 @@ func (s *Server) lameDuckMode() {
 
 	s.mu.Lock()
 	// Need to recheck few things
-	if s.isShuttingDown() || len(s.clients) == 0 {
+	if s.isShuttingDown() || len(s.clients)+len(s.leafs) == 0 {
 		s.mu.Unlock()
 		// If there is no client, we need to call Shutdown() to complete
 		// the LDMode. If server has been shutdown while lock was released,
@@ -4507,9 +4539,9 @@ func (s *Server) lameDuckMode() {
 	if dur <= 0 {
 		dur = int64(time.Second)
 	}
-	numClients := int64(len(s.clients))
+	numClients := int64(len(s.clients) + len(s.leafs))
 	batch := 1
-	// Sleep interval between each client connection close.
+	// Sleep interval between each client or leaf connection close.
 	var si int64
 	if numClients != 0 {
 		si = dur / numClients
@@ -4527,11 +4559,14 @@ func (s *Server) lameDuckMode() {
 		si = int64(time.Second)
 	}
 
-	// Now capture all clients
-	clients := make([]*client, 0, len(s.clients))
+	clients := make([]*client, 0, len(s.clients)+len(s.leafs))
 	for _, client := range s.clients {
 		clients = append(clients, client)
 	}
+	for _, leaf := range s.leafs {
+		clients = append(clients, leaf)
+	}
+	rand.Shuffle(len(clients), func(i, j int) { clients[i], clients[j] = clients[j], clients[i] })
 	// Now that we know that no new client can be accepted,
 	// send INFO to routes and clients to notify this state.
 	s.sendLDMToRoutes()

@@ -2687,6 +2687,27 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
+	// Clustered ephemeral consumers use the assignment name as their identity,
+	// while the original consumer config can have an empty Name. Make sure a
+	// snapshot remains restorable in that case.
+	ephSubj := nats.NewInbox()
+	ephSub, err := nc.Subscribe(ephSubj, func(*nats.Msg) {})
+	if err != nil {
+		t.Fatalf("Unexpected error subscribing for ephemeral consumer: %v", err)
+	}
+	defer ephSub.Unsubscribe()
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("Unexpected error flushing ephemeral consumer subscription: %v", err)
+	}
+	eph, err := js.AddConsumer("TEST", &nats.ConsumerConfig{
+		DeliverSubject:    ephSubj,
+		DeliverPolicy:     nats.DeliverNewPolicy,
+		AckPolicy:         nats.AckNonePolicy,
+		InactiveThreshold: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Unexpected error creating ephemeral consumer: %v", err)
+	}
 
 	jsub, err := js.PullSubscribe("foo", "dlc")
 	if err != nil {
@@ -2840,6 +2861,7 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 
 	// Wait on the system to elect a leader for the restored consumer.
 	c.waitOnConsumerLeader("$G", "TEST", "dlc")
+	c.waitOnConsumerLeader("$G", "TEST", eph.Name)
 
 	// Now check for the consumer being recreated.
 	nci, err := js.ConsumerInfo("TEST", "dlc")
@@ -2857,6 +2879,14 @@ func TestJetStreamClusterUserSnapshotAndRestore(t *testing.T) {
 	nci.AckFloor.Last, ci.AckFloor.Last = nil, nil
 	if nci.AckFloor != ci.AckFloor {
 		t.Fatalf("Ack floors did not match %+v vs %+v", nci.AckFloor, ci.AckFloor)
+	}
+
+	ephInfo, err := js.ConsumerInfo("TEST", eph.Name)
+	if err != nil {
+		t.Fatalf("Unexpected error getting restored ephemeral consumer info: %v", err)
+	}
+	if ephInfo.Config.Durable != _EMPTY_ {
+		t.Fatalf("Expected restored consumer to remain ephemeral, got durable %q", ephInfo.Config.Durable)
 	}
 
 	// Make sure consumer works.
@@ -9859,7 +9889,7 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	// This is fine for the RAFT log and allowing the consumer to be created,
 	// but we will not be able to apply the consumer assignment for some time.
 	mjs := nl.getJetStream()
-	require_NotNil(t, js)
+	require_NotNil(t, mjs)
 	mg := mjs.getMetaGroup()
 	require_NotNil(t, mg)
 	err = mg.(*raft).PauseApply()
@@ -10071,7 +10101,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10182,7 +10212,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10256,7 +10286,7 @@ func TestJetStreamClusterStreamHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10392,7 +10422,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10514,7 +10544,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
@@ -10594,7 +10624,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
@@ -12808,7 +12838,8 @@ func TestJetStreamClusterWALReplayPreservesFirstSeq(t *testing.T) {
 
 type snapshotlessRaftNode struct {
 	RaftNode
-	id string
+	id    string
+	peers []string
 }
 
 func (n *snapshotlessRaftNode) ID() string                         { return n.id }
@@ -12816,51 +12847,74 @@ func (n *snapshotlessRaftNode) Progress() (uint64, uint64, uint64) { return 1, 1
 func (n *snapshotlessRaftNode) LoadLastSnapshot() (uint64, []byte, error) {
 	return 0, nil, errNoSnapAvailable
 }
+func (n *snapshotlessRaftNode) Peers() []*Peer {
+	peers := make([]*Peer, 0, len(n.peers))
+	for _, p := range n.peers {
+		peers = append(peers, &Peer{ID: p})
+	}
+	return peers
+}
 
 func TestJetStreamClusterPrepareForWALReplayPreservesR1ScaleUpSource(t *testing.T) {
-	s := RunBasicJetStreamServer(t)
-	defer s.Shutdown()
-
-	nc, js := jsClientConnect(t, s)
-	defer nc.Close()
-
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
-	require_NoError(t, err)
-	for range 3 {
-		_, err = js.Publish("foo", []byte("msg"))
-		require_NoError(t, err)
-	}
-
-	mset, err := s.GlobalAccount().lookupStream("TEST")
-	require_NoError(t, err)
-	fs := mset.store.(*fileStore)
-	fs.syncOnFlush.Store(true)
-
-	// Simulate the original R1 peer restarting before bootstrap completed.
 	const source = "source"
-	n := &snapshotlessRaftNode{id: source}
-	mset.mu.Lock()
-	mset.node = n
-	mset.sa = &streamAssignment{Group: &raftGroup{Desired: &desiredRaftGroup{
-		Peers: []string{source, "peer-2", "peer-3"},
-		Origin: &desiredRaftGroupOrigin{
-			Peers:    []string{source},
-			Replicas: 1,
-		},
-	}}}
-	mset.mu.Unlock()
-	defer func() {
-		mset.mu.Lock()
-		mset.node, mset.sa = nil, nil
-		mset.mu.Unlock()
-	}()
+	for _, test := range []struct {
+		title   string
+		peers   []string
+		origin  *desiredRaftGroupOrigin
+		desired []string
+		msgs    uint64
+	}{
+		// The original R1 peer restarting before bootstrap completed.
+		{"R1 origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 3},
+		// After stacked updates the origin needn't name the source, only the membership does.
+		{"stacked origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source, "peer-2", "peer-3"}, Replicas: 3}, []string{source, "peer-4", "peer-5"}, 3},
+		// The source only adds peers after snapshotting, so a WAL without one is complete.
+		{"not sole member", []string{source, "peer-2"}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 0},
+		// A plain R1 isn't scaling up, its WAL is complete.
+		{"plain R1", []string{source}, nil, nil, 0},
+		// A scale down to R1 doesn't grow, its WAL is complete.
+		{"scale down to R1", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source, "peer-2", "peer-3"}, Replicas: 3}, []string{source}, 0},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
 
-	// Its new WAL cannot reconstruct the existing R1 stream state,
-	// prepareStreamRecovery must preserve the stream store
-	require_NoError(t, prepareStreamRecovery(mset, n))
-	state := mset.state()
-	require_Equal(t, state.Msgs, 3)
-	require_Equal(t, state.LastSeq, 3)
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
+			require_NoError(t, err)
+			for range 3 {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			fs := mset.store.(*fileStore)
+			fs.syncOnFlush.Store(true)
+
+			n := &snapshotlessRaftNode{id: source, peers: test.peers}
+			mset.mu.Lock()
+			mset.node = n
+			mset.sa = &streamAssignment{Group: &raftGroup{}}
+			if test.desired != nil {
+				mset.sa.Group.Desired = &desiredRaftGroup{Peers: test.desired, Origin: test.origin}
+			}
+			mset.mu.Unlock()
+			defer func() {
+				mset.mu.Lock()
+				mset.node, mset.sa = nil, nil
+				mset.mu.Unlock()
+			}()
+
+			// A sole member's new WAL can't reconstruct the existing stream state, so its store must be preserved.
+			require_NoError(t, prepareStreamRecovery(mset, n))
+			state := mset.state()
+			require_Equal(t, state.Msgs, test.msgs)
+			require_Equal(t, state.LastSeq, test.msgs)
+		})
+	}
 }
 
 func TestJetStreamClusterPrepareForWALReplayTruncatesStore(t *testing.T) {
@@ -15406,6 +15460,74 @@ func TestJetStreamClusterRaftCatchupSignalsMetaRecoveryRecreateConsumerRemoved(t
 		return nil
 	})
 }
+
+func TestJetStreamClusterMetaCatchupRespondsToStagedRequests(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterTempl, "R3S", 3,
+		func(serverName, _, _, conf string) string {
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, serverName)
+		})
+	defer c.shutdown()
+
+	// All assets are R1 on rs, so rs responds for them.
+	rs := c.randomNonLeader()
+	tags := []string{rs.Name()}
+	nc, js := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	for _, name := range []string{"TEST", "OLD"} {
+		_, err := js.AddStream(&nats.StreamConfig{Name: name, Placement: &nats.Placement{Tags: tags}})
+		require_NoError(t, err)
+	}
+	_, err := js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "OLD"})
+	require_NoError(t, err)
+
+	// Put rs in a catchup to an unreachable index, so it ignores new entries. Once stalled for 2s,
+	// the leader's next heartbeat makes rs request a real catchup, which delivers the requests below.
+	meta := rs.getJetStream().getMetaGroup().(*raft)
+	meta.Lock()
+	meta.createCatchup(&appendEntry{pterm: 100, pindex: 100})
+	meta.Unlock()
+
+	sub := natsSubSync(t, nc, "reply")
+	for _, r := range []struct {
+		subj string
+		req  any
+	}{
+		{fmt.Sprintf(JSApiStreamCreateT, "NEW"), &StreamConfig{Name: "NEW", Storage: FileStorage, Placement: &Placement{Tags: tags}}},
+		{fmt.Sprintf(JSApiDurableCreateT, "TEST", "NEW"), &CreateConsumerRequest{Stream: "TEST", Config: ConsumerConfig{Durable: "NEW"}}},
+		{fmt.Sprintf(JSApiStreamDeleteT, "OLD"), nil},
+		{fmt.Sprintf(JSApiConsumerDeleteT, "TEST", "OLD"), nil},
+	} {
+		var b []byte
+		if r.req != nil {
+			b, err = json.Marshal(r.req)
+			require_NoError(t, err)
+		}
+		require_NoError(t, nc.PublishRequest(r.subj, "reply", b))
+	}
+
+	// Wait for the meta leader to apply all requests, so they're all part of the catchup.
+	mjs := c.leader().getJetStream()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		if mjs.streamAssignment(globalAccountName, "NEW") == nil ||
+			mjs.consumerAssignment(globalAccountName, "TEST", "NEW") == nil ||
+			mjs.streamAssignment(globalAccountName, "OLD") != nil ||
+			mjs.consumerAssignment(globalAccountName, "TEST", "OLD") != nil {
+			return errors.New("not applied yet")
+		}
+		return nil
+	})
+
+	for range 4 {
+		msg, err := sub.NextMsg(5 * time.Second)
+		require_NoError(t, err)
+		var resp ApiResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_True(t, resp.Error == nil)
+	}
+}
+
 func TestJetStreamClusterMetaRecoveryRecreateStream(t *testing.T) {
 	test := func(t *testing.T, newStream bool) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)

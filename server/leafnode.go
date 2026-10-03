@@ -385,6 +385,11 @@ func validateLeafNodeProxyOptions(remote *RemoteLeafOpts) ([]string, error) {
 	var warnings []string
 
 	if remote.Proxy.URL == _EMPTY_ {
+		// Without a URL the proxy is not used, so any other proxy option is a mistake.
+		if remote.Proxy.Username != _EMPTY_ || remote.Proxy.Password != _EMPTY_ || remote.Proxy.Timeout != 0 ||
+			remote.Proxy.TLSConfig != nil || remote.Proxy.TLSTimeout != 0 {
+			return warnings, fmt.Errorf("proxy URL must be specified when other proxy options are set")
+		}
 		return warnings, nil
 	}
 
@@ -401,34 +406,25 @@ func validateLeafNodeProxyOptions(remote *RemoteLeafOpts) ([]string, error) {
 		return warnings, fmt.Errorf("proxy URL must specify a host")
 	}
 
+	if remote.Proxy.TLSConfig != nil && proxyURL.Scheme != "https" {
+		return warnings, fmt.Errorf("proxy TLS configuration requires an https proxy URL, got: %s", proxyURL.Scheme)
+	}
+
 	if remote.Proxy.Timeout < 0 {
 		return warnings, fmt.Errorf("proxy timeout must be >= 0")
+	}
+
+	if remote.Proxy.TLSTimeout < 0 {
+		return warnings, fmt.Errorf("proxy TLS timeout must be >= 0")
 	}
 
 	if (remote.Proxy.Username == _EMPTY_) != (remote.Proxy.Password == _EMPTY_) {
 		return warnings, fmt.Errorf("proxy username and password must both be specified or both be empty")
 	}
 
-	if len(remote.URLs) > 0 {
-		hasWebSocketURL := false
-		hasNonWebSocketURL := false
-
-		for _, remoteURL := range remote.URLs {
-			if remoteURL.Scheme == wsSchemePrefix || remoteURL.Scheme == wsSchemePrefixTLS {
-				hasWebSocketURL = true
-				if (remoteURL.Scheme == wsSchemePrefixTLS) &&
-					remote.TLSConfig == nil && !remote.TLS {
-					return warnings, fmt.Errorf("proxy is configured but remote URL %s requires TLS and no TLS configuration is provided. When using proxy with TLS endpoints, ensure TLS is properly configured for the leafnode remote", remoteURL.String())
-				}
-			} else {
-				hasNonWebSocketURL = true
-			}
-		}
-
-		if !hasWebSocketURL {
-			warnings = append(warnings, "proxy configuration will be ignored: proxy settings only apply to WebSocket connections (ws:// or wss://), but all configured URLs use TCP connections (nats://)")
-		} else if hasNonWebSocketURL {
-			warnings = append(warnings, "proxy configuration will only be used for WebSocket URLs: proxy settings do not apply to TCP connections (nats://)")
+	for _, remoteURL := range remote.URLs {
+		if remoteURL.Scheme == wsSchemePrefixTLS && remote.TLSConfig == nil && !remote.TLS {
+			return warnings, fmt.Errorf("proxy is configured but remote URL %s requires TLS and no TLS configuration is provided. When using proxy with TLS endpoints, ensure TLS is properly configured for the leafnode remote", remoteURL.String())
 		}
 	}
 
@@ -451,6 +447,9 @@ func (s *Server) reConnectToRemoteLeafNode(remote *leafNodeCfg) {
 	case <-remote.quitCh:
 		return
 	case <-s.quitCh:
+		return
+	}
+	if !s.isRunning() || s.isLameDuckMode() {
 		return
 	}
 	clearInProgress = !connectToRemoteLeafNode(s, remote, false)
@@ -611,8 +610,19 @@ func (s *Server) setLeafNodeNonExportedOptions() {
 
 const sharedSysAccDelay = 250 * time.Millisecond
 
+// proxyDialAddress returns the proxy's host:port, defaulting the port based on the scheme.
+func proxyDialAddress(u *url.URL) string {
+	if u.Port() != _EMPTY_ {
+		return u.Host
+	}
+	if u.Scheme == "https" {
+		return net.JoinHostPort(u.Hostname(), "443")
+	}
+	return net.JoinHostPort(u.Hostname(), "80")
+}
+
 // establishHTTPProxyTunnel establishes an HTTP CONNECT tunnel through a proxy server
-func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration, username, password string) (net.Conn, error) {
+func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration, username, password string, tlsConfig *tls.Config, tlsTimeout time.Duration) (net.Conn, error) {
 	proxyAddr, err := url.Parse(proxyURL)
 	if err != nil {
 		// This should not happen since proxy URL is validated during configuration parsing
@@ -620,12 +630,38 @@ func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration
 	}
 
 	// Connect to the proxy server
-	conn, err := natsDialTimeout("tcp", proxyAddr.Host, timeout)
+	conn, err := natsDialTimeout("tcp", proxyDialAddress(proxyAddr), timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to proxy: %v", err)
 	}
 
-	// Set deadline for the entire proxy handshake
+	if proxyAddr.Scheme == "https" {
+		var cfg *tls.Config
+		if tlsConfig != nil {
+			cfg = tlsConfig.Clone()
+		} else {
+			cfg = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		if cfg.ServerName == _EMPTY_ {
+			cfg.ServerName = proxyAddr.Hostname()
+		}
+		if tlsTimeout <= 0 {
+			tlsTimeout = DEFAULT_LEAF_TLS_TIMEOUT
+		}
+		tlsConn := tls.Client(conn, cfg)
+		// The TLS handshake has its own timeout, like other TLS handshakes.
+		if err := tlsConn.SetDeadline(time.Now().Add(tlsTimeout)); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to set deadline: %v", err)
+		}
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("proxy TLS handshake failed: %v", err)
+		}
+		conn = tlsConn
+	}
+
+	// Set deadline for the CONNECT exchange
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to set deadline: %v", err)
@@ -648,7 +684,8 @@ func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration
 		return nil, fmt.Errorf("failed to write CONNECT request: %v", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to read proxy response: %v", err)
@@ -669,7 +706,46 @@ func establishHTTPProxyTunnel(proxyURL, targetHost string, timeout time.Duration
 		return nil, fmt.Errorf("failed to clear deadline: %v", err)
 	}
 
-	return conn, nil
+	// Wrap TLS to the proxy, so it isn't mistaken for TLS to the remote.
+	_, isTLS := conn.(*tls.Conn)
+	n := br.Buffered()
+	if !isTLS && n == 0 {
+		return conn, nil
+	}
+	pc := &proxyTunnelConn{Conn: conn}
+	// Keep bytes the target sent along with the CONNECT response, like a hub's INFO.
+	if n > 0 {
+		pre, _ := br.Peek(n)
+		pc.pre = bytes.NewBuffer(pre)
+	}
+	return pc, nil
+}
+
+// proxyTunnelConn is a connection tunneled through a proxy, returning bytes
+// read past the CONNECT response first.
+type proxyTunnelConn struct {
+	net.Conn
+	pre *bytes.Buffer
+}
+
+func (c *proxyTunnelConn) Read(b []byte) (int, error) {
+	if c.pre != nil {
+		n, err := c.pre.Read(b)
+		if c.pre.Len() == 0 {
+			c.pre = nil
+		}
+		return n, err
+	}
+	return c.Conn.Read(b)
+}
+
+// Close the TLS connection to the proxy in a go routine, like closeConnection does for *tls.Conn.
+func (c *proxyTunnelConn) Close() error {
+	if _, ok := c.Conn.(*tls.Conn); ok {
+		go c.Conn.Close()
+		return nil
+	}
+	return c.Conn.Close()
 }
 
 // Connect to a remote leaf node asynchronously (that is, this function will do
@@ -776,7 +852,7 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 	reconnectTimer.Stop()
 	defer stopAndClearTimer(&reconnectTimer)
 
-	for s.isRunning() && remote.stillValid() {
+	for s.isRunning() && !s.isLameDuckMode() && remote.stillValid() {
 		rURL := remote.pickNextURL()
 		url, err := s.getRandomIP(resolver, rURL.Host, nil)
 		if err == nil {
@@ -793,17 +869,12 @@ func connectToRemoteLeafNode(s *Server, remote *leafNodeCfg, firstConnect bool) 
 
 				// Check if proxy is configured
 				if proxyURL != _EMPTY_ {
-					targetHost := rURL.Host
-					// If URL doesn't include port, add the default port for the scheme
-					if rURL.Port() == _EMPTY_ {
-						defaultPort := "80"
-						if rURL.Scheme == wsSchemePrefixTLS {
-							defaultPort = "443"
-						}
-						targetHost = net.JoinHostPort(rURL.Hostname(), defaultPort)
-					}
-
-					conn, err = establishHTTPProxyTunnel(proxyURL, targetHost, proxyTimeout, proxyUsername, proxyPassword)
+					// Read per attempt so that a reloaded proxy TLS config is picked up.
+					remote.RLock()
+					proxyTLSConfig, proxyTLSTimeout := remote.Proxy.TLSConfig, secondsToDuration(remote.Proxy.TLSTimeout)
+					remote.RUnlock()
+					// Remote URLs always have a port, see setBaselineOptions.
+					conn, err = establishHTTPProxyTunnel(proxyURL, rURL.Host, proxyTimeout, proxyUsername, proxyPassword, proxyTLSConfig, proxyTLSTimeout)
 				} else {
 					// Direct connection
 					conn, err = dialer("tcp", url, dialTimeout)
@@ -1068,7 +1139,15 @@ func (s *Server) startLeafNodeAcceptLoop() {
 	if warn {
 		s.Warnf(leafnodeTLSInsecureWarning)
 	}
-	go s.acceptConnections(l, "Leafnode", func(conn net.Conn) { s.createLeafNode(conn, nil, nil, nil) }, nil)
+	go s.acceptConnections(l, "Leafnode", func(conn net.Conn) { s.createLeafNode(conn, nil, nil, nil) },
+		func(_ error) bool {
+			if s.isLameDuckMode() {
+				s.ldmCh <- true
+				<-s.quitCh
+				return true
+			}
+			return false
+		})
 	s.mu.Unlock()
 }
 
@@ -1396,6 +1475,15 @@ func (s *Server) createLeafNode(conn net.Conn, rURL *url.URL, remote *leafNodeCf
 		// We will process the INFO from the readloop and finish by
 		// sending the CONNECT and finish registration later.
 	} else {
+		// Websocket leafnodes do TLS in the websocket http server, so there is
+		// no TLS initiation below. Mark the handshake as complete, as is done
+		// for websocket clients, so that TLS state (e.g. verified client chains)
+		// is available to auth callout.
+		if c.isWebsocket() {
+			if _, ok := c.nc.(*tls.Conn); ok {
+				c.flags.set(handshakeComplete)
+			}
+		}
 		// Send our info to the other side.
 		// Remember the nonce we sent here for signatures, etc.
 		c.nonce = make([]byte, nonceLen)
@@ -1967,6 +2055,10 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 
 	var old *client
 	s.mu.Lock()
+	if s.ldm {
+		s.mu.Unlock()
+		return false
+	}
 	// We check for empty because in some test we may send empty CONNECT{}
 	if checkForDup && srvName != _EMPTY_ {
 		for _, ol := range s.leafs {
@@ -2348,7 +2440,10 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 	}
 
 	// Add in the leafnode here since we passed through auth at this point.
-	s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true)
+	if !s.addLeafNodeConnection(c, proto.Name, proto.Cluster, true) {
+		c.closeConnection(ServerShutdown)
+		return nil
+	}
 
 	// If we have permissions bound to this leafnode we need to send then back to the
 	// origin server for local enforcement.

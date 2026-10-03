@@ -121,7 +121,7 @@ func testMQTTReadPacket(t testing.TB, r *mqttReader) (byte, int) {
 			t.Fatalf("Error reading packet: %v", err)
 		}
 		var complete bool
-		pl, complete, err = r.readPacketLen(MAX_PAYLOAD_SIZE)
+		pl, complete, err = r.readPacketLen(b&mqttPacketMask, MAX_PAYLOAD_SIZE)
 		if err != nil {
 			t.Fatalf("Error reading packet: %v", err)
 		}
@@ -220,7 +220,7 @@ func TestMQTTReader(t *testing.T) {
 		if pt := b & mqttPacketMask; pt != mqttPacketPub {
 			t.Fatalf("Unexpected byte: %v", b)
 		}
-		pl, complete, err := r.readPacketLen(MAX_PAYLOAD_SIZE)
+		pl, complete, err := r.readPacketLen(mqttPacketPub, MAX_PAYLOAD_SIZE)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -345,11 +345,47 @@ func TestMQTTPacketLenMaxPayloadViolation(t *testing.T) {
 	_, err := r.readByte("packet type")
 	require_NoError(t, err)
 
-	packetLen, complete, err := r.readPacketLen(maxPayload)
+	packetLen, complete, err := r.readPacketLen(mqttPacketConnect, maxPayload)
 	require_Error(t, err, ErrMaxPayload)
 	require_False(t, complete)
 	require_Equal(t, packetLen, w.Len())
 	require_Equal(t, len(r.pbuf), 0)
+}
+
+func TestMQTTPartialPacketNotCopiedOnEveryRead(t *testing.T) {
+	const payloadLen = 64 * 1024
+	w := newMQTTWriter(0)
+	w.WriteByte(mqttPacketPub)
+	w.WriteVarInt(2 + 3 + payloadLen)
+	w.WriteString("foo")
+	w.Write(bytes.Repeat([]byte{'A'}, payloadLen))
+	packet := w.Bytes()
+
+	r := &mqttReader{}
+	var reallocs int
+	var last *byte
+	for i, b := range packet {
+		r.reset([]byte{b})
+		r.pstart = r.pos
+		_, err := r.readByte("packet type")
+		require_NoError(t, err)
+		pl, complete, err := r.readPacketLen(mqttPacketPub, MAX_PAYLOAD_SIZE)
+		require_NoError(t, err)
+		if i == len(packet)-1 {
+			require_True(t, complete)
+			require_Equal(t, pl, 2+3+payloadLen)
+			require_True(t, bytes.Equal(r.buf, packet))
+		} else {
+			require_False(t, complete)
+			require_Equal(t, len(r.pbuf), i+1)
+			if p := &r.pbuf[0]; p != last {
+				reallocs++
+				last = p
+			}
+		}
+	}
+	// Buffer growth should be amortized, not a new allocation and copy per read.
+	require_True(t, reallocs < 100)
 }
 
 func testMQTTDefaultOptions() *Options {
@@ -1936,6 +1972,15 @@ func TestMQTTMalformedRemainingLengthCausesDisconnect(t *testing.T) {
 			},
 		},
 		{
+			name: "puback incomplete",
+			packet: func(t *testing.T) (net.Conn, []byte) {
+				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				// Declare the maximum remaining length but only send part of the packet.
+				return mc, []byte{mqttPacketPubAck, 0xff, 0xff, 0xff, 0x7f, 0, 1}
+			},
+		},
+		{
 			name: "publish",
 			packet: func(t *testing.T) (net.Conn, []byte) {
 				mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
@@ -3258,7 +3303,7 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	sess := mqttSession{}
 
 	sess.last_pi = 0xFFFF
-	pi := sess.trackPublishRetained("foo")
+	pi := sess.trackPublishRetained("foo", 1)
 	if pi != 1 {
 		t.Fatalf("Expected 1, got %v", pi)
 	}
@@ -3267,13 +3312,13 @@ func TestMQTTTrackPendingOverrun(t *testing.T) {
 	for i := 1; i <= 0xFFFF; i++ {
 		sess.pendingPublish[uint16(i)] = p
 	}
-	pi, _ = sess.trackPublish("test", "test")
+	pi, _ = sess.trackPublish("test", "test", 1)
 	if pi != 0 {
 		t.Fatalf("Expected 0, got %v", pi)
 	}
 
 	delete(sess.pendingPublish, 1234)
-	pi = sess.trackPublishRetained("foo")
+	pi = sess.trackPublishRetained("foo", 1)
 	if pi != 1234 {
 		t.Fatalf("Expected 1234, got %v", pi)
 	}
@@ -6882,6 +6927,82 @@ func TestMQTTConfigReload(t *testing.T) {
 	testMQTTCheckPubMsg(t, c, r, "bar", mqttPubQos1, []byte("msg4"))
 }
 
+func TestMQTTConfigReloadKeepsQoS1DeliveryWithDefaultMaxAckPending(t *testing.T) {
+	tlsMap := `tls {
+		cert_file: "../test/configs/certs/tlsauth/server.pem"
+		key_file: "../test/configs/certs/tlsauth/server-key.pem"
+		ca_file: "../test/configs/certs/tlsauth/ca.pem"
+		verify_and_map: true
+		timeout: 2
+	}`
+	for _, test := range []struct {
+		name   string
+		before string
+		after  string
+		users  string
+		cert   bool
+	}{
+		// With a tls block the TLS config is rebuilt on every reload, so even a
+		// reload that changes nothing applies the MQTT options again (#8661).
+		{"no-op reload with certificate mapped user", tlsMap, tlsMap, `users = [ { user: "CN=example.com,OU=NATS.io" } ]`, true},
+		{"reload changing ack_wait", `ack_wait: "30s"`, `ack_wait: "45s"`, `users = [ { user: "u", password: "p" } ]`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmpl := `
+				listen: 127.0.0.1:-1
+				server_name: mqtt
+				jetstream { store_dir: %q }
+				mqtt {
+					listen: 127.0.0.1:-1
+					%s
+				}
+				authorization { %s }
+			`
+			dir := t.TempDir()
+			conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, dir, test.before, test.users)))
+			s, o := RunServerWithConfig(conf)
+			defer testMQTTShutdownServer(s)
+
+			connect := func(id string) (net.Conn, *mqttReader) {
+				ci := &mqttConnInfo{clientID: id, cleanSess: true}
+				if test.cert {
+					tlsc, err := GenTLSConfig(&TLSConfigOpts{
+						CertFile: "../test/configs/certs/tlsauth/client.pem",
+						KeyFile:  "../test/configs/certs/tlsauth/client-key.pem",
+					})
+					require_NoError(t, err)
+					tlsc.InsecureSkipVerify = true
+					tlsc.MinVersion = tls.VersionTLS13
+					ci.tls, ci.tlsc = true, tlsc
+				} else {
+					ci.user, ci.pass = "u", "p"
+				}
+				c, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+				testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+				return c, r
+			}
+			sub, rs := connect("sub")
+			defer sub.Close()
+			testMQTTSub(t, 1, sub, rs, []*mqttFilter{{filter: "foo", qos: 1}}, []byte{1})
+			testMQTTFlush(t, sub, nil, rs)
+			pub, rp := connect("pub")
+			defer pub.Close()
+
+			testMQTTPublish(t, pub, rp, 1, false, false, "foo", 1, []byte("msg1"))
+			pi := testMQTTCheckPubMsg(t, sub, rs, "foo", mqttPubQos1, []byte("msg1"))
+			testMQTTSendPIPacket(mqttPacketPubAck, t, sub, pi)
+
+			changeCurrentConfigContentWithNewContent(t, conf, []byte(fmt.Sprintf(tmpl, dir, test.after, test.users)))
+			require_NoError(t, s.Reload())
+
+			// max_ack_pending is not set, so the session must keep the default
+			// limit instead of 0, which would stop every QoS 1 delivery.
+			testMQTTPublish(t, pub, rp, 1, false, false, "foo", 2, []byte("msg2"))
+			testMQTTCheckPubMsg(t, sub, rs, "foo", mqttPubQos1, []byte("msg2"))
+		})
+	}
+}
+
 func TestMQTTStreamInfoReturnsNonEmptySubject(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
@@ -8722,6 +8843,40 @@ func TestMQTTMaxPayloadDoesNotCapPublishTopic(t *testing.T) {
 
 	testMQTTSendPublishPacket(t, mc, 0, false, false, strings.Repeat("a", 1100), 0, nil)
 	testMQTTFlush(t, mc, nil, r)
+}
+
+func TestMQTTIncompletePacketMaxPayloadViolationDisconnects(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	o.MaxPayload = 1024
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	for _, test := range []struct {
+		name   string
+		header byte
+	}{
+		{"publish", mqttPacketPub},
+		{"subscribe", mqttPacketSub | mqttSubscribeFlags},
+		{"unsubscribe", mqttPacketUnsub | mqttUnsubscribeFlags},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mc, r := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+			defer mc.Close()
+			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+			// Declare the maximum remaining length but only send a few bytes.
+			w := newMQTTWriter(0)
+			w.WriteByte(test.header)
+			w.WriteVarInt(mqttMaxPayloadSize)
+			w.WriteString("foo")
+			w.Write(bytes.Repeat([]byte{'A'}, 100))
+
+			_, err := testMQTTWrite(mc, w.Bytes())
+			require_NoError(t, err)
+
+			testMQTTExpectDisconnect(t, mc)
+		})
+	}
 }
 
 func TestMQTTJSApiMapping(t *testing.T) {
@@ -10814,4 +10969,64 @@ func TestMQTTDeleteMsgRequestEncoding(t *testing.T) {
 			t.Fatalf("seq %v: got %s, expected %s", seq, got, expected)
 		}
 	}
+}
+
+func TestMQTTQoS2UntrackedPubRecNotStored(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	cp, rp := testMQTTConnect(t, &mqttConnInfo{clientID: "pub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer cp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, cp, rp, 2, false, true, "baz", 1, []byte("retained"))
+
+	c, r := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
+	defer c.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, c, r, []*mqttFilter{{filter: "foo", qos: 2}, {filter: "bar", qos: 1}}, []byte{2, 1})
+	testMQTTFlush(t, c, nil, r)
+
+	// PUBRECs for a PI that was never delivered get a PUBREL, but must not store one.
+	for range 100 {
+		testMQTTSendPIPacket(mqttPacketPubRec, t, c, 100)
+		testMQTTReadPIPacket(mqttPacketPubRel, t, r, 100)
+	}
+
+	// A PUBREC for a QoS1 delivery must not store a PUBREL, the PUBACK still works.
+	testMQTTPublish(t, cp, rp, 1, false, false, "bar", 1, []byte("qos1"))
+	pi := testMQTTCheckPubMsgNoAck(t, c, r, "bar", mqttPubQos1, []byte("qos1"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+	testMQTTSendPIPacket(mqttPacketPubAck, t, c, pi)
+	testMQTTExpectNothing(t, r)
+
+	// A genuine QoS2 delivery must still result in a PUBREL.
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("data"))
+	pi = testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("data"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, pi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, pi)
+
+	// A retained QoS2 delivery must also result in a PUBREL.
+	testMQTTSub(t, 2, c, r, []*mqttFilter{{filter: "baz", qos: 2}}, []byte{2})
+	rpi := testMQTTCheckPubMsgNoAck(t, c, r, "baz", mqttPubQoS2|mqttPubFlagRetain, []byte("retained"))
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, rpi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, rpi)
+
+	// A QoS2 delivery in flight during UNSUBSCRIBE must still complete [MQTT-3.10.4-3].
+	testMQTTPublish(t, cp, rp, 2, false, false, "foo", 1, []byte("unsub"))
+	upi := testMQTTCheckPubMsgNoAck(t, c, r, "foo", mqttPubQoS2, []byte("unsub"))
+	testMQTTUnsub(t, 3, c, r, []*mqttFilter{{filter: "foo"}})
+	testMQTTSendPIPacket(mqttPacketPubRec, t, c, upi)
+	testMQTTReadPIPacket(mqttPacketPubRel, t, r, upi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, upi)
+
+	// Only the genuine PUBRELs were stored.
+	mset, err := s.GlobalAccount().lookupStream(mqttOutStreamName)
+	require_NoError(t, err)
+	require_Equal(t, mset.state().Msgs, 2)
+
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, pi)
+	testMQTTSendPIPacket(mqttPacketPubComp, t, c, rpi)
+	testMQTTExpectNothing(t, r)
 }

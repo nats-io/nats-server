@@ -79,6 +79,75 @@ func (ss *SequenceSet) Exists(seq uint64) bool {
 	return false
 }
 
+// SpanEnd returns the last sequence in the consecutive span starting at seq.
+// If seq is not in the set, it returns 0, false.
+func (ss *SequenceSet) SpanEnd(seq uint64) (end uint64, found bool) {
+	if ss == nil {
+		return 0, false
+	}
+
+	// Keep only ancestors that are successors of the node being searched for.
+	var path [32]*node
+	parents := path[:0]
+	n := ss.root
+	for n != nil {
+		if seq < n.base {
+			parents = append(parents, n)
+			n = n.l
+		} else if seq-n.base >= numEntries {
+			n = n.r
+		} else {
+			break
+		}
+	}
+	if n == nil || !n.exists(seq) {
+		return 0, false
+	}
+
+	offset := seq - n.base
+	bucket, bit := offset/bitsPerBucket, offset%bitsPerBucket
+	for {
+		for ; bucket < numBuckets; bucket++ {
+			// Ignore bits before seq and find the first missing sequence.
+			if missing := ^n.bits[bucket] & (^uint64(0) << bit); missing != 0 {
+				delta := uint64(bits.TrailingZeros64(missing)) - bit
+				if delta > ^uint64(0)-seq {
+					return ^uint64(0), true
+				}
+				return seq + delta - 1, true
+			}
+			// A full word can be skipped, unless it reaches the sequence limit.
+			step := uint64(bitsPerBucket) - bit
+			if step > ^uint64(0)-seq {
+				return ^uint64(0), true
+			}
+			seq += step
+			bit = 0
+		}
+
+		// Advance to the next node in tree order without searching from the root.
+		if n.r != nil {
+			n = n.r
+			for n.l != nil {
+				parents = append(parents, n)
+				n = n.l
+			}
+		} else if len(parents) > 0 {
+			n = parents[len(parents)-1]
+			parents = parents[:len(parents)-1]
+		} else {
+			return seq - 1, true
+		}
+		// A gap in node coverage ends the span. SetInitialMin can leave an
+		// unaligned node overlapping its successor, so resume at seq's offset.
+		if n.base > seq || seq-n.base >= numEntries {
+			return seq - 1, true
+		}
+		offset = seq - n.base
+		bucket, bit = offset/bitsPerBucket, offset%bitsPerBucket
+	}
+}
+
 // SetInitialMin should be used to set the initial minimum sequence when known.
 // This will more effectively utilize space versus self selecting.
 // The set should be empty.
@@ -279,10 +348,6 @@ func (ss SequenceSet) Encode(buf []byte) []byte {
 		buf = buf[:encLen]
 	}
 
-	// TODO(dlc) - Go 1.19 introduced Append to not have to keep track.
-	// Once 1.20 is out we could change this over.
-	// Also binary.Write() is way slower, do not use.
-
 	var le = binary.LittleEndian
 	buf[0], buf[1] = magic, version
 	i := hdrLen
@@ -290,14 +355,15 @@ func (ss SequenceSet) Encode(buf []byte) []byte {
 	le.PutUint32(buf[i+4:], uint32(ss.size))
 	i += 8
 	ss.root.nodeIter(func(n *node) {
-		le.PutUint64(buf[i:], n.base)
-		i += 8
-		for _, b := range n.bits {
-			le.PutUint64(buf[i:], b)
-			i += 8
+		// Bound the whole record once, and read buckets without copying the array.
+		const nodeLen = (numBuckets+1)*8 + 2
+		record := buf[i : i+nodeLen]
+		le.PutUint64(record, n.base)
+		for j := range n.bits {
+			le.PutUint64(record[8+j*8:], n.bits[j])
 		}
-		le.PutUint16(buf[i:], uint16(n.h))
-		i += 2
+		le.PutUint16(record[nodeLen-2:], uint16(n.h))
+		i += nodeLen
 	})
 	return buf[:i]
 }
@@ -566,6 +632,9 @@ func (n *node) clear(seq uint64, deleted *bool) bool {
 	}
 	n.bits[i] &^= mask
 	*deleted = true
+	if n.bits[i] != 0 {
+		return false
+	}
 	for _, b := range n.bits {
 		if b != 0 {
 			return false
@@ -578,6 +647,7 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 	if n == nil {
 		return nil
 	}
+	nn := *nodes
 
 	if seq < n.base {
 		n.l = n.l.delete(seq, deleted, nodes)
@@ -596,6 +666,10 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 		}
 	}
 
+	// Clearing a bit without removing a node leaves heights and balance unchanged.
+	if *nodes == nn {
+		return n
+	}
 	if n != nil {
 		n.h = maxH(n) + 1
 	}

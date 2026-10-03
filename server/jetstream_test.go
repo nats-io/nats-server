@@ -12696,8 +12696,10 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 		}
 	})
 
-	// The storage has to be MemoryStorage to show the issue
-	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket", Storage: nats.MemoryStorage})
+	// The storage has to be MemoryStorage to show the issue.
+	// History must cover all revisions, otherwise a Put can evict the
+	// previous revision of the key before the watchers have received it.
+	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "bucket", Storage: nats.MemoryStorage, History: 64})
 	require_NoError(t, err)
 
 	w1, err := kv.WatchAll()
@@ -12706,36 +12708,49 @@ func TestJetStreamMemoryCorruption(t *testing.T) {
 	w2, err := kv.WatchAll(nats.MetaOnly())
 	require_NoError(t, err)
 
-	kv.Put("key1", []byte("aaa"))
-	kv.Put("key1", []byte("aab"))
-	kv.Put("key2", []byte("zza"))
-	kv.Put("key2", []byte("zzb"))
-	kv.Delete("key1")
-	kv.Delete("key2")
-	kv.Put("key1", []byte("aac"))
-	kv.Put("key2", []byte("zzc"))
-	kv.Delete("key1")
-	kv.Delete("key2")
-	kv.Purge("key1")
-	kv.Purge("key2")
+	_, err = kv.Put("key1", []byte("aaa"))
+	require_NoError(t, err)
+	_, err = kv.Put("key1", []byte("aab"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zza"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zzb"))
+	require_NoError(t, err)
+	require_NoError(t, kv.Delete("key1"))
+	require_NoError(t, kv.Delete("key2"))
+	_, err = kv.Put("key1", []byte("aac"))
+	require_NoError(t, err)
+	_, err = kv.Put("key2", []byte("zzc"))
+	require_NoError(t, err)
+	require_NoError(t, kv.Delete("key1"))
+	require_NoError(t, kv.Delete("key2"))
 
-	checkUpdates := func(updates <-chan nats.KeyValueEntry) {
+	checkUpdates := func(updates <-chan nats.KeyValueEntry, expected int) {
 		t.Helper()
 		count := 0
 		for {
 			select {
 			case <-updates:
 				count++
-				if count == 13 {
+				if count == expected {
 					return
 				}
-			case <-time.After(time.Second):
-				t.Fatal("Did not receive all updates")
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Did not receive all updates, got %d of %d", count, expected)
 			}
 		}
 	}
-	checkUpdates(w1.Updates())
-	checkUpdates(w2.Updates())
+	// Both watchers must have received the initial marker and the 10 updates
+	// before purging, since a purge removes any not-yet-delivered messages
+	// for that key from the stream.
+	checkUpdates(w1.Updates(), 11)
+	checkUpdates(w2.Updates(), 11)
+
+	require_NoError(t, kv.Purge("key1"))
+	require_NoError(t, kv.Purge("key2"))
+
+	checkUpdates(w1.Updates(), 2)
+	checkUpdates(w2.Updates(), 2)
 
 	select {
 	case e := <-errCh:
@@ -13675,6 +13690,45 @@ func TestJetStreamRestoreBadStream(t *testing.T) {
 			t.Fatalf("Found file %s", f)
 		}
 	}
+}
+
+func TestJetStreamRestoreFormatDetectionBounded(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, _ := jsClientConnect(t, s)
+	defer nc.Close()
+
+	req, err := json.Marshal(&JSApiStreamRestoreRequest{Config: StreamConfig{Name: "TEST", Storage: FileStorage}})
+	require_NoError(t, err)
+	var rresp JSApiStreamRestoreResponse
+	msg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"), req, 5*time.Second)
+	require_NoError(t, err)
+	require_NoError(t, json.Unmarshal(msg.Data, &rresp))
+	require_True(t, rresp.Error == nil)
+
+	// An S2 stream identifier followed only by skippable padding chunks never yields a preamble.
+	padLen := 64 * 1024
+	padding := make([]byte, s2ChunkHeaderSize+padLen)
+	padding[0], padding[1], padding[2], padding[3] = 0xfe, byte(padLen), byte(padLen>>8), byte(padLen>>16)
+	chunks := [][]byte{[]byte(s2MagicChunk)}
+	for sent := 0; sent <= 2*jsRestoreFormatDetectLimit; sent += len(padding) {
+		chunks = append(chunks, padding)
+	}
+
+	// The empty end-of-stream chunk is sent last and returns the restore error.
+	chunks = append(chunks, nil)
+	for _, chunk := range chunks {
+		msg, err = nc.Request(rresp.DeliverSubject, chunk, 5*time.Second)
+		require_NoError(t, err)
+		if len(msg.Data) == 0 {
+			continue
+		}
+		require_NoError(t, json.Unmarshal(msg.Data, &rresp))
+		break
+	}
+	require_True(t, rresp.Error != nil)
+	require_Contains(t, rresp.Error.Description, "size limit")
 }
 
 func TestJetStreamRemoveExternalSource(t *testing.T) {
@@ -17079,7 +17133,7 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	require_NoError(t, err)
 
 	nmsgs := 100
-	for i := 0; i < nmsgs; i++ {
+	for range nmsgs {
 		sendStreamMsg(t, nc, "foo", "OK")
 	}
 	sub, err := js.PullSubscribe("foo", "dlc", nats.AckWait(time.Second))
@@ -17103,19 +17157,27 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	require_True(t, ci.NumAckPending == keep)
 	require_True(t, ci.NumPending == 0)
 
-	for i := 0; i < nmsgs; i++ {
+	for range nmsgs {
 		sendStreamMsg(t, nc, "foo", "OK")
 	}
 
-	ci, err = js.ConsumerInfo("TEST", "dlc")
-	require_NoError(t, err)
+	// Num pending is updated asynchronously after the publish acks.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if ci, err = js.ConsumerInfo("TEST", "dlc"); err != nil {
+			return err
+		}
+		if ci.NumPending != uint64(nmsgs) {
+			return fmt.Errorf("expected %d pending, got %d", nmsgs, ci.NumPending)
+		}
+		return nil
+	})
 	// Make sure we calculated correctly.
 	// Top 3 will be same.
-	require_True(t, ci.AckFloor.Consumer == uint64(keep))
-	require_True(t, ci.AckFloor.Stream == uint64(keep))
-	require_True(t, ci.NumAckPending == keep)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.AckFloor.Consumer, uint64(keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(keep))
+	require_Equal(t, ci.NumAckPending, keep)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, 0)
 
 	msgs, err := sub.Fetch(keep)
 	require_NoError(t, err)
@@ -17124,30 +17186,29 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Make sure we calculated correctly.
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs))
-	require_True(t, ci.AckFloor.Consumer == uint64(keep))
-	require_True(t, ci.AckFloor.Stream == uint64(keep))
-	require_True(t, ci.NumAckPending == keep)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == keep)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(keep))
+	require_Equal(t, ci.NumAckPending, keep)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, keep)
 
 	// Ack all.
 	for _, m := range msgs {
-		m.Ack()
+		require_NoError(t, m.AckSync())
 	}
-	nc.Flush()
 
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Same for Delivered
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs))
-	require_True(t, ci.AckFloor.Consumer == uint64(nmsgs+keep))
-	require_True(t, ci.AckFloor.Stream == uint64(nmsgs))
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.NumPending == uint64(nmsgs))
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(nmsgs+keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(nmsgs))
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.NumPending, uint64(nmsgs))
+	require_Equal(t, ci.NumRedelivered, 0)
 
 	msgs, err = sub.Fetch(nmsgs)
 	require_NoError(t, err)
@@ -17155,20 +17216,19 @@ func TestJetStreamPartialPurgeWithAckPending(t *testing.T) {
 
 	// Ack all again
 	for _, m := range msgs {
-		m.Ack()
+		require_NoError(t, m.AckSync())
 	}
-	nc.Flush()
 
 	ci, err = js.ConsumerInfo("TEST", "dlc")
 	require_NoError(t, err)
 	// Make sure we calculated correctly.
-	require_True(t, ci.Delivered.Consumer == uint64(nmsgs*2+keep))
-	require_True(t, ci.Delivered.Stream == uint64(nmsgs*2))
-	require_True(t, ci.AckFloor.Consumer == uint64(nmsgs*2+keep))
-	require_True(t, ci.AckFloor.Stream == uint64(nmsgs*2))
-	require_True(t, ci.NumAckPending == 0)
-	require_True(t, ci.NumPending == 0)
-	require_True(t, ci.NumRedelivered == 0)
+	require_Equal(t, ci.Delivered.Consumer, uint64(nmsgs*2+keep))
+	require_Equal(t, ci.Delivered.Stream, uint64(nmsgs*2))
+	require_Equal(t, ci.AckFloor.Consumer, uint64(nmsgs*2+keep))
+	require_Equal(t, ci.AckFloor.Stream, uint64(nmsgs*2))
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumRedelivered, 0)
 }
 
 func TestJetStreamPurgeWithRedeliveredPending(t *testing.T) {
@@ -22026,7 +22086,7 @@ func TestJetStreamStreamRetentionUpdatesConsumers(t *testing.T) {
 			require_NoError(t, err)
 
 			o := mset.lookupConsumer("test_consumer")
-			require_NotNil(t, err)
+			require_NotNil(t, o)
 			require_Equal(t, o.retention, from)
 
 			sc.Retention = to

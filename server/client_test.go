@@ -5000,6 +5000,79 @@ func TestClientRepeatConnectSwitchesAccountAndCleansOldSubs(t *testing.T) {
 	}
 }
 
+func TestClientRepeatConnectClearsSublistResultCache(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts: {
+			A: { users: [ { user: ua, password: pa } ] }
+			B: { users: [ { user: ub, password: pb } ] }
+		}
+	`))
+
+	s, opts := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	accA, err := s.LookupAccount("A")
+	require_NoError(t, err)
+	accB, err := s.LookupAccount("B")
+	require_NoError(t, err)
+
+	// Keep matching subscription state in both accounts. Equal generation IDs
+	// make this test exercise the stale-cache case directly.
+	ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("ua", "pa"))
+	defer ncA.Close()
+	subA := natsSubSync(t, ncA, "target")
+	natsFlush(t, ncA)
+
+	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("ub", "pb"))
+	defer ncB.Close()
+	subB := natsSubSync(t, ncB, "target")
+	natsFlush(t, ncB)
+
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		genA := atomic.LoadUint64(&accA.sl.genid)
+		genB := atomic.LoadUint64(&accB.sl.genid)
+		if genA != genB {
+			return fmt.Errorf("expected equal account sublist generation IDs, got A=%d B=%d", genA, genB)
+		}
+		return nil
+	})
+
+	conn, err := net.Dial("tcp", net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port)))
+	require_NoError(t, err)
+	defer conn.Close()
+	cr := bufio.NewReader(conn)
+	line, _, err := cr.ReadLine()
+	require_NoError(t, err)
+	require_Contains(t, string(line), "INFO {")
+
+	_, err = conn.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ua\",\"pass\":\"pa\"}\r\nPING\r\n"))
+	require_NoError(t, err)
+	line, _, err = cr.ReadLine()
+	require_NoError(t, err)
+	require_Equal(t, string(line), "PONG")
+	_, err = conn.Write([]byte("PUB target 5\r\nprime\r\n"))
+	require_NoError(t, err)
+	msg := natsNexMsg(t, subA, time.Second)
+	require_Equal(t, string(msg.Data), "prime")
+
+	_, err = conn.Write([]byte("CONNECT {\"verbose\":false,\"user\":\"ub\",\"pass\":\"pb\"}\r\nPING\r\n"))
+	require_NoError(t, err)
+	line, _, err = cr.ReadLine()
+	require_NoError(t, err)
+	require_Equal(t, string(line), "PONG")
+	_, err = conn.Write([]byte("PUB target 6\r\nfrom-B\r\n"))
+	require_NoError(t, err)
+
+	if msg, err := subA.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("message published in account B was delivered to account A: %q", msg.Data)
+	} else if err != nats.ErrTimeout {
+		t.Fatalf("unexpected error waiting for account A message: %v", err)
+	}
+	msg = natsNexMsg(t, subB, time.Second)
+	require_Equal(t, string(msg.Data), "from-B")
+}
+
 func TestClientMsgsMetric(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.ServerName = "S1"
