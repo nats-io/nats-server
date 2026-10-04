@@ -12917,6 +12917,64 @@ func TestJetStreamClusterPrepareForWALReplayPreservesR1ScaleUpSource(t *testing.
 	}
 }
 
+func TestJetStreamClusterInterestCheckDoesNotCompactPastReplay(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.FileStorage,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	const numMsgs = 3
+	for range numMsgs {
+		_, err = js.Publish("foo", []byte("msg"))
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs)
+	require_NoError(t, err)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 0 {
+			return fmt.Errorf("expected acked messages to be removed, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	// Checking interest on the full store leaves the consumer's check floor
+	// past the last message, as when a replicated stream starts up.
+	mset.checkInterestState()
+
+	// Recovery truncates the store to replay the Raft log, while the
+	// consumer's ack and check floors are still at the last message.
+	require_NoError(t, mset.prepareForWALReplay(nil))
+	require_Equal(t, mset.lastSeq(), 0)
+
+	// A leader change checks interest before the replay has caught up. It
+	// must not compact the store past the messages that are still to come.
+	mset.checkInterestState()
+	require_Equal(t, mset.state().LastSeq, 0)
+	for seq := uint64(1); seq <= numMsgs; seq++ {
+		require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("msg"), seq, time.Now().UnixNano(), 0, false))
+	}
+	require_Equal(t, mset.state().LastSeq, numMsgs)
+}
+
 func TestJetStreamClusterPrepareForWALReplayTruncatesStore(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

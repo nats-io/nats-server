@@ -27305,3 +27305,34 @@ func TestJetStreamDynamicMaxStoreStableAcrossRestart(t *testing.T) {
 			friendlyBytes(int64(written)), friendlyBytes(before), friendlyBytes(after))
 	}
 }
+
+func TestJetStreamInterestCheckWithoutConsumersDoesNotCompact(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.FileStorage,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	const numMsgs = 3
+	for range numMsgs {
+		_, _, err = mset.store.StoreMsg("foo", nil, []byte("msg"), 0)
+		require_NoError(t, err)
+	}
+
+	// Without consumers there is no ack floor to compact to.
+	mset.checkInterestState()
+	state := mset.state()
+	require_Equal(t, state.Msgs, numMsgs)
+	require_Equal(t, state.FirstSeq, 1)
+	require_Equal(t, state.LastSeq, numMsgs)
+}

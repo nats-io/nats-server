@@ -8998,8 +8998,9 @@ func (mset *stream) checkInterestState() {
 	rp := mset.cfg.Retention
 	mset.cfgMu.RUnlock()
 	// Remove as many messages from the "head" of the stream if there's no interest anymore.
+	// Only compact up to the current stream state, consumers may be ahead while replaying.
 	if rp == InterestPolicy && asflr != math.MaxUint64 {
-		mset.store.Compact(asflr)
+		mset.store.Compact(min(asflr, ss.LastSeq+1))
 	}
 }
 
