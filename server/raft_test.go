@@ -10651,3 +10651,88 @@ func TestNRGReloadDebugDoesNotDeadlockWithUnregister(t *testing.T) {
 	locked = false
 	<-reloaded
 }
+
+func TestNRGReleasesWALOnShutdownBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	n := s.getJetStream().getMetaGroup().(*raft)
+	n.RLock()
+	require_NotNil(t, n.cf)
+	n.RUnlock()
+
+	s.Shutdown()
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALOnStopBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	defer s.Shutdown()
+	n := s.getJetStream().getMetaGroup().(*raft)
+	n.RLock()
+	require_NotNil(t, n.cf)
+	n.RUnlock()
+
+	done := make(chan struct{})
+	go func() {
+		n.Stop()
+		n.WaitForStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForStop hung while the node was waiting for routing")
+	}
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALOnServerQuitBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	rn, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	n := rn.(*raft)
+
+	// A node Shutdown does not stop, for instance one registered after it
+	// stopped the others, only sees the server quit.
+	s.unregisterRaftNode(n.group)
+	// Shutdown waits for the run goroutine to return.
+	s.Shutdown()
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALWhenRunNotStarted(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+
+	// Simulate server shutdown: goroutines are no longer started.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+
+	rn, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	n := rn.(*raft)
+
+	done := make(chan struct{})
+	go func() {
+		n.Stop()
+		n.WaitForStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForStop hung for a run goroutine that was never started")
+	}
+	requireRaftNodeReleased(t, s, n)
+}
