@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -10524,4 +10525,48 @@ func TestNRGScaleUpPeerObserverUntilAdded(t *testing.T) {
 			require_Equal(t, n.IsObserver(), !test.joins)
 		})
 	}
+}
+
+func TestNRGReloadDebugDoesNotDeadlockWithUnregister(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	s := n.s
+
+	// A node exiting its run goroutine holds its lock while it unregisters itself.
+	n.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			n.Unlock()
+		}
+	}()
+	reloaded := make(chan struct{})
+	go func() {
+		s.reloadDebugRaftNodes(true)
+		close(reloaded)
+	}()
+
+	// Give the reload the chance to take rnMu and wait for the node's lock.
+	for start := time.Now(); time.Since(start) < 250*time.Millisecond; {
+		if !s.rnMu.TryLock() {
+			break
+		}
+		s.rnMu.Unlock()
+		runtime.Gosched()
+	}
+
+	unregistered := make(chan struct{})
+	go func() {
+		s.unregisterRaftNode(n.group)
+		close(unregistered)
+	}()
+	select {
+	case <-unregistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unregisterRaftNode deadlocked with reloadDebugRaftNodes")
+	}
+
+	n.Unlock()
+	locked = false
+	<-reloaded
 }
