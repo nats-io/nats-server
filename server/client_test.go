@@ -5193,3 +5193,96 @@ func TestClientMsgsMetric(t *testing.T) {
 		t.Fatalf("Did not get expected outClientMsg/Bytes for message sent on qsub")
 	}
 }
+
+func newProcessMsgResultsTestClient(s *Server, acc *Account, nc net.Conn) *client {
+	c := &client{srv: s, acc: acc, kind: CLIENT, nc: nc}
+	c.initClient()
+	return c
+}
+
+func flushProcessMsgResultsTestClient(t *testing.T, c *client, nc *testConnWritePartial) []byte {
+	t.Helper()
+	c.mu.Lock()
+	c.flushOutbound()
+	c.mu.Unlock()
+	return append([]byte(nil), nc.buf.Bytes()...)
+}
+
+func TestProcessMsgResultsLazySubjectScratch(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	defer s.Shutdown()
+	acc := NewAccount("A")
+	c := newProcessMsgResultsTestClient(s, acc, nil)
+	r := &SublistResult{}
+	msg, subject := []byte("payload"+CR_LF), []byte("published")
+
+	if allocs := testing.AllocsPerRun(100, func() {
+		c.processMsgResults(acc, r, msg, nil, subject, nil, pmrNoFlag)
+	}); allocs != 0 {
+		t.Fatalf("Expected no scratch allocation without mapped subscriptions, got %g allocations per call", allocs)
+	}
+}
+
+// With a deliver subject, processMsgResults swaps the delivery subject and
+// the mapped subject after each mapped subscription, so subj then refers to
+// the mapping buffer that the next mapped subscription writes. The first
+// recipient gets the deliver subject. Each later recipient must get its own
+// mapped subject, whether the subjects fit in the initial 128-byte buffer or
+// make append grow it.
+func TestProcessMsgResultsMappedSubjectScratchDeliver(t *testing.T) {
+	for _, size := range []int{16, 128, 129, 300} {
+		for _, queueMode := range []bool{false, true} {
+			name := fmt.Sprintf("len=%d/psubs", size)
+			if queueMode {
+				name = fmt.Sprintf("len=%d/qsubs", size)
+			}
+			t.Run(name, func(t *testing.T) {
+				opts := defaultServerOptions
+				s := New(&opts)
+				defer s.Shutdown()
+				acc := NewAccount("A")
+				sender := newProcessMsgResultsTestClient(s, acc, nil)
+				const payload = "payload"
+				const deliver = "deliver.ORDERS"
+				var targets []string
+				for _, c := range "abc" {
+					targets = append(targets, "mapped."+strings.Repeat(string(c), size-len("mapped.")))
+				}
+				conns := make([]*testConnWritePartial, len(targets))
+				subs := make([]*subscription, len(targets))
+				for i := range subs {
+					conns[i] = &testConnWritePartial{}
+					receiver := newProcessMsgResultsTestClient(s, NewAccount("B"), conns[i])
+					subs[i] = &subscription{
+						client: receiver,
+						sid:    []byte(fmt.Sprint(i + 1)),
+						queue:  []byte(fmt.Sprintf("workers-%d", i+1)),
+						im:     &streamImport{to: targets[i]},
+					}
+				}
+				r := &SublistResult{}
+				if queueMode {
+					for _, sub := range subs {
+						r.qsubs = append(r.qsubs, []*subscription{sub})
+					}
+				} else {
+					r.psubs = subs
+				}
+				sender.pa = pubArg{size: len(payload), szb: []byte(fmt.Sprint(len(payload)))}
+				sender.processMsgResults(acc, r, []byte(payload+CR_LF), []byte(deliver), []byte("orders.new"), nil, pmrNoFlag)
+
+				for i, sub := range subs {
+					subject := targets[i]
+					if i == 0 {
+						subject = deliver
+					}
+					want := fmt.Sprintf("MSG %s %s %d\r\n%s\r\n", subject, sub.sid, len(payload), payload)
+					if got := string(flushProcessMsgResultsTestClient(t, sub.client, conns[i])); got != want {
+						t.Errorf("Recipient %d: got %q, want %q", i+1, got, want)
+					}
+				}
+			})
+		}
+	}
+}
