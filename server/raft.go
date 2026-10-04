@@ -894,13 +894,19 @@ func (s *Server) reloadDebugRaftNodes(debug bool) {
 		return
 	}
 	s.rnMu.RLock()
+	nodes := make([]*raft, 0, len(s.raftNodes))
 	for _, ni := range s.raftNodes {
-		n := ni.(*raft)
+		nodes = append(nodes, ni.(*raft))
+	}
+	s.rnMu.RUnlock()
+
+	// Don't hold rnMu while taking a node's lock, a node exiting its run
+	// goroutine holds its lock while it unregisters itself.
+	for _, n := range nodes {
 		n.Lock()
 		n.dflag = debug
 		n.Unlock()
 	}
-	s.rnMu.RUnlock()
 }
 
 // Requests that all Raft nodes on this server step down and place them into
