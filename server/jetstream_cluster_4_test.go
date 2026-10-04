@@ -12184,6 +12184,32 @@ func TestJetStreamClusterMetaGroupStopsWALOnSetupFailure(t *testing.T) {
 				require_Error(t, err, rerr)
 			},
 		},
+		{
+			// No peer state to recover, so the meta group bootstraps, but can't write it.
+			name: "Bootstrap",
+			setup: func(t *testing.T, sd string) {
+				psf := filepath.Join(sd, peerStateFile)
+				require_NoError(t, os.Remove(psf))
+				require_NoError(t, os.Mkdir(psf, defaultDirPerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				var lerr *os.LinkError
+				require_True(t, errors.As(err, &lerr))
+				require_Equal(t, lerr.New, filepath.Join(sd, peerStateFile))
+			},
+		},
+		{
+			// The peer state is recovered, but can't be written back.
+			name: "WritePeerState",
+			setup: func(t *testing.T, sd string) {
+				require_NoError(t, os.Mkdir(filepath.Join(sd, peerStateFile)+".tmp", defaultDirPerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				var perr *os.PathError
+				require_True(t, errors.As(err, &perr))
+				require_Equal(t, perr.Path, filepath.Join(sd, peerStateFile)+".tmp")
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := runServerWaitingForRouting(t)
