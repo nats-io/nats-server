@@ -31,6 +31,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -2561,4 +2563,63 @@ func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byt
 		}
 		require_Error(t, err, nats.ErrTooManyStalledMsgs)
 	}
+}
+
+// The state flush loop is the only goroutine newFileStoreWithCreatedAndMode
+// starts directly. cleanupOldMeta is started from its deferred closure, which is
+// reported as newFileStoreWithCreatedAndMode.funcN and not matched. The flush
+// loop is matched by its creator, as until it runs its stack only shows a
+// wrapper of flushStreamStateLoop.
+var fileStoreFlushLoopCreator = regexp.MustCompile(`(?m)^created by \S*\bserver\.newFileStoreWithCreatedAndMode(\s|$)`)
+
+// fileStoreFlushLoops returns the IDs of the goroutines of filestores' state
+// flush loops, which run until their filestore is stopped.
+func fileStoreFlushLoops() map[string]struct{} {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	ids := make(map[string]struct{})
+	for _, g := range bytes.Split(buf, []byte("\n\n")) {
+		if fileStoreFlushLoopCreator.Match(g) {
+			// Starts with "goroutine <id> [<status>]:".
+			ids[string(bytes.Fields(g)[1])] = struct{}{}
+		}
+	}
+	return ids
+}
+
+// requireFileStoresStopped checks that the filestores opened since flushLoops
+// was taken have been stopped.
+func requireFileStoresStopped(t *testing.T, flushLoops map[string]struct{}) {
+	t.Helper()
+	// A filestore known to be open must be seen, or a renamed creator or a flush
+	// loop that's no longer a goroutine of its own would make this pass vacuously.
+	before := fileStoreFlushLoops()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "CONTROL", Storage: FileStorage})
+	require_NoError(t, err)
+	var seen bool
+	for id := range fileStoreFlushLoops() {
+		if _, ok := before[id]; !ok {
+			seen = true
+		}
+	}
+	// Stopped, it's checked below like any other.
+	require_NoError(t, fs.Stop())
+	if !seen {
+		t.Fatalf("flush loop of an open filestore not found in the goroutine stacks")
+	}
+
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		for id := range fileStoreFlushLoops() {
+			if _, ok := flushLoops[id]; !ok {
+				return fmt.Errorf("filestore of goroutine %s not stopped", id)
+			}
+		}
+		return nil
+	})
 }
