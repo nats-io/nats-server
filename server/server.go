@@ -34,6 +34,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2620,6 +2621,9 @@ func (s *Server) Shutdown() {
 	if !s.shutdown.CompareAndSwap(false, true) {
 		return
 	}
+	// MQTT Wills need JetStream and the internal request/reply subscriptions.
+	s.mqttShutdown()
+
 	// This is for JetStream R1 Pull Consumers to allow signaling
 	// that pending pull requests are invalid.
 	s.signalPullConsumers()
@@ -4493,6 +4497,7 @@ func (s *Server) lameDuckMode() {
 	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
+	drainMQTT := opts.MQTT.Port != 0
 	gp := opts.LameDuckGracePeriod
 	// For tests, we want the grace period to be in some cases bigger
 	// than the ldm duration, so to by-pass the validateOptions() check,
@@ -4512,11 +4517,11 @@ func (s *Server) lameDuckMode() {
 		}
 	}
 
-	// Now check and shutdown jetstream.
-	s.shutdownJetStream()
-
-	// Now shutdown the nodes
-	s.shutdownRaftNodes()
+	// MQTT clients need JetStream until their Wills have been published.
+	if !drainMQTT {
+		s.shutdownJetStream()
+		s.shutdownRaftNodes()
+	}
 
 	// Wait for accept loops to be done to make sure that no new
 	// client can connect
@@ -4567,6 +4572,13 @@ func (s *Server) lameDuckMode() {
 		clients = append(clients, leaf)
 	}
 	rand.Shuffle(len(clients), func(i, j int) { clients[i], clients[j] = clients[j], clients[i] })
+	if drainMQTT {
+		// Keep leaf connections and other subscribers available while MQTT
+		// clients drain. Preserve the random order within each group.
+		sort.SliceStable(clients, func(i, j int) bool {
+			return clients[i].isMqtt() && !clients[j].isMqtt()
+		})
+	}
 	// Now that we know that no new client can be accepted,
 	// send INFO to routes and clients to notify this state.
 	s.sendLDMToRoutes()
@@ -4585,6 +4597,15 @@ func (s *Server) lameDuckMode() {
 		return
 	}
 	for i, client := range clients {
+		if drainMQTT && !client.isMqtt() {
+			s.mqtt.readLoopWG.Wait()
+			if s.isShuttingDown() {
+				return
+			}
+			s.shutdownJetStream()
+			s.shutdownRaftNodes()
+			drainMQTT = false
+		}
 		client.closeConnection(ServerShutdown)
 		if i == len(clients)-1 {
 			break

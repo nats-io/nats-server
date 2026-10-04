@@ -264,6 +264,7 @@ type srvMQTT struct {
 	listenerErr  error
 	authOverride bool
 	sessmgr      mqttSessionManager
+	readLoopWG   sync.WaitGroup
 }
 
 type mqttSessionManager struct {
@@ -623,12 +624,10 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	c.mu.Unlock()
 
 	s.mu.Lock()
-	if !s.isRunning() || s.ldm {
-		if s.isShuttingDown() {
-			conn.Close()
-		}
+	if !s.isRunning() || s.isShuttingDown() || s.ldm {
 		s.mu.Unlock()
-		return c
+		c.closeConnection(ServerShutdown)
+		return nil
 	}
 
 	if opts.MaxConn < 0 || (opts.MaxConn > 0 && len(s.clients) >= opts.MaxConn) {
@@ -637,6 +636,15 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 		return nil
 	}
 	s.clients[c.cid] = c
+	// Register before releasing the server lock so shutdown also waits for
+	// clients that are still completing their TLS handshake.
+	s.mqtt.readLoopWG.Add(1)
+	readLoopStarted := false
+	defer func() {
+		if !readLoopStarted {
+			s.mqtt.readLoopWG.Done()
+		}
+	}()
 
 	// Websocket TLS handshake is already done when getting to this function.
 	tlsRequired := opts.MQTT.TLSConfig != nil && ws == nil
@@ -689,7 +697,10 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 
 	// No Ping timer for MQTT clients...
 
-	s.startGoRoutine(func() { c.readLoop(pre) })
+	readLoopStarted = s.startGoRoutine(func() {
+		defer s.mqtt.readLoopWG.Done()
+		c.readLoop(pre)
+	})
 	s.startGoRoutine(func() { c.writeLoop() })
 
 	if tlsRequired {
@@ -701,6 +712,25 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	c.mu.Unlock()
 
 	return c
+}
+
+// Close MQTT connections and let their read loops publish any Will messages
+// before JetStream, eventing, or routes are shut down. New MQTT clients must
+// already be prevented from registering by shutdown or lame-duck mode.
+// No lock held on entry.
+func (s *Server) mqttShutdown() {
+	s.mu.Lock()
+	var clients []*client
+	for _, c := range s.clients {
+		if c.isMqtt() {
+			clients = append(clients, c)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range clients {
+		c.closeConnection(ServerShutdown)
+	}
+	s.mqtt.readLoopWG.Wait()
 }
 
 // Given the mqtt options, we check if any auth configuration
