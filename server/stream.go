@@ -8108,7 +8108,8 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Get batch.
 	b, ok := batches.fast[batch.id]
 	if !ok {
-		if batch.seq != 1 {
+		// A new batch can only be started at sequence 1 and not by a ping.
+		if batch.seq != 1 || batch.ping {
 			batches.mu.Unlock()
 			mset.mu.Unlock()
 			return respondError(NewJSBatchPublishUnknownBatchIDError())
