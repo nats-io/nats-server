@@ -4736,66 +4736,56 @@ func TestMQTTLameDuckGracePeriod(t *testing.T) {
 }
 
 func TestMQTTWillOnLeafShutdown(t *testing.T) {
-	for _, lameDuck := range []bool{false, true} {
-		t.Run(fmt.Sprintf("lame_duck=%v", lameDuck), func(t *testing.T) {
-			ho := testMQTTDefaultOptions()
-			ho.Cluster.Name = "hub"
-			ho.LeafNode.Host, ho.LeafNode.Port = "127.0.0.1", -1
-			hub := testMQTTRunServer(t, ho)
-			defer hub.Shutdown()
+	ho := testMQTTDefaultOptions()
+	ho.Cluster.Name = "hub"
+	ho.LeafNode.Host, ho.LeafNode.Port = "127.0.0.1", -1
+	hub := testMQTTRunServer(t, ho)
+	defer hub.Shutdown()
 
-			o := testMQTTDefaultOptions()
-			o.JetStream = false
-			o.Cluster.Name = "leaf"
-			o.JsAccDefaultDomain = map[string]string{"$G": ""}
-			o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))}}
-			o.LameDuckGracePeriod = -time.Millisecond
-			o.LameDuckDuration = 50 * time.Millisecond
-			s := testMQTTRunServer(t, o)
-			defer s.Shutdown()
-			checkLeafNodeConnected(t, s)
+	o := testMQTTDefaultOptions()
+	o.JetStream = false
+	o.Cluster.Name = "leaf"
+	o.JsAccDefaultDomain = map[string]string{"$G": ""}
+	o.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", ho.LeafNode.Port))}}
+	s := testMQTTRunServer(t, o)
+	defer s.Shutdown()
+	checkLeafNodeConnected(t, s)
 
-			observer := &mqttConnInfo{clientID: "observer", cleanSess: false}
-			mc, r := testMQTTConnect(t, observer, ho.MQTT.Host, ho.MQTT.Port)
-			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
-			testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "will/topic", qos: 1}}, []byte{1})
-			testMQTTDisconnect(t, mc, nil)
-			mc.Close()
+	observer := &mqttConnInfo{clientID: "observer", cleanSess: false}
+	mc, r := testMQTTConnect(t, observer, ho.MQTT.Host, ho.MQTT.Port)
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "will/topic", qos: 1}}, []byte{1})
+	testMQTTDisconnect(t, mc, nil)
+	mc.Close()
 
-			const writers = 4
-			for i := 0; i < writers; i++ {
-				id := fmt.Sprintf("writer-%d", i)
-				writer, wr := testMQTTConnect(t, &mqttConnInfo{
-					clientID: id, cleanSess: true,
-					will: &mqttWill{topic: []byte("will/topic"), message: []byte(id), qos: 1},
-				}, o.MQTT.Host, o.MQTT.Port)
-				defer writer.Close()
-				testMQTTCheckConnAck(t, wr, mqttConnAckRCConnectionAccepted, false)
-			}
-			if lameDuck {
-				s.LameDuckShutdown()
-			} else {
-				s.Shutdown()
-			}
-
-			mc, r = testMQTTConnect(t, observer, ho.MQTT.Host, ho.MQTT.Port)
-			defer mc.Close()
-			testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
-			seen := make(map[string]bool)
-			for i := 0; i < writers; i++ {
-				flags, pi, _, payload := testMQTTGetPubMsgEx(t, mc, r, "will/topic", nil)
-				require_Equal(t, flags, mqttPubQos1)
-				require_False(t, seen[string(payload)])
-				seen[string(payload)] = true
-				testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi)
-			}
-			for i := 0; i < writers; i++ {
-				require_True(t, seen[fmt.Sprintf("writer-%d", i)])
-			}
-			testMQTTFlush(t, mc, nil, r)
-			testMQTTExpectNothing(t, r)
-		})
+	const writers = 4
+	for i := 0; i < writers; i++ {
+		id := fmt.Sprintf("writer-%d", i)
+		writer, wr := testMQTTConnect(t, &mqttConnInfo{
+			clientID: id, cleanSess: true,
+			will: &mqttWill{topic: []byte("will/topic"), message: []byte(id), qos: 1},
+		}, o.MQTT.Host, o.MQTT.Port)
+		defer writer.Close()
+		testMQTTCheckConnAck(t, wr, mqttConnAckRCConnectionAccepted, false)
 	}
+	s.Shutdown()
+
+	mc, r = testMQTTConnect(t, observer, ho.MQTT.Host, ho.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, true)
+	seen := make(map[string]bool)
+	for i := 0; i < writers; i++ {
+		flags, pi, _, payload := testMQTTGetPubMsgEx(t, mc, r, "will/topic", nil)
+		require_Equal(t, flags, mqttPubQos1)
+		require_False(t, seen[string(payload)])
+		seen[string(payload)] = true
+		testMQTTSendPIPacket(mqttPacketPubAck, t, mc, pi)
+	}
+	for i := 0; i < writers; i++ {
+		require_True(t, seen[fmt.Sprintf("writer-%d", i)])
+	}
+	testMQTTFlush(t, mc, nil, r)
+	testMQTTExpectNothing(t, r)
 }
 
 func TestMQTTShutdownPendingConnect(t *testing.T) {

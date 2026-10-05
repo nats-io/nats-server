@@ -34,7 +34,6 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/pprof"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2621,12 +2620,23 @@ func (s *Server) Shutdown() {
 	if !s.shutdown.CompareAndSwap(false, true) {
 		return
 	}
-	// MQTT Wills need JetStream and the internal request/reply subscriptions.
-	s.mqttShutdown()
-
 	// This is for JetStream R1 Pull Consumers to allow signaling
 	// that pending pull requests are invalid.
 	s.signalPullConsumers()
+
+	s.mu.Lock()
+	clients := make([]*client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+
+	// Client cleanup can publish MQTT Wills, so keep JetStream, eventing,
+	// and inter-server connections available until it has finished.
+	for _, c := range clients {
+		c.closeConnection(ServerShutdown)
+	}
+	s.mqtt.readLoopWG.Wait()
 
 	// Transfer off any raft nodes that we are a leader by stepping them down.
 	s.stepdownRaftNodes()
@@ -3403,7 +3413,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// list of connections to close. It won't contain this one, so we need
 	// to bail out now otherwise the readLoop started down there would not
 	// be interrupted. Skip also if in lame duck mode.
-	if !s.isRunning() || s.ldm {
+	if !s.isRunning() || s.isShuttingDown() || s.ldm {
 		// There are some tests that create a server but don't start it,
 		// and use "async" clients and perform the parsing manually. Such
 		// clients would branch here (since server is not running). However,
@@ -4497,7 +4507,6 @@ func (s *Server) lameDuckMode() {
 	}
 	s.ldmCh = make(chan bool, expected)
 	opts := s.getOpts()
-	drainMQTT := opts.MQTT.Port != 0
 	gp := opts.LameDuckGracePeriod
 	// For tests, we want the grace period to be in some cases bigger
 	// than the ldm duration, so to by-pass the validateOptions() check,
@@ -4515,12 +4524,6 @@ func (s *Server) lameDuckMode() {
 		case <-s.quitCh:
 			return
 		}
-	}
-
-	// MQTT clients need JetStream until their Wills have been published.
-	if !drainMQTT {
-		s.shutdownJetStream()
-		s.shutdownRaftNodes()
 	}
 
 	// Wait for accept loops to be done to make sure that no new
@@ -4572,13 +4575,6 @@ func (s *Server) lameDuckMode() {
 		clients = append(clients, leaf)
 	}
 	rand.Shuffle(len(clients), func(i, j int) { clients[i], clients[j] = clients[j], clients[i] })
-	if drainMQTT {
-		// Keep leaf connections and other subscribers available while MQTT
-		// clients drain. Preserve the random order within each group.
-		sort.SliceStable(clients, func(i, j int) bool {
-			return clients[i].isMqtt() && !clients[j].isMqtt()
-		})
-	}
 	// Now that we know that no new client can be accepted,
 	// send INFO to routes and clients to notify this state.
 	s.sendLDMToRoutes()
@@ -4597,15 +4593,6 @@ func (s *Server) lameDuckMode() {
 		return
 	}
 	for i, client := range clients {
-		if drainMQTT && !client.isMqtt() {
-			s.mqtt.readLoopWG.Wait()
-			if s.isShuttingDown() {
-				return
-			}
-			s.shutdownJetStream()
-			s.shutdownRaftNodes()
-			drainMQTT = false
-		}
 		client.closeConnection(ServerShutdown)
 		if i == len(clients)-1 {
 			break

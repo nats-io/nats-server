@@ -714,25 +714,6 @@ func (s *Server) createMQTTClient(conn net.Conn, ws *websocket) *client {
 	return c
 }
 
-// Close MQTT connections and let their read loops publish any Will messages
-// before JetStream, eventing, or routes are shut down. New MQTT clients must
-// already be prevented from registering by shutdown or lame-duck mode.
-// No lock held on entry.
-func (s *Server) mqttShutdown() {
-	s.mu.Lock()
-	var clients []*client
-	for _, c := range s.clients {
-		if c.isMqtt() {
-			clients = append(clients, c)
-		}
-	}
-	s.mu.Unlock()
-	for _, c := range clients {
-		c.closeConnection(ServerShutdown)
-	}
-	s.mqtt.readLoopWG.Wait()
-}
-
 // Given the mqtt options, we check if any auth configuration
 // has been provided. If so, possibly create users/nkey users and
 // store them in s.mqtt.users/nkeys.
