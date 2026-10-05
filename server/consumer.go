@@ -3126,17 +3126,17 @@ func (o *consumer) addReplicatedQueuedMsg(pmsg *jsPubMsg) {
 }
 
 // Lock should be held.
-func (o *consumer) updateAcks(dseq, sseq uint64, reply string, term bool) {
+func (o *consumer) updateAcks(dseq, sseq uint64, reply string, explicit bool) {
 	if o.node != nil {
 		// Inline for now, use variable compression.
-		// A trailing byte marks the ack as a term; older versions ignore it
+		// A trailing byte marks the ack as explicit; older versions ignore it
 		// when decoding and apply regular ack semantics.
 		var b [2*binary.MaxVarintLen64 + 2]byte
 		b[0] = byte(updateAcksOp)
 		n := 1
 		n += binary.PutUvarint(b[n:], dseq)
 		n += binary.PutUvarint(b[n:], sseq)
-		if term {
+		if explicit {
 			b[n] = 1
 			n++
 		}
@@ -3145,7 +3145,7 @@ func (o *consumer) updateAcks(dseq, sseq uint64, reply string, term bool) {
 			o.addAckReply(sseq, reply)
 		}
 	} else if o.store != nil {
-		o.store.UpdateAcks(dseq, sseq, term)
+		o.store.UpdateAcks(dseq, sseq, explicit)
 		if reply != _EMPTY_ {
 			// Already locked so send direct.
 			o.outq.sendMsg(reply, nil)
@@ -3861,7 +3861,7 @@ func (o *consumer) processAckMsgLocked(sseq, dseq, dc uint64, reply string, doSa
 		reply = _EMPTY_
 	}
 	// Update underlying store. Acks and client terms are regular acks; only
-	// server-side removal of deleted messages is scoped as a term.
+	// server-side removal of deleted messages is scoped as an explicit ack.
 	o.updateAcks(dseq, sseq, reply, false)
 	unlock()
 
@@ -6665,7 +6665,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 			var smv StoreMsg
 			if _, err := store.LoadMsg(seq, &smv); err == errDeletedMsg || err == ErrStoreMsgNotFound {
 				// The message is gone, so it will never be delivered again. Remove
-				// it like a term: only this sequence, never the ones below it.
+				// it with an explicit ack: only this sequence, never the ones below it.
 				delete(o.pending, seq)
 				delete(o.rdc, seq)
 				o.moveAckFloor(p.Sequence, seq)

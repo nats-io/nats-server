@@ -9240,19 +9240,19 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 	t.Run("AckUpdate", func(t *testing.T) {
 		valid := binary.AppendUvarint(nil, 10)
 		valid = binary.AppendUvarint(valid, 20)
-		if _, _, term, err := decodeAckUpdate(valid); err != nil {
+		if _, _, explicit, err := decodeAckUpdate(valid); err != nil {
 			t.Fatalf("expected valid ack update to decode, got %v", err)
-		} else if term {
-			t.Fatalf("expected term to default to false")
+		} else if explicit {
+			t.Fatalf("expected explicit to default to false")
 		}
-		// An optional trailing byte marks the update as a term.
-		termed := binary.AppendUvarint(nil, 10)
-		termed = binary.AppendUvarint(termed, 20)
-		termed = append(termed, 1)
-		if _, _, term, err := decodeAckUpdate(termed); err != nil {
-			t.Fatalf("expected valid term ack update to decode, got %v", err)
-		} else if !term {
-			t.Fatalf("expected trailing byte to decode as term")
+		// An optional trailing byte marks the update as explicit.
+		marked := binary.AppendUvarint(nil, 10)
+		marked = binary.AppendUvarint(marked, 20)
+		marked = append(marked, 1)
+		if _, _, explicit, err := decodeAckUpdate(marked); err != nil {
+			t.Fatalf("expected valid explicit ack update to decode, got %v", err)
+		} else if !explicit {
+			t.Fatalf("expected trailing byte to decode as explicit")
 		}
 		for _, buf := range [][]byte{nil, valid[:1]} {
 			if _, _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {

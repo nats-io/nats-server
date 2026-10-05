@@ -2951,7 +2951,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 	return nil
 }
 
-func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, term bool) error {
+func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2972,9 +2972,9 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, term bool) error {
 	}
 
 	// Check for AckAll here (or AckFlowControl which functions like AckAll).
-	// A term is scoped to this message only, so it falls through to the
-	// explicit path even under AckAll.
-	if !term && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
+	// An explicit ack is scoped to this message only, so it falls through to
+	// the per-message path even under AckAll.
+	if !explicit && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
 		sgap := sseq - o.state.AckFloor.Stream
 		o.state.AckFloor.Consumer = dseq
 		o.state.AckFloor.Stream = sseq
