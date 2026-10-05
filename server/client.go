@@ -5932,6 +5932,9 @@ func (c *client) processPingTimer() {
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		pingInterval = opts.Cluster.PingInterval
 	}
+	if c.kind == LEAF && opts.LeafNode.PingInterval > 0 {
+		pingInterval = opts.LeafNode.PingInterval
+	}
 	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
 		pingInterval = opts.Websocket.PingInterval
 	}
@@ -5957,6 +5960,9 @@ func (c *client) processPingTimer() {
 		maxPingsOut := opts.MaxPingsOut
 		if c.kind == ROUTER && opts.Cluster.MaxPingsOut > 0 {
 			maxPingsOut = opts.Cluster.MaxPingsOut
+		}
+		if c.kind == LEAF && opts.LeafNode.MaxPingsOut > 0 {
+			maxPingsOut = opts.LeafNode.MaxPingsOut
 		}
 		if c.ping.out+1 > maxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
@@ -6016,6 +6022,9 @@ func (c *client) setPingTimer() {
 	d := opts.PingInterval
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.kind == LEAF && opts.LeafNode.PingInterval > 0 {
+		d = opts.LeafNode.PingInterval
 	}
 	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
 		d = opts.Websocket.PingInterval
@@ -7097,6 +7106,9 @@ func (c *client) setFirstPingTimer() {
 
 	if c.kind == ROUTER && opts.Cluster.PingInterval > 0 {
 		d = opts.Cluster.PingInterval
+	}
+	if c.kind == LEAF && opts.LeafNode.PingInterval > 0 {
+		d = opts.LeafNode.PingInterval
 	}
 	if c.isWebsocket() && opts.Websocket.PingInterval > 0 {
 		d = opts.Websocket.PingInterval
