@@ -5002,6 +5002,54 @@ func TestJetStreamFastBatchPublishPing(t *testing.T) {
 	require_Equal(t, pubAck.BatchSize, 100)
 }
 
+func TestJetStreamFastBatchPublishPingCannotStartBatch(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           FileStorage,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// A ping at batch sequence 1 must not start a new batch.
+	for _, gapMode := range []string{FastBatchGapFail, FastBatchGapOk} {
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 2, gapMode, FastBatchOpPing)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
+	}
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.RLock()
+	batches := mset.batches
+	mset.mu.RUnlock()
+	if batches != nil {
+		batches.mu.Lock()
+		inflight := len(batches.fast)
+		batches.mu.Unlock()
+		require_Len(t, inflight, 0)
+	}
+	require_Equal(t, globalInflightFastBatches.Load(), 0)
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
 func TestJetStreamFastBatchPublishGapOkBackwardSeq(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
