@@ -16915,3 +16915,357 @@ func TestFileStoreCompactionPreservesRedelivery(t *testing.T) {
 		return nil
 	})
 }
+
+// A real flush may have encoded the old state before Reset starts. Its write
+// must finish before Reset commits the new state, including a zero checkpoint.
+func TestFileStoreConsumerResetWithBlockedFlusher(t *testing.T) {
+	for _, syncAlways := range []bool{false, true} {
+		for _, resetSeq := range []uint64{0, 10} {
+			t.Run(fmt.Sprintf("sync=%v/sequence=%d", syncAlways, resetSeq), func(t *testing.T) {
+				io := newDiskIOSemaphore(4)
+				store := &consumerFileStore{
+					fs:  &fileStore{dios: io},
+					cfg: &FileConsumerInfo{ConsumerConfig: ConsumerConfig{AckPolicy: AckExplicit}},
+					ifn: filepath.Join(t.TempDir(), "consumer-state"),
+				}
+				store.fs.syncAlways.Store(syncAlways)
+				for seq := uint64(1); seq <= 4; seq++ {
+					require_NoError(t, store.UpdateDelivered(seq, seq, 1, time.Now().UnixNano()))
+				}
+				require_NoError(t, store.UpdateAcks(2, 2))
+				require_NoError(t, store.UpdateDelivered(5, 3, 2, time.Now().UnixNano()))
+				before, err := store.State()
+				require_NoError(t, err)
+				if before.Delivered.Stream != 4 || before.AckFloor.Stream != 0 || len(before.Pending) != 3 || len(before.Redelivered) != 1 {
+					t.Fatalf("invalid delivered fixture: %+v", before)
+				}
+				require_NoError(t, store.writeState(encodeConsumerState(before)))
+
+				for range io.cap() {
+					io.acquire()
+				}
+				held := true
+				release := func() {
+					if held {
+						for range io.cap() {
+							io.release()
+						}
+						held = false
+					}
+				}
+				store.fch, store.qch = make(chan struct{}, 1), make(chan struct{})
+				flushDone := make(chan struct{})
+				stopped := false
+				go func() {
+					store.flushLoop(store.fch, store.qch)
+					close(flushDone)
+				}()
+				defer func() {
+					release()
+					if !stopped {
+						close(store.qch)
+					}
+					select {
+					case <-flushDone:
+					case <-time.After(time.Second):
+						t.Error("flusher did not finish after disk-IO release")
+					}
+				}()
+				store.fch <- struct{}{}
+				checkFor(t, time.Second, time.Millisecond, func() error {
+					if io.waiters.Load() == 0 {
+						return fmt.Errorf("old flush did not reach actual disk-IO barrier")
+					}
+					return nil
+				})
+
+				// Ordinary delivery updates and reads must not wait for disk IO.
+				updateDone := make(chan error, 1)
+				go func() {
+					if err := store.UpdateDelivered(6, 5, 1, time.Now().UnixNano()); err != nil {
+						updateDone <- err
+						return
+					}
+					state, err := store.State()
+					if err == nil && state.Delivered != (SequencePair{Consumer: 6, Stream: 5}) {
+						err = fmt.Errorf("delivery update is not observable during disk IO: %+v", state)
+					}
+					updateDone <- err
+				}()
+				select {
+				case err := <-updateDone:
+					require_NoError(t, err)
+				case <-time.After(time.Second):
+					t.Fatal("delivery update or state read waited for background disk IO")
+				}
+
+				resetDone := make(chan error, 1)
+				go func() { resetDone <- store.Reset(resetSeq) }()
+				returned := false
+				select {
+				case err := <-resetDone:
+					require_NoError(t, err)
+					returned = true
+				case <-time.After(100 * time.Millisecond):
+					// Reset may wait for the old write before committing its state.
+				}
+				release()
+				if !returned {
+					select {
+					case err := <-resetDone:
+						require_NoError(t, err)
+					case <-time.After(time.Second):
+						t.Fatal("reset did not finish after disk-IO release")
+					}
+				}
+				close(store.qch)
+				stopped = true
+				select {
+				case <-flushDone:
+				case <-time.After(time.Second):
+					t.Fatal("old flush did not finish after disk-IO release")
+				}
+				checkState := func(label string, state *ConsumerState, err error) {
+					t.Helper()
+					require_NoError(t, err)
+					want := SequencePair{Stream: resetSeq}
+					if state.Delivered != want || state.AckFloor != want || len(state.Pending) != 0 || len(state.Redelivered) != 0 {
+						t.Errorf("%s reset state is obsolete: %+v", label, state)
+					}
+				}
+				after, err := store.BorrowState()
+				checkState("live", after, err)
+				reopened := &consumerFileStore{fs: store.fs, ifn: store.ifn}
+				persisted, err := reopened.State()
+				checkState("reopened", persisted, err)
+			})
+		}
+	}
+}
+
+func TestFileStoreConsumerCloseWithBlockedFlusher(t *testing.T) {
+	for _, deleteStore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delete=%v", deleteStore), func(t *testing.T) {
+			io := newDiskIOSemaphore(4)
+			odir := t.TempDir()
+			store := &consumerFileStore{
+				fs:   &fileStore{dios: io},
+				cfg:  &FileConsumerInfo{ConsumerConfig: ConsumerConfig{AckPolicy: AckExplicit}},
+				odir: odir,
+				ifn:  filepath.Join(odir, consumerState),
+				fch:  make(chan struct{}, 1),
+				qch:  make(chan struct{}),
+			}
+			require_NoError(t, store.UpdateDelivered(1, 1, 1, time.Now().UnixNano()))
+			for range io.cap() {
+				io.acquire()
+			}
+			held := true
+			release := func() {
+				if held {
+					for range io.cap() {
+						io.release()
+					}
+					held = false
+				}
+			}
+			flushDone := make(chan struct{})
+			go func() {
+				store.flushLoop(store.fch, store.qch)
+				close(flushDone)
+			}()
+			defer func() {
+				release()
+				store.Stop()
+				select {
+				case <-flushDone:
+				case <-time.After(time.Second):
+					t.Error("flusher did not finish after disk-IO release")
+				}
+			}()
+			checkFor(t, time.Second, time.Millisecond, func() error {
+				if io.waiters.Load() == 0 {
+					return fmt.Errorf("old flush did not reach actual disk-IO barrier")
+				}
+				return nil
+			})
+			// Stop must persist this update after the old snapshot finishes.
+			require_NoError(t, store.UpdateDelivered(2, 2, 1, time.Now().UnixNano()))
+			closeDone := make(chan error, 1)
+			go func() {
+				if deleteStore {
+					closeDone <- store.Delete()
+				} else {
+					closeDone <- store.Stop()
+				}
+			}()
+			select {
+			case err := <-closeDone:
+				t.Fatalf("consumer closed before the in-flight write finished: %v", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			release()
+			select {
+			case err := <-closeDone:
+				require_NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("consumer close did not finish after disk-IO release")
+			}
+			select {
+			case <-flushDone:
+			case <-time.After(time.Second):
+				t.Fatal("old flush did not finish after consumer close")
+			}
+			if deleteStore {
+				_, err := os.Stat(odir)
+				require_True(t, os.IsNotExist(err))
+			} else {
+				reopened := &consumerFileStore{fs: store.fs, ifn: store.ifn}
+				state, err := reopened.State()
+				require_NoError(t, err)
+				require_Equal(t, state.Delivered, SequencePair{Consumer: 2, Stream: 2})
+			}
+		})
+	}
+}
+
+// A successfully loaded zero state must remain available when unrelated disk
+// writers saturate the IO semaphore. Zero delivered sequences are valid state.
+func TestFileStoreConsumerLoadedZeroDoesNotReload(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		t.Run(fmt.Sprintf("state-file=%v", present), func(t *testing.T) {
+			io := newDiskIOSemaphore(4)
+			store := &consumerFileStore{fs: &fileStore{dios: io}, ifn: filepath.Join(t.TempDir(), "state")}
+			if present {
+				if err := os.WriteFile(store.ifn, encodeConsumerState(&ConsumerState{}), defaultFilePerms); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := store.loadState(); err != nil {
+				t.Fatal(err)
+			}
+			// Loading an absent file caches zero state, but records no progress.
+			require_Equal(t, store.HasState(), present)
+			for range io.cap() {
+				io.acquire()
+			}
+			done := make(chan error, 1)
+			go func() {
+				state, err := store.BorrowState()
+				if err == nil && (state.Delivered != (SequencePair{}) || state.AckFloor != (SequencePair{}) || len(state.Pending) != 0) {
+					err = fmt.Errorf("loaded zero state changed: %+v", state)
+				}
+				done <- err
+			}()
+			returned := false
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+				returned = true
+			case <-time.After(100 * time.Millisecond):
+			}
+			for range io.cap() {
+				io.release()
+			}
+			if !returned {
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("state read did not finish after IO release")
+				}
+				t.Error("a loaded zero state tried to reread disk")
+			}
+			require_Equal(t, store.HasState(), present)
+		})
+	}
+}
+
+// A failed checkpoint write must not publish Reset in memory or through Stop.
+func TestFileStoreConsumerResetWriteErrorPreservesState(t *testing.T) {
+	for _, cipher := range []StoreCipher{NoCipher, AES, ChaCha} {
+		for _, syncAlways := range []bool{false, true} {
+			for _, resetSeq := range []uint64{0, 10} {
+				for _, recorded := range []bool{false, true} {
+					t.Run(fmt.Sprintf("cipher=%s/sync=%v/sequence=%d/recorded=%v", cipher, syncAlways, resetSeq, recorded), func(t *testing.T) {
+						fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: cipher}
+						fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "TEST", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+						require_NoError(t, err)
+						defer fs.Stop()
+						fs.syncAlways.Store(syncAlways)
+						cfg := &ConsumerConfig{AckPolicy: AckExplicit}
+						cs, err := fs.ConsumerStore("C", time.Now(), cfg)
+						require_NoError(t, err)
+						store := cs.(*consumerFileStore)
+						defer store.Stop()
+						require_False(t, store.HasState())
+						before := &ConsumerState{}
+						if recorded {
+							before = &ConsumerState{
+								Delivered: SequencePair{Consumer: 8, Stream: 6},
+								AckFloor:  SequencePair{Consumer: 2, Stream: 2},
+								Pending: map[uint64]*Pending{
+									4: {Sequence: 4, Timestamp: time.Now().Truncate(time.Second).UnixNano()},
+									6: {Sequence: 6, Timestamp: time.Now().Add(-time.Minute).Truncate(time.Second).UnixNano()},
+								},
+								Redelivered: map[uint64]uint64{4: 2},
+							}
+							require_NoError(t, store.ForceUpdate(before))
+						}
+						checkLive := func(want *ConsumerState) {
+							t.Helper()
+							state, err := store.State()
+							require_NoError(t, err)
+							if !reflect.DeepEqual(state, want) {
+								t.Errorf("live state changed: got %+v, want %+v", state, want)
+							}
+						}
+						checkDisk := func(want *ConsumerState, present bool) {
+							t.Helper()
+							if !present {
+								_, err := os.Stat(store.ifn)
+								if !os.IsNotExist(err) {
+									t.Errorf("failed first reset created a checkpoint: %v", err)
+								}
+								return
+							}
+							// Read through an independent store to include ciphertext decoding.
+							reopened := &consumerFileStore{fs: fs, ifn: store.ifn, aek: store.aek}
+							state, err := reopened.State()
+							require_NoError(t, err)
+							if !reflect.DeepEqual(state, want) {
+								t.Errorf("checkpoint changed: got %+v, want %+v", state, want)
+							}
+						}
+						checkLive(before)
+						checkDisk(before, recorded)
+						// OpenFile must fail before rename, preserving the old checkpoint.
+						tmp := store.ifn + ".tmp"
+						require_NoError(t, os.Mkdir(tmp, defaultDirPerms))
+						if err := store.Reset(resetSeq); err == nil {
+							t.Fatal("reset succeeded despite an unwritable checkpoint temporary file")
+						}
+						checkLive(before)
+						checkDisk(before, recorded)
+						require_Equal(t, store.HasState(), recorded)
+						require_NoError(t, os.Remove(tmp))
+						// Stop flushes dirty state, so it must not publish the failed reset later.
+						require_NoError(t, store.Stop())
+						checkDisk(before, recorded)
+						cs, err = fs.ConsumerStore("C", time.Now(), cfg)
+						require_NoError(t, err)
+						store = cs.(*consumerFileStore)
+						defer store.Stop()
+						checkLive(before)
+						require_Equal(t, store.HasState(), recorded)
+						require_NoError(t, store.Reset(resetSeq))
+						want := &ConsumerState{Delivered: SequencePair{Stream: resetSeq}, AckFloor: SequencePair{Stream: resetSeq}}
+						checkLive(want)
+						checkDisk(want, true)
+					})
+				}
+			}
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13917,4 +13918,177 @@ func TestJetStreamConsumerEphemeralPullDefaultInactiveThresholdAfterRestart(t *t
 		}
 		return nil
 	})
+}
+
+// Exercise actual disk errors at the existing public reset/update boundary and
+// committed-entry apply boundary. The store is real; its writer cannot replace
+// a checkpoint file when its temporary path is occupied by a directory.
+func TestJetStreamConsumerResetWriteErrorsReachCaller(t *testing.T) {
+	for _, syncAlways := range []bool{false, true} {
+		for _, operation := range []string{"reset-api", "sourcing-update", "replicated-apply"} {
+			t.Run(fmt.Sprintf("sync=%v/%s", syncAlways, operation), func(t *testing.T) {
+				s := RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+				nc, js := jsClientConnect(t, s)
+				defer nc.Close()
+				_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+				require_NoError(t, err)
+				cfg := ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit, Sourcing: operation == "sourcing-update"}
+				actual, err := jsConsumerCreate(t, nc, "TEST", cfg, false)
+				require_NoError(t, err)
+				mset, err := s.globalAccount().lookupStream("TEST")
+				require_NoError(t, err)
+				o := mset.lookupConsumer("CONSUMER")
+				require_NotNil(t, o)
+				for i := 0; i < 3; i++ {
+					_, err := js.Publish("foo", []byte("message"))
+					require_NoError(t, err)
+				}
+				for i := 0; i < 2; i++ {
+					msg, err := nc.Request(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), nil, time.Second)
+					require_NoError(t, err)
+					require_Equal(t, string(msg.Data), "message")
+					if i == 0 {
+						_, err = nc.Request(msg.Reply, AckAck, time.Second)
+						require_NoError(t, err)
+					}
+				}
+				cfs := o.store.(*consumerFileStore)
+				cfs.fs.syncAlways.Store(syncAlways)
+				beforeInfo := o.info()
+				require_NotNil(t, beforeInfo)
+				require_Equal(t, beforeInfo.Delivered.Consumer, 2)
+				require_Equal(t, beforeInfo.Delivered.Stream, 2)
+				require_Equal(t, beforeInfo.AckFloor.Consumer, 1)
+				require_Equal(t, beforeInfo.AckFloor.Stream, 1)
+				require_Equal(t, beforeInfo.NumAckPending, 1)
+				require_Equal(t, beforeInfo.NumPending, 1)
+				beforeState, err := cfs.State()
+				require_NoError(t, err)
+				require_Equal(t, len(beforeState.Pending), 1)
+				o.mu.RLock()
+				dseq, sseq, adflr, asflr, npc, npf := o.dseq, o.sseq, o.adflr, o.asflr, o.npc, o.npf
+				ldt, lat := o.ldt, o.lat
+				pending := make(map[uint64]*Pending, len(o.pending))
+				for seq, p := range o.pending {
+					pending[seq] = &Pending{p.Sequence, p.Timestamp}
+				}
+				redelivered := make(map[uint64]uint64, len(o.rdc))
+				for seq, count := range o.rdc {
+					redelivered[seq] = count
+				}
+				o.mu.RUnlock()
+				// The prior state remains readable, so an ignored write error can
+				// produce a positive INFO response instead of a masking read error.
+				blocked := filepath.Join(t.TempDir(), "state")
+				checkpoint := encodeConsumerState(beforeState)
+				require_NoError(t, os.WriteFile(blocked, checkpoint, defaultFilePerms))
+				require_NoError(t, os.Mkdir(blocked+".tmp", defaultDirPerms))
+				cfs.mu.Lock()
+				cfs.waitOnWriteLocked()
+				original := cfs.ifn
+				cfs.ifn = blocked
+				cfs.mu.Unlock()
+				defer func() {
+					cfs.mu.Lock()
+					cfs.waitOnWriteLocked()
+					cfs.ifn = original
+					cfs.mu.Unlock()
+				}()
+				switch operation {
+				case "reset-api":
+					msg, err := nc.Request("$JS.API.CONSUMER.RESET.TEST.CONSUMER", nil, time.Second)
+					require_NoError(t, err)
+					var response JSApiConsumerResetResponse
+					require_NoError(t, json.Unmarshal(msg.Data, &response))
+					if response.Error == nil || response.Error.ErrCode != uint16(JSConsumerInvalidResetErr) || response.ResetSeq != 0 {
+						t.Fatalf("failed checkpoint write produced reset success: %+v", response)
+					}
+				case "sourcing-update":
+					actual.Description = "updated source"
+					_, err := jsConsumerCreate(t, nc, "TEST", *actual, false)
+					if err == nil {
+						t.Fatal("failed source reset produced update success")
+					}
+				case "replicated-apply":
+					buf := make([]byte, 9)
+					buf[0] = byte(resetSeqOp)
+					binary.LittleEndian.PutUint64(buf[1:], 1)
+					entry := &CommittedEntry{Entries: []*Entry{{Type: EntryNormal, Data: buf}}}
+					err := o.js.applyConsumerEntries(o, entry, true)
+					var pathErr *os.PathError
+					if !errors.As(err, &pathErr) {
+						t.Fatalf("failed reset apply did not return actual disk error: %v", err)
+					}
+				}
+				state, err := cfs.State()
+				require_NoError(t, err)
+				if !reflect.DeepEqual(state, beforeState) {
+					t.Errorf("failed reset changed store state: before=%+v after=%+v", beforeState, state)
+				}
+				o.mu.RLock()
+				if o.dseq != dseq || o.sseq != sseq || o.adflr != adflr || o.asflr != asflr || o.npc != npc || o.npf != npf ||
+					!o.ldt.Equal(ldt) || !o.lat.Equal(lat) || !reflect.DeepEqual(o.pending, pending) || len(o.rdc) != len(redelivered) {
+					t.Errorf("failed reset changed runtime state: delivered=%d/%d ackfloor=%d/%d pending=%v", o.dseq-1, o.sseq-1, o.adflr, o.asflr, o.pending)
+				}
+				for seq, count := range redelivered {
+					if o.rdc[seq] != count {
+						t.Errorf("failed reset changed redelivery count for %d", seq)
+					}
+				}
+				o.mu.RUnlock()
+				info := o.info()
+				require_NotNil(t, info)
+				// Gathering INFO changes only its observation timestamp.
+				info.TimeStamp = beforeInfo.TimeStamp
+				// Sourcing updates apply configuration before resetting; compare delivery state separately.
+				info.Config = beforeInfo.Config
+				if !reflect.DeepEqual(info, beforeInfo) {
+					t.Errorf("failed reset changed consumer INFO: before=%+v after=%+v", beforeInfo, info)
+				}
+				persistedState, err := os.ReadFile(blocked)
+				require_NoError(t, err)
+				if !bytes.Equal(persistedState, checkpoint) {
+					t.Error("failed reset changed persisted checkpoint")
+				}
+			})
+		}
+	}
+}
+
+// Recovery can read retained metadata/state from a directory whose writes now
+// fail. A source consumer must fail its constructor reset before publishing a
+// ready consumer; cleanup retains the store instead of deleting its evidence.
+func TestJetStreamConsumerSourcingConstructorReportsResetWriteError(t *testing.T) {
+	for _, syncAlways := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sync=%v", syncAlways), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+			require_NoError(t, err)
+			cfg := ConsumerConfig{Durable: "CONSUMER", AckPolicy: AckExplicit, Sourcing: true}
+			_, err = jsConsumerCreate(t, nc, "TEST", cfg, false)
+			require_NoError(t, err)
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			o := mset.lookupConsumer("CONSUMER")
+			require_NotNil(t, o)
+			cfs := o.store.(*consumerFileStore)
+			cfs.fs.syncAlways.Store(syncAlways)
+			require_NoError(t, o.stop())
+			require_NoError(t, os.Mkdir(cfs.ifn+".tmp", defaultDirPerms))
+			_, err = jsConsumerCreate(t, nc, "TEST", cfg, false)
+			if err == nil {
+				t.Fatal("failed constructor reset produced create success")
+			}
+			if mset.lookupConsumer("CONSUMER") != nil {
+				t.Fatal("failed source constructor left a registered consumer")
+			}
+			if _, err := os.Stat(cfs.ifn); err != nil {
+				t.Fatalf("failed constructor deleted retained state: %v", err)
+			}
+		})
+	}
 }
