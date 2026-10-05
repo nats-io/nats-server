@@ -9075,7 +9075,7 @@ func TestJetStreamClusterDesyncAfterDiskResetDuringRollout(t *testing.T) {
 }
 
 func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T) {
-	test := func(truncateTo int64) {
+	test := func(t *testing.T, truncateTo int64) {
 		c := createJetStreamClusterWithTemplate(t, jsClusterEncryptedTempl, "C", 3)
 		defer c.shutdown()
 
@@ -9088,6 +9088,13 @@ func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T
 			Replicas: 3,
 		})
 		require_NoError(t, err)
+
+		// Connect to the stream leader. The client must not be on the follower we shut down.
+		sl := c.streamLeader(globalAccountName, "TEST")
+		require_NotNil(t, sl)
+		nc.Close()
+		nc, js = jsClientConnect(t, sl)
+		defer nc.Close()
 
 		for range 100 {
 			_, err = js.Publish("foo", nil)
@@ -9140,7 +9147,7 @@ func TestJetStreamClusterEncryptedReplicaRecoversFromCorruptKeyFile(t *testing.T
 	// 64-71 bytes passes the size check but fails to open/convert the key.
 	for _, size := range []int64{0, 70} {
 		t.Run(fmt.Sprintf("TruncateTo%d", size), func(t *testing.T) {
-			test(size)
+			test(t, size)
 		})
 	}
 }
