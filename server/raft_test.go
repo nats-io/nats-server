@@ -250,9 +250,20 @@ func TestNRGLeaderNotInOwnPeerSetAddsItself(t *testing.T) {
 	require_Len(t, len(follower.Peers()), 2)
 
 	// Once we become leader we must be a member again, and tell the others.
+	// The transfer silently goes to another peer if the leader hasn't heard from
+	// the follower recently, so retry until the follower is the leader.
 	require_NoError(t, leader.StepDown(follower.id))
-	rg.waitOnLeader()
-	require_True(t, rg.leader().node() == follower)
+	checkFor(t, 5*time.Second, 250*time.Millisecond, func() error {
+		l := rg.leader()
+		if l == nil {
+			return errors.New("no leader yet")
+		}
+		if n := l.node(); n != follower {
+			n.StepDown(follower.id)
+			return fmt.Errorf("leader is %s, not %s", n.ID(), follower.id)
+		}
+		return nil
+	})
 	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
 		for _, sm := range rg {
 			n := sm.node().(*raft)
