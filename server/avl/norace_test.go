@@ -173,8 +173,9 @@ func TestNoRaceSeqSetRelativeSpeed(t *testing.T) {
 			return fmt.Errorf("Expected SequenceSet insert to be no more than 2x slower (%v vs %v)", mapInsertElapsed, ssInsertElapsed)
 		}
 
-		if mapLookupElapsed*3 <= ssLookupElapsed {
-			return fmt.Errorf("Expected SequenceSet lookups to be no more than 3x slower (%v vs %v)", mapLookupElapsed, ssLookupElapsed)
+		// Map lookups can be much faster on machines with large CPU caches, so allow up to 5x.
+		if mapLookupElapsed*5 <= ssLookupElapsed {
+			return fmt.Errorf("Expected SequenceSet lookups to be no more than 5x slower (%v vs %v)", mapLookupElapsed, ssLookupElapsed)
 		}
 		return nil
 	}

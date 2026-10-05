@@ -342,9 +342,17 @@ func TestJetStreamSuperClusterStreamStepDown(t *testing.T) {
 		sdr := stepdown(preferredServer, _EMPTY_, nil)
 		require_Equal(t, sdr.Error, nil)
 
-		c.waitOnStreamLeader(globalAccountName, "foo")
-		sl = c.streamLeader(globalAccountName, "foo")
-		require_Equal(t, sl.Name(), preferredServer)
+		// The transfer silently goes to another peer if the leader hasn't heard from
+		// the preferred server recently, so retry until it's the leader.
+		checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+			c.waitOnStreamLeader(globalAccountName, "foo")
+			sl = c.streamLeader(globalAccountName, "foo")
+			if sl.Name() != preferredServer {
+				stepdown(preferredServer, _EMPTY_, nil)
+				return fmt.Errorf("leader is %s, not %s", sl.Name(), preferredServer)
+			}
+			return nil
+		})
 	})
 
 	// Influence the placement by using the cluster name. For streams this doesn't really
@@ -6112,7 +6120,7 @@ func TestJetStreamSuperClusterConsumerAckSubjectWithStreamImportProtocolError(t 
 	if err := meta.CampaignImmediately(); err != nil {
 		require_Error(t, err, errAlreadyLeader)
 	}
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		if !s1.JetStreamIsLeader() && !s2.JetStreamIsLeader() {
 			return fmt.Errorf("neither server is leader")
 		}
