@@ -1737,7 +1737,14 @@ func (c *cluster) randomNonLeader() *Server {
 func (c *cluster) leader() *Server {
 	for _, s := range c.servers {
 		if s.JetStreamIsLeader() {
-			return s
+			// The upper layer is only signaled asynchronously, so also require the meta
+			// group to still be leader. Otherwise, a leader that just stepped down could
+			// still be returned until it processes the leader change.
+			if js := s.getJetStream(); js != nil {
+				if meta := js.getMetaGroup(); meta != nil && meta.Leader() {
+					return s
+				}
+			}
 		}
 	}
 	return nil
