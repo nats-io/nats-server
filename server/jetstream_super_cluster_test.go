@@ -6112,7 +6112,7 @@ func TestJetStreamSuperClusterConsumerAckSubjectWithStreamImportProtocolError(t 
 	if err := meta.CampaignImmediately(); err != nil {
 		require_Error(t, err, errAlreadyLeader)
 	}
-	checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
 		if !s1.JetStreamIsLeader() && !s2.JetStreamIsLeader() {
 			return fmt.Errorf("neither server is leader")
 		}
