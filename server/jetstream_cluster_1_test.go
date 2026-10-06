@@ -9889,7 +9889,7 @@ func TestJetStreamClusterConsumerInfoAfterCreate(t *testing.T) {
 	// This is fine for the RAFT log and allowing the consumer to be created,
 	// but we will not be able to apply the consumer assignment for some time.
 	mjs := nl.getJetStream()
-	require_NotNil(t, js)
+	require_NotNil(t, mjs)
 	mg := mjs.getMetaGroup()
 	require_NotNil(t, mg)
 	err = mg.(*raft).PauseApply()
@@ -10101,7 +10101,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10212,7 +10212,7 @@ func TestJetStreamClusterStreamHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10286,7 +10286,7 @@ func TestJetStreamClusterStreamHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10422,7 +10422,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotRecreate(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 
 		sjs := rs.getJetStream()
 		sjs.mu.Lock()
@@ -10544,7 +10544,7 @@ func TestJetStreamClusterConsumerHealthCheckMustNotDeleteEarly(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
@@ -10624,7 +10624,7 @@ func TestJetStreamClusterConsumerHealthCheckOnlyReportsSkew(t *testing.T) {
 		acc, err := rs.lookupAccount(globalAccountName)
 		require_NoError(t, err)
 		mset, err := acc.lookupStream("TEST")
-		require_NotNil(t, err)
+		require_NoError(t, err)
 		o := mset.lookupConsumer("CONSUMER")
 
 		sjs := rs.getJetStream()
@@ -12838,7 +12838,8 @@ func TestJetStreamClusterWALReplayPreservesFirstSeq(t *testing.T) {
 
 type snapshotlessRaftNode struct {
 	RaftNode
-	id string
+	id    string
+	peers []string
 }
 
 func (n *snapshotlessRaftNode) ID() string                         { return n.id }
@@ -12846,51 +12847,132 @@ func (n *snapshotlessRaftNode) Progress() (uint64, uint64, uint64) { return 1, 1
 func (n *snapshotlessRaftNode) LoadLastSnapshot() (uint64, []byte, error) {
 	return 0, nil, errNoSnapAvailable
 }
+func (n *snapshotlessRaftNode) Peers() []*Peer {
+	peers := make([]*Peer, 0, len(n.peers))
+	for _, p := range n.peers {
+		peers = append(peers, &Peer{ID: p})
+	}
+	return peers
+}
 
 func TestJetStreamClusterPrepareForWALReplayPreservesR1ScaleUpSource(t *testing.T) {
+	const source = "source"
+	for _, test := range []struct {
+		title   string
+		peers   []string
+		origin  *desiredRaftGroupOrigin
+		desired []string
+		msgs    uint64
+	}{
+		// The original R1 peer restarting before bootstrap completed.
+		{"R1 origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 3},
+		// After stacked updates the origin needn't name the source, only the membership does.
+		{"stacked origin", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source, "peer-2", "peer-3"}, Replicas: 3}, []string{source, "peer-4", "peer-5"}, 3},
+		// The source only adds peers after snapshotting, so a WAL without one is complete.
+		{"not sole member", []string{source, "peer-2"}, &desiredRaftGroupOrigin{Peers: []string{source}, Replicas: 1}, []string{source, "peer-2", "peer-3"}, 0},
+		// A plain R1 isn't scaling up, its WAL is complete.
+		{"plain R1", []string{source}, nil, nil, 0},
+		// A scale down to R1 doesn't grow, its WAL is complete.
+		{"scale down to R1", []string{source}, &desiredRaftGroupOrigin{Peers: []string{source, "peer-2", "peer-3"}, Replicas: 3}, []string{source}, 0},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
+			require_NoError(t, err)
+			for range 3 {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+
+			mset, err := s.GlobalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			fs := mset.store.(*fileStore)
+			fs.syncOnFlush.Store(true)
+
+			n := &snapshotlessRaftNode{id: source, peers: test.peers}
+			mset.mu.Lock()
+			mset.node = n
+			mset.sa = &streamAssignment{Group: &raftGroup{}}
+			if test.desired != nil {
+				mset.sa.Group.Desired = &desiredRaftGroup{Peers: test.desired, Origin: test.origin}
+			}
+			mset.mu.Unlock()
+			defer func() {
+				mset.mu.Lock()
+				mset.node, mset.sa = nil, nil
+				mset.mu.Unlock()
+			}()
+
+			// A sole member's new WAL can't reconstruct the existing stream state, so its store must be preserved.
+			require_NoError(t, prepareStreamRecovery(mset, n))
+			state := mset.state()
+			require_Equal(t, state.Msgs, test.msgs)
+			require_Equal(t, state.LastSeq, test.msgs)
+		})
+	}
+}
+
+func TestJetStreamClusterInterestCheckDoesNotCompactPastReplay(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
 
 	nc, js := jsClientConnect(t, s)
 	defer nc.Close()
 
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.FileStorage})
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.FileStorage,
+		Retention: nats.InterestPolicy,
+	})
 	require_NoError(t, err)
-	for range 3 {
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	const numMsgs = 3
+	for range numMsgs {
 		_, err = js.Publish("foo", []byte("msg"))
 		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs)
+	require_NoError(t, err)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
 	}
 
 	mset, err := s.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	fs := mset.store.(*fileStore)
-	fs.syncOnFlush.Store(true)
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 0 {
+			return fmt.Errorf("expected acked messages to be removed, got %d", state.Msgs)
+		}
+		return nil
+	})
 
-	// Simulate the original R1 peer restarting before bootstrap completed.
-	const source = "source"
-	n := &snapshotlessRaftNode{id: source}
-	mset.mu.Lock()
-	mset.node = n
-	mset.sa = &streamAssignment{Group: &raftGroup{Desired: &desiredRaftGroup{
-		Peers: []string{source, "peer-2", "peer-3"},
-		Origin: &desiredRaftGroupOrigin{
-			Peers:    []string{source},
-			Replicas: 1,
-		},
-	}}}
-	mset.mu.Unlock()
-	defer func() {
-		mset.mu.Lock()
-		mset.node, mset.sa = nil, nil
-		mset.mu.Unlock()
-	}()
+	// Checking interest on the full store leaves the consumer's check floor
+	// past the last message, as when a replicated stream starts up.
+	mset.checkInterestState()
 
-	// Its new WAL cannot reconstruct the existing R1 stream state,
-	// prepareStreamRecovery must preserve the stream store
-	require_NoError(t, prepareStreamRecovery(mset, n))
-	state := mset.state()
-	require_Equal(t, state.Msgs, 3)
-	require_Equal(t, state.LastSeq, 3)
+	// Recovery truncates the store to replay the Raft log, while the
+	// consumer's ack and check floors are still at the last message.
+	require_NoError(t, mset.prepareForWALReplay(nil))
+	require_Equal(t, mset.lastSeq(), 0)
+
+	// A leader change checks interest before the replay has caught up. It
+	// must not compact the store past the messages that are still to come.
+	mset.checkInterestState()
+	require_Equal(t, mset.state().LastSeq, 0)
+	for seq := uint64(1); seq <= numMsgs; seq++ {
+		require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("msg"), seq, time.Now().UnixNano(), 0, false))
+	}
+	require_Equal(t, mset.state().LastSeq, numMsgs)
 }
 
 func TestJetStreamClusterPrepareForWALReplayTruncatesStore(t *testing.T) {

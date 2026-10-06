@@ -301,12 +301,14 @@ func (ack BatchFlowAck) MarshalJSON() ([]byte, error) {
 }
 
 // BatchFlowGap is used for reporting gaps when fast batch publishing into a stream.
+// A forward gap means messages were lost, a backward gap means a message was duplicated or reordered.
 // This message is purely informational and could technically be lost without the client receiving it.
 type BatchFlowGap struct {
 	// Type: "gap"
 	Type string `json:"type"`
 	// ExpectedLastSequence is the sequence expected to be received next.
-	// Messages starting from ExpectedLastSequence up to (but not including) CurrentSequence were lost.
+	// If CurrentSequence is higher, messages starting from ExpectedLastSequence up to (but not including) CurrentSequence were lost.
+	// If CurrentSequence is lower or equal, it's a backward gap and the batch is ended, the PubAck confirms what was persisted.
 	ExpectedLastSequence uint64 `json:"last_seq"`
 	// CurrentSequence is the sequence of the message that just came in and detected the gap.
 	CurrentSequence uint64 `json:"seq"`
@@ -1256,6 +1258,21 @@ func (ssi *StreamSource) composeIName() string {
 // Sets the index name.
 func (ssi *StreamSource) setIndexName() {
 	ssi.iname = ssi.composeIName()
+}
+
+// matchSourceIndexNames sets the index names on cfg's sources only if they are also set on ocfg's sources.
+// The index name is not encoded, so this ensures a DeepEqual of both configs can succeed.
+func matchSourceIndexNames(cfg *StreamConfig, ocfg *StreamConfig) {
+	currentIName := make(map[string]struct{}, len(ocfg.Sources))
+	for _, s := range ocfg.Sources {
+		currentIName[s.iname] = struct{}{}
+	}
+	for _, s := range cfg.Sources {
+		s.setIndexName()
+		if _, ok := currentIName[s.iname]; !ok {
+			s.iname = _EMPTY_
+		}
+	}
 }
 
 // Composes the consumer index name. Contains the stream name and consumer name used for durable sourcing (if any).
@@ -8129,7 +8146,8 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Get batch.
 	b, ok := batches.fast[batch.id]
 	if !ok {
-		if batch.seq != 1 {
+		// A new batch can only be started at sequence 1 and not by a ping.
+		if batch.seq != 1 || batch.ping {
 			batches.mu.Unlock()
 			mset.mu.Unlock()
 			return respondError(NewJSBatchPublishUnknownBatchIDError())
@@ -8221,8 +8239,8 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	// Detect gaps.
 	b.lseq++
 	if b.lseq != batch.seq || cleanup {
-		// If a forward gap is detected, we always report about it.
-		if batch.seq > b.lseq {
+		// If a forward or backward gap is detected, we always report about it.
+		if batch.seq != b.lseq {
 			buf, _ := BatchFlowGap{ExpectedLastSequence: b.lseq, CurrentSequence: batch.seq}.MarshalJSON()
 			outq.sendMsg(reply, buf)
 		}
@@ -9019,8 +9037,9 @@ func (mset *stream) checkInterestState() {
 	rp := mset.cfg.Retention
 	mset.cfgMu.RUnlock()
 	// Remove as many messages from the "head" of the stream if there's no interest anymore.
+	// Only compact up to the current stream state, consumers may be ahead while replaying.
 	if rp == InterestPolicy && asflr != math.MaxUint64 {
-		mset.store.Compact(asflr)
+		mset.store.Compact(min(asflr, ss.LastSeq+1))
 	}
 }
 

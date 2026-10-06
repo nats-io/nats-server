@@ -9092,21 +9092,47 @@ func TestJetStreamClusteredStreamCreateIdempotentWithSources(t *testing.T) {
 	_, err = js.AddStream(cfg)
 	require_NoError(t, err)
 
-	// Step down the stream leader until it lands on the meta leader.
-	// This ensures the meta leader's stored assignment has iname populated
-	// via the shared StreamSource pointer.
+	// The leadership transfer is best-effort and another peer could win the election, so retry.
+	stepDownTo := func(target *Server) {
+		t.Helper()
+		checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+			c.waitOnStreamLeader(globalAccountName, "SOURCED")
+			sl := c.streamLeader(globalAccountName, "SOURCED")
+			if sl == nil {
+				return errors.New("no stream leader")
+			} else if sl == target {
+				return nil
+			}
+			mset, err := sl.globalAccount().lookupStream("SOURCED")
+			require_NoError(t, err)
+			// The stream leader could have changed in the meantime.
+			if err = mset.raftNode().StepDown(target.Node()); err != nil && err != errNotLeader {
+				return err
+			}
+			return fmt.Errorf("stream leader is %s, expected %s", sl.Name(), target.Name())
+		})
+	}
+
+	// Move the stream leader across all servers, ending on the meta leader.
+	// This ensures all stored assignments have iname populated via the shared StreamSource pointer.
 	ml := c.leader()
 	require_NotNil(t, ml)
-	sl := c.streamLeader(globalAccountName, "SOURCED")
-	require_NotNil(t, sl)
-	if sl != ml {
-		mset, err := sl.globalAccount().lookupStream("SOURCED")
-		require_NoError(t, err)
-		require_NoError(t, mset.raftNode().StepDown(ml.Node()))
-		c.waitOnStreamLeader(globalAccountName, "SOURCED")
-		sl = c.streamLeader(globalAccountName, "SOURCED")
+	for _, s := range c.servers {
+		if s != ml {
+			stepDownTo(s)
+		}
 	}
-	require_Equal(t, ml, sl)
+	stepDownTo(ml)
+
+	for _, s := range c.servers {
+		mset, err := s.globalAccount().lookupStream("SOURCED")
+		require_NoError(t, err)
+		sjs := s.getJetStream()
+		sjs.mu.RLock()
+		iname := mset.streamAssignment().Config.Sources[0].iname
+		sjs.mu.RUnlock()
+		require_NotEqual(t, iname, _EMPTY_)
+	}
 
 	// The second create should be idempotent, and succeed even though iname was set.
 	_, err = js.AddStream(cfg)
@@ -11672,12 +11698,12 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleStream(t *testing.T) {
 	// The public API refuses to update an offline stream, but a partition or a
 	// crash right after the proposal has the same effect. Build and propose the
 	// scaled-up assignment like jsClusteredStreamUpdateRequest would: this
-	// renames the raft group, but keeps the assignment created time and the
-	// stream data.
+	// renames the raft group and records the new peer set as desired state,
+	// but keeps the assignment created time and the stream data.
 	mljs := ml.getJetStream()
 	mljs.mu.Lock()
-	var nsa *streamAssignment
-	if osa := mljs.streamAssignment(globalAccountName, "TEST"); osa != nil {
+	var osa, nsa *streamAssignment
+	if osa = mljs.streamAssignment(globalAccountName, "TEST"); osa != nil {
 		nsa = osa.copyGroup()
 	}
 	cc := mljs.cluster
@@ -11688,10 +11714,10 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleStream(t *testing.T) {
 	ncfg := *nsa.Config
 	ncfg.Replicas = 3
 	nsa.Config = &ncfg
-	nsa.Group.Preferred = nsa.Group.Peers[0]
-	nsa.Group.ScaleUp = true
 	nsa.Group.Peers = peers
 	nsa.Group.Name = groupNameForStream(peers, nsa.Group.Storage)
+	nsa.Group = osa.Group.withDesired(nsa.Group)
+	nsa.Group.populateOrigin(osa)
 	require_NoError(t, meta.Propose(term, encodeUpdateStreamAssignment(nsa)))
 
 	// Wait until the update is applied.
@@ -11791,11 +11817,12 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	// The public API refuses to update an offline consumer, but a partition or a
 	// crash right after the proposal has the same effect. Build and propose the
 	// scaled-up assignment like jsClusteredConsumerRequest would: this renames
-	// the raft group, but keeps the assignment created time and consumer state.
+	// the raft group and records the new peer set as desired state, but keeps
+	// the assignment created time and consumer state.
 	mljs := ml.getJetStream()
 	mljs.mu.Lock()
-	var nca *consumerAssignment
-	if oca := mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); oca != nil {
+	var oca, nca *consumerAssignment
+	if oca = mljs.consumerAssignment(globalAccountName, "TEST", "DUR"); oca != nil {
 		nca = oca.copyGroup()
 	}
 	cc := mljs.cluster
@@ -11806,10 +11833,9 @@ func TestJetStreamClusterMetaSnapshotRecoveryScaleConsumer(t *testing.T) {
 	ncfg := *nca.Config
 	ncfg.Replicas = 3
 	nca.Config = &ncfg
-	nca.Group.Preferred = nca.Group.Peers[0]
-	nca.Group.ScaleUp = true
 	nca.Group.Peers = peers
 	nca.Group.Name = groupNameForConsumer(peers, nca.Group.Storage)
+	nca.Group = oca.Group.withDesired(nca.Group)
 	require_NoError(t, meta.Propose(term, encodeAddConsumerAssignment(nca)))
 
 	// Wait until the update is applied.
@@ -15592,7 +15618,10 @@ func TestJetStreamClusterScaleDownCancelsCatchup(t *testing.T) {
 	sl.gcbSubLast(hold)
 	scale(3)
 	waitReplicas(3)
-	require_NoError(t, checkState(t, c, globalAccountName, "TEST"))
+	// Replicas are Raft-current once added, their store catchup may still be finishing.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		return checkState(t, c, globalAccountName, "TEST")
+	})
 }
 
 func TestJetStreamClusterConsumerScaleDownDesiredAfterMetaLeaderChange(t *testing.T) {
@@ -15847,4 +15876,230 @@ func TestJetStreamClusterReconcileMigratesConsumerBeforeDroppingStreamPeer(t *te
 		}
 		return nil
 	})
+}
+
+// Scale up peers observe while the source is down, and take over once it's back or once it's peer-removed.
+func TestJetStreamClusterScaleUpSourceDown(t *testing.T) {
+	// Shorter election timeouts keep the wait for a non-election short.
+	omin, omax := minElectionTimeout, maxElectionTimeout
+	minElectionTimeout, maxElectionTimeout = 250*time.Millisecond, time.Second
+	defer func() {
+		minElectionTimeout, maxElectionTimeout = omin, omax
+	}()
+
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Remove=%v", remove), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, "R4S", 4)
+			defer c.shutdown()
+
+			nc, js := jsClientConnect(t, c.randomServer())
+			defer nc.Close()
+			_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+			require_NoError(t, err)
+			_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+			require_NoError(t, err)
+			for range 10 {
+				_, err = js.Publish("foo", nil)
+				require_NoError(t, err)
+			}
+
+			// The source goes down below, so it mustn't be the meta leader.
+			sl := c.streamLeader(globalAccountName, "TEST")
+			var ml *Server
+			checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+				if ml = c.leader(); ml == nil || ml == sl {
+					if ml != nil {
+						ml.getJetStream().getMetaGroup().StepDown()
+					}
+					return fmt.Errorf("meta leader is unknown or the source")
+				}
+				return nil
+			})
+			slID, mljs := sl.Node(), ml.getJetStream()
+			nc, js = jsClientConnect(t, ml)
+			defer nc.Close()
+
+			// The stream's assignment and Raft node on a running server.
+			assignment := func(s *Server) (*raftGroup, RaftNode) {
+				sjs := s.getJetStream()
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				sa := sjs.streamAssignment(globalAccountName, "TEST")
+				if sa == nil || sa.Group == nil {
+					return nil, nil
+				}
+				return sa.Group.copyGroup(), sa.Group.node
+			}
+
+			// Hold back the source's report extending the assignment, it's applied once the source is down.
+			expand := make(chan []byte, 1)
+			var hold atomic.Bool
+			hold.Store(true)
+			mljs.mu.Lock()
+			cc := mljs.cluster
+			origSub := cc.streamReconcile
+			cc.streamReconcile = nil
+			mljs.mu.Unlock()
+			ml.sysUnsubscribe(origSub)
+			mljs.mu.Lock()
+			cc.streamReconcile, err = ml.systemSubscribe(streamAssignmentReconcileSubj, _EMPTY_, false, cc.c,
+				func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+					var reconcile streamAssignmentReconcile
+					if json.Unmarshal(msg, &reconcile) == nil && hold.Load() && len(reconcile.MetaPeers) > len(reconcile.Members) {
+						select {
+						case expand <- copyBytes(msg):
+						default:
+						}
+						return
+					}
+					mljs.reconcileDesiredStreamAssignment(sub, c, acc, subject, reply, msg)
+				})
+			mljs.mu.Unlock()
+			require_NoError(t, err)
+
+			_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+			require_NoError(t, err)
+			var msg []byte
+			select {
+			case msg = <-expand:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("source never reported the extended assignment")
+			}
+			sl.Shutdown()
+			sl.WaitForShutdown()
+			hold.Store(false)
+			mljs.reconcileDesiredStreamAssignment(nil, nil, nil, _EMPTY_, _EMPTY_, msg)
+
+			// The new peers run their nodes, but without a leader to add them they never elect one among themselves.
+			var others []*Server
+			checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+				others = others[:0]
+				for _, s := range c.servers {
+					if s == sl {
+						continue
+					}
+					if _, n := assignment(s); n != nil {
+						others = append(others, s)
+					}
+				}
+				if len(others) != 2 {
+					return fmt.Errorf("%d new peers run a node, want 2", len(others))
+				}
+				return nil
+			})
+			time.Sleep(2 * maxElectionTimeout)
+			require_True(t, c.streamLeader(globalAccountName, "TEST") == nil)
+			for _, s := range others {
+				_, n := assignment(s)
+				require_True(t, n.IsObserver())
+			}
+
+			if remove {
+				// The source was the only member, the empty peers take over.
+				b, err := json.Marshal(JSApiStreamRemovePeerRequest{Peer: slID})
+				require_NoError(t, err)
+				rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRemovePeerT, "TEST"), b, 10*time.Second)
+				require_NoError(t, err)
+				var resp JSApiStreamRemovePeerResponse
+				require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+				require_True(t, resp.Success)
+			} else {
+				sl = c.restartServer(sl)
+			}
+
+			// The scale up completes, no peer is left observing.
+			checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
+				rg, _ := assignment(c.leader())
+				if rg.Desired != nil || rg.ScaleUp || len(rg.Peers) != 3 || remove == slices.Contains(rg.Peers, slID) {
+					return fmt.Errorf("stream not converged: peers=%v desired=%v scale up=%v", rg.Peers, rg.Desired != nil, rg.ScaleUp)
+				}
+				for _, s := range c.servers {
+					if s == sl && remove {
+						continue
+					}
+					if _, n := assignment(s); n != nil && n.IsObserver() {
+						return fmt.Errorf("%s still an observer", s.Name())
+					}
+				}
+				ci, err := js.ConsumerInfo("TEST", "C")
+				if err != nil {
+					return err
+				}
+				if len(ci.Cluster.Replicas) != 2 {
+					return fmt.Errorf("consumer has %d replicas, want 2", len(ci.Cluster.Replicas))
+				}
+				return nil
+			})
+			for _, s := range c.servers {
+				if s == sl && remove {
+					continue
+				}
+				if _, n := assignment(s); n != nil {
+					c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+				}
+			}
+
+			// The data went with the source if it was removed.
+			want := uint64(10)
+			if remove {
+				want = 0
+			}
+			si, err := js.StreamInfo("TEST")
+			require_NoError(t, err)
+			require_Equal(t, si.State.Msgs, want)
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		})
+	}
+}
+
+// Only peers that aren't members yet run their node as a scale up observer.
+func TestJetStreamClusterScaleUpPeerNodeCreation(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	sjs := s.getJetStream()
+	ourID := s.Node()
+	peers := serverPeerNames(c.servers)
+	other := slices.DeleteFunc(copyStrings(peers), func(p string) bool { return p == ourID })
+
+	for _, test := range []struct {
+		name         string
+		rg           *raftGroup
+		recovering   bool
+		observer     bool
+		initializing bool
+	}{
+		{"NewGroup", &raftGroup{Peers: peers}, false, false, true},
+		{"MemberOfMigration", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers, Members: peers}}, false, false, true},
+		{"ScaleUpPeer", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers, Members: other}}, false, true, false},
+		// A recorded membership holds on recovery as well.
+		{"RecoveringScaleUpPeer", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers, Members: other}}, true, true, false},
+		{"LegacyDesiredNoMembers", &raftGroup{Peers: peers, ScaleUp: true, Preferred: other[0],
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers}}, false, true, false},
+		// Without a recorded membership the preferred peer is the source.
+		{"LegacyPreferredSource", &raftGroup{Peers: peers, ScaleUp: true, Preferred: ourID,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers}}, false, false, true},
+		// Recovery clears the preferred peer, members would otherwise all come back as observers.
+		{"LegacyRecovering", &raftGroup{Peers: peers, ScaleUp: true,
+			Desired: &desiredRaftGroup{ID: "desired", Peers: peers}}, true, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.rg.Name = "TEST-" + test.name
+			test.rg.Storage = MemoryStorage
+			node, err := sjs.createRaftGroup(globalAccountName, test.rg, test.recovering, MemoryStorage, pprofLabels{})
+			require_NoError(t, err)
+			defer node.Delete()
+			n := node.(*raft)
+			require_Equal(t, n.IsObserver(), test.observer)
+			n.RLock()
+			initializing := n.initializing
+			n.RUnlock()
+			require_Equal(t, initializing, test.initializing)
+		})
+	}
 }

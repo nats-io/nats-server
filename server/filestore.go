@@ -4281,36 +4281,78 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
-	if sseq < fs.state.FirstSeq {
-		sseq = fs.state.FirstSeq
-	}
-	// Track starting for both block for the sseq and staring block that matches any subject.
-	var seqStart int
-	// See if we need to figure out starting block per sseq.
-	if sseq > fs.state.FirstSeq {
-		// This should not, but can return -1, so make sure we check to avoid panic below.
-		if seqStart, _ = fs.selectMsgBlockWithIndex(sseq); seqStart < 0 {
-			seqStart = 0
-		}
-	}
-
 	isAll := filter == _EMPTY_ || filter == fwcs
 	if isAll && filter == _EMPTY_ {
 		filter = fwcs
 	}
 	wc := subjectHasWildcard(filter)
 
+	// Resolve exact filters once, including those with no retained messages.
+	var info *psi
+	if !isAll && !wc {
+		var ok bool
+		if info, ok = fs.psim.Find(stringToBytes(filter)); !ok {
+			return 0, validThrough, nil
+		}
+	}
+
+	// When starting at the beginning, count directly from stream and subject state.
+	// No message blocks need to be loaded, even if there are sequence gaps.
+	if sseq <= fs.state.FirstSeq {
+		if isAll {
+			if lastPerSubject {
+				return uint64(fs.psim.Size()), validThrough, nil
+			}
+			return fs.state.Msgs, validThrough, nil
+		}
+		if !wc {
+			if lastPerSubject {
+				return 1, validThrough, nil
+			}
+			return info.total, validThrough, nil
+		}
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, info *psi) {
+			if lastPerSubject {
+				total++
+			} else {
+				total += info.total
+			}
+		})
+		return total, validThrough, nil
+	}
+
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
-		_, isAll = fs.psim.Find(stringToBytes(filter))
+		isAll = true
 	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
-		if sseq == 0 {
-			return fs.state.Msgs, validThrough, nil
-		}
 		return fs.state.LastSeq - sseq + 1, validThrough, nil
+	}
+
+	// The remaining paths start after FirstSeq and need the starting block.
+	seqStart, _ := fs.selectMsgBlockWithIndex(sseq)
+	// This should not, but can return -1, so make sure we check to avoid panic below.
+	if seqStart < 0 {
+		seqStart = 0
+	}
+
+	// Block indexes can have gaps, and fblk can lag after deletions. Search the
+	// retained blocks for the subject's conservative bounds rather than requiring
+	// the indexed blocks to still exist.
+	blkStart, blkEnd := 0, len(fs.blks)
+	if info != nil {
+		blkStart = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index >= info.fblk })
+		blkEnd = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index > info.lblk })
+		if seqStart >= blkEnd {
+			return 0, validThrough, nil
+		}
+		if seqStart < blkStart {
+			if lastPerSubject {
+				return 1, validThrough, nil
+			}
+			return info.total, validThrough, nil
+		}
 	}
 
 	_tsa, _fsa := [32]string{}, [32]string{}
@@ -4337,10 +4379,6 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
 	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
-		// If we want all and our start sequence is equal or less than first return number of subjects.
-		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough, nil
-		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
 		lbm := make(map[string]bool)
@@ -4359,6 +4397,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				lbm[string(subj)] = true
 			}
 		})
+
+		// Subjects whose last block is later need no correction in this block.
+		if len(lbm) == 0 {
+			return total, validThrough, nil
+		}
 
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
@@ -4380,9 +4423,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= lseq {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4422,8 +4469,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
 	if seqStart >= (len(fs.blks) / 2) {
-		for i := seqStart; i < len(fs.blks); i++ {
+		for i := max(seqStart, blkStart); i < blkEnd; i++ {
 			var shouldExpire bool
+			var updateLLTS bool
 			mb := fs.blks[i]
 			// Hold write lock in case we need to load cache.
 			mb.mu.Lock()
@@ -4491,8 +4539,17 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+						updateLLTS = true
+						if end >= lseq {
+							break
+						}
+						seq = end
+						continue
+					}
 					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
 						t++
+						updateLLTS = false // cacheLookup already updated it.
 					}
 				}
 			}
@@ -4501,6 +4558,9 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 				mb.tryForceExpireCacheLocked()
 			} else {
 				mb.finishedWithCache()
+			}
+			if updateLLTS {
+				mb.llts = ats.AccessTime()
 			}
 			mb.mu.Unlock()
 			total += t
@@ -4511,16 +4571,16 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
 	// TODO(dlc) - Eventually when sublist uses generics, make this sublist driven instead.
 	start := uint32(math.MaxUint32)
-	fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-		total += psi.total
-		// Keep track of start index for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-	})
-	// See if we were asked for all, if so we are done.
-	if sseq <= fs.state.FirstSeq {
-		return total, validThrough, nil
+	if info != nil {
+		total, start = info.total, info.fblk
+	} else {
+		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
+			total += psi.total
+			// Keep track of start index for this subject.
+			if psi.fblk < start {
+				start = psi.fblk
+			}
+		})
 	}
 
 	// If we are here we need to calculate partials for the first blocks.
@@ -4533,7 +4593,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 
 	// Track how many we need to adjust against the total.
 	var adjust uint64
-	for i := 0; i <= seqStart; i++ {
+	for i := blkStart; i <= seqStart && i < blkEnd; i++ {
 		mb := fs.blks[i]
 		// We can skip blks if we know they are below the first one that has any subject matches.
 		if !firstSubjBlkFound {
@@ -4582,9 +4642,13 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= last {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4633,21 +4697,27 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 		return 0, validThrough, nil
 	}
 
-	// If sseq is less then our first set to first.
-	if sseq < fs.state.FirstSeq {
-		sseq = fs.state.FirstSeq
-	}
-	// Track starting for both block for the sseq and staring block that matches any subject.
-	var seqStart int
-	// See if we need to figure out starting block per sseq.
-	if sseq > fs.state.FirstSeq {
-		// This should not, but can return -1, so make sure we check to avoid panic below.
-		if seqStart, _ = fs.selectMsgBlockWithIndex(sseq); seqStart < 0 {
-			seqStart = 0
-		}
-	}
-
 	isAll := sl == nil
+
+	// When starting at the beginning, count directly from stream and subject state.
+	// No message blocks need to be loaded, even if there are sequence gaps.
+	if sseq <= fs.state.FirstSeq {
+		if isAll {
+			if lastPerSubject {
+				return uint64(fs.psim.Size()), validThrough, nil
+			}
+			return fs.state.Msgs, validThrough, nil
+		}
+		stree.IntersectGSL(fs.psim, sl, func(_ []byte, info *psi) bool {
+			if lastPerSubject {
+				total++
+			} else {
+				total += info.total
+			}
+			return true
+		})
+		return total, validThrough, nil
+	}
 
 	// See if filter was provided but its the only subject.
 	if !isAll && fs.psim.Size() == 1 {
@@ -4658,11 +4728,55 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	}
 	// If we are isAll and have no deleted we can do a simpler calculation.
 	if !lastPerSubject && isAll && (fs.state.LastSeq-fs.state.FirstSeq+1) == fs.state.Msgs {
-		if sseq == 0 {
-			return fs.state.Msgs, validThrough, nil
-		}
 		return fs.state.LastSeq - sseq + 1, validThrough, nil
 	}
+
+	// The remaining paths start after FirstSeq and need the starting block.
+	seqStart, _ := fs.selectMsgBlockWithIndex(sseq)
+	// This should not, but can return -1, so make sure we check to avoid panic below.
+	if seqStart < 0 {
+		seqStart = 0
+	}
+
+	// Resolve the matching subjects' conservative block bounds once. Block
+	// indexes can have gaps, and first-block tracking can lag after deletions.
+	blkStart, blkEnd := 0, len(fs.blks)
+	start, stop := uint32(math.MaxUint32), uint32(0)
+	var matchedMsgs, matchedSubjects, pendingSubjects uint64
+	var lbm map[string]bool
+	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
+		lbm = make(map[string]bool)
+	}
+	if sl != nil {
+		bi := fs.blks[seqStart].index
+		stree.IntersectGSL(fs.psim, sl, func(subj []byte, info *psi) bool {
+			matchedMsgs += info.total
+			matchedSubjects++
+			start, stop = min(start, info.fblk), max(stop, info.lblk)
+			if lbm != nil && info.lblk >= bi {
+				pendingSubjects++
+				if info.lblk == bi {
+					lbm[string(subj)] = true
+				}
+			}
+			return true
+		})
+		if matchedSubjects == 0 {
+			return 0, validThrough, nil
+		}
+		blkStart = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index >= start })
+		blkEnd = sort.Search(len(fs.blks), func(i int) bool { return fs.blks[i].index > stop })
+		if seqStart >= blkEnd {
+			return 0, validThrough, nil
+		}
+		if seqStart < blkStart {
+			if lastPerSubject {
+				return matchedSubjects, validThrough, nil
+			}
+			return matchedMsgs, validThrough, nil
+		}
+	}
+
 	// Setup the isMatch function.
 	isMatch := func(subj string) bool {
 		if isAll {
@@ -4678,29 +4792,28 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	// For the last block, we need to track the subjects that we know are in that block, and track seen
 	// while in the block itself, but complexity there worth it.
 	if lastPerSubject || fs.cfg.MaxMsgsPer == 1 {
-		// If we want all and our start sequence is equal or less than first return number of subjects.
-		if isAll && sseq <= fs.state.FirstSeq {
-			return uint64(fs.psim.Size()), validThrough, nil
-		}
 		// If we are here we need to scan. We are going to scan the PSIM looking for lblks that are >= seqStart.
 		// This will build up a list of all subjects from the selected block onward.
-		lbm := make(map[string]bool)
 		mb := fs.blks[seqStart]
 		bi := mb.index
 
-		stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) bool {
-			// If the select blk start is greater than entry's last blk skip.
-			if bi > psi.lblk {
+		if sl != nil {
+			total = pendingSubjects
+		} else {
+			fs.psim.IterFast(func(subj []byte, info *psi) bool {
+				if info.lblk >= bi {
+					total++
+					if info.lblk == bi {
+						lbm[string(subj)] = true
+					}
+				}
 				return true
-			}
-			total++
-			// We will track the subjects that are an exact match to the last block.
-			// This is needed for last block processing.
-			if psi.lblk == bi {
-				lbm[string(subj)] = true
-			}
-			return true
-		})
+			})
+		}
+		// Subjects whose last block is later need no correction in this block.
+		if len(lbm) == 0 {
+			return total, validThrough, nil
+		}
 
 		// Now check if we need to inspect the seqStart block.
 		// Grab write lock in case we need to load in msgs.
@@ -4722,9 +4835,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			}
 			var smv StoreMsg
 			for seq, lseq := atomic.LoadUint64(&mb.first.seq), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= lseq {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -4763,7 +4880,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
 	if seqStart >= (len(fs.blks) / 2) {
-		for i := seqStart; i < len(fs.blks); i++ {
+		for i := max(seqStart, blkStart); i < blkEnd; i++ {
 			var shouldExpire bool
 			mb := fs.blks[i]
 			// Hold write lock in case we need to load cache.
@@ -4828,9 +4945,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 				}
 				var smv StoreMsg
 				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if mb.dmap.Exists(seq) {
-						// Optimisation to avoid calling cacheLookup which hits time.Now().
+					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+						// Skip the deleted span without calling cacheLookup, which hits time.Now().
 						updateLLTS = true
+						if end >= lseq {
+							break
+						}
+						seq = end
 						continue
 					}
 					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
@@ -4855,19 +4976,10 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 	}
 
 	// If we are here it's better to calculate totals from psim and adjust downward by scanning less blocks.
-	start := uint32(math.MaxUint32)
-	stree.IntersectGSL(fs.psim, sl, func(subj []byte, psi *psi) bool {
-		total += psi.total
-		// Keep track of start index for this subject.
-		if psi.fblk < start {
-			start = psi.fblk
-		}
-		return true
-	})
-
-	// See if we were asked for all, if so we are done.
-	if sseq <= fs.state.FirstSeq {
-		return total, validThrough, nil
+	if sl != nil {
+		total = matchedMsgs
+	} else {
+		total, start = fs.state.Msgs, fs.blks[0].index
 	}
 
 	// If we are here we need to calculate partials for the first blocks.
@@ -4880,7 +4992,7 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 
 	// Track how many we need to adjust against the total.
 	var adjust uint64
-	for i := 0; i <= seqStart; i++ {
+	for i := blkStart; i <= seqStart && i < blkEnd; i++ {
 		mb := fs.blks[i]
 		// We can skip blks if we know they are below the first one that has any subject matches.
 		if !firstSubjBlkFound {
@@ -4929,9 +5041,13 @@ func (fs *fileStore) NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPer
 			// We need to walk all messages in this block
 			var smv StoreMsg
 			for seq := atomic.LoadUint64(&mb.first.seq); seq < last; seq++ {
-				if mb.dmap.Exists(seq) {
-					// Optimisation to avoid calling cacheLookup which hits time.Now().
+				if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+					// Skip the deleted span without calling cacheLookup, which hits time.Now().
 					updateLLTS = true
+					if end >= last {
+						break
+					}
+					seq = end
 					continue
 				}
 				sm, _ := mb.cacheLookupNoCopy(seq, &smv)
@@ -14038,8 +14154,13 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 }
 
 func (o *consumerFileStore) writeState(buf []byte) error {
-	// Check if we have the index file open.
 	o.mu.Lock()
+	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
+	if o.closed {
+		o.mu.Unlock()
+		return ErrStoreClosed
+	}
+	// Check if we have the index file open.
 	if o.writing || len(buf) == 0 {
 		o.mu.Unlock()
 		return nil
@@ -14083,6 +14204,10 @@ func (o *consumerFileStore) updateConfig(cfg ConsumerConfig) error {
 // Write out the consumer meta data, i.e. state.
 // Lock should be held.
 func (cfs *consumerFileStore) writeConsumerMeta() error {
+	// Don't write after being stopped or deleted, otherwise we'd write into the working directory.
+	if cfs.closed {
+		return ErrStoreClosed
+	}
 	meta := filepath.Join(cfs.odir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -14431,8 +14556,9 @@ func (o *consumerFileStore) Stop() error {
 		return err
 	}
 
+	// Wait for an in-progress flush, even if not dirty, so the state is on disk when we return.
+	o.waitOnFlusher()
 	if len(buf) > 0 {
-		o.waitOnFlusher()
 		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 	}
 	return err
