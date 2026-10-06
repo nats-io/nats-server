@@ -1,4 +1,4 @@
-// Copyright 2022-2023 The NATS Authors
+// Copyright 2022-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -32,8 +32,16 @@ const (
 	AuthRequestXKeyHeader = "Nats-Server-Xkey"
 )
 
+func titleCase(m string) string {
+	r := []rune(m)
+	if len(r) == 0 {
+		return _EMPTY_
+	}
+	return string(append([]rune{unicode.ToUpper(r[0])}, r[1:]...))
+}
+
 // Process a callout on this client's behalf.
-func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorized bool, errStr string) {
+func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool, ujwt string) (authorized bool, errStr string) {
 	isOperatorMode := len(opts.TrustedKeys) > 0
 
 	// this is the account the user connected in, or the one running the callout
@@ -49,6 +57,13 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		}
 	} else {
 		acc = c.acc
+	}
+	if acc == nil {
+		// FIX for https://github.com/nats-io/nats-server/issues/7841
+		// hand rolled creds on leafnode became crasher here
+		errStr = fmt.Sprintf("%s not mapped to a callout account", c.kindString())
+		s.Warnf(errStr)
+		return false, errStr
 	}
 
 	// Check if we have been requested to encrypt.
@@ -66,9 +81,6 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		xkp, xkey = s.xkp, s.info.XKey
 	}
 
-	// FIXME: so things like the server ID that get assigned, are used as a sort of nonce - but
-	//  reality is that the keypair here, is generated, so the response generated a JWT has to be
-	//  this user - no replay possible
 	// Create a keypair for the user. We will expect this public user to be in the signed response.
 	// This prevents replay attacks.
 	ukp, _ := nkeys.CreateUser()
@@ -132,7 +144,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 				pkStr = cr.IssuerAccount
 			}
 			if pkStr != account {
-				if _, ok := acc.signingKeys[pkStr]; !ok {
+				if _, ok := acc.hasIssuer(pkStr); !ok {
 					return nil, errors.New("auth callout signing key is unknown")
 				}
 			}
@@ -234,13 +246,18 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	}
 
 	processReply := func(_ *subscription, rc *client, racc *Account, subject, reply string, rmsg []byte) {
-		titleCase := func(m string) string {
-			r := []rune(m)
-			return string(append([]rune{unicode.ToUpper(r[0])}, r[1:]...))
-		}
-
 		arc, err := decodeResponse(rc, rmsg, racc)
 		if err != nil {
+			c.authViolation()
+			respCh <- titleCase(err.Error())
+			return
+		}
+		// If the caller had established that the user should go through a proxy,
+		// or if the `arc` JWT requires it, and we don't have a trusted proxy,
+		// reject the connection.
+		if (proxyRequired || arc.ProxyRequired) && !trustedProxy {
+			err = ErrAuthProxyRequired
+			c.setAuthError(err)
 			c.authViolation()
 			respCh <- titleCase(err.Error())
 			return
@@ -269,6 +286,15 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 
 		targetAcc, err := assignAccountAndPermissions(arc, racc.Name)
 		if err != nil {
+			c.authViolation()
+			respCh <- titleCase(err.Error())
+			return
+		}
+
+		// The scoped template may have introduced a proxy requirement.
+		if arc.ProxyRequired && !trustedProxy {
+			err = ErrAuthProxyRequired
+			c.setAuthError(err)
 			c.authViolation()
 			respCh <- titleCase(err.Error())
 			return
@@ -357,7 +383,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 	// Grab client info for the request.
 	c.mu.Lock()
 	c.fillClientInfo(&claim.ClientInformation)
-	c.fillConnectOpts(&claim.ConnectOptions)
+	c.fillConnectOpts(&claim.ConnectOptions, ujwt)
 	// If we have a sig in the client opts, fill in nonce.
 	if claim.ConnectOptions.SignedNonce != _EMPTY_ {
 		claim.ClientInformation.Nonce = string(c.nonce)
@@ -369,7 +395,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		conn := c.nc.(*tls.Conn)
 		cs := conn.ConnectionState()
 		ct.Version = tlsVersion(cs.Version)
-		ct.Cipher = tlsCipher(cs.CipherSuite)
+		ct.Cipher = tls.CipherSuiteName(cs.CipherSuite)
 		// Check verified chains.
 		for _, vs := range cs.VerifiedChains {
 			var certs []string
@@ -403,7 +429,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 		return false, errStr
 	}
 	req := []byte(b)
-	var hdr map[string]string
+	var hdr []byte
 
 	// Check if we have been asked to encrypt.
 	if xkp != nil {
@@ -413,7 +439,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options) (authorize
 			s.Warnf(errStr)
 			return false, errStr
 		}
-		hdr = map[string]string{AuthRequestXKeyHeader: xkey}
+		hdr = genHeader(hdr, AuthRequestXKeyHeader, xkey)
 	}
 
 	// Send out our request.
@@ -457,16 +483,22 @@ func (c *client) fillClientInfo(ci *jwt.ClientInformation) {
 
 // Fill in client options.
 // Lock should be held.
-func (c *client) fillConnectOpts(opts *jwt.ConnectOptions) {
+func (c *client) fillConnectOpts(opts *jwt.ConnectOptions, ujwt string) {
 	if c == nil || (c.kind != CLIENT && c.kind != LEAF && c.kind != JETSTREAM && c.kind != ACCOUNT) {
 		return
 	}
 
 	o := c.opts
+	if ujwt == _EMPTY_ {
+		// The caller may supply a reconstructed JWT that should be sent to auth
+		// callout without storing it in c.opts.JWT. If not, fall back to the client
+		// option as before.
+		ujwt = o.JWT
+	}
 
 	// Do it this way to fail to compile if fields are added to jwt.ClientInformation.
 	*opts = jwt.ConnectOptions{
-		JWT:         o.JWT,
+		JWT:         ujwt,
 		Nkey:        o.Nkey,
 		SignedNonce: o.Sig,
 		Token:       o.Token,

@@ -1,4 +1,4 @@
-// Copyright 2018-2020 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -26,7 +26,7 @@ import (
 func checkClosedConns(t *testing.T, s *Server, num int, wait time.Duration) {
 	t.Helper()
 	checkFor(t, wait, 5*time.Millisecond, func() error {
-		if nc := s.numClosedConns(); nc != num {
+		if nc := s.closed.len(); nc != num {
 			return fmt.Errorf("Closed conns expected to be %v, got %v", num, nc)
 		}
 		return nil
@@ -36,7 +36,7 @@ func checkClosedConns(t *testing.T, s *Server, num int, wait time.Duration) {
 func checkTotalClosedConns(t *testing.T, s *Server, num uint64, wait time.Duration) {
 	t.Helper()
 	checkFor(t, wait, 5*time.Millisecond, func() error {
-		if nc := s.totalClosedConns(); nc != num {
+		if nc := s.closed.totalConns(); nc != num {
 			return fmt.Errorf("Total closed conns expected to be %v, got %v", num, nc)
 		}
 		return nil
@@ -62,7 +62,7 @@ func TestClosedConnsAccounting(t *testing.T) {
 
 	checkClosedConns(t, s, 1, wait)
 
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
@@ -83,7 +83,7 @@ func TestClosedConnsAccounting(t *testing.T) {
 	checkClosedConns(t, s, opts.MaxClosedClients, wait)
 	checkTotalClosedConns(t, s, 22, wait)
 
-	conns = s.closedClients()
+	conns = s.closed.closedClients()
 	if lc := len(conns); lc != opts.MaxClosedClients {
 		t.Fatalf("len(conns) expected to be %d, got %d\n",
 			opts.MaxClosedClients, lc)
@@ -122,7 +122,7 @@ func TestClosedConnsSubsAccounting(t *testing.T) {
 	nc.Close()
 
 	checkClosedConns(t, s, 1, 20*time.Millisecond)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be 1, got %d\n", lc)
 	}
@@ -147,14 +147,14 @@ func TestClosedAuthorizationTimeout(t *testing.T) {
 	s := RunServer(serverOptions)
 	defer s.Shutdown()
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", serverOptions.Host, serverOptions.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(serverOptions.Host, fmt.Sprintf("%d", serverOptions.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
 	defer conn.Close()
 
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
@@ -177,7 +177,7 @@ func TestClosedAuthorizationViolation(t *testing.T) {
 	}
 
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
@@ -208,7 +208,7 @@ func TestClosedUPAuthorizationViolation(t *testing.T) {
 	}
 
 	checkClosedConns(t, s, 2, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 2 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 2, lc)
 	}
@@ -224,7 +224,7 @@ func TestClosedMaxPayload(t *testing.T) {
 	defer s.Shutdown()
 
 	opts := s.getOpts()
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 
 	conn, err := net.DialTimeout("tcp", endpoint, time.Second)
 	if err != nil {
@@ -237,7 +237,7 @@ func TestClosedMaxPayload(t *testing.T) {
 	conn.Write([]byte(pub))
 
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}
@@ -262,7 +262,7 @@ func TestClosedTLSHandshake(t *testing.T) {
 	}
 
 	checkClosedConns(t, s, 1, 2*time.Second)
-	conns := s.closedClients()
+	conns := s.closed.closedClients()
 	if lc := len(conns); lc != 1 {
 		t.Fatalf("len(conns) expected to be %d, got %d\n", 1, lc)
 	}

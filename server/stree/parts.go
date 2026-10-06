@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,7 +14,7 @@
 package stree
 
 import (
-	"bytes"
+	"strings"
 )
 
 // genParts will break a filter subject up into parts.
@@ -36,7 +36,6 @@ func genParts(filter []byte, parts [][]byte) [][]byte {
 				}
 				start = i + 1
 			} else if i < e && filter[i+1] == fwc && i+1 == e {
-				// We have a fwc
 				if i > start {
 					parts = append(parts, filter[start:i+1])
 				}
@@ -52,6 +51,10 @@ func genParts(filter []byte, parts [][]byte) [][]byte {
 			// Wildcard must be at the end or followed by tsep.
 			if next := i + 1; next == e || next < e && filter[next] != tsep {
 				continue
+			}
+			// Full wildcard must be terminal.
+			if filter[i] == fwc && i < e {
+				break
 			}
 			// We start with a pwc or fwc.
 			parts = append(parts, filter[i:i+1])
@@ -71,8 +74,9 @@ func genParts(filter []byte, parts [][]byte) [][]byte {
 	return parts
 }
 
-// Match our parts against a fragment, which could be prefix for nodes or a suffix for leafs.
-func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
+// Match our parts against a stored fragment, which could be a prefix for nodes
+// or a suffix for leaves.
+func matchParts(parts [][]byte, frag string) ([][]byte, bool) {
 	lf := len(frag)
 	if lf == 0 {
 		return parts, true
@@ -89,7 +93,7 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		// Check for pwc or fwc place holders.
 		if lp == 1 {
 			if part[0] == pwc {
-				index := bytes.IndexByte(frag[si:], tsep)
+				index := strings.IndexByte(frag[si:], tsep)
 				// We are trying to match pwc and did not find our tsep.
 				// Will need to move to next node from caller.
 				if index < 0 {
@@ -111,7 +115,7 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 			// Frag is smaller then part itself.
 			part = part[:end-si]
 		}
-		if !bytes.Equal(part, frag[si:end]) {
+		if string(part) != frag[si:end] {
 			return parts, false
 		}
 		// If we still have a portion of the fragment left, update and continue.
@@ -123,7 +127,10 @@ func matchParts(parts [][]byte, frag []byte) ([][]byte, bool) {
 		// but update the part to what was consumed. This allows upper layers to continue.
 		if end < si+lp {
 			if end >= lf {
-				parts = append([][]byte{}, parts...) // Create a copy before modifying.
+				// Create a copy before modifying. Reuse slice capacity available at the
+				// end of the parts slice, since this saves us additional allocations.
+				lp := len(parts)
+				parts = append(parts[lp:], parts[:lp]...)
 				parts[i] = parts[i][lf-si:]
 			} else {
 				i++

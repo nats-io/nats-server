@@ -1,4 +1,4 @@
-// Copyright 2020-2024 The NATS Authors
+// Copyright 2020-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,13 +18,22 @@ import (
 	"time"
 )
 
-func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {
+// publishAdvisory sends the given advisory into the account. Returns true if
+// it was sent, false if not (i.e. due to lack of interest or a marshal error).
+func (s *Server) publishAdvisory(acc *Account, subject string, adv any) bool {
 	if acc == nil {
 		acc = s.SystemAccount()
 		if acc == nil {
-			return
+			return false
 		}
 	}
+
+	// If there is no one listening for this advisory then save ourselves the effort
+	// and don't bother encoding the JSON or sending it.
+	if sl := acc.sl; (sl != nil && !sl.HasInterest(subject)) && !s.hasGatewayInterest(acc.Name, subject) {
+		return false
+	}
+
 	ej, err := json.Marshal(adv)
 	if err == nil {
 		err = s.sendInternalAccountMsg(acc, subject, ej)
@@ -34,6 +43,7 @@ func (s *Server) publishAdvisory(acc *Account, subject string, adv any) {
 	} else {
 		s.Warnf("Advisory could not be serialized for account %q: %v", acc.Name, err)
 	}
+	return err == nil
 }
 
 // JSAPIAudit is an advisory about administrative actions taken on JetStream
@@ -61,10 +71,9 @@ const (
 // JSStreamActionAdvisory indicates that a stream was created, edited or deleted
 type JSStreamActionAdvisory struct {
 	TypedEvent
-	Stream   string             `json:"stream"`
-	Action   ActionAdvisoryType `json:"action"`
-	Template string             `json:"template,omitempty"`
-	Domain   string             `json:"domain,omitempty"`
+	Stream string             `json:"stream"`
+	Action ActionAdvisoryType `json:"action"`
+	Domain string             `json:"domain,omitempty"`
 }
 
 const JSStreamActionAdvisoryType = "io.nats.jetstream.advisory.v1.stream_action"
@@ -173,6 +182,7 @@ type JSSnapshotCompleteAdvisory struct {
 	End    time.Time   `json:"end"`
 	Client *ClientInfo `json:"client"`
 	Domain string      `json:"domain,omitempty"`
+	Error  string      `json:"error,omitempty"`
 }
 
 // JSSnapshotCompleteAdvisoryType is the schema type for JSSnapshotCreateAdvisory
@@ -242,6 +252,28 @@ type JSStreamQuorumLostAdvisory struct {
 	Replicas []*PeerInfo `json:"replicas"`
 	Domain   string      `json:"domain,omitempty"`
 }
+
+// JSStreamBatchAbandonedAdvisoryType is sent when a stream's atomic batch is abandoned.
+const JSStreamBatchAbandonedAdvisoryType = "io.nats.jetstream.advisory.v1.stream_batch_abandoned"
+
+// JSStreamBatchAbandonedAdvisory indicates that a stream's batch was abandoned.
+type JSStreamBatchAbandonedAdvisory struct {
+	TypedEvent
+	Account string             `json:"account,omitempty"`
+	Stream  string             `json:"stream"`
+	Domain  string             `json:"domain,omitempty"`
+	BatchId string             `json:"batch"`
+	Reason  BatchAbandonReason `json:"reason"`
+}
+
+type BatchAbandonReason string
+
+var (
+	BatchTimeout            BatchAbandonReason = "timeout"
+	BatchLarge              BatchAbandonReason = "large"
+	BatchIncomplete         BatchAbandonReason = "incomplete"
+	BatchRequirementsNotMet BatchAbandonReason = "unsupported"
+)
 
 // JSConsumerLeaderElectedAdvisoryType is sent when the system elects a leader for a consumer.
 const JSConsumerLeaderElectedAdvisoryType = "io.nats.jetstream.advisory.v1.consumer_leader_elected"
@@ -321,6 +353,22 @@ type JSServerRemovedAdvisory struct {
 	ServerID string `json:"server_id"`
 	Cluster  string `json:"cluster"`
 	Domain   string `json:"domain,omitempty"`
+}
+
+// JSMetaRescueAdvisoryType is sent when a server unsafely lowers the meta
+// group's quorum requirement for disaster recovery.
+const JSMetaRescueAdvisoryType = "io.nats.jetstream.advisory.v1.meta_rescue"
+
+// JSMetaRescueAdvisory indicates that a server has unsafely lowered the meta
+// group's quorum requirement for disaster recovery.
+type JSMetaRescueAdvisory struct {
+	TypedEvent
+	Server     string `json:"server"`
+	ServerID   string `json:"server_id"`
+	PrevQuorum int    `json:"prev_quorum"`
+	NewQuorum  int    `json:"new_quorum"`
+	Cluster    string `json:"cluster"`
+	Domain     string `json:"domain,omitempty"`
 }
 
 // JSAPILimitReachedAdvisoryType is sent when the JS API request queue limit is reached.

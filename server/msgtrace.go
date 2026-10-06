@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -17,15 +17,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const (
 	MsgTraceDest          = "Nats-Trace-Dest"
+	MsgTraceDestDisabled  = "trace disabled" // This must be an invalid NATS subject
 	MsgTraceHop           = "Nats-Trace-Hop"
 	MsgTraceOriginAccount = "Nats-Trace-Origin-Account"
 	MsgTraceOnly          = "Nats-Trace-Only"
@@ -33,8 +35,17 @@ const (
 	// External trace header. Note that this header is normally in lower
 	// case (https://www.w3.org/TR/trace-context/#header-name). Vendors
 	// MUST expect the header in any case (upper, lower, mixed), and
-	// SHOULD send the header name in lowercase.
+	// SHOULD send the header name in lowercase. We used to change it
+	// to lower case, but no longer do that in 2.14.
 	traceParentHdr = "traceparent"
+)
+
+var (
+	traceDestHdrAsBytes      = stringToBytes(MsgTraceDest)
+	traceDestDisabledAsBytes = stringToBytes(MsgTraceDestDisabled)
+	traceParentHdrAsBytes    = stringToBytes(traceParentHdr)
+	crLFAsBytes              = stringToBytes(CR_LF)
+	dashAsBytes              = stringToBytes("-")
 )
 
 type MsgTraceType string
@@ -244,21 +255,35 @@ const (
 	errMsgTraceSubClosed       = "Not delivered because subscription is closed"
 	errMsgTraceClientClosed    = "Not delivered because client is closed"
 	errMsgTraceAutoSubExceeded = "Not delivered because auto-unsubscribe exceeded"
+	errMsgTraceFastProdNoStall = "Not delivered because fast producer not stalled and consumer is slow"
 )
 
 type msgTrace struct {
+	kind  int
 	ready int32
 	srv   *Server
 	acc   *Account
-	// Origin account name, set only if acc is nil when acc lookup failed.
-	oan   string
 	dest  string
 	event *MsgTraceEvent
 	js    *MsgTraceJetStream
+	siMu  sync.RWMutex
+	si    []*msgTraceServiceImport
+	rsi   *msgTraceRespServiceImport
 	hop   string
 	nhop  string
 	tonly bool // Will only trace the message, not do delivery.
 	ct    compressionType
+}
+
+type msgTraceServiceImport struct {
+	si  *serviceImport
+	acc *Account
+}
+
+type msgTraceRespServiceImport struct {
+	hops     int
+	received int
+	tree     map[string]*msgTraceRespServiceImport
 }
 
 // This will be false outside of the tests, so when building the server binary,
@@ -318,7 +343,12 @@ func getCompressionType(cts string) compressionType {
 	return unsupportedCompression
 }
 
-func (c *client) initMsgTrace() *msgTrace {
+// Possibly initialize message tracing if appropriate headers are found in the
+// given `hdr` byte slice.
+// If there is an error and the header `MsgTraceOnly` is set to `true` (indicating
+// that it should be a "trace only" message, without message delivery), then this
+// function will return `true, nil`, so that the caller can skip message processing.
+func (c *client) initMsgTrace(hdr []byte, ingressError error) (bool, *msgTrace) {
 	// The code in the "if" statement is only running in test mode.
 	if msgTraceRunInTests {
 		// Check the type of client that tries to initialize a trace struct.
@@ -330,17 +360,16 @@ func (c *client) initMsgTrace() *msgTrace {
 		// simply ignore it.
 		if msgTraceCheckSupport {
 			if c.srv == nil || c.srv.getServerProto() < MsgTraceProto {
-				return nil
+				return false, nil
 			}
 		}
 	}
-	if c.pa.hdr <= 0 {
-		return nil
-	}
-	hdr := c.msgBuf[:c.pa.hdr]
+	// Get the headers if we find `Nats-Trace-Dest` or `traceparent` header.
+	// For `traceparent`, `external` will be true indicating that we need
+	// to get the destination and sampling from the account.
 	headers, external := genHeaderMapIfTraceHeadersPresent(hdr)
 	if len(headers) == 0 {
-		return nil
+		return false, nil
 	}
 	// Little helper to give us the first value of a given header, or _EMPTY_
 	// if key is not present.
@@ -351,10 +380,11 @@ func (c *client) initMsgTrace() *msgTrace {
 		}
 		return vv[0]
 	}
-	ct := getCompressionType(getHdrVal(acceptEncodingHeader))
 	var (
-		dest      string
-		traceOnly bool
+		dest      string   // The destination the trace message should be sent to
+		traceOnly bool     // True if this is "trace only" and no message delivery should occur
+		hop       string   // The hop "id", taken from headers only when not from CLIENT
+		kind      = c.kind // The type of connection this originates from
 	)
 	// Check for traceOnly only if not external.
 	if !external {
@@ -366,98 +396,102 @@ func (c *client) initMsgTrace() *msgTrace {
 			}
 		}
 		dest = getHdrVal(MsgTraceDest)
-		// Check the destination to see if this is a valid public subject.
-		if !IsValidPublishSubject(dest) {
-			// We still have to return a msgTrace object (if traceOnly is set)
-			// because if we don't, the message will end-up being delivered to
-			// applications, which may break them. We report the error in any case.
-			c.Errorf("Destination %q is not valid, won't be able to trace events", dest)
-			if !traceOnly {
-				// We can bail, tracing will be disabled for this message.
-				return nil
-			}
+		// If no dest, bail out.
+		if dest == _EMPTY_ {
+			return traceOnly, nil
 		}
 	}
-	var (
-		// Account to use when sending the trace event
-		acc *Account
-		// Ingress' account name
-		ian string
-		// Origin account name
-		oan string
-		// The hop "id", taken from headers only when not from CLIENT
-		hop string
-	)
-	if c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF {
-		// The ingress account name will always be c.pa.account, but `acc` may
-		// be different if we have an origin account header.
-		if c.kind == LEAF {
-			ian = c.acc.GetName()
-		} else {
-			ian = string(c.pa.account)
+	// Now that we know if there is `traceOnly` set or not, if we were to fail
+	// here by returning `nil` for `*msgTrace`, we will return `true, nil` to
+	// indicate to the caller that it should skip message processing (so that
+	// the failed trace message is not delivered to regular subscriptions).
+
+	// First, disable tracing if the message contains the old MsgTraceOriginAccount header.
+	if v := getHdrVal(MsgTraceOriginAccount); v != _EMPTY_ {
+		c.Errorf("Message tracing disabled because of header %q with value=%q",
+			MsgTraceOriginAccount, v)
+		// Skip this if we are invoked with ingressError, or if we are going to skip
+		// message processing anyway (if `traceOnly` is true).
+		if ingressError == nil && !traceOnly {
+			// Disable tracing by changing the `MsgTraceDest` header to `MsgTraceDestDisabled`.
+			c.msgBuf = c.setHeader(MsgTraceDest, MsgTraceDestDisabled, c.msgBuf)
 		}
-		// The remote will have set the origin account header only if the
-		// message changed account (think of service imports).
-		oan = getHdrVal(MsgTraceOriginAccount)
-		if oan == _EMPTY_ {
-			// For LEAF or ROUTER with pinned-account, we can use the c.acc.
-			if c.kind == LEAF || (c.kind == ROUTER && len(c.route.accName) > 0) {
-				acc = c.acc
-			} else {
-				// We will lookup account with c.pa.account (or ian).
-				oan = ian
-			}
-		}
-		// Unless we already got the account, we need to look it up.
-		if acc == nil {
-			// We don't want to do account resolving here.
-			if acci, ok := c.srv.accounts.Load(oan); ok {
-				acc = acci.(*Account)
-				// Since we have looked-up the account, we don't need oan, so
-				// clear it in case it was set.
-				oan = _EMPTY_
-			} else {
-				// We still have to return a msgTrace object (if traceOnly is set)
-				// because if we don't, the message will end-up being delivered to
-				// applications, which may break them. We report the error in any case.
-				c.Errorf("Account %q was not found, won't be able to trace events", oan)
-				if !traceOnly {
-					// We can bail, tracing will be disabled for this message.
-					return nil
-				}
-			}
-		}
-		// Check the hop header
+		// If `traceOnly` is false, the message will be delivered and possibly routed,
+		// but it will not be traced. If it is `true`, then there will be no tracing
+		// and the message will not be processed (so no chance to be routed).
+		return traceOnly, nil
+	}
+
+	// Get the account and server.
+	c.mu.Lock()
+	acc := c.acc
+	srv := c.srv
+	c.mu.Unlock()
+	// There should always be a server object, and for CLIENT and LEAF, the
+	// account should be available.
+	if srv == nil || (acc == nil && (kind == CLIENT || kind == LEAF)) {
+		// Make the caller skip message procesing if `traceOnly` is true.
+		return traceOnly, nil
+	}
+	// For non CLIENT connection, get the account and hop header.
+	if kind != CLIENT {
 		hop = getHdrVal(MsgTraceHop)
-	} else {
-		acc = c.acc
-		ian = acc.GetName()
+		if kind != LEAF {
+			// Lookup the account, if not present, bail out.
+			if acci, ok := c.srv.accounts.Load(string(c.pa.account)); ok {
+				acc = acci.(*Account)
+			} else {
+				c.Errorf("Account %q was not found, won't be able to trace events", c.pa.account)
+				return traceOnly, nil
+			}
+		}
 	}
 	// If external, we need to have the account's trace destination set,
 	// otherwise, we are not enabling tracing.
 	if external {
 		var sampling int
-		if acc != nil {
-			dest, sampling = acc.getTraceDestAndSampling()
-		}
+		dest, sampling = acc.getTraceDestAndSampling()
 		if dest == _EMPTY_ {
 			// No account destination, no tracing for external trace headers.
-			return nil
+			// This is not an error, so return false so that we don't skip
+			// message processing.
+			return false, nil
 		}
 		// Check sampling, but only from origin server.
-		if c.kind == CLIENT && !sample(sampling) {
-			// Need to desactivate the traceParentHdr so that if the message
-			// is routed, it does possibly trigger a trace there.
-			disableTraceHeaders(c, hdr)
-			return nil
+		if kind == CLIENT && !sample(sampling) {
+			// Need to disable tracing so that if the message is routed, it won't
+			// trigger a trace there. Skip this if we have an ingress error.
+			if ingressError == nil {
+				c.msgBuf = c.setHeader(MsgTraceDest, MsgTraceDestDisabled, c.msgBuf)
+			}
+			return false, nil
 		}
 	}
+	// Check the destination to see if this is a valid publish subject.
+	if !IsValidPublishSubject(dest) {
+		c.Errorf("Destination %q is not valid, won't be able to trace events", dest)
+		// Return `traceOnly` to cause the caller to skip message processing if
+		// this was supposed to be a trace only message.
+		return traceOnly, nil
+	}
+	// Now that we have a valid `dest`, make sure this connection is allowed
+	// to publish to it.
+	if !c.allowedToPublishOnMsgTraceDest(srv, acc, dest) {
+		// Send the error back only if CLIENT or LEAF, otherwise just log.
+		if kind == CLIENT || kind == LEAF {
+			c.pubPermissionViolation(stringToBytes(dest))
+		} else {
+			c.Errorf("Publish Violation - Subject %q", dest)
+		}
+		// Return `true, nil` to force skipping of message processing.
+		return true, nil
+	}
 	c.pa.trace = &msgTrace{
+		kind: kind,
 		srv:  c.srv,
 		acc:  acc,
-		oan:  oan,
 		dest: dest,
-		ct:   ct,
+		ct:   getCompressionType(getHdrVal(acceptEncodingHeader)),
 		hop:  hop,
 		event: &MsgTraceEvent{
 			Request: MsgTraceRequest{
@@ -469,16 +503,43 @@ func (c *client) initMsgTrace() *msgTrace {
 					Type:      MsgTraceIngressType,
 					Timestamp: time.Now(),
 				},
-				Kind:    c.kind,
+				Kind:    kind,
 				CID:     c.cid,
 				Name:    getConnName(c),
-				Account: ian,
+				Account: acc.GetName(),
 				Subject: string(c.pa.subject),
 			}),
 		},
 		tonly: traceOnly,
 	}
-	return c.pa.trace
+	// If we are invoked with an ingress error, set it now.
+	if ingressError != nil {
+		c.pa.trace.event.Events[0].(*MsgTraceIngress).Error = ingressError.Error()
+	}
+	return false, c.pa.trace
+}
+
+func (c *client) allowedToPublishOnMsgTraceDest(s *Server, acc *Account, dest string) bool {
+	td := stringToBytes(dest)
+	if hasGWRoutedReplyPrefix(td) {
+		return false
+	}
+	if bytes.HasPrefix(td, clientNRGPrefix) && acc != s.SystemAccount() {
+		return false
+	}
+	allowed := true
+	c.mu.Lock()
+	if c.kind == LEAF {
+		if c.isSpokeLeafNode() {
+			allowed = c.leafReceiveAllowed(td)
+		} else {
+			allowed = c.leafSendAllowed(td)
+		}
+	} else if c.perms != nil && (c.perms.pub.allow != nil || c.perms.pub.deny != nil) && !c.pubAllowedFullCheck(dest, false, true) {
+		allowed = false
+	}
+	c.mu.Unlock()
+	return allowed
 }
 
 func sample(sampling int) bool {
@@ -487,7 +548,7 @@ func sample(sampling int) bool {
 	if sampling <= 0 || sampling >= 100 {
 		return true
 	}
-	return rand.Int31n(100) <= int32(sampling)
+	return rand.Int32N(100) <= int32(sampling)
 }
 
 // This function will return the header as a map (instead of http.Header because
@@ -495,9 +556,7 @@ func sample(sampling int) bool {
 // the headers have been lifted due to the presence of the external trace header
 // only.
 // Note that because of the traceParentHdr, the search is done in a case
-// insensitive way, but if the header is found, it is rewritten in lower case
-// as suggested by the spec, but also to make it easier to disable the header
-// when needed.
+// insensitive way. We used to rewrite it in lower case but no longer do since v2.14.
 func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 
 	var (
@@ -512,11 +571,6 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 		return nil, false
 	}
 
-	traceDestHdrAsBytes := stringToBytes(MsgTraceDest)
-	traceParentHdrAsBytes := stringToBytes(traceParentHdr)
-	crLFAsBytes := stringToBytes(CR_LF)
-	dashAsBytes := stringToBytes("-")
-
 	keys := _keys[:0]
 	vals := _vals[:0]
 
@@ -529,46 +583,50 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 		keyStart := i
 		key := hdr[keyStart : keyStart+del]
 		i += del + 1
+		for i < len(hdr) && (hdr[i] == ' ' || hdr[i] == '\t') {
+			i++
+		}
 		valStart := i
 		nl := bytes.Index(hdr[valStart:], crLFAsBytes)
 		if nl < 0 {
 			break
 		}
-		if len(key) > 0 {
-			val := bytes.Trim(hdr[valStart:valStart+nl], " \t")
+		valEnd := valStart + nl
+		for valEnd > valStart && (hdr[valEnd-1] == ' ' || hdr[valEnd-1] == '\t') {
+			valEnd--
+		}
+		val := hdr[valStart:valEnd]
+		if len(key) > 0 && len(val) > 0 {
 			vals = append(vals, val)
 
+			// We search for our special keys only if not already found.
+
 			// Check for the external trace header.
-			if bytes.EqualFold(key, traceParentHdrAsBytes) {
-				// Rewrite the header using lower case if needed.
-				if !bytes.Equal(key, traceParentHdrAsBytes) {
-					copy(hdr[keyStart:], traceParentHdrAsBytes)
-				}
+			// Search needs to be case insensitive.
+			if !traceParentHdrFound && bytes.EqualFold(key, traceParentHdrAsBytes) {
 				// We will now check if the value has sampling or not.
 				// TODO(ik): Not sure if this header can have multiple values
 				// or not, and if so, what would be the rule to check for
 				// sampling. What is done here is to check them all until we
 				// found one with sampling.
-				if !traceParentHdrFound {
-					tk := bytes.Split(val, dashAsBytes)
-					if len(tk) == 4 && len([]byte(tk[3])) == 2 {
-						if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
-							if hexVal&0x1 == 0x1 {
-								traceParentHdrFound = true
-							}
+				tk := bytes.Split(val, dashAsBytes)
+				if len(tk) == 4 && len([]byte(tk[3])) == 2 {
+					if hexVal, err := strconv.ParseInt(bytesToString(tk[3]), 16, 8); err == nil {
+						if hexVal&0x1 == 0x1 {
+							traceParentHdrFound = true
 						}
 					}
 				}
-				// Add to the keys with the external trace header in lower case.
-				keys = append(keys, traceParentHdrAsBytes)
-			} else {
-				// Is the key the Nats-Trace-Dest header?
-				if bytes.EqualFold(key, traceDestHdrAsBytes) {
-					traceDestHdrFound = true
+			} else if !traceDestHdrFound && bytes.Equal(key, traceDestHdrAsBytes) {
+				// This is the Nats-Trace-Dest header, check the value to see
+				// if it indicates that the trace was disabled.
+				if bytes.Equal(val, traceDestDisabledAsBytes) {
+					return nil, false
 				}
-				// Add to the keys and preserve the key's case
-				keys = append(keys, key)
+				traceDestHdrFound = true
 			}
+			// Add to the keys and preserve the key's case
+			keys = append(keys, key)
 		}
 		i += nl + 2
 	}
@@ -586,31 +644,13 @@ func genHeaderMapIfTraceHeadersPresent(hdr []byte) (map[string][]string, bool) {
 // Special case where we create a trace event before parsing the message.
 // This is for cases where the connection will be closed when detecting
 // an error during early message processing (for instance max payload).
-func (c *client) initAndSendIngressErrEvent(hdr []byte, dest string, ingressError error) {
+func (c *client) sendMsgTraceIngressErrEvent(hdr []byte, ingressError error) {
 	if ingressError == nil {
 		return
 	}
-	ct := getAcceptEncoding(hdr)
-	t := &msgTrace{
-		srv:  c.srv,
-		acc:  c.acc,
-		dest: dest,
-		ct:   ct,
-		event: &MsgTraceEvent{
-			Request: MsgTraceRequest{MsgSize: c.pa.size},
-			Events: append(MsgTraceEvents(nil), &MsgTraceIngress{
-				MsgTraceBase: MsgTraceBase{
-					Type:      MsgTraceIngressType,
-					Timestamp: time.Now(),
-				},
-				Kind:  c.kind,
-				CID:   c.cid,
-				Name:  getConnName(c),
-				Error: ingressError.Error(),
-			}),
-		},
+	if _, t := c.initMsgTrace(hdr, ingressError); t != nil {
+		t.sendEvent()
 	}
-	t.sendEvent()
 }
 
 // Returns `true` if message tracing is enabled and we are tracing only,
@@ -618,22 +658,6 @@ func (c *client) initAndSendIngressErrEvent(hdr []byte, dest string, ingressErro
 // `false` otherwise (no tracing, or tracing and message delivery).
 func (t *msgTrace) traceOnly() bool {
 	return t != nil && t.tonly
-}
-
-func (t *msgTrace) setOriginAccountHeaderIfNeeded(c *client, acc *Account, msg []byte) []byte {
-	var oan string
-	// If t.acc is set, only check that, not t.oan.
-	if t.acc != nil {
-		if t.acc != acc {
-			oan = t.acc.GetName()
-		}
-	} else if t.oan != acc.GetName() {
-		oan = t.oan
-	}
-	if oan != _EMPTY_ {
-		msg = c.setHeader(MsgTraceOriginAccount, oan, msg)
-	}
-	return msg
 }
 
 func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
@@ -644,60 +668,15 @@ func (t *msgTrace) setHopHeader(c *client, msg []byte) []byte {
 	} else {
 		t.nhop = fmt.Sprintf("%d", e.Hops)
 	}
+	if t.kind == CLIENT && strings.HasPrefix(t.dest, replyPrefix) {
+		t.siMu.Lock()
+		if t.rsi == nil {
+			t.rsi = &msgTraceRespServiceImport{}
+		}
+		t.rsi.hops++
+		t.siMu.Unlock()
+	}
 	return c.setHeader(MsgTraceHop, t.nhop, msg)
-}
-
-// Will look for the MsgTraceSendTo and traceParentHdr headers and change the first
-// character to an 'X' so that if this message is sent to a remote, the remote
-// will not initialize tracing since it won't find the actual trace headers.
-// The function returns the position of the headers so it can efficiently be
-// re-enabled by calling enableTraceHeaders.
-// Note that if `msg` can be either the header alone or the full message
-// (header and payload). This function will use c.pa.hdr to limit the
-// search to the header section alone.
-func disableTraceHeaders(c *client, msg []byte) []int {
-	// Code largely copied from getHeader(), except that we don't need the value
-	if c.pa.hdr <= 0 {
-		return []int{-1, -1}
-	}
-	hdr := msg[:c.pa.hdr]
-	headers := [2]string{MsgTraceDest, traceParentHdr}
-	positions := [2]int{-1, -1}
-	for i := 0; i < 2; i++ {
-		key := stringToBytes(headers[i])
-		pos := bytes.Index(hdr, key)
-		if pos < 0 {
-			continue
-		}
-		// Make sure this key does not have additional prefix.
-		if pos < 2 || hdr[pos-1] != '\n' || hdr[pos-2] != '\r' {
-			continue
-		}
-		index := pos + len(key)
-		if index >= len(hdr) {
-			continue
-		}
-		if hdr[index] != ':' {
-			continue
-		}
-		// Disable the trace by altering the first character of the header
-		hdr[pos] = 'X'
-		positions[i] = pos
-	}
-	// Return the positions of those characters so we can re-enable the headers.
-	return positions[:2]
-}
-
-// Changes back the character at the given position `pos` in the `msg`
-// byte slice to the first character of the MsgTraceSendTo header.
-func enableTraceHeaders(msg []byte, positions []int) {
-	firstChar := [2]byte{MsgTraceDest[0], traceParentHdr[0]}
-	for i, pos := range positions {
-		if pos == -1 {
-			continue
-		}
-		msg[pos] = firstChar[i]
-	}
 }
 
 func (t *msgTrace) setIngressError(err string) {
@@ -842,4 +821,83 @@ func (t *msgTrace) sendEvent() {
 		}
 	}
 	t.srv.sendInternalAccountSysMsg(t.acc, t.dest, &t.event.Server, t.event, t.ct)
+}
+
+func (t *msgTrace) setupResponseServiceImport(c *client, acc *Account, si *serviceImport, msg []byte) (*serviceImport, []byte) {
+	rsi := si.acc.addRespServiceImport(acc, t.dest, si, false, nil, t)
+	t.dest = rsi.from
+	t.siMu.Lock()
+	t.si = append(t.si, &msgTraceServiceImport{rsi, si.acc})
+	t.siMu.Unlock()
+	return rsi, c.setHeader(MsgTraceDest, t.dest, msg)
+}
+
+func (t *msgTrace) handleRespServiceImport(e *MsgTraceEvent) {
+	t.siMu.Lock()
+	defer t.siMu.Unlock()
+
+	// If response service import were created and routed for message traces,
+	// we should have t.rsi created. If it is not, we are done. Note that
+	// if for any reason we bail out because we are not in a state that we
+	// expect, the response service imports will be cleaned-up on a timer based.
+	if t.rsi == nil {
+		return
+	}
+	t.updateRespServiceImport(e)
+
+	if t.allRespServiceImportReceived(t.rsi) {
+		for _, rsi := range t.si {
+			rsi.acc.removeRespServiceImport(rsi.si, rsiOk)
+		}
+		t.rsi, t.si = nil, nil
+	}
+}
+
+// For a given trace message event, update the tree of response service import
+// trace messages.
+// Lock is held on entry.
+func (t *msgTrace) updateRespServiceImport(e *MsgTraceEvent) {
+	// Check for the hop header.
+	hop, ok := e.Request.Header[MsgTraceHop]
+	if !ok || len(hop) != 1 {
+		return
+	}
+	hops := strings.Split(hop[0], ".")
+	prsi := t.rsi
+	for i, h := range hops {
+		rsi := prsi.tree[h]
+		if rsi == nil {
+			if prsi.tree == nil {
+				prsi.tree = make(map[string]*msgTraceRespServiceImport)
+			}
+			// Create an entry and initializes the hops count to -1. It will be set
+			// when receiving the corresponding trace message.
+			rsi = &msgTraceRespServiceImport{hops: -1}
+			// Bind it to the parent tree for this "hop" id.
+			prsi.tree[h] = rsi
+		}
+		// When dealing with the last section of the `hop` string, we set the
+		// expected hops count based on the event's `Hops` field and bump the number
+		// of received trace messages on the parent's node. We do this only once
+		// per event (use rsi.hops == -1 as the indicator).
+		if rsi.hops == -1 && i == len(hops)-1 {
+			rsi.hops = e.Hops
+			prsi.received++
+		}
+		prsi = rsi
+	}
+}
+
+// Determine if all response service import traces have been received.
+// Lock held on entry.
+func (t *msgTrace) allRespServiceImportReceived(prsi *msgTraceRespServiceImport) bool {
+	if prsi.hops != prsi.received {
+		return false
+	}
+	for _, rsi := range prsi.tree {
+		if !t.allRespServiceImportReceived(rsi) {
+			return false
+		}
+	}
+	return true
 }

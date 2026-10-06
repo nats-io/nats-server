@@ -1,4 +1,4 @@
-// Copyright 2021-2023 The NATS Authors
+// Copyright 2021-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,6 +15,7 @@ package server
 
 import (
 	"errors"
+	"iter"
 	"sync"
 	"sync/atomic"
 )
@@ -140,6 +141,53 @@ func (q *ipQueue[T]) push(e T) (int, error) {
 	return l + 1, nil
 }
 
+// Add all elements yielded by seq to the queue while holding the queue
+// lock, preventing other producers from pushing interleaving elements.
+// On success, it returns the queue length after adding all yielded elements.
+// If a queue limit is reached, no yielded elements are retained, and it
+// returns the unchanged queue length and the first limit error.
+func (q *ipQueue[T]) pushMany(seq iter.Seq[T]) (int, error) {
+	q.Lock()
+	l, added, start := len(q.elts)-q.pos, 0, len(q.elts)
+	initialSize := q.sz
+	revert := func() {
+		clear(q.elts[start:])
+		q.elts = q.elts[:start]
+		q.sz, added = initialSize, 0
+	}
+	defer func() {
+		q.Unlock()
+		if l == 0 && added > 0 {
+			select {
+			case q.ch <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	for e := range seq {
+		if q.mlen > 0 && l+added == q.mlen {
+			revert()
+			return l, errIPQLenLimitReached
+		}
+		if q.calc != nil {
+			sz := q.calc(e)
+			if q.msz > 0 && q.sz+sz > q.msz {
+				revert()
+				return l, errIPQSizeLimitReached
+			}
+			q.sz += sz
+		}
+		if q.elts == nil {
+			// What comes out of the pool is already of size 0, so no need for [:0].
+			q.elts = *(q.pool.Get().(*[]T))
+		}
+		q.elts = append(q.elts, e)
+		added++
+	}
+	return l + added, nil
+}
+
 // Returns the whole list of elements currently present in the queue,
 // emptying the queue. This should be called after receiving a notification
 // from the queue's `ch` notification channel that indicates that there
@@ -246,14 +294,16 @@ func (q *ipQueue[T]) size() uint64 {
 }
 
 // Empty the queue and consumes the notification signal if present.
+// Returns the number of items that were drained from the queue.
 // Note that this could cause a reader go routine that has been
 // notified that there is something in the queue (reading from queue's `ch`)
 // may then get nothing if `drain()` is invoked before the `pop()` or `popOne()`.
-func (q *ipQueue[T]) drain() {
+func (q *ipQueue[T]) drain() int {
 	if q == nil {
-		return
+		return 0
 	}
 	q.Lock()
+	olen := len(q.elts) - q.pos
 	q.elts, q.pos, q.sz = nil, 0, 0
 	// Consume the signal if it was present to reduce the chance of a reader
 	// routine to be think that there is something in the queue...
@@ -262,6 +312,7 @@ func (q *ipQueue[T]) drain() {
 	default:
 	}
 	q.Unlock()
+	return olen
 }
 
 // Since the length of the queue goes to 0 after a pop(), it is good to

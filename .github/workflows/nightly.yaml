@@ -3,27 +3,49 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Override image branch (optional)"
+        description: "Override source branch (optional)"
         type: string
         required: false
 
   schedule:
     - cron: "40 4 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.GHA_WORKER_RELEASE || 'ubuntu-latest' }}
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout NATS
+        uses: actions/checkout@v6
         with:
           path: src/github.com/nats-io/nats-server
           ref: ${{ inputs.target || 'main' }}
+          fetch-depth: 0
+          fetch-tags: true
 
-      - uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
+      - name: Checkout NSC
+        uses: actions/checkout@v6
         with:
-          go: "1.23"
-          workdir: src/github.com/nats-io/nats-server
-          label: nightly
+          repository: nats-io/nsc
+          path: src/github.com/nats-io/nsc
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Checkout NATS CLI
+        uses: actions/checkout@v6
+        with:
+          repository: nats-io/natscli
+          path: src/github.com/nats-io/natscli
+          fetch-depth: 1
+          fetch-tags: true
+
+      - name: Build Docker nightly
+        uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
+        with:
+          name: ${{ inputs.target || 'nightly' }}
           hub_username: "${{ secrets.DOCKER_USERNAME }}"
           hub_password: "${{ secrets.DOCKER_PASSWORD }}"

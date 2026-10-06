@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -586,11 +586,25 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 
 		newClientSend, newClientExpect := setupConnWithProto(t, newClient, clientProtoInfo)
 		newClientSend("PING\r\n")
-		newClientExpect(pongRe)
 
-		// Check that even a new client does not receive an async INFO at this point
-		// since there is no route created yet.
-		expectNothing(t, newClient)
+		// For new clients, the initial PING (after a CONNECT) will result in a
+		// PONG followed by an INFO, so make sure we receive them separately.
+		getPongAlone := func(c net.Conn) {
+			t.Helper()
+			pongBuf := make([]byte, len("PONG\r\n"))
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, err := c.Read(pongBuf)
+			c.SetReadDeadline(time.Time{})
+			if n <= 0 && err != nil {
+				t.Fatalf("Error reading from conn: %v\n", err)
+			}
+			if !pongRe.Match(pongBuf) {
+				t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
+			}
+		}
+		getPongAlone(newClient)
+		// The new client should receive an INFO with the ConnectInfo boolean set to true.
+		newClientExpect(infoRe)
 
 		routeID := "Server-B"
 
@@ -658,10 +672,16 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 			}
 		}
 
+		var checkConnectInfo bool
 		checkINFOReceived := func(client net.Conn, clientExpect expectFun, expectedURLs []string) {
 			if opts.Cluster.NoAdvertise {
-				expectNothing(t, client)
-				return
+				if !checkConnectInfo {
+					expectNothing(t, client)
+					return
+				}
+				// Since it is no advertise, but we still get an INFO, the URLs
+				// should be empty.
+				expectedURLs = nil
 			}
 			buf := clientExpect(infoRe)
 			info := server.Info{}
@@ -669,6 +689,17 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 				stackFatalf(t, "Could not unmarshal route info: %v", err)
 			}
 			checkClientConnectURLS(info.ClientConnectURLs, expectedURLs)
+			if checkConnectInfo {
+				if !info.ConnectInfo {
+					stackFatalf(t, "ConnectInfo should have been true")
+				}
+				if info.RemoteAccount != "$G" {
+					stackFatalf(t, "RemoteAccount should be %q, got %q", "$G", info.RemoteAccount)
+				}
+				if info.IsSystemAccount {
+					stackFatalf(t, "IsSystemAccount should have been false")
+				}
+			}
 		}
 
 		// Create a route
@@ -751,36 +782,20 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 
 		// Now send the first PING
 		clientNoPingSend("PING\r\n")
-		// Should receive PONG followed by INFO
-		// Receive PONG only first
-		pongBuf := make([]byte, len("PONG\r\n"))
-		clientNoPing.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := clientNoPing.Read(pongBuf)
-		clientNoPing.SetReadDeadline(time.Time{})
-		if n <= 0 && err != nil {
-			t.Fatalf("Error reading from conn: %v\n", err)
-		}
-		if !pongRe.Match(pongBuf) {
-			t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
-		}
+		getPongAlone(clientNoPing)
+		// We should receive an INFO but with ConnectInfo==true, etc..
+		checkConnectInfo = true
 		checkINFOReceived(clientNoPing, clientNoPingExpect, expectedURLs)
+		checkConnectInfo = false
 
 		// Have the client that did not send the connect do it now
 		clientNoConnectSend, clientNoConnectExpect := setupConnWithProto(t, clientNoConnect, clientProtoInfo)
 		// Send the PING
 		clientNoConnectSend("PING\r\n")
-		// Should receive PONG followed by INFO
-		// Receive PONG only first
-		clientNoConnect.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err = clientNoConnect.Read(pongBuf)
-		clientNoConnect.SetReadDeadline(time.Time{})
-		if n <= 0 && err != nil {
-			t.Fatalf("Error reading from conn: %v\n", err)
-		}
-		if !pongRe.Match(pongBuf) {
-			t.Fatalf("Response did not match expected: \n\tReceived:'%q'\n\tExpected:'%s'\n", pongBuf, pongRe)
-		}
+		getPongAlone(clientNoConnect)
+		checkConnectInfo = true
 		checkINFOReceived(clientNoConnect, clientNoConnectExpect, expectedURLs)
+		checkConnectInfo = false
 
 		// Create a client connection and verify content of initial INFO contains array
 		// (but empty if no advertise option is set)
@@ -789,7 +804,7 @@ func TestRouteSendAsyncINFOToClients(t *testing.T) {
 		buf := expectResult(t, cli, infoRe)
 		js := infoRe.FindAllSubmatch(buf, 1)[0][1]
 		var sinfo server.Info
-		err = json.Unmarshal(js, &sinfo)
+		err := json.Unmarshal(js, &sinfo)
 		if err != nil {
 			t.Fatalf("Could not unmarshal INFO json: %v\n", err)
 		}

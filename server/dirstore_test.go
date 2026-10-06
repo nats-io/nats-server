@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,9 +18,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -193,6 +194,31 @@ func TestCreateMakesDir(t *testing.T) {
 
 	_, err = os.Stat(fullPath)
 	require_NoError(t, err)
+}
+
+func TestDirStoreInaccessibleParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits do not block traversal on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission checks")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "parent")
+	require_NoError(t, os.Mkdir(parent, 0o755))
+	child := filepath.Join(parent, "child")
+	require_NoError(t, os.Mkdir(child, 0o755))
+
+	// Remove the search bit on the parent so stat of child returns EACCES
+	// rather than IsNotExist. Previously this panicked with a nil pointer
+	// dereference instead of returning an error.
+	require_NoError(t, os.Chmod(parent, 0o000))
+	t.Cleanup(func() { os.Chmod(parent, 0o755) })
+
+	_, err := NewDirJWTStore(child, false, true)
+	require_Error(t, err)
 }
 
 func TestShardedDirStorePackMerge(t *testing.T) {
@@ -392,9 +418,22 @@ func createTestAccount(t *testing.T, dirStore *DirJWTStore, expSec int, accKey n
 
 func assertStoreSize(t *testing.T, dirStore *DirJWTStore, length int) {
 	t.Helper()
-	f, err := os.ReadDir(dirStore.directory)
+	// Count actual JWT files recursively. In shard mode files are nested in
+	// subdirectories named by the key's last two characters, so a plain
+	// os.ReadDir of the top-level directory would miscount when two keys share
+	// the same shard suffix.
+	var fileCnt int
+	err := filepath.Walk(dirStore.directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, fileExtension) {
+			fileCnt++
+		}
+		return nil
+	})
 	require_NoError(t, err)
-	require_Len(t, len(f), length)
+	require_Len(t, fileCnt, length)
 	dirStore.Lock()
 	require_Len(t, len(dirStore.expiration.idx), length)
 	require_Len(t, dirStore.expiration.lru.Len(), length)
@@ -595,7 +634,7 @@ func TestLruVolume(t *testing.T) {
 		keys[i], err = k.PublicKey()
 		require_NoError(t, err)
 
-		createTestAccount(t, dirStore, 10000+rand.Intn(10000), k) // not intended to expire
+		createTestAccount(t, dirStore, 10000+rand.IntN(10000), k) // not intended to expire
 		assertStoreSize(t, dirStore, 2)
 		_, err = os.Stat(fmt.Sprintf("%s/%s.jwt", dir, keys[i-2]))
 		require_Error(t, err)

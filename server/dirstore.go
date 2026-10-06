@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -48,8 +48,11 @@ func validatePathExists(path string, dir bool) (string, error) {
 	}
 
 	var finfo os.FileInfo
-	if finfo, err = os.Stat(abs); os.IsNotExist(err) {
-		return _EMPTY_, fmt.Errorf("the path [%s] doesn't exist", abs)
+	if finfo, err = os.Stat(abs); err != nil {
+		if os.IsNotExist(err) {
+			return _EMPTY_, fmt.Errorf("the path [%s] doesn't exist", abs)
+		}
+		return _EMPTY_, fmt.Errorf("error accessing path [%s]: %v", abs, err)
 	}
 
 	mode := finfo.Mode()
@@ -230,7 +233,7 @@ func (store *DirJWTStore) Pack(maxJWTs int) (string, error) {
 	}
 	store.Lock()
 	err := filepath.Walk(store.directory, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
+		if info != nil && !info.IsDir() && strings.HasSuffix(path, fileExtension) { // this is a JWT
 			if count == maxJWTs { // won't match negative
 				return nil
 			}

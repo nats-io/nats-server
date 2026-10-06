@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !windows
-// +build !windows
 
 package server
 
@@ -93,10 +92,11 @@ func TestSignalToReloadConfig(t *testing.T) {
 
 	// Check that the reload time does not change when there are no changes.
 	loaded := s.ConfigTime()
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	syscall.Kill(syscall.Getpid(), syscall.SIGHUP)
-	if reloaded := s.ConfigTime(); reloaded.After(loaded) {
-		t.Fatalf("ConfigTime is incorrect.\nexpected no change: %s\ngot: %s", loaded, reloaded)
+	time.Sleep(250 * time.Millisecond)
+	if reloaded := s.ConfigTime(); reloaded.Equal(loaded) {
+		t.Fatalf("ConfigTime is incorrect.\nexpected reload time to change: %s\ngot: %s", loaded, reloaded)
 	}
 
 	// Repeat test to make sure that server services signals more than once...
@@ -429,7 +429,7 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 	opts := &Options{
 		Host:                "127.0.0.1",
 		Port:                -1,
-		NoSigs:              false,
+		NoSigs:              true,
 		NoLog:               true,
 		LameDuckDuration:    2 * time.Second,
 		LameDuckGracePeriod: 1 * time.Second,
@@ -463,7 +463,7 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 
 	// Termination signal should not cause server to shutdown
 	// while in lame duck mode already.
-	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	s.handleSignal(syscall.SIGTERM)
 
 	// Wait for server shutdown due to lame duck shutdown.
 	timeoutCh := make(chan error)
@@ -482,4 +482,34 @@ func TestProcessSignalTermDuringLameDuckMode(t *testing.T) {
 			break
 		}
 	}
+}
+
+func TestSignalInterruptHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGINT))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalInterruptHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
+}
+
+func TestSignalTermHasSuccessfulExit(t *testing.T) {
+	if os.Getenv("IN_TEST") == "1" {
+		s := RunServer(&Options{})
+		defer s.Shutdown()
+		require_NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+		s.WaitForShutdown()
+		return
+	}
+	// To check for successful/0 exit code, need execute as separate process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestSignalTermHasSuccessfulExit")
+	cmd.Env = append(os.Environ(), "IN_TEST=1")
+	err := cmd.Run()
+	require_NoError(t, err)
 }

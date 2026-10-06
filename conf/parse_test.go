@@ -173,6 +173,32 @@ func TestBcryptVariable(t *testing.T) {
 	test(t, "password: $2a$11$ooo", ex)
 }
 
+// Unquoted values that begin with digits followed by a size suffix (k, m,
+// g, ...) or the 'e'/'E' suffix and then more characters (e.g. a digit) are
+// not convenient numbers and must be parsed as plain strings rather than
+// failing to parse. See #5186, #5189 and #6891.
+func TestUnquotedStringStartingWithNumberAndSuffix(t *testing.T) {
+	for _, val := range []string{"0K1abc", "8m4dwr", "5e7bcd-abc10", "4e2abc", "-1k2abc"} {
+		ex := map[string]any{"password": val}
+		test(t, fmt.Sprintf("password: %s", val), ex)
+	}
+
+	ex := map[string]any{
+		"passwords": []any{"4e2abc", "0K1abc"},
+	}
+	test(t, "passwords: [4e2abc, 0K1abc]", ex)
+
+	// Also verify it works inside a map, matching the reported nats.conf
+	// authorization block.
+	ex = map[string]any{
+		"authorization": map[string]any{
+			"user":     "foo",
+			"password": "4e2abc",
+		},
+	}
+	test(t, "authorization { user: foo, password: 4e2abc }", ex)
+}
+
 var easynum = `
 k = 8k
 kb = 4kb
@@ -216,6 +242,24 @@ func TestConvenientNumbers(t *testing.T) {
 		"pib": int64(22 * 1024 * 1024 * 1024 * 1024 * 1024),
 	}
 	test(t, easynum, ex)
+}
+
+func TestParseFileWithChecksDigestPreservesConfigKeyUsedAsVariable(t *testing.T) {
+	confFile := filepath.Join(t.TempDir(), "nats.conf")
+	if err := os.WriteFile(confFile, []byte(`
+		port = 4222
+		monitor_port = $port
+	`), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	m, _, err := ParseFileWithChecksDigest(confFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["port"]; !ok {
+		t.Fatal("expected config key used as a variable reference to be preserved")
+	}
 }
 
 var sample1 = `
@@ -919,7 +963,7 @@ func TestParseDigest(t *testing.T) {
                         very { nested { env { VAR = 'NESTED', quux = $VAR }}}
                         `,
 			nil,
-			"sha256:34f8faf3f269fe7509edc4742f20c8c4a7ad51fe21f8b361764314b533ac3ab5",
+			"sha256:bddb282343249c26d3edcef9bfaa9d2711505fc67210380e871405ba394a9186",
 		},
 		{
 			`# substitutions, same as previous one without env vars.
@@ -942,7 +986,7 @@ func TestParseDigest(t *testing.T) {
                         }
                         `,
 			nil,
-			"sha256:f5d943b4ed22b80c6199203f8a7eaa8eb68ef7b2d46ef6b1b26f05e21f8beb13",
+			"sha256:b0e2ba0b8ec2cb75681b5c5d61789cda0c9942c2f9fe16cdb7f6703364485360",
 		},
 		{
 			`# substitutions

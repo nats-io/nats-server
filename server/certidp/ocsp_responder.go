@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		return nil, err
 	}
 
-	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
+	reqEnc := encodeOCSPRequest(reqDER)
 
 	responders := *link.OCSPWebEndpoints
 
@@ -68,10 +69,10 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 		Timeout: timeout,
 	}
 	for _, u := range responders {
-		url := u.String()
-		log.Debugf(DbgMakingCARequest, url)
-		url = strings.TrimSuffix(url, "/")
-		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", url, reqEnc), hc)
+		responderURL := u.String()
+		log.Debugf(DbgMakingCARequest, responderURL)
+		responderURL = strings.TrimSuffix(responderURL, "/")
+		raw, err = getRequestBytes(fmt.Sprintf("%s/%s", responderURL, reqEnc), hc)
 		if err == nil {
 			break
 		}
@@ -81,4 +82,11 @@ func FetchOCSPResponse(link *ChainLink, opts *OCSPPeerConfig, log *Log) ([]byte,
 	}
 
 	return raw, nil
+}
+
+// encodeOCSPRequest encodes the OCSP request in base64 and URL-encodes it.
+// This is needed to fulfill the OCSP responder's requirements for the request format. (X.690)
+func encodeOCSPRequest(reqDER []byte) string {
+	reqEnc := base64.StdEncoding.EncodeToString(reqDER)
+	return url.QueryEscape(reqEnc)
 }

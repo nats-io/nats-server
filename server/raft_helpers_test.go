@@ -1,4 +1,4 @@
-// Copyright 2023 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,8 +18,9 @@ package server
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"testing"
 	"time"
@@ -56,22 +57,34 @@ func (sg smGroup) leader() stateMachine {
 	return nil
 }
 
+func (sg smGroup) followers() smGroup {
+	var f []stateMachine
+	for _, sm := range sg {
+		if sm.node().Leader() {
+			continue
+		}
+		f = append(f, sm)
+	}
+	return f
+}
+
 // Wait on a leader to be elected.
-func (sg smGroup) waitOnLeader() {
+func (sg smGroup) waitOnLeader() stateMachine {
 	expires := time.Now().Add(10 * time.Second)
 	for time.Now().Before(expires) {
 		for _, sm := range sg {
 			if sm.node().Leader() {
-				return
+				return sm
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return nil
 }
 
 // Pick a random member.
 func (sg smGroup) randomMember() stateMachine {
-	return sg[rand.Intn(len(sg))]
+	return sg[rand.IntN(len(sg))]
 }
 
 // Return a non-leader
@@ -98,30 +111,68 @@ func (sg smGroup) unlockAll() {
 	}
 }
 
+// Acquire the lock on all follower nodes.
+func (sg smGroup) lockFollowers() []stateMachine {
+	var locked []stateMachine
+	for _, sm := range sg {
+		if !sm.node().Leader() {
+			locked = append(locked, sm)
+			sm.node().(*raft).Lock()
+		}
+	}
+	return locked[:]
+}
+
 // Create a raft group and place on numMembers servers at random.
 // Filestore based.
 func (c *cluster) createRaftGroup(name string, numMembers int, smf smFactory) smGroup {
-	return c.createRaftGroupEx(name, numMembers, smf, FileStorage)
+	return c.createRaftGroupEx(name, numMembers, smf, defaultRaftTransport, FileStorage)
 }
 
 func (c *cluster) createMemRaftGroup(name string, numMembers int, smf smFactory) smGroup {
-	return c.createRaftGroupEx(name, numMembers, smf, MemoryStorage)
+	return c.createRaftGroupEx(name, numMembers, smf, defaultRaftTransport, MemoryStorage)
 }
 
-func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, st StorageType) smGroup {
+func (c *cluster) createMockMemRaftGroup(name string, members int, smf smFactory) (*raftTransportHub, smGroup) {
+	hub := newRaftTransportHub()
+	return hub, c.createRaftGroupEx(name, members, smf, hub.newTransport, MemoryStorage)
+}
+
+func (c *cluster) createRaftGroupEx(name string, numMembers int, smf smFactory, rtf newTransportFunc, st StorageType) smGroup {
 	c.t.Helper()
 	if numMembers > len(c.servers) {
 		c.t.Fatalf("Members > Peers: %d vs  %d", numMembers, len(c.servers))
 	}
 	servers := append([]*Server{}, c.servers...)
 	rand.Shuffle(len(servers), func(i, j int) { servers[i], servers[j] = servers[j], servers[i] })
-	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf, st)
+	return c.createRaftGroupWithPeers(name, servers[:numMembers], smf, rtf, st)
 }
 
-func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, st StorageType) smGroup {
+func (c *cluster) createWAL(name string, st StorageType) WAL {
 	c.t.Helper()
+	var err error
+	var store WAL
+	if st == FileStorage {
+		store, err = newFileStore(
+			FileStoreConfig{
+				StoreDir:     c.t.TempDir(),
+				BlockSize:    defaultMediumBlockSize,
+				AsyncFlush:   false,
+				SyncInterval: 5 * time.Minute},
+			StreamConfig{
+				Name:    name,
+				Storage: FileStorage})
+	} else {
+		store, err = newMemStore(
+			&StreamConfig{
+				Name:    name,
+				Storage: MemoryStorage})
+	}
+	require_NoError(c.t, err)
+	return store
+}
 
-	var sg smGroup
+func serverPeerNames(servers []*Server) []string {
 	var peers []string
 
 	for _, s := range servers {
@@ -131,28 +182,63 @@ func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf s
 		s.mu.RUnlock()
 	}
 
+	return peers
+}
+
+func (c *cluster) createStateMachine(s *Server, cfg *RaftConfig, peers []string, smf smFactory) stateMachine {
+	s.bootstrapRaftNode(cfg, peers, true)
+	n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(c.t, err)
+	sm := smf(s, cfg, n)
+	go smLoop(sm)
+	return sm
+}
+
+func (c *cluster) createRaftGroupWithPeers(name string, servers []*Server, smf smFactory, rtf newTransportFunc, st StorageType) smGroup {
+	c.t.Helper()
+
+	var sg smGroup
+	peers := serverPeerNames(servers)
+
 	for _, s := range servers {
-		var cfg *RaftConfig
-		if st == FileStorage {
-			fs, err := newFileStore(
-				FileStoreConfig{StoreDir: c.t.TempDir(), BlockSize: defaultMediumBlockSize, AsyncFlush: false, SyncInterval: 5 * time.Minute},
-				StreamConfig{Name: name, Storage: FileStorage},
-			)
-			require_NoError(c.t, err)
-			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: fs}
-		} else {
-			ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
-			require_NoError(c.t, err)
-			cfg = &RaftConfig{Name: name, Store: c.t.TempDir(), Log: ms}
-		}
-		s.bootstrapRaftNode(cfg, peers, true)
-		n, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
-		require_NoError(c.t, err)
-		sm := smf(s, cfg, n)
-		sg = append(sg, sm)
-		go smLoop(sm)
+		cfg := &RaftConfig{
+			Name:         name,
+			Store:        c.t.TempDir(),
+			Log:          c.createWAL(name, st),
+			NewTransport: rtf}
+		sg = append(sg, c.createStateMachine(s, cfg, peers, smf))
 	}
+
+	// Start campaigning early to speed up bootstrap leader election.
+	sg[0].node().CampaignImmediately()
 	return sg
+}
+
+func (c *cluster) addNodeEx(name string, smf smFactory, rtf newTransportFunc, st StorageType) stateMachine {
+	c.t.Helper()
+
+	server := c.addInNewServer()
+
+	cfg := &RaftConfig{
+		Name:         name,
+		Store:        c.t.TempDir(),
+		Log:          c.createWAL(name, st),
+		NewTransport: rtf}
+
+	peers := serverPeerNames(c.servers)
+	return c.createStateMachine(server, cfg, peers, smf)
+}
+
+func (c *cluster) addRaftNode(name string, smf smFactory) stateMachine {
+	return c.addNodeEx(name, smf, defaultRaftTransport, FileStorage)
+}
+
+func (c *cluster) addMemRaftNode(name string, smf smFactory) stateMachine {
+	return c.addNodeEx(name, smf, defaultRaftTransport, MemoryStorage)
+}
+
+func (c *cluster) addMockMemRaftNode(name string, hub *raftTransportHub, smf smFactory) stateMachine {
+	return c.addNodeEx(name, smf, hub.newTransport, MemoryStorage)
 }
 
 // Driver program for the state machine.
@@ -178,8 +264,8 @@ func smLoop(sm stateMachine) {
 			}
 			aq.recycle(&ces)
 
-		case isLeader := <-lch:
-			sm.leaderChange(isLeader)
+		case lc := <-lch:
+			sm.leaderChange(lc.isLeader)
 		}
 	}
 }
@@ -216,16 +302,16 @@ func (a *stateAdder) waitGroup() *sync.WaitGroup {
 }
 
 func (a *stateAdder) propose(data []byte) {
-	a.Lock()
-	defer a.Unlock()
-	a.n.ForwardProposal(data)
+	// Don't hold state machine lock as we could deadlock if the node was locked as part of the test.
+	n := a.node()
+	n.ForwardProposal(data)
 }
 
 func (a *stateAdder) applyEntry(ce *CommittedEntry) {
 	a.Lock()
-	defer a.Unlock()
 	if ce == nil {
 		// This means initial state is done/replayed.
+		a.Unlock()
 		return
 	}
 	for _, e := range ce.Entries {
@@ -237,7 +323,10 @@ func (a *stateAdder) applyEntry(ce *CommittedEntry) {
 		}
 	}
 	// Update applied.
-	a.n.Applied(ce.Index)
+	// But don't hold state machine lock as we could deadlock if the node was locked as part of the test.
+	n := a.n
+	a.Unlock()
+	n.Applied(ce.Index)
 }
 
 func (a *stateAdder) leaderChange(isLeader bool) {
@@ -309,26 +398,34 @@ func (a *stateAdder) total() int64 {
 
 // Install a snapshot.
 func (a *stateAdder) snapshot(t *testing.T) {
+	// Don't hold state machine lock as we could deadlock if the node was locked as part of the test.
 	a.Lock()
-	defer a.Unlock()
+	sum := a.sum
+	rn := a.n
+	a.Unlock()
+
 	data := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutVarint(data, a.sum)
+	n := binary.PutVarint(data, sum)
 	snap := data[:n]
-	require_NoError(t, a.n.InstallSnapshot(snap))
+	require_NoError(t, rn.InstallSnapshot(snap, false))
 }
 
 // Helper to wait for a certain state.
 func (rg smGroup) waitOnTotal(t *testing.T, expected int64) {
 	t.Helper()
-	checkFor(t, 20*time.Second, 200*time.Millisecond, func() error {
+	checkFor(t, 5*time.Second, 200*time.Millisecond, func() error {
+		var err error
 		for _, sm := range rg {
+			if sm.node().State() == Closed {
+				continue
+			}
 			asm := sm.(*stateAdder)
 			if total := asm.total(); total != expected {
-				return fmt.Errorf("Adder on %v has wrong total: %d vs %d",
-					asm.server(), total, expected)
+				err = errors.Join(err, fmt.Errorf("Adder on %v has wrong total: %d vs %d",
+					asm.server(), total, expected))
 			}
 		}
-		return nil
+		return err
 	})
 }
 
@@ -355,7 +452,8 @@ func initSingleMemRaftNodeWithCluster(t *testing.T) (*raft, *cluster) {
 	require_NoError(t, err)
 	cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: ms}
 
-	err = s.bootstrapRaftNode(cfg, nil, false)
+	id := s.sys.shash[:idLen]
+	err = s.bootstrapRaftNode(cfg, []string{id}, true)
 	require_NoError(t, err)
 	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
 	require_NoError(t, err)

@@ -10,7 +10,7 @@ The script `runTestsOnTravis.sh` will run a given job based on the definition fo
 
 As for the naming convention:
 
-- All JetStream tests name should start with `TestJetStream`
+- All JetStream test name should start with `TestJetStream`
 - Cluster tests should go into `jetstream_cluster_test.go` and start with `TestJetStreamCluster`
 - Super-cluster tests should go into `jetstream_super_cluster_test.go` and start with `TestJetStreamSuperCluster`
 

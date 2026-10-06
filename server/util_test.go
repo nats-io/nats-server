@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,7 +15,7 @@ package server
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -280,7 +280,7 @@ func createTestSub() *subscription {
 
 func BenchmarkArrayRand(b *testing.B) {
 	b.StopTimer()
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 	// Create an array of 10 items
 	subs := []*subscription{}
 	for i := 0; i < 10; i++ {
@@ -289,7 +289,7 @@ func BenchmarkArrayRand(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		index := r.Intn(len(subs))
+		index := r.IntN(len(subs))
 		_ = subs[index]
 	}
 }

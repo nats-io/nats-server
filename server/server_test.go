@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -37,6 +37,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/nats-io/nats-server/v2/internal/antithesis"
 	srvlog "github.com/nats-io/nats-server/v2/logger"
 )
 
@@ -57,6 +58,7 @@ func checkFor(t testing.TB, totalWait, sleepDur time.Duration, f func() error) {
 	t.Helper()
 	err := checkForErr(totalWait, sleepDur, f)
 	if err != nil {
+		antithesis.AssertUnreachable(t, "Timeout in checkFor", nil)
 		t.Fatal(err.Error())
 	}
 }
@@ -198,6 +200,44 @@ func TestStartupAndShutdown(t *testing.T) {
 	}
 }
 
+func TestConcurrentShutdown(t *testing.T) {
+	opts := DefaultOptions()
+	opts.DisableShortFirstPing = true
+	opts.Accounts = []*Account{NewAccount("$SYS")}
+	opts.SystemAccount = "$SYS"
+
+	s := RunServer(opts)
+	if !s.EventsEnabled() {
+		t.Fatal("Expected events to be enabled")
+	}
+
+	const callers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			s.Shutdown()
+		}()
+	}
+	close(start)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed out waiting for concurrent shutdown calls")
+	}
+	s.WaitForShutdown()
+}
+
 func TestTLSVersions(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -256,7 +296,7 @@ func TestTLSMinVersionConfig(t *testing.T) {
 	// Cannot connect with client requiring a lower minimum TLS Version.
 	connect(t, &tls.Config{
 		MaxVersion: tls.VersionTLS12,
-	}, errors.New(`remote error: tls: protocol version not supported`))
+	}, errors.New(`nats: tls error: remote error: tls: protocol version not supported`))
 
 	// Should connect since matching minimum TLS version.
 	connect(t, &tls.Config{
@@ -317,63 +357,131 @@ func TestTLSMinVersionConfig(t *testing.T) {
 }
 
 func TestTLSCipher(t *testing.T) {
-	if strings.Compare(tlsCipher(0x0005), "TLS_RSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
+	require_Equal(t, tls.CipherSuiteName(0x0005), "TLS_RSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x000a), "TLS_RSA_WITH_3DES_EDE_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x002f), "TLS_RSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0x0035), "TLS_RSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc007), "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc009), "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc00a), "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc011), "TLS_ECDHE_RSA_WITH_RC4_128_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc012), "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc013), "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc014), "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA")
+	require_Equal(t, tls.CipherSuiteName(0xc02f), "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0xc02b), "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0xc030), "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0xc02c), "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0x1301), "TLS_AES_128_GCM_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0x1302), "TLS_AES_256_GCM_SHA384")
+	require_Equal(t, tls.CipherSuiteName(0x1303), "TLS_CHACHA20_POLY1305_SHA256")
+	require_Equal(t, tls.CipherSuiteName(0x9999), "0x9999")
+}
+
+func TestTLSDefaultCipherAndCurvePreferences(t *testing.T) {
+	// The module still targets Go 1.25 in go.mod, so Go 1.26 keeps the SecP ML-KEM
+	// groups disabled by default unless the test opts in explicitly.
+	t.Setenv("GODEBUG", "tlssecpmlkem=1")
+
+	runTLSServer := func(t *testing.T, cipherSuites []uint16, curvePreferences []tls.CurveID, minVersion, maxVersion uint16) *Server {
+		t.Helper()
+		tc := &TLSConfigOpts{
+			Certificates: []*TLSCertPairOpt{
+				{
+					CertFile: "../test/configs/certs/server-cert.pem",
+					KeyFile:  "../test/configs/certs/server-key.pem",
+				},
+				{
+					CertFile: "../test/configs/certs/tlsauth/certstore/ecdsa_server.pem",
+					KeyFile:  "../test/configs/certs/tlsauth/certstore/ecdsa_server.key",
+				},
+			},
+			Ciphers:          cipherSuites,
+			CurvePreferences: curvePreferences,
+			MinVersion:       minVersion,
+		}
+		config, err := GenTLSConfig(tc)
+		require_NoError(t, err)
+		config.MaxVersion = maxVersion
+
+		opts := DefaultOptions()
+		opts.TLSConfig = config
+		opts.TLSHandshakeFirst = true
+		return RunServer(opts)
 	}
-	if strings.Compare(tlsCipher(0x000a), "TLS_RSA_WITH_3DES_EDE_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
+
+	dial := func(s *Server, config *tls.Config) (*tls.Conn, error) {
+		return tls.Dial("tcp", s.Addr().String(), config)
 	}
-	if strings.Compare(tlsCipher(0x002f), "TLS_RSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x0035), "TLS_RSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc007), "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc009), "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc00a), "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc011), "TLS_ECDHE_RSA_WITH_RC4_128_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc012), "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc013), "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc014), "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA") != 0 {
-		t.Fatalf("IUnknownnvalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02f), "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02b), "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc030), "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0xc02c), "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1301), "TLS_AES_128_GCM_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1302), "TLS_AES_256_GCM_SHA384") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x1303), "TLS_CHACHA20_POLY1305_SHA256") != 0 {
-		t.Fatalf("Invalid tls cipher")
-	}
-	if strings.Compare(tlsCipher(0x9999), "Unknown [0x9999]") != 0 {
-		t.Fatalf("Expected an unknown cipher")
-	}
+
+	t.Run("cipher suites", func(t *testing.T) {
+		for _, id := range defaultCipherSuites() {
+			cs := cipherMapByID[id]
+			if !slices.Contains(cs.SupportedVersions, tls.VersionTLS12) {
+				continue // t.Skip("tls.Config.CipherSuites does not configure TLS 1.3 cipher suites")
+			}
+
+			t.Run(cs.Name, func(t *testing.T) {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: true,
+					ServerName:         "localhost",
+					MinVersion:         tls.VersionTLS12,
+					MaxVersion:         tls.VersionTLS12,
+					CipherSuites:       []uint16{cs.ID},
+					CurvePreferences:   defaultCurvePreferences(),
+				}
+
+				s := runTLSServer(t, []uint16{cs.ID}, tlsConfig.CurvePreferences, tlsConfig.MinVersion, tlsConfig.MaxVersion)
+				defer s.Shutdown()
+
+				// Prove that we can connect with the right curve preference.
+				conn, err := dial(s, tlsConfig)
+				require_NoError(t, err)
+				defer conn.Close()
+				require_Equal(t, conn.ConnectionState().CipherSuite, cs.ID)
+
+				// Now configure other ciphers and check that we fail to connect.
+				tlsConfig.CipherSuites = slices.DeleteFunc(slices.Clone(defaultCipherSuites()), func(id uint16) bool {
+					return id == cs.ID || !slices.Contains(cipherMapByID[id].SupportedVersions, tls.VersionTLS12)
+				})
+				if conn, err = dial(s, tlsConfig); conn != nil {
+					defer conn.Close()
+				}
+				require_Error(t, err)
+			})
+		}
+	})
+
+	t.Run("curve preferences", func(t *testing.T) {
+		for name, curve := range curvePreferenceMap {
+			t.Run(name, func(t *testing.T) {
+				tlsConfig := &tls.Config{
+					InsecureSkipVerify: true,
+					MinVersion:         tls.VersionTLS13,
+					MaxVersion:         tls.VersionTLS13,
+					CurvePreferences:   []tls.CurveID{curve},
+				}
+
+				s := runTLSServer(t, nil, []tls.CurveID{curve}, tlsConfig.MinVersion, tlsConfig.MaxVersion)
+				defer s.Shutdown()
+
+				// Prove that we can connect with the right cipher suites.
+				conn, err := dial(s, tlsConfig)
+				require_NoError(t, err)
+				defer conn.Close()
+				require_Equal(t, conn.ConnectionState().CurveID, curve)
+
+				// Now configure other curves and check that we fail to connect.
+				tlsConfig.CurvePreferences = slices.DeleteFunc(slices.Clone(defaultCurvePreferences()), func(id tls.CurveID) bool {
+					return id == curve
+				})
+				if conn, err = dial(s, tlsConfig); conn != nil {
+					defer conn.Close()
+				}
+				require_Error(t, err)
+			})
+		}
+	})
 }
 
 func TestGetConnectURLs(t *testing.T) {
@@ -622,6 +730,17 @@ func TestMaxConnections(t *testing.T) {
 		nc2.Close()
 		t.Fatal("Expected connection to fail")
 	}
+}
+
+func TestMaxConnectionsPreventsAll(t *testing.T) {
+	opts := DefaultOptions()
+	opts.MaxConn = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, opts.Port)
+	_, err := nats.Connect(addr)
+	require_Error(t, err)
 }
 
 func TestMaxSubscriptions(t *testing.T) {
@@ -893,6 +1012,7 @@ func TestLameDuckMode(t *testing.T) {
 	optsA := DefaultOptions()
 	testSetLDMGracePeriod(optsA, time.Nanosecond)
 	optsA.Cluster.Host = "127.0.0.1"
+	optsA.Cluster.Name = "ldm-test"
 	srvA := RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -902,16 +1022,50 @@ func TestLameDuckMode(t *testing.T) {
 		t.Fatalf("Server should have shutdown")
 	}
 
-	optsA.LameDuckDuration = 10 * time.Nanosecond
+	optsA = DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
+	optsA.Cluster.Host = "127.0.0.1"
+	optsA.Cluster.Name = "ldm-test"
+	optsA.LameDuckDuration = 2 * time.Second
+	optsA.LeafNode.Host = "127.0.0.1"
+	optsA.LeafNode.Port = -1
+	optsA.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	optsHub := DefaultOptions()
+	optsHub.LeafNode.Host = "127.0.0.1"
+	optsHub.LeafNode.Port = -1
+	srvHub := RunServer(optsHub)
+	defer srvHub.Shutdown()
+	hubURL, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", optsHub.LeafNode.Port))
+	if err != nil {
+		t.Fatalf("Error parsing hub leafnode URL: %v", err)
+	}
+	optsA.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{hubURL}}}
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
 	optsB := DefaultOptions()
+	optsB.Cluster.Name = "ldm-test"
 	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", srvA.ClusterAddr().Port))
 	srvB := RunServer(optsB)
 	defer srvB.Shutdown()
 
 	checkClusterFormed(t, srvA, srvB)
+	checkLeafNodeConnectedCount(t, srvA, 1)
+	checkLeafNodeConnected(t, srvHub)
+
+	leafURL, err := url.Parse(fmt.Sprintf("nats://%s", srvA.leafNodeInfo.IP))
+	if err != nil {
+		t.Fatalf("Error parsing leafnode URL: %v", err)
+	}
+	optsLeaf := DefaultOptions()
+	optsLeaf.Cluster.Name = "leaf-spoke"
+	optsLeaf.LeafNode.Port = -1
+	optsLeaf.LeafNode.ReconnectInterval = 50 * time.Millisecond
+	optsLeaf.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+	srvLeaf := RunServer(optsLeaf)
+	defer srvLeaf.Shutdown()
+	checkLeafNodeConnectedCount(t, srvA, 2)
+	checkLeafNodeConnected(t, srvLeaf)
 
 	total := 50
 	connectClients := func() []*nats.Conn {
@@ -930,6 +1084,8 @@ func TestLameDuckMode(t *testing.T) {
 		for _, nc := range ncs {
 			nc.Close()
 		}
+		srvLeaf.Shutdown()
+		srvHub.Shutdown()
 		srvB.Shutdown()
 	}
 
@@ -944,28 +1100,34 @@ func TestLameDuckMode(t *testing.T) {
 	srvA.lameDuckMode()
 	// Wait that shutdown completes
 	elapsed := time.Since(start)
-	// It should have taken more than the allotted time of 10ms since we had 50 clients.
-	if elapsed <= optsA.LameDuckDuration {
-		t.Fatalf("Expected to take more than %v, got %v", optsA.LameDuckDuration, elapsed)
+	// The clients and both leaf connections should share the paced drain window.
+	if elapsed < optsA.LameDuckDuration/2 {
+		t.Fatalf("Expected paced shutdown to take at least %v, got %v", optsA.LameDuckDuration/2, elapsed)
 	}
 
 	checkClientsCount(t, srvA, 0)
 	checkClientsCount(t, srvB, total)
+	if got := srvA.NumLeafNodes(); got != 0 {
+		t.Fatalf("Expected lame duck mode to close leaf connection, got %d remaining", got)
+	}
+	if got := srvHub.NumLeafNodes(); got != 0 {
+		t.Fatalf("Expected outbound leaf connection to remain shed during lame duck mode, got %d replacement(s)", got)
+	}
 
 	// Check closed status on server A
 	// Connections are saved in go routines, so although we have evaluated the number
 	// of connections in the server A to be 0, the polling of connection closed may
 	// need a bit more time.
 	checkFor(t, time.Second, 15*time.Millisecond, func() error {
-		cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
-		if n := len(cz.Conns); n != total {
-			return fmt.Errorf("expected %v closed connections, got %v", total, n)
+		cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+		if n := len(cz.Conns); n != total+2 {
+			return fmt.Errorf("expected %v closed connections, got %v", total+2, n)
 		}
 		return nil
 	})
-	cz := pollConz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
-	if n := len(cz.Conns); n != total {
-		t.Fatalf("Expected %v closed connections, got %v", total, n)
+	cz := pollConnz(t, srvA, 1, "", &ConnzOptions{State: ConnClosed})
+	if n := len(cz.Conns); n != total+2 {
+		t.Fatalf("Expected %v closed connections, got %v", total+2, n)
 	}
 	for _, c := range cz.Conns {
 		checkReason(t, c.Reason, ServerShutdown)
@@ -973,7 +1135,11 @@ func TestLameDuckMode(t *testing.T) {
 
 	stopClientsAndSrvB(ncs)
 
+	optsA = DefaultOptions()
+	testSetLDMGracePeriod(optsA, time.Nanosecond)
+	optsA.Cluster.Host = "127.0.0.1"
 	optsA.LameDuckDuration = time.Second
+	optsB = DefaultOptions()
 	srvA = RunServer(optsA)
 	defer srvA.Shutdown()
 
@@ -1145,6 +1311,8 @@ func TestLameDuckModeInfo(t *testing.T) {
 
 	getInfo(false)
 	c.Write([]byte("CONNECT {\"protocol\":1,\"verbose\":false}\r\nPING\r\n"))
+	// Consume both the first PONG and INFO in response to the Connect.
+	client.ReadString('\n')
 	client.ReadString('\n')
 
 	optsB := testWSOptions()
@@ -1918,7 +2086,7 @@ func TestReconnectErrorReports(t *testing.T) {
 	cs.Shutdown()
 
 	// Specifically for route test, wait at least reconnect interval before checking logs
-	time.Sleep(DEFAULT_ROUTE_RECONNECT)
+	time.Sleep(routeReconnectDelay)
 
 	checkContent := func(t *testing.T, txt string, attempt int, shouldBeThere bool) {
 		t.Helper()
@@ -2356,4 +2524,52 @@ func TestServerJsonMarshalNestedStructsPanic(t *testing.T) {
 	b, err := json.Marshal(Body{Payload: &Detail{I: Item{A: "a", B: "b"}}})
 	require_NoError(t, err)
 	require_Equal(t, string(b), "{\"p\":{\"i\":{\"a\":\"a\",\"b\":\"b\"}}}")
+}
+
+func TestBuildinfoFormatRevision(t *testing.T) {
+	tests := []struct {
+		name     string
+		revision string
+		expected string
+	}{
+		{
+			name:     "Git-like longer version",
+			revision: "abc123def456789",
+			expected: "abc123d",
+		},
+		{
+			name:     "Git-like exactly 7 chars",
+			revision: "abc123d",
+			expected: "abc123d",
+		},
+		{
+			name:     "SVN shorter revision",
+			revision: "1234",
+			expected: "1234",
+		},
+		{
+			name:     "SVN single digit",
+			revision: "5",
+			expected: "5",
+		},
+		{
+			name:     "Empty revision",
+			revision: "",
+			expected: "",
+		},
+		{
+			name:     "6 character revision",
+			revision: "abc123",
+			expected: "abc123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatRevision(tt.revision)
+			if result != tt.expected {
+				t.Errorf("formatRevision(%q) = %q, expected %q", tt.revision, result, tt.expected)
+			}
+		})
+	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2017-2024 The NATS Authors
+// Copyright 2017-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,10 +18,12 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -375,6 +377,10 @@ func TestConfigReload(t *testing.T) {
 	if updated.MaxPayload != 1024 {
 		t.Fatalf("MaxPayload is incorrect.\nexpected 1024\ngot: %d", updated.MaxPayload)
 	}
+	expectedMetadata := map[string]string{"key1": "value1", "key2": "value2"}
+	if !reflect.DeepEqual(expectedMetadata, updated.Metadata) {
+		t.Fatalf("Metadata is incorrect.\nexpected: %v\ngot: %v", expectedMetadata, updated.Metadata)
+	}
 
 	if reloaded := server.ConfigTime(); !reloaded.After(loaded) {
 		t.Fatalf("ConfigTime is incorrect.\nexpected greater than: %s\ngot: %s", loaded, reloaded)
@@ -434,6 +440,46 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	if string(msg.Data) != "hello" {
 		t.Fatalf("Msg is incorrect.\nexpected: %+v\ngot: %+v", []byte("hello"), msg.Data)
 	}
+}
+
+func TestConfigReloadTLSPinnedCertsDisconnectsClient(t *testing.T) {
+	const config = `
+		host: localhost
+		port: -1
+		tls {
+			ca_file: "../test/configs/certs/ca.pem"
+			cert_file: "../test/configs/certs/server-cert.pem"
+			key_file: "../test/configs/certs/server-key.pem"
+			verify: true
+			pinned_certs: ["%s"]
+		}
+	`
+	const (
+		clientCertPin = "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+		otherCertPin  = "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+	)
+
+	conf := createConfFile(t, fmt.Appendf(nil, config, clientCertPin))
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	nc, err := nats.Connect(srv.ClientURL(),
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.ClientCert("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem"),
+		nats.NoReconnect(),
+	)
+	require_NoError(t, err)
+	defer nc.Close()
+
+	require_NoError(t, os.WriteFile(conf, fmt.Appendf(nil, config, otherCertPin), 0660))
+	require_NoError(t, srv.Reload())
+
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsClosed() {
+			return fmt.Errorf("client with removed certificate pin is still connected")
+		}
+		return nil
+	})
 }
 
 // Ensure Reload supports enabling TLS. Test this by starting a server without
@@ -595,6 +641,113 @@ func TestConfigReloadRotateTLSMultiCert(t *testing.T) {
 	if bytes.Equal(certB, certC) {
 		t.Error("Expected a different cert")
 	}
+}
+
+func TestConfigReloadTrustedOperatorAndTrustedKeysUnsupported(t *testing.T) {
+	kp, _ := nkeys.CreateAccount()
+	aPub, _ := kp.PublicKey()
+	claim := jwt.NewAccountClaims(aPub)
+	aJwt, err := claim.Encode(oKp)
+	require_NoError(t, err)
+	tmpl := `
+		listen: 127.0.0.1:-1
+		%s
+		resolver: MEM
+		resolver_preload: {
+			%s: %s
+		}
+	`
+	conf := createConfFile(t, fmt.Appendf(nil, tmpl, fmt.Sprintf("operator: %s", ojwt), aPub, aJwt))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// The server fills the TrustedKeys with the operators' signing keys.
+	require_True(t, len(o.TrustedKeys) > 0)
+
+	keysConf := strings.Builder{}
+	keysConf.WriteByte('[')
+	for i, k := range o.TrustedKeys {
+		if i > 0 {
+			keysConf.WriteString(", ")
+		}
+		keysConf.WriteByte('"')
+		keysConf.WriteString(k)
+		keysConf.WriteByte('"')
+	}
+	keysConf.WriteByte(']')
+
+	err = os.WriteFile(conf, fmt.Appendf(nil, tmpl, _EMPTY_, aPub, aJwt), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "not supported for TrustedOperator")
+
+	// We used to wipe the TrustedKeys, we no longer do that.
+	require_True(t, len(o.TrustedKeys) > 0)
+
+	s.Shutdown()
+	conf = createConfFile(t,
+		fmt.Appendf(nil, tmpl, fmt.Sprintf("trusted_keys: %s", keysConf.String()), aPub, aJwt))
+	s, o = RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	err = os.WriteFile(conf, fmt.Appendf(nil, tmpl, _EMPTY_, aPub, aJwt), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "not supported for TrustedKeys")
+
+	require_True(t, len(o.TrustedKeys) > 0)
+}
+
+func TestConfigReloadDefaultSentinel(t *testing.T) {
+	var err error
+	preload := make(map[string]string)
+
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uc := jwt.NewUserClaims(uPub)
+	uc.BearerToken = true
+	uc.Name = "sentinel"
+	sentinelToken, err := uc.Encode(aKP)
+	require_NoError(t, err)
+	content := func() []byte {
+		return []byte(fmt.Sprintf(`
+            listen: 127.0.0.1:4747
+            operator: %s
+            system_account: %s
+            resolver: MEM
+            resolver_preload: %s
+			default_sentinel: %s
+`, ojwt, sysPub, preloadConfig, sentinelToken))
+	}
+
+	server, opts, config := runReloadServerWithContent(t, content())
+	defer server.Shutdown()
+	require_Equal(t, opts.DefaultSentinel, sentinelToken)
+
+	uc.Name = "sentinel-updated"
+	sentinelToken, err = uc.Encode(aKP)
+	require_NoError(t, err)
+	changeCurrentConfigContentWithNewContent(t, config, content())
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+	opts = server.getOpts()
+	require_Equal(t, opts.DefaultSentinel, sentinelToken)
 }
 
 // Ensure Reload supports single user authentication config changes. Test this
@@ -1320,6 +1473,59 @@ func TestConfigReloadChangePermissions(t *testing.T) {
 	}
 }
 
+func TestConfigReloadRevokesQueueSubscriptionWithQueueScopedDeny(t *testing.T) {
+	config := func(deny string) []byte {
+		return fmt.Appendf(nil, `
+			listen: 127.0.0.1:-1
+			authorization {
+				users: [
+					{
+						user: attacker
+						password: pass
+						permissions: {
+							subscribe: {
+								allow: [">"]
+								%s
+							}
+						}
+					}
+				]
+			}
+		`, deny)
+	}
+
+	s, opts, configFile := runReloadServerWithContent(t, config(""))
+	defer s.Shutdown()
+
+	asyncErr := make(chan error, 1)
+	nc := natsConnect(t, fmt.Sprintf("nats://127.0.0.1:%d", opts.Port),
+		nats.UserInfo("attacker", "pass"),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			asyncErr <- err
+		}))
+	defer nc.Close()
+
+	sub := natsQueueSubSync(t, nc, "admin.secret", "workers")
+	natsFlush(t, nc)
+
+	changeCurrentConfigContentWithNewContent(t, configFile, config(`deny: ["admin.secret workers"]`))
+	require_NoError(t, s.Reload())
+
+	select {
+	case err := <-asyncErr:
+		if !strings.Contains(strings.ToLower(err.Error()), `permissions violation for subscription to "admin.secret" using queue "workers"`) {
+			t.Fatalf("Expected queue subscription permission violation, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Expected queue subscription to be revoked")
+	}
+	natsPub(t, nc, "admin.secret", []byte("blocked"))
+	natsFlush(t, nc)
+	if _, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected revoked queue subscription not to receive messages, got %v", err)
+	}
+}
+
 // Ensure Reload returns an error when attempting to change cluster address
 // host.
 func TestConfigReloadClusterHostUnsupported(t *testing.T) {
@@ -1692,7 +1898,7 @@ func TestConfigReloadClusterRemoveSolicitedRoutes(t *testing.T) {
 
 	// We should not have a cluster formed here.
 	numRoutes := 0
-	deadline := time.Now().Add(2 * DEFAULT_ROUTE_RECONNECT)
+	deadline := time.Now().Add(routeReconnectDelay + 500*time.Millisecond)
 	for time.Now().Before(deadline) {
 		if numRoutes = srva.NumRoutes(); numRoutes != 0 {
 			break
@@ -1963,6 +2169,59 @@ func TestConfigReloadMaxConnections(t *testing.T) {
 	}
 
 	checkClientsCount(t, server, 1)
+
+	// Ensure new connections fail.
+	_, err = nats.Connect(addr)
+	if err == nil {
+		t.Fatal("Expected error on connect")
+	}
+}
+
+// Ensure Reload supports refusing all connections. Test this by starting a
+// server with no max connections, connecting two clients, reloading with a
+// max connections of one, and ensuring one client is disconnected.
+func TestConfigReloadMaxConnectionsPreventAll(t *testing.T) {
+	server, opts, config := runReloadServerWithConfig(t, "./configs/reload/basic.conf")
+	defer server.Shutdown()
+
+	// Make two connections.
+	addr := fmt.Sprintf("nats://%s:%d", opts.Host, server.Addr().(*net.TCPAddr).Port)
+	nc1, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc1.Close()
+	closed := make(chan struct{}, 1)
+	nc1.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+	nc2, err := nats.Connect(addr)
+	if err != nil {
+		t.Fatalf("Error creating client: %v", err)
+	}
+	defer nc2.Close()
+	nc2.SetDisconnectHandler(func(*nats.Conn) {
+		closed <- struct{}{}
+	})
+
+	if numClients := server.NumClients(); numClients != 2 {
+		t.Fatalf("Expected 2 clients, got %d", numClients)
+	}
+
+	// Set max connections to one.
+	changeCurrentConfigContent(t, config, "./configs/reload/max_connections_refuse_all.conf")
+	if err := server.Reload(); err != nil {
+		t.Fatalf("Error reloading config: %v", err)
+	}
+
+	// Ensure one connection was closed.
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Expected to be disconnected")
+	}
+
+	checkClientsCount(t, server, 0)
 
 	// Ensure new connections fail.
 	_, err = nats.Connect(addr)
@@ -3808,9 +4067,53 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			true,
 			func() bool { return opts.TraceVerbose },
 		},
+		// --js override
+		{
+			"jetstream_not_in_config_no_override",
+			"",
+			nil,
+			false,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_not_in_config_override_true",
+			"",
+			[]string{"--js"},
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_false_in_config_no_override",
+			"jetstream: false",
+			nil,
+			false,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_false_in_config_override_true",
+			"jetstream: false",
+			[]string{"--js"},
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_true_in_config_no_override",
+			"jetstream: true",
+			nil,
+			true,
+			func() bool { return opts.JetStream },
+		},
+		{
+			"jetstream_true_in_config_override_false",
+			"jetstream: true",
+			[]string{"--js=false"},
+			false,
+			func() bool { return opts.JetStream },
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			conf := createConfFile(t, []byte(fmt.Sprintf(template, logfile, test.content)))
+			content := fmt.Sprintf(template, logfile, test.content)
+			conf := createConfFile(t, []byte(content))
 
 			fs := flag.NewFlagSet("test", flag.ContinueOnError)
 			var args []string
@@ -3829,9 +4132,15 @@ func TestConfigReloadBoolFlags(t *testing.T) {
 			if test.val() != test.expected {
 				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
 			}
-			if err := s.Reload(); err != nil {
-				t.Fatalf("Error on reload: %v", err)
-			}
+			// Do a config reload with a modified config file so that s.Reload()
+			// actually does something (otherwise it would not because config
+			// digest would not have changed). We could alternatively change
+			// s.opts.configDigest to the empty string.
+			reloadUpdateConfig(t, s, conf, content+`
+				max_connections: 1000
+			`)
+			// Have `opts` now point to the new options after the Reload()
+			opts = s.getOpts()
 			if test.val() != test.expected {
 				t.Fatalf("Expected to be set to %v, got %v", test.expected, test.val())
 			}
@@ -4409,9 +4718,7 @@ func TestConfigReloadValidate(t *testing.T) {
 		}
 	`))
 	srv, _ := RunServerWithConfig(confFileName)
-	if srv == nil {
-		t.Fatal("Server did not start")
-	}
+	defer srv.Shutdown()
 	// Induce error by removing the user no_auth_user points to
 	changeCurrentConfigContentWithNewContent(t, confFileName, []byte(`
 		listen: "127.0.0.1:-1"
@@ -4424,10 +4731,9 @@ func TestConfigReloadValidate(t *testing.T) {
 	`))
 	if err := srv.Reload(); err == nil {
 		t.Fatal("Expected error on reload, got none")
-	} else if strings.HasPrefix(err.Error(), " no_auth_user:") {
+	} else if !strings.HasPrefix(err.Error(), "no_auth_user:") {
 		t.Logf("Expected no_auth_user error, got different one %s", err)
 	}
-	srv.Shutdown()
 }
 
 func TestConfigReloadAccounts(t *testing.T) {
@@ -5219,6 +5525,30 @@ func TestConfigReloadRoutePoolAndPerAccount(t *testing.T) {
 	// Now add accounts "B" and "D" and do a config reload.
 	reloadUpdateConfig(t, srva, confA, fmt.Sprintf(confATemplate, "pool_size: 3", "accounts: [\"A\",\"B\",\"D\"]"))
 
+	// reloadClusterPoolAndAccounts must not let srva's Reload() return until the
+	// remotes have confirmed they processed the per-account route additions.
+	for _, s := range []*Server{srvb, srvc} {
+		for _, acc := range []string{"B", "D"} {
+			s.mu.RLock()
+			_, hasRoute := s.accRoutes[acc]
+			a, found := s.accounts.Load(acc)
+			s.mu.RUnlock()
+			if !hasRoute {
+				t.Fatalf("%s.Reload() returned before remote %s set up the per-account route for %q; the route confirmation wait was skipped", srva, s, acc)
+			}
+			if !found {
+				t.Fatalf("Remote %s does not know account %q", s, acc)
+			}
+			acc := a.(*Account)
+			acc.mu.RLock()
+			rpi := acc.routePoolIdx
+			acc.mu.RUnlock()
+			if rpi != accTransitioningToDedicatedRoute {
+				t.Fatalf("%s.Reload() returned before remote %s marked account %q transitioning (routePoolIdx=%d); the route confirmation wait was skipped", srva, s, acc.Name, rpi)
+			}
+		}
+	}
+
 	// Even before reloading srvb and srvc, we should already have per-account
 	// routes for accounts B and D being established. The accounts routePoolIdx
 	// should be marked as transitioning.
@@ -5375,6 +5705,41 @@ func TestConfigReloadRoutePoolAndPerAccount(t *testing.T) {
 			t.Fatalf("Expected 0 pending messages, got %v for accIdx=%d sub=%q", n, i, sub.Subject)
 		}
 	}
+}
+
+func TestConfigReloadRoutePoolAndPerAccountNoPanicIfFirstAdded(t *testing.T) {
+	tmpl := `
+		port: -1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: "user1", password: "pwd"}] }
+			B { users: [{user: "user2", password: "pwd"}] }
+		}
+		cluster {
+				name: "local"
+				listen: 127.0.0.1:-1
+				pool_size: 2
+				%s
+				%s
+		}
+		no_sys_acc: true
+	`
+	conf1 := createConfFile(t, fmt.Appendf(nil, tmpl, "A", _EMPTY_, _EMPTY_))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	route := fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl, "B", _EMPTY_, route))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	reloadUpdateConfig(t, s1, conf1, fmt.Sprintf(tmpl, "A", "accounts:[\"A\"]", _EMPTY_))
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl, "B", "accounts:[\"A\"]", route))
+
+	time.Sleep(50 * time.Millisecond)
+	checkClusterFormed(t, s1, s2)
 }
 
 func TestConfigReloadRoutePoolCannotBeDisabledIfAccountsPresent(t *testing.T) {
@@ -6216,6 +6581,913 @@ func TestConfigReloadLeafNodeCompressionS2Auto(t *testing.T) {
 	}
 }
 
+func TestConfigReloadGetRemoteLeafOpts(t *testing.T) {
+	u1, err := url.Parse("nats://127.0.0.1:1234")
+	require_NoError(t, err)
+	u2, err := url.Parse("nats://127.0.0.1:1235")
+	require_NoError(t, err)
+	u3, err := url.Parse("nats://127.0.0.1:1236")
+	require_NoError(t, err)
+
+	rlo1 := &RemoteLeafOpts{URLs: []*url.URL{u1}}
+	rlo2 := &RemoteLeafOpts{URLs: []*url.URL{u2}}
+	rlo3 := &RemoteLeafOpts{URLs: []*url.URL{u3}}
+
+	for _, test := range []struct {
+		name    string
+		search  *RemoteLeafOpts
+		listIn  []*RemoteLeafOpts
+		result  *RemoteLeafOpts
+		listOut []*RemoteLeafOpts
+	}{
+		{"list empty", rlo1, nil, nil, nil},
+		{"list of one and found", rlo1, []*RemoteLeafOpts{rlo1}, rlo1, nil},
+		{"list of one and not found", rlo2, []*RemoteLeafOpts{rlo1}, nil, []*RemoteLeafOpts{rlo1}},
+		{"list of two and found at pos 1", rlo1, []*RemoteLeafOpts{rlo1, rlo2}, rlo1, []*RemoteLeafOpts{rlo2}},
+		{"list of two and found at pos 2", rlo2, []*RemoteLeafOpts{rlo1, rlo2}, rlo2, []*RemoteLeafOpts{rlo1}},
+		{"list of two and not found", rlo3, []*RemoteLeafOpts{rlo1, rlo2}, nil, []*RemoteLeafOpts{rlo1, rlo2}},
+		// When finding an element, we take the last from the list and move it in place of the found one and reduce the list size.
+		{"list of three and found at pos 1", rlo1, []*RemoteLeafOpts{rlo1, rlo2, rlo3}, rlo1, []*RemoteLeafOpts{rlo3, rlo2}},
+		{"list of three and found at pos 2", rlo2, []*RemoteLeafOpts{rlo1, rlo2, rlo3}, rlo2, []*RemoteLeafOpts{rlo1, rlo3}},
+		{"list of three and found at pos 3", rlo3, []*RemoteLeafOpts{rlo1, rlo2, rlo3}, rlo3, []*RemoteLeafOpts{rlo1, rlo2}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rlo, list := getRemoteLeafOpts(test.search.name(), test.listIn)
+			require_True(t, reflect.DeepEqual(list, test.listOut))
+			require_Equal(t, rlo, test.result)
+		})
+	}
+}
+
+func TestConfigReloadGetLeafNodeOptionsChanges(t *testing.T) {
+	u, err := url.Parse("nats://127.0.0.1:7222")
+	require_NoError(t, err)
+	remote := &RemoteLeafOpts{
+		URLs:        []*url.URL{u},
+		Compression: CompressionOpts{Mode: CompressionS2Fast},
+	}
+	cfg := &leafNodeCfg{RemoteLeafOpts: remote}
+	s := &Server{}
+	s.leafRemoteCfgs = make(map[*leafNodeCfg]struct{})
+	s.leafRemoteCfgs[cfg] = struct{}{}
+
+	changedRemotes := make(map[*leafNodeCfg]*remoteLeafOption)
+	changedRemotes[cfg] = &remoteLeafOption{opts: remote}
+
+	changedRemotesTLSFirst := make(map[*leafNodeCfg]*remoteLeafOption)
+	tlsFirstRemote := *remote
+	tlsFirstRemote.TLSHandshakeFirst = true
+	changedRemotesTLSFirst[cfg] = &remoteLeafOption{tlsFirstChanged: true, opts: &tlsFirstRemote}
+
+	changedRemotesCompression := make(map[*leafNodeCfg]*remoteLeafOption)
+	compressionRemote := *remote
+	compressionRemote.Compression = CompressionOpts{Mode: CompressionS2Best}
+	changedRemotesCompression[cfg] = &remoteLeafOption{compressionChanged: true, opts: &compressionRemote}
+
+	changedRemotesDisabled := make(map[*leafNodeCfg]*remoteLeafOption)
+	disabledRemote := *remote
+	disabledRemote.Disabled = true
+	changedRemotesDisabled[cfg] = &remoteLeafOption{disabledChanged: true, opts: &disabledRemote}
+
+	u2, err := url.Parse("nats://127.0.0.1:7223")
+	require_NoError(t, err)
+	addedRemote := &RemoteLeafOpts{
+		URLs:         []*url.URL{u2},
+		Compression:  CompressionOpts{Mode: CompressionS2Fast},
+		LocalAccount: "A",
+	}
+
+	addedRemoteDueToDifferentAccount := &RemoteLeafOpts{
+		URLs:         []*url.URL{u},
+		Compression:  CompressionOpts{Mode: CompressionS2Fast},
+		LocalAccount: "A",
+	}
+	addedRemoteDueToDifferentCreds := &RemoteLeafOpts{
+		URLs:        []*url.URL{u},
+		Compression: CompressionOpts{Mode: CompressionS2Fast},
+		Credentials: "credsfile",
+	}
+	addedRemoteDueToDifferentNkey := &RemoteLeafOpts{
+		URLs:        []*url.URL{u},
+		Compression: CompressionOpts{Mode: CompressionS2Fast},
+		Credentials: "SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4",
+	}
+
+	acc1 := &Account{Name: "A1"}
+	acc2 := &Account{Name: "A2"}
+
+	for _, test := range []struct {
+		name   string
+		genCfg func() (*Server, *LeafNodeOpts, *LeafNodeOpts)
+		lo     *leafNodeOption
+		errTxt string
+	}{
+		{
+			"no change no remote",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			_EMPTY_,
+		},
+		{
+			"no change with remote",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{remote},
+				}
+				r := *remote
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{&r},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{changed: changedRemotes},
+			_EMPTY_,
+		},
+		{
+			"users order changed but equivalent",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users: []*User{
+						{Username: "a", Password: "pwd"},
+						{Username: "b", Password: "pwd"},
+					},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users: []*User{
+						{Username: "b", Password: "pwd"},
+						{Username: "a", Password: "pwd"},
+					},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			_EMPTY_,
+		},
+		{
+			"users different length",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users: []*User{
+						{Username: "a", Password: "pwd"},
+						{Username: "b", Password: "pwd"},
+					},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\": old=",
+		},
+		{
+			"users different pwd",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "changedpwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\": old=",
+		},
+		{
+			"users different account",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd", Account: acc1}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd", Account: acc2}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\": old=",
+		},
+		{
+			"user not found",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "b", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Users\": old=",
+		},
+		{
+			"unsupported change",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+					Port:              1234,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+					// Pick some field that is not Compression or TLSHandshakeFirst
+					Port: 5678,
+				}
+				return ts, old, new
+			},
+			nil,
+			"field \"Port\": old=1234, new=5678",
+		},
+		{
+			"tlsfirst changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: false,
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{tlsFirstChanged: true},
+			_EMPTY_,
+		},
+		{
+			"compression changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Best},
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{compressionChanged: true},
+			_EMPTY_,
+		},
+		{
+			"tlsfirst and compression changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+				}
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Best},
+					TLSHandshakeFirst: false,
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{tlsFirstChanged: true, compressionChanged: true},
+			_EMPTY_,
+		},
+		{
+			"unsupported remote change",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Fast},
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{remote},
+				}
+				r := *remote
+				// Set something that cannot be changed.
+				r.Hub = true
+				new := &LeafNodeOpts{
+					Users:             []*User{{Username: "a", Password: "pwd"}},
+					Compression:       CompressionOpts{Mode: CompressionS2Best},
+					TLSHandshakeFirst: false,
+					Remotes:           []*RemoteLeafOpts{&r},
+				}
+				return ts, old, new
+			},
+			nil,
+			fmt.Sprintf("remote %s: field %q: old=false, new=true", remote.safeName(), "Hub"),
+		},
+		{
+			"remote tlsfirst changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users: []*User{{Username: "a", Password: "pwd"}},
+					// At the same time, change compression for the LeafNodeOpts block.
+					Compression: CompressionOpts{Mode: CompressionS2Best},
+					Remotes:     []*RemoteLeafOpts{&tlsFirstRemote},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				compressionChanged: true,
+				changed:            changedRemotesTLSFirst,
+			},
+			_EMPTY_,
+		},
+		{
+			"remote compression changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{&compressionRemote},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				changed:         changedRemotesCompression,
+			},
+			_EMPTY_,
+		},
+		{
+			"remote disabled changed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{&disabledRemote},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				changed:         changedRemotesDisabled,
+			},
+			_EMPTY_,
+		},
+		{
+			"remote removed",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{tlsFirstChanged: true},
+			_EMPTY_,
+		},
+		{
+			"remote added",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{remote, addedRemote},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				added:           []*RemoteLeafOpts{addedRemote},
+				changed:         changedRemotes,
+			},
+			_EMPTY_,
+		},
+		{
+			"remote added due to different account",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{addedRemoteDueToDifferentAccount},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				added:           []*RemoteLeafOpts{addedRemoteDueToDifferentAccount},
+			},
+			_EMPTY_,
+		},
+		{
+			"remote added due to different creds",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{addedRemoteDueToDifferentCreds},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				added:           []*RemoteLeafOpts{addedRemoteDueToDifferentCreds},
+			},
+			_EMPTY_,
+		},
+		{
+			"remote added due to different nkey",
+			func() (*Server, *LeafNodeOpts, *LeafNodeOpts) {
+				ts := &Server{}
+				ts.leafRemoteCfgs = maps.Clone(s.leafRemoteCfgs)
+				old := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					Remotes:     []*RemoteLeafOpts{remote},
+				}
+				new := &LeafNodeOpts{
+					Users:       []*User{{Username: "a", Password: "pwd"}},
+					Compression: CompressionOpts{Mode: CompressionS2Fast},
+					// At the same time, change tls first for the LeafNodeOpts block.
+					TLSHandshakeFirst: true,
+					Remotes:           []*RemoteLeafOpts{addedRemoteDueToDifferentNkey},
+				}
+				return ts, old, new
+			},
+			&leafNodeOption{
+				tlsFirstChanged: true,
+				added:           []*RemoteLeafOpts{addedRemoteDueToDifferentNkey},
+			},
+			_EMPTY_,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, old, new := test.genCfg()
+			lo, err := getLeafNodeOptionsChanges(s, old, new)
+			if test.errTxt != _EMPTY_ {
+				if err == nil || !strings.Contains(err.Error(), test.errTxt) {
+					t.Fatalf("Expected error containing %q, got %q", test.errTxt, err)
+				}
+				return
+			}
+			if !reflect.DeepEqual(lo, test.lo) {
+				t.Fatalf("Expected result to be %+v, got %+v", test.lo, lo)
+			}
+		})
+	}
+}
+
+func TestConfigReloadLeafNodeUnsupportedChangesFail(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		server_name: "B"
+		leafnodes {
+			port: %d
+			remotes [
+				{ url: "nats://127.0.0.1:%d", deny_imports: ["%s"], deny_exports: ["%s"]%s }
+				%s
+			]
+		}
+	`
+	conf2 := createConfFile(t,
+		fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "foo", "bar", _EMPTY_, _EMPTY_))
+	s2, o2 := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s2, 1)
+
+	remote := o2.LeafNode.Remotes[0]
+	require_NotNil(t, remote)
+	remoteName := remote.safeName()
+	require_NotEqual(t, remoteName, _EMPTY_)
+
+	checkConfigReload := func(content []byte, errTxt string) {
+		t.Helper()
+		err := os.WriteFile(conf2, content, 0666)
+		require_NoError(t, err)
+		err = s2.Reload()
+		require_Error(t, err)
+		require_Contains(t, err.Error(), errTxt)
+	}
+
+	// Make a change that is not supported in the main block
+	checkConfigReload(fmt.Appendf(nil, tmpl2, 1234, o1.LeafNode.Port, "foo", "bar", _EMPTY_, _EMPTY_),
+		"not supported for LeafNode: field \"Port\": old=")
+
+	// Now make one in the remote block
+	checkConfigReload(fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "foo", "bar", ", hub: true", _EMPTY_),
+		fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=false, new=true",
+			remoteName, "Hub"))
+
+	// Check we now correctly fail a change in deny_imports
+	checkConfigReload(fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "xxx", "bar", _EMPTY_, _EMPTY_),
+		fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=[foo], new=[xxx]",
+			remoteName, "DenyImports"))
+
+	// Check we now correctly fail a change in deny_exports
+	checkConfigReload(fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "foo", "xxx", _EMPTY_, _EMPTY_),
+		fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=[bar], new=[xxx]",
+			remoteName, "DenyExports"))
+
+	// Try with a duplicate, it should fail too.
+	duplicate := fmt.Sprintf(`{ url: "nats://127.0.0.1:%d" }`, o1.LeafNode.Port)
+	checkConfigReload(fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "foo", "bar", _EMPTY_, duplicate),
+		fmt.Sprintf("duplicate remote %s", remoteName))
+
+	// Now repeat with s.ReloadOptions()
+	checkOptionsReload := func(o *Options, errTxt string) {
+		t.Helper()
+		err := s2.ReloadOptions(o)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), errTxt)
+	}
+	err := os.WriteFile(conf2, fmt.Appendf(nil, tmpl2, -1, o1.LeafNode.Port, "foo", "bar", _EMPTY_, _EMPTY_), 0666)
+	require_NoError(t, err)
+	o := LoadConfig(conf2)
+	o.LeafNode.Port = 1234
+	checkOptionsReload(o, "not supported for LeafNode: field \"Port\"")
+
+	o = LoadConfig(conf2)
+	o.LeafNode.Remotes[0].Hub = true
+	checkOptionsReload(o,
+		fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=false, new=true",
+			remoteName, "Hub"))
+
+	o = LoadConfig(conf2)
+	duplicateRemote := *o.LeafNode.Remotes[0]
+	o.LeafNode.Remotes = append(o.LeafNode.Remotes, &duplicateRemote)
+	checkOptionsReload(o, fmt.Sprintf("duplicate remote %s", remoteName))
+
+	o = LoadConfig(conf2)
+	o.LeafNode.Remotes[0].DenyImports = []string{"xxx"}
+	checkOptionsReload(o, fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=[foo], new=[xxx]",
+		remoteName, "DenyImports"))
+
+	o = LoadConfig(conf2)
+	o.LeafNode.Remotes[0].DenyExports = []string{"xxx"}
+	checkOptionsReload(o, fmt.Sprintf("not supported for LeafNode: remote %s: field %q: old=[bar], new=[xxx]",
+		remoteName, "DenyExports"))
+}
+
+func TestConfigReloadLeafNodeRemotesReorderOk(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		accounts {
+			A: {users:[{user: "A", password: "pwd"}]}
+			B: {users:[{user: "B", password: "pwd"}]}
+		}
+		leafnodes {
+			port: -1
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		server_name: "B"
+		leafnodes {
+			remotes [
+				{ url: "nats://%s:pwd@127.0.0.1:%d"%s }
+				{ url: "nats://%s:pwd@127.0.0.1:%d" }
+			]
+		}
+	`
+	conf2 := createConfFile(t, []byte(fmt.Sprintf(tmpl2,
+		"A", o1.LeafNode.Port, _EMPTY_, "B", o1.LeafNode.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s2, 2)
+
+	// Flip the order of the remotes, and disable "B". We should have only
+	// one leafnode connected on s1, and it should be for account "A".
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2,
+		"B", o1.LeafNode.Port, ", disabled: true", "A", o1.LeafNode.Port))
+
+	checkLeafNodeConnectedCount(t, s1, 1)
+	checkLeafNodeConnectedCount(t, s2, 1)
+	var leaf *client
+	s2.mu.RLock()
+	for _, l := range s2.leafs {
+		leaf = l
+		break
+	}
+	s2.mu.RUnlock()
+	require_NotNil(t, leaf)
+	leaf.mu.Lock()
+	acc := leaf.leaf.remoteAccName
+	leaf.mu.Unlock()
+	require_Equal(t, "A", acc)
+}
+
+func TestConfigReloadAddRemoveRemoteLeafNodes(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		server_name: "B"
+		accounts {
+			A: {users:[{user: "A", password: "pwd"}]}
+			B: {users:[{user: "B", password: "pwd"}]}
+			C: {users:[{user: "C", password: "pwd"}]}
+		}
+		leafnodes {
+			remotes [
+				%s
+				%s
+				%s
+			]
+		}
+	`
+	remoteTmpl := fmt.Sprintf(`{ url: "nats://127.0.0.1:%d"`, o1.LeafNode.Port) + ", account=%q}"
+	accA := fmt.Sprintf(remoteTmpl, "A")
+	accB := fmt.Sprintf(remoteTmpl, "B")
+	accC := fmt.Sprintf(remoteTmpl, "C")
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl2, accA, _EMPTY_, _EMPTY_))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafs := func(accs []string) {
+		t.Helper()
+		s2.mu.RLock()
+		defer s2.mu.RUnlock()
+		require_Len(t, len(accs), len(s2.leafRemoteCfgs))
+		for _, acc := range accs {
+			var ok bool
+			for cfg := range s2.leafRemoteCfgs {
+				cfg.RLock()
+				ok = cfg.LocalAccount == acc
+				cfg.RUnlock()
+				if ok {
+					break
+				}
+			}
+			if !ok {
+				t.Fatalf("Did not find account %q in the remote configs", acc)
+			}
+		}
+	}
+
+	checkLeafNodeConnectedCount(t, s2, 1)
+	checkLeafs([]string{"A"})
+
+	// Add a remote with local account "B" and "C"
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, accA, accB, accC))
+
+	checkLeafNodeConnectedCount(t, s2, 3)
+	checkLeafs([]string{"A", "B", "C"})
+
+	// Remove remote with local account "A" and "C"
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, _EMPTY_, accB, _EMPTY_))
+
+	checkLeafNodeConnectedCount(t, s2, 1)
+	checkLeafs([]string{"B"})
+
+	// Remove all now
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, _EMPTY_, _EMPTY_, _EMPTY_))
+	checkLeafNodeConnectedCount(t, s2, 0)
+	checkLeafs(nil)
+}
+
+func TestConfigReloadAddRemoveRemoteLeafNodesVarz(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		port: -1
+		server_name: "A"
+		leafnodes {
+			port: -1
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		port: -1
+		http: -1
+		server_name: "B"
+		accounts {
+			A: {users:[{user: "A", password: "pwd"}]}
+			B: {users:[{user: "B", password: "pwd"}]}
+		}
+		leafnodes {
+			remotes [
+				%s
+				%s
+			]
+		}
+	`
+	remoteTmpl := fmt.Sprintf(`{ url: "nats://127.0.0.1:%d"`, o1.LeafNode.Port) + ", account=%q}"
+	accA := fmt.Sprintf(remoteTmpl, "A")
+	accB := fmt.Sprintf(remoteTmpl, "B")
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl2, accA, _EMPTY_))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, s2, 1)
+
+	checkRemotes := func(accs ...string) {
+		t.Helper()
+		// Check both the HTTP endpoint (mode 0), which caches the Varz
+		// object, and the programmatic API (mode 1).
+		url := fmt.Sprintf("http://127.0.0.1:%d/varz", s2.MonitorAddr().Port)
+		for mode := 0; mode < 2; mode++ {
+			v := pollVarz(t, s2, mode, url, nil)
+			require_Len(t, len(v.LeafNode.Remotes), len(accs))
+			for _, acc := range accs {
+				var ok bool
+				for _, r := range v.LeafNode.Remotes {
+					if r.LocalAccount == acc {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					t.Fatalf("Mode %d: did not find account %q in varz remotes: %+v", mode, acc, v.LeafNode.Remotes)
+				}
+			}
+		}
+	}
+	// This will also populate the cached s.varz used by the HTTP endpoint.
+	checkRemotes("A")
+
+	// Add a remote with local account "B".
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, accA, accB))
+	checkLeafNodeConnectedCount(t, s2, 2)
+	checkRemotes("A", "B")
+
+	// Remove the remote with local account "A".
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, _EMPTY_, accB))
+	checkLeafNodeConnectedCount(t, s2, 1)
+	checkRemotes("B")
+}
+
+func TestConfigReloadRemoteLeafNodeNkeyChange(t *testing.T) {
+	conf1 := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		server_name: "A"
+		leaf {
+			listen: 127.0.0.1:-1
+			authorization: { nkey: UCSTG5CRF5GEJERAFKUUYRODGABTBVWY2NPE4GGKRQVQOH74PIAKTVKO }
+		}
+	`))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	tmpl2 := `
+		listen: "127.0.0.1:-1"
+		server_name: "B"
+		leaf {
+			reconnect_interval: "50ms"
+			remotes: [
+				{
+					url:  "nats-leaf://127.0.0.1:%d"
+					nkey: %s
+				}
+			]
+		}
+	`
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl2, o1.LeafNode.Port,
+		"SUAPM67TC4RHQLKBX55NIQXSMATZDOZK6FNEOSS36CAYA7F7TY66LP4BOM"))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	// Should not be able to connect...
+	time.Sleep(70 * time.Millisecond)
+	checkLeafNodeConnectedCount(t, s2, 0)
+
+	reloadUpdateConfig(t, s2, conf2, fmt.Sprintf(tmpl2, o1.LeafNode.Port,
+		"SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4"))
+
+	checkLeafNodeConnectedCount(t, s2, 1)
+}
+
 func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 	tmpl := `
 		port: -1
@@ -6251,5 +7523,426 @@ func TestConfigReloadNoPanicOnShutdown(t *testing.T) {
 		err = s.Reload()
 		require_NoError(t, err)
 		wg.Wait()
+	}
+}
+
+func TestJetStreamReloadPreservesMaxConcurrentIOOnDisable(t *testing.T) {
+	storeDir := t.TempDir()
+	initialLimit := 128
+	disabledConfig := `listen: 127.0.0.1:-1`
+	jsConfig := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {
+			max_mem_store: 2MB
+			max_file_store: 8MB
+			store_dir: '%s'
+			max_concurrent_io: %d
+		}
+	`, storeDir, initialLimit)
+	conf := createConfFile(t, []byte(jsConfig))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	require_True(t, s.ReadyForConnections(5*time.Second))
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// disabling JS repeatedly is OK
+	reloadUpdateConfig(t, s, conf, disabledConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// renabling with the same values is OK
+	reloadUpdateConfig(t, s, conf, jsConfig)
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+
+	// changing value not OK
+	jsConfig = strings.Replace(jsConfig,
+		fmt.Sprintf("max_concurrent_io: %d", initialLimit),
+		"max_concurrent_io: 256", 1)
+	require_NoError(t, os.WriteFile(conf, []byte(jsConfig), 0666))
+	err := s.Reload()
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "JetStreamConcurrentIOs")
+	require_Equal(t, s.dios.cap(), initialLimit)
+	require_Equal(t, s.getOpts().JetStreamConcurrentIOs, initialLimit)
+}
+
+func TestJetStreamReloadMaxMemAndStore(t *testing.T) {
+	tdir := t.TempDir()
+	template := `
+		listen: 127.0.0.1:-1
+		http: 127.0.0.1:-1
+		jetstream {
+			max_mem_store: %s
+			max_file_store: %s
+			store_dir = %q
+		}
+	`
+	conf := createConfFile(t, []byte(fmt.Sprintf(template, "128MB", "128MB", tdir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	varzURL := fmt.Sprintf("http://127.0.0.1:%d/varz", s.MonitorAddr().Port)
+
+	// Verify initial config.
+	cfg := s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
+	require_Equal(t, cfg.MaxStore, 128*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 128*1024*1024)
+	require_Equal(t, cfg.MaxStore, 128*1024*1024)
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{MaxBytes: 128 * 1024 * 1024}
+	storageTypes := []nats.StorageType{nats.FileStorage, nats.MemoryStorage}
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		require_NoError(t, err)
+	}
+
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST2-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		if st == nats.FileStorage {
+			require_Error(t, err, NewJSStorageResourcesExceededError())
+		} else {
+			require_Error(t, err, NewJSMemoryResourcesExceededError())
+		}
+	}
+
+	// Reload with increased limits.
+	err := os.WriteFile(conf, []byte(fmt.Sprintf(template, "512MB", "512MB", tdir)), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_NoError(t, err)
+	cfg = s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	// We should now be able to create the stream.
+	for _, st := range storageTypes {
+		scfg.Name = fmt.Sprintf("TEST2-%s", st)
+		scfg.Storage = st
+		_, err := js.AddStream(scfg)
+		require_NoError(t, err)
+	}
+
+	// Decreasing the limits should fail.
+	err = os.WriteFile(conf, []byte(fmt.Sprintf(template, "511MB", "511MB", tdir)), 0666)
+	require_NoError(t, err)
+	err = s.Reload()
+	require_Error(t, err, errors.New("config reload not supported for decreasing jetstream max memory and store"))
+
+	// Config should remain the same.
+	cfg = s.JetStreamConfig()
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+	cfg = pollVarz(t, s, 0, varzURL, nil).JetStream.Config
+	require_Equal(t, cfg.MaxMemory, 512*1024*1024)
+	require_Equal(t, cfg.MaxStore, 512*1024*1024)
+
+}
+
+func TestConfigReloadJetStreamLimits(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			limits: {
+				default_max_consumers: %d
+			}
+		}
+	`
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(tmpl, storeDir, 1)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C1", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// The limit of one consumer is reached.
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Raising the limit must be picked up by a reload.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, 2))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, 2)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C2", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	// As must lowering it again.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, 1))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, 1)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "maximum consumers limit reached")
+
+	// Unset means the server default applies, -1 means unlimited.
+	reloadUpdateConfig(t, s, conf, fmt.Sprintf(tmpl, storeDir, -1))
+	require_Equal(t, s.getOpts().JetStreamLimits.DefaultMaxConsumers, -1)
+
+	_, err = js.AddConsumer("S", &nats.ConsumerConfig{Durable: "C3", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+}
+
+// https://github.com/nats-io/nats-server/issues/8606
+func TestConfigReloadDoesNotDisconnectJWTClientSendingNkey(t *testing.T) {
+	var err error
+	preload := make(map[string]string)
+
+	_, sysPub, sysAC := NewJwtAccountClaim("SYS")
+	preload[sysPub], err = sysAC.Encode(oKp)
+	require_NoError(t, err)
+
+	aKP, aPub, aAC := NewJwtAccountClaim("A")
+	preload[aPub], err = aAC.Encode(oKp)
+	require_NoError(t, err)
+
+	preloadConfig, err := json.MarshalIndent(preload, "", " ")
+	require_NoError(t, err)
+
+	uKP, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	uPub, err := uKP.PublicKey()
+	require_NoError(t, err)
+	uJwt, err := jwt.NewUserClaims(uPub).Encode(aKP)
+	require_NoError(t, err)
+
+	content := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: %s
+	`, ojwt, sysPub, preloadConfig)
+
+	s, _, _ := runReloadServerWithContent(t, []byte(content))
+	defer s.Shutdown()
+
+	acc, err := s.LookupAccount(aPub)
+	require_NoError(t, err)
+
+	c, cr, l := newClientForServer(s)
+	defer c.close()
+
+	var info nonceInfo
+	require_NoError(t, json.Unmarshal([]byte(l[5:]), &info))
+	require_True(t, info.Nonce != _EMPTY_)
+
+	sigraw, err := uKP.Sign([]byte(info.Nonce))
+	require_NoError(t, err)
+	sig := base64.RawURLEncoding.EncodeToString(sigraw)
+
+	// Send the nkey along with the JWT, like nats.js' jwtAuthenticator does.
+	// The Go client does not allow sending both.
+	c.parseAsync(fmt.Sprintf("CONNECT {\"jwt\":%q,\"nkey\":%q,\"sig\":%q,\"verbose\":true,\"pedantic\":true}\r\nPING\r\n", uJwt, uPub, sig))
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "+OK"))
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "PONG"))
+	checkClientsCount(t, s, 1)
+	require_Equal(t, c.acc, acc)
+
+	// Reloading the same configuration must be a no-op for this client.
+	require_NoError(t, s.Reload())
+
+	// The client must not have been disconnected by the reload, nor have been
+	// considered as having moved to a different account.
+	checkClientsCount(t, s, 1)
+	require_Equal(t, c.acc, acc)
+	c.parseAsync("PING\r\n")
+	l, err = cr.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(l, "PONG"))
+}
+
+func TestConfigReloadKeepsJetStreamAPIImportLinkedToSystemExport(t *testing.T) {
+	tmpl := jsClusterTempl + `
+		authorization {
+			users = [
+				{user: app, password: pwd}
+			]
+		}
+	`
+	c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+	defer c.shutdown()
+
+	s := c.randomServer()
+	nc, js := jsClientConnect(t, s, nats.UserInfo("app", "pwd"))
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	sub, err := js.PullSubscribe("foo", "dur")
+	require_NoError(t, err)
+
+	fetch := func() {
+		t.Helper()
+		for i := 0; i < 50; i++ {
+			_, err := js.Publish("foo", []byte("msg"))
+			require_NoError(t, err)
+			msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+			require_NoError(t, err)
+			for _, m := range msgs {
+				require_NoError(t, m.AckSync())
+			}
+		}
+	}
+	numResponses := func() int {
+		sacc := s.SystemAccount()
+		sacc.mu.RLock()
+		defer sacc.mu.RUnlock()
+		return len(sacc.exports.responses)
+	}
+	checkImportLinked := func() {
+		t.Helper()
+		gacc := s.GlobalAccount()
+		gacc.mu.RLock()
+		defer gacc.mu.RUnlock()
+		sis := gacc.imports.services[jsAllAPI]
+		require_Len(t, len(sis), 1)
+		if se := sis[0].se; se == nil || se.acc != s.SystemAccount() {
+			t.Fatalf("Expected %q import to be linked to the system account export, got %+v", jsAllAPI, se)
+		}
+	}
+
+	fetch()
+	checkImportLinked()
+	before := numResponses()
+
+	// Any authorization change reconfigures the accounts on reload.
+	for _, srv := range c.servers {
+		cf := srv.getOpts().ConfigFile
+		buf, err := os.ReadFile(cf)
+		require_NoError(t, err)
+		nbuf := bytes.Replace(buf, []byte("{user: app, password: pwd}"), []byte("{user: app, password: pwd}\n\t\t\t\t{user: other, password: pwd}"), 1)
+		require_NoError(t, os.WriteFile(cf, nbuf, defaultFilePerms))
+		require_NoError(t, srv.Reload())
+	}
+
+	checkImportLinked()
+	// Pull requests must still bypass the service import, otherwise each one
+	// leaves behind a response service import that never expires.
+	fetch()
+	require_Equal(t, numResponses(), before)
+}
+
+func TestConfigReloadNoRaceWithServiceImports(t *testing.T) {
+	kp, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	pub, _ := kp.PublicKey()
+
+	storeDir := t.TempDir()
+	mkOpts := func() *Options {
+		return &Options{
+			Host:      "127.0.0.1",
+			Port:      -1,
+			JetStream: true,
+			StoreDir:  storeDir,
+			NoSigs:    true,
+			NoLog:     true,
+			Nkeys:     []*NkeyUser{{Nkey: pub}},
+		}
+	}
+	srv := RunServer(mkOpts())
+	defer srv.Shutdown()
+
+	sign := func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) }
+	nc, js := jsClientConnect(t, srv, nats.Nkey(pub, sign), nats.Timeout(5*time.Second))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"js.>"}})
+	require_NoError(t, err)
+	pull, err := js.PullSubscribe("js.>", "dur")
+	require_NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ { // concurrent JetStream publishers ($JS.API service imports)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = js.Publish("js.x", []byte("x"), nats.AckWait(500*time.Millisecond))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { // consumer fetch loop: delivery is the read side
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			msgs, _ := pull.Fetch(20, nats.MaxWait(200*time.Millisecond))
+			for _, m := range msgs {
+				_ = m.Ack()
+			}
+		}
+	}()
+	wg.Add(1)
+	errCh := make(chan error, 1)
+	go func() { // ReloadOptions loop: the write side
+		defer wg.Done()
+		tk := time.NewTicker(5 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				if err := srv.ReloadOptions(mkOpts()); err != nil {
+					errCh <- fmt.Errorf("reload error: %v", err)
+					return
+				}
+			}
+		}
+	}()
+
+	time.Sleep(3 * time.Second)
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
 	}
 }

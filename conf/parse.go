@@ -1,4 +1,4 @@
-// Copyright 2013-2018 The NATS Authors
+// Copyright 2013-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -60,6 +60,9 @@ type parser struct {
 
 	// pedantic reports error when configuration is not correct.
 	pedantic bool
+
+	// Tracks environment variable references, to avoid cycles
+	envVarReferences map[string]bool
 }
 
 // Parse will return a map of keys to any, although concrete types
@@ -111,42 +114,28 @@ func ParseFileWithChecks(fp string) (map[string]any, error) {
 	return p.mapping, nil
 }
 
-// cleanupUsedEnvVars will recursively remove all already used
-// environment variables which might be in the parsed tree.
-func cleanupUsedEnvVars(m map[string]any) {
-	for k, v := range m {
-		t := v.(*token)
-		if t.usedVariable {
-			delete(m, k)
-			continue
-		}
-		// Cleanup any other env var that is still in the map.
-		if tm, ok := t.value.(map[string]any); ok {
-			cleanupUsedEnvVars(tm)
-		}
+// configDigest returns a digest for the parsed config.
+func configDigest(m map[string]any) (string, error) {
+	digest := sha256.New()
+	e := json.NewEncoder(digest)
+	if err := e.Encode(m); err != nil {
+		return _EMPTY_, err
 	}
+	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
 }
 
 // ParseFileWithChecksDigest returns the processed config and a digest
 // that represents the configuration.
 func ParseFileWithChecksDigest(fp string) (map[string]any, string, error) {
-	data, err := os.ReadFile(fp)
+	m, err := ParseFileWithChecks(fp)
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	p, err := parse(string(data), fp, true)
+	digest, err := configDigest(m)
 	if err != nil {
 		return nil, _EMPTY_, err
 	}
-	// Filter out any environment variables before taking the digest.
-	cleanupUsedEnvVars(p.mapping)
-	digest := sha256.New()
-	e := json.NewEncoder(digest)
-	err = e.Encode(p.mapping)
-	if err != nil {
-		return nil, _EMPTY_, err
-	}
-	return p.mapping, fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+	return m, digest, nil
 }
 
 type token struct {
@@ -180,16 +169,37 @@ func (t *token) Position() int {
 	return t.item.pos
 }
 
-func parse(data, fp string, pedantic bool) (p *parser, err error) {
-	p = &parser{
-		mapping:  make(map[string]any),
-		lx:       lex(data),
-		ctxs:     make([]any, 0, 4),
-		keys:     make([]string, 0, 4),
-		ikeys:    make([]item, 0, 4),
-		fp:       filepath.Dir(fp),
-		pedantic: pedantic,
+func newParser(data, fp string, pedantic bool) *parser {
+	return &parser{
+		mapping:          make(map[string]any),
+		lx:               lex(data),
+		ctxs:             make([]any, 0, 4),
+		keys:             make([]string, 0, 4),
+		ikeys:            make([]item, 0, 4),
+		fp:               filepath.Dir(fp),
+		pedantic:         pedantic,
+		envVarReferences: make(map[string]bool),
 	}
+}
+
+func parse(data, fp string, pedantic bool) (*parser, error) {
+	p := newParser(data, fp, pedantic)
+	if err := p.parse(fp); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func parseEnv(data string, parent *parser) (*parser, error) {
+	p := newParser(data, "", false)
+	p.envVarReferences = parent.envVarReferences
+	if err := p.parse(""); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (p *parser) parse(fp string) error {
 	p.pushContext(p.mapping)
 
 	var prevItem item
@@ -199,16 +209,16 @@ func parse(data, fp string, pedantic bool) (p *parser, err error) {
 			// Here we allow the final character to be a bracket '}'
 			// in order to support JSON like configurations.
 			if prevItem.typ == itemKey && prevItem.val != mapEndString {
-				return nil, fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
+				return fmt.Errorf("config is invalid (%s:%d:%d)", fp, it.line, it.pos)
 			}
 			break
 		}
 		prevItem = it
 		if err := p.processItem(it, fp); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return p, nil
+	return nil
 }
 
 func (p *parser) next() item {
@@ -453,11 +463,18 @@ func (p *parser) lookupVariable(varReference string) (any, bool, error) {
 	}
 
 	// If we are here, we have exhausted our context maps and still not found anything.
-	// Parse from the environment.
+	// Detect reference cycles
+	if p.envVarReferences[varReference] {
+		return nil, false, fmt.Errorf("variable reference cycle for '%s'", varReference)
+	}
+	p.envVarReferences[varReference] = true
+	defer delete(p.envVarReferences, varReference)
+
+	// Parse from the environment
 	if vStr, ok := os.LookupEnv(varReference); ok {
 		// Everything we get here will be a string value, so we need to process as a parser would.
-		if vmap, err := Parse(fmt.Sprintf("%s=%s", pkey, vStr)); err == nil {
-			v, ok := vmap[pkey]
+		if subp, err := parseEnv(fmt.Sprintf("%s=%s", pkey, vStr), p); err == nil {
+			v, ok := subp.mapping[pkey]
 			return v, ok, nil
 		} else {
 			return nil, false, err

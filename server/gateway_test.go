@@ -1,4 +1,4 @@
-// Copyright 2018-2024 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -33,6 +33,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/logger"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"golang.org/x/crypto/ocsp"
 
 	. "github.com/nats-io/nats-server/v2/internal/ocsp"
@@ -40,6 +41,7 @@ import (
 
 func init() {
 	gatewayConnectDelay = 15 * time.Millisecond
+	gatewayConnectMaxDelay = 15 * time.Millisecond
 	gatewayReconnectDelay = 15 * time.Millisecond
 }
 
@@ -516,7 +518,7 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	s := runGatewayServer(o)
 	defer s.Shutdown()
 
-	gwconn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	gwconn, err := net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, fmt.Sprintf("%d", o.Gateway.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -542,7 +544,7 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	s = runGatewayServer(o)
 	defer s.Shutdown()
 
-	gwconn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", o.Gateway.Host, o.Gateway.Port))
+	gwconn, err = net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, fmt.Sprintf("%d", o.Gateway.Port)))
 	if err != nil {
 		t.Fatalf("Error dialing server: %v\n", err)
 	}
@@ -557,6 +559,38 @@ func TestGatewayHeaderInfo(t *testing.T) {
 	}
 	if info.Headers {
 		t.Fatalf("Expected header support to be disabled")
+	}
+}
+
+func TestGatewayRejectsInfoBeforeConnect(t *testing.T) {
+	o := testDefaultOptionsForGateway("A")
+	s := runGatewayServer(o)
+	defer s.Shutdown()
+
+	gwconn, err := net.Dial("tcp", net.JoinHostPort(o.Gateway.Host, strconv.Itoa(o.Gateway.Port)))
+	if err != nil {
+		t.Fatalf("Error dialing server: %v", err)
+	}
+	defer gwconn.Close()
+
+	client := bufio.NewReaderSize(gwconn, maxBufSize)
+	if _, err := client.ReadString('\n'); err != nil {
+		t.Fatalf("Error receiving initial INFO from server: %v", err)
+	}
+
+	if _, err := fmt.Fprint(gwconn, "INFO {}\r\n"); err != nil {
+		t.Fatalf("Error sending gateway INFO: %v", err)
+	}
+
+	if err := gwconn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("Error setting read deadline: %v", err)
+	}
+	l, err := client.ReadString('\n')
+	if err != nil {
+		t.Fatalf("Expected authorization failure, got read error: %v", err)
+	}
+	if !strings.Contains(l, "Authorization Violation") {
+		t.Fatalf("Expected authorization violation, got %q", l)
 	}
 }
 
@@ -1304,6 +1338,8 @@ func TestGatewayImplicitReconnect(t *testing.T) {
 	// Shutdown s1, remove the gateway from A to B and restart.
 	s1.Shutdown()
 	o1.Gateway.Gateways = o1.Gateway.Gateways[:0]
+	// Only the gateway port needs to be reused, others could be taken in the meantime.
+	o1.Port, o1.Cluster.Port = -1, -1
 	s1 = runGatewayServer(o1)
 	defer s1.Shutdown()
 
@@ -1443,6 +1479,62 @@ func TestGatewayImplicitReconnectHonorConnectRetries(t *testing.T) {
 	waitForInboundGateways(t, sb, 1, 2*time.Second)
 	waitForOutboundGateways(t, sc, 1, 2*time.Second)
 	waitForInboundGateways(t, sc, 1, 2*time.Second)
+}
+
+func TestGatewayReconnectExponentialBackoff(t *testing.T) {
+	oGatewayConnectDelay := gatewayConnectDelay
+	oGatewayConnectMaxDelay := gatewayConnectMaxDelay
+	gatewayConnectDelay = 500 * time.Millisecond
+	gatewayConnectMaxDelay = 2 * time.Second
+	defer func() {
+		gatewayConnectDelay = oGatewayConnectDelay
+		gatewayConnectMaxDelay = oGatewayConnectMaxDelay
+	}()
+
+	ob := testDefaultOptionsForGateway("B")
+	ob.ReconnectErrorReports = 1
+	ob.Gateway.ConnectRetries = 3
+	ob.Gateway.ConnectBackoff = true
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	l := &gwReconnAttemptLogger{errCh: make(chan string, 3)}
+	sb.SetLogger(l, true, false)
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	// Wait for the proper connections
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+	waitForInboundGateways(t, sb, 1, time.Second)
+
+	// Remove initial delay before reconnect, and allow for some skew.
+	now := time.Now().Add(gatewayReconnectDelay).Add(-100 * time.Millisecond)
+	var delay time.Duration
+
+	// B will try to reconnect to A 3 times (we stop after attempts > ConnectRetries)
+	sa.Shutdown()
+	for i := 0; i < ob.Gateway.ConnectRetries+1; i++ {
+		select {
+		case <-l.errCh:
+			if since := time.Since(now); since < delay {
+				t.Fatalf("Expected delay to take %v, took %v", delay, since)
+			}
+			if delay == 0 {
+				delay = gatewayConnectDelay
+			} else {
+				delay *= 2
+			}
+			if delay > gatewayConnectMaxDelay {
+				delay = gatewayConnectMaxDelay
+			}
+		case <-time.After(gatewayConnectMaxDelay + time.Second):
+			t.Fatal("Did not attempt to reconnect")
+		}
+	}
 }
 
 func TestGatewayURLsFromClusterSentInINFO(t *testing.T) {
@@ -2421,6 +2513,93 @@ func TestGatewayQueueSub(t *testing.T) {
 	send(t, ncA)
 	check(t, &count1, total)
 	check(t, &count3, total)
+}
+
+func TestGatewayQueueSubNotSuppressedByDeniedLeafQueue(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.NoSystemAccount = false
+	oa.Accounts = []*Account{NewAccount("SYS")}
+	oa.SystemAccount = "SYS"
+	oa.LeafNode.Host = "127.0.0.1"
+	oa.LeafNode.Port = -1
+	oa.Users = []*User{
+		{
+			Username: "leaf",
+			Password: "pwd",
+			Permissions: &Permissions{
+				Publish: &SubjectPermission{Allow: []string{">"}},
+				Subscribe: &SubjectPermission{
+					Allow: []string{">"},
+					Deny:  []string{"admin.secret workers"},
+				},
+			},
+		},
+	}
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, time.Second)
+	waitForOutboundGateways(t, sb, 1, time.Second)
+
+	leafURL, err := url.Parse(fmt.Sprintf("nats://leaf:pwd@127.0.0.1:%d", oa.LeafNode.Port))
+	require_NoError(t, err)
+	ol := DefaultOptions()
+	ol.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{leafURL}}}
+	sl := RunServer(ol)
+	defer sl.Shutdown()
+	checkLeafNodeConnected(t, sa)
+	checkLeafNodeConnected(t, sl)
+
+	ncLeaf := natsConnect(t, sl.ClientURL())
+	defer ncLeaf.Close()
+	leafSub := natsQueueSubSync(t, ncLeaf, "admin.secret", "workers")
+	natsFlush(t, ncLeaf)
+
+	ncB := natsConnect(t, sb.ClientURL())
+	defer ncB.Close()
+	gatewaySub := natsQueueSubSync(t, ncB, "admin.secret", "workers")
+	natsFlush(t, ncB)
+
+	checkForRegisteredQSubInterest(t, sa, "B", globalAccountName, "admin.secret", 1, time.Second)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if !sa.globalAccount().sl.HasInterest("admin.secret") {
+			return fmt.Errorf("leaf queue interest has not propagated")
+		}
+		return nil
+	})
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		sa.mu.Lock()
+		leafs := make([]*client, 0, len(sa.leafs))
+		for _, lc := range sa.leafs {
+			leafs = append(leafs, lc)
+		}
+		sa.mu.Unlock()
+		for _, lc := range leafs {
+			lc.mu.Lock()
+			isGlobal := lc.acc != nil && lc.acc.Name == globalAccountName
+			denied := isGlobal && lc.mperms != nil && lc.checkDenySub("admin.secret", "workers")
+			lc.mu.Unlock()
+			if denied {
+				return nil
+			}
+		}
+		return fmt.Errorf("leaf queue deny filter has not been initialized")
+	})
+
+	ncA := natsConnect(t, sa.ClientURL())
+	defer ncA.Close()
+	natsPub(t, ncA, "admin.secret", []byte("gateway"))
+	natsFlush(t, ncA)
+
+	msg := natsNexMsg(t, gatewaySub, time.Second)
+	require_Equal(t, "gateway", string(msg.Data))
+	if _, err := leafSub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("Expected leaf queue subscription to be denied, got %v", err)
+	}
 }
 
 func TestGatewayTotalQSubs(t *testing.T) {
@@ -4727,19 +4906,19 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			if !test.public {
 				accs = []*Account{barA1}
 			}
-			fooA1.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooA1.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barA2}
 			}
-			fooA2.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooA2.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barB1}
 			}
-			fooB1.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooB1.AddServiceExport("ngs.update.*", accs))
 			if !test.public {
 				accs = []*Account{barB2}
 			}
-			fooB2.AddServiceExport("ngs.update.*", accs)
+			require_NoError(t, fooB2.AddServiceExport("ngs.update.*", accs))
 
 			// Add import abilities to server B's bar account from foo.
 			if err := barB1.AddServiceImport(fooB1, "ngs.update", "ngs.update.$bar"); err != nil {
@@ -4772,6 +4951,9 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			subB := natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
+
+			// Ensure the subscription is known by the server we're connected to.
+			time.Sleep(100 * time.Millisecond)
 
 			var msg *nats.Msg
 			var err error
@@ -4837,7 +5019,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 			checkSubs(t, fooB2, "B2", 1)
 			checkSubs(t, barB2, "B2", 2)
 
-			// Speed up exiration
+			// Speed up expiration
 			err = fooA1.SetServiceExportResponseThreshold("ngs.update.*", 10*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Error setting response threshold: %v", err)
@@ -4860,7 +5042,7 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 				}
 			}
 
-			// Unsubsribe all and ensure counts go to 0.
+			// Unsubscribe all and ensure counts go to 0.
 			natsUnsub(t, subA)
 			natsFlush(t, clientA)
 			natsUnsub(t, subB)
@@ -4908,6 +5090,9 @@ func TestGatewayServiceExportWithWildcards(t *testing.T) {
 
 			subB = natsSubSync(t, clientB, "reply")
 			natsFlush(t, clientB)
+
+			// Ensure the subscription is known by the server we're connected to.
+			time.Sleep(100 * time.Millisecond)
 
 			for attempts := 1; attempts <= 2; attempts++ {
 				// Send the request from clientB on foo.request,
@@ -5950,6 +6135,66 @@ func TestGatewaySingleOutbound(t *testing.T) {
 	}
 }
 
+func TestGatewayLegacyGRPrefixReservedOnClientIngress(t *testing.T) {
+	ob := testDefaultOptionsForGateway("B")
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.Users = []*User{{
+		Username:    "denied",
+		Password:    "pwd",
+		Permissions: &Permissions{Publish: &SubjectPermission{Deny: []string{"foo"}}},
+	}}
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForOutboundGateways(t, sb, 1, 2*time.Second)
+
+	ncb := natsConnect(t, fmt.Sprintf("nats://%s:%d", ob.Host, ob.Port))
+	defer ncb.Close()
+	subB := natsSubSync(t, ncb, "foo")
+	natsFlush(t, ncb)
+
+	errCh := make(chan string, 8)
+	nca := natsConnect(t, fmt.Sprintf("nats://denied:pwd@%s:%d", oa.Host, oa.Port),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { errCh <- err.Error() }))
+	defer nca.Close()
+	// Cluster B re-sends un-prefixed replies to gateways with interest, so
+	// also make sure nothing comes back to A.
+	subA := natsSubSync(t, nca, "foo")
+	natsFlush(t, nca)
+
+	expectViolation := func(what string) {
+		t.Helper()
+		select {
+		case e := <-errCh:
+			if !strings.Contains(e, "Permissions Violation") {
+				t.Fatalf("Unexpected error: %v", e)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Expected permissions violation for %s", what)
+		}
+		for _, sub := range []*nats.Subscription{subB, subA} {
+			if m, err := sub.NextMsg(100 * time.Millisecond); err == nil {
+				t.Fatalf("Unexpected delivery on %q: %q", m.Subject, m.Data)
+			}
+		}
+	}
+
+	legacy := oldGWReplyPrefix + "abcd.foo"
+	for _, subj := range []string{"foo", string(sb.gateway.replyPfx) + "foo", legacy} {
+		natsPub(t, nca, subj, []byte("msg"))
+		natsFlush(t, nca)
+		expectViolation("publish on " + subj)
+	}
+	// The legacy prefix must also be rejected as a reply subject.
+	natsPubReq(t, nca, "bar", legacy, []byte("req"))
+	natsFlush(t, nca)
+	expectViolation("reply on " + legacy)
+}
+
 func TestGatewayReplyMapTracking(t *testing.T) {
 	// Increase the recSubExp value on servers so we have time
 	// to check the replies mapping structures.
@@ -6144,7 +6389,7 @@ func TestGatewayCloseTLSConnection(t *testing.T) {
 	waitForOutboundGateways(t, sb1, 1, 2*time.Second)
 	waitForInboundGateways(t, sb1, 1, 2*time.Second)
 
-	endpoint := fmt.Sprintf("%s:%d", oa.Gateway.Host, oa.Gateway.Port)
+	endpoint := net.JoinHostPort(oa.Gateway.Host, fmt.Sprintf("%d", oa.Gateway.Port))
 	conn, err := net.DialTimeout("tcp", endpoint, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Unexpected error on dial: %v", err)
@@ -6450,6 +6695,126 @@ func TestGatewayTLSConfigReloadForRemote(t *testing.T) {
 	waitForOutboundGateways(t, srvA, 1, time.Second)
 	waitForInboundGateways(t, srvB, 1, time.Second)
 	waitForOutboundGateways(t, srvB, 1, time.Second)
+}
+
+func TestGatewayTLSConfigReloadForImplicitRemote(t *testing.T) {
+	SetGatewaysSolicitDelay(5 * time.Millisecond)
+	defer ResetGatewaysSolicitDelay()
+
+	template := `
+		listen: 127.0.0.1:-1
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/srva-cert.pem"
+				key_file:  "../test/configs/certs/srva-key.pem"
+				%s
+				verify: true
+			}
+		}
+	`
+	confA := createConfFile(t, fmt.Appendf(nil, template, `ca_file:   "../test/configs/certs/ca.pem"`))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	optsB := testGatewayOptionsFromToWithTLS(t, "B", "A", []string{fmt.Sprintf("nats://127.0.0.1:%d", optsA.Gateway.Port)})
+	srvB := runGatewayServer(optsB)
+	defer srvB.Shutdown()
+
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+	// We will verify that the config reload of the tls{} block is applied to
+	// the implicit remote (from A to B) by removing the ca_file.
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, ""))
+
+	// Get the remote from A to B
+	cfg := srvA.getRemoteGateway("B")
+	require_NotNil(t, cfg)
+	cfg.Lock()
+	tc := cfg.TLSConfig
+	cfg.Unlock()
+	require_NotNil(t, tc)
+	// The CA should have been removed.
+	require_True(t, tc.ClientCAs == nil)
+
+	// Reset the connection attempts, since we are going to close the connection
+	// from A to B and make sure that connection keeps failing.
+	cfg.resetConnAttempts()
+
+	// Get the outbound connection and close it.
+	c := srvA.getOutboundGatewayConnection("B")
+	require_NotNil(t, c)
+	c.mu.Lock()
+	c.nc.Close()
+	c.mu.Unlock()
+
+	// Verify that we fail to connect from A to B now.
+	waitForGatewayFailedConnect(t, srvA, "B", true, time.Second)
+}
+
+func TestGatewayTLSPinnedCertsReloadDisconnectsPeers(t *testing.T) {
+	SetGatewaysSolicitDelay(5 * time.Millisecond)
+	defer ResetGatewaysSolicitDelay()
+
+	const (
+		pinnedSrvA = "[\"c5d58200425185accb67cdca400d823ef20300a1ee09e5b38c668be8bd20256e\"]"
+		pinnedSrvB = "[\"0e35d0ab7dee2683105f841c4a51953ec493ceb62503d26f38902d301111562c\"]"
+	)
+
+	template := `
+		listen: 127.0.0.1:-1
+		gateway {
+			name: "A"
+			listen: "127.0.0.1:-1"
+			tls {
+				cert_file: "../test/configs/certs/srva-cert.pem"
+				key_file:  "../test/configs/certs/srva-key.pem"
+				ca_file:   "../test/configs/certs/ca.pem"
+				verify: true
+				pinned_certs: %s
+				timeout: 2
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(template, pinnedSrvB)))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	optsB := testGatewayOptionsFromToWithTLS(t, "B", "A", []string{fmt.Sprintf("nats://127.0.0.1:%d", optsA.Gateway.Port)})
+	srvB := runGatewayServer(optsB)
+	defer srvB.Shutdown()
+
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+	// Change the pinned cert. Expect the gateway to disconnect
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, pinnedSrvA))
+	waitForInboundGateways(t, srvA, 0, time.Second)
+	waitForOutboundGateways(t, srvA, 0, time.Second)
+	waitForInboundGateways(t, srvB, 0, time.Second)
+	waitForOutboundGateways(t, srvB, 0, time.Second)
+	waitForGatewayFailedConnect(t, srvB, "A", true, time.Second)
+
+	// Reload with empty pinned cert. Expect gateway to reconnect.
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, "[]"))
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
+	// Reset pinned cert to server B. Expect gate to remain connected.
+	reloadUpdateConfig(t, srvA, confA, fmt.Sprintf(template, pinnedSrvB))
+	waitForInboundGateways(t, srvA, 1, time.Second)
+	waitForOutboundGateways(t, srvA, 1, time.Second)
+	waitForInboundGateways(t, srvB, 1, time.Second)
+	waitForOutboundGateways(t, srvB, 1, time.Second)
+
 }
 
 func TestGatewayAuthDiscovered(t *testing.T) {
@@ -7405,4 +7770,155 @@ func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	close(ch)
 	wg.Wait()
 	s.WaitForShutdown()
+}
+
+func TestGatewayConfigureWriteDeadline(t *testing.T) {
+	o1 := testDefaultOptionsForGateway("B")
+	o1.Gateway.WriteDeadline = 5 * time.Second
+	s1 := runGatewayServer(o1)
+	defer s1.Shutdown()
+
+	o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+	s2 := runGatewayServer(o2)
+	defer s2.Shutdown()
+
+	waitForOutboundGateways(t, s2, 1, time.Second)
+	waitForInboundGateways(t, s1, 1, time.Second)
+	waitForOutboundGateways(t, s1, 1, time.Second)
+
+	s1.mu.RLock()
+	defer s1.mu.RUnlock()
+
+	s1.gateway.RLock()
+	defer s1.gateway.RUnlock()
+
+	for _, r := range s1.gateway.out {
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
+	}
+
+	for _, r := range s1.gateway.in {
+		r.mu.Lock()
+		wdl := r.out.wdl
+		r.mu.Unlock()
+		require_Equal(t, wdl, 5*time.Second)
+	}
+}
+
+func TestGatewayConfigureWriteTimeoutPolicy(t *testing.T) {
+	for name, policy := range map[string]WriteTimeoutPolicy{
+		"Default": WriteTimeoutPolicyDefault,
+		"Retry":   WriteTimeoutPolicyRetry,
+		"Close":   WriteTimeoutPolicyClose,
+	} {
+		t.Run(name, func(t *testing.T) {
+			o1 := testDefaultOptionsForGateway("B")
+			o1.Gateway.WriteTimeout = policy
+			s1 := runGatewayServer(o1)
+			defer s1.Shutdown()
+
+			o2 := testGatewayOptionsFromToWithServers(t, "A", "B", s1)
+			s2 := runGatewayServer(o2)
+			defer s2.Shutdown()
+
+			waitForOutboundGateways(t, s2, 1, time.Second)
+			waitForInboundGateways(t, s1, 1, time.Second)
+			waitForOutboundGateways(t, s1, 1, time.Second)
+
+			s1.mu.RLock()
+			defer s1.mu.RUnlock()
+
+			s1.gateway.RLock()
+			defer s1.gateway.RUnlock()
+
+			for _, r := range s1.gateway.out {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+
+			for _, r := range s1.gateway.in {
+				if policy == WriteTimeoutPolicyDefault {
+					require_Equal(t, r.out.wtp, WriteTimeoutPolicyRetry)
+				} else {
+					require_Equal(t, r.out.wtp, policy)
+				}
+			}
+		})
+	}
+}
+
+func TestGatewayProcessRSubNoBlockingAccountFetch(t *testing.T) {
+	createAccountPubKey := func() string {
+		kp, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		pubkey, err := kp.PublicKey()
+		require_NoError(t, err)
+		return pubkey
+	}
+	sysPub := createAccountPubKey()
+	accPub := createAccountPubKey()
+	dir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		server_name: srv
+		operator: %s
+		system_account: %s
+		resolver: {
+			type: cache
+			dir: '%s'
+			timeout: "2s"
+		}
+		gateway: {
+			name: "clust-B"
+			listen: 127.0.0.1:-1
+		}
+       `, ojwt, sysPub, dir)))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// Set up a mock gateway client.
+	c := s.createInternalAccountClient()
+	c.mu.Lock()
+	c.gw = &gateway{}
+	c.gw.outsim = &sync.Map{}
+	c.nc = &net.IPConn{}
+	c.mu.Unlock()
+
+	// Receiving a R+ should not be blocking, since we're in the gateway's readLoop.
+	start := time.Now()
+	require_NoError(t, c.processGatewayRSub(fmt.Appendf(nil, "%s subj queue 0", accPub)))
+	ei, ok := c.gw.outsim.Load(accPub)
+	require_True(t, ok)
+	require_True(t, ei.(*outsie).sl.CacheEnabled())
+	c.mu.Lock()
+	subs := len(c.subs)
+	c.mu.Unlock()
+	require_Len(t, subs, 1)
+	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+
+	// Receiving a R- should not be blocking, since we're in the gateway's readLoop.
+	start = time.Now()
+	require_NoError(t, c.processGatewayRUnsub(fmt.Appendf(nil, "%s subj queue", accPub)))
+	c.mu.Lock()
+	subs = len(c.subs)
+	c.mu.Unlock()
+	require_Len(t, subs, 0)
+	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+
+	c2 := s.createInternalAccountClient()
+	c2.mu.Lock()
+	c2.gw = &gateway{}
+	c2.gw.outsim = &sync.Map{}
+	c2.nc = &net.IPConn{}
+	c2.mu.Unlock()
+
+	require_NoError(t, c2.processGatewayRUnsub(fmt.Appendf(nil, "%s subj", accPub)))
+	ei, ok = c2.gw.outsim.Load(accPub)
+	require_True(t, ok)
+	require_True(t, ei.(*outsie).sl.CacheEnabled())
 }

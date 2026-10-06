@@ -1,0 +1,59 @@
+name: NATS Server PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  signoffs:
+    name: Sign-offs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR head
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_SHA" "pull/${PR_NUMBER}/head:pr-head"
+
+      - name: Check all PR commits are signed off
+        run: |
+          set -euo pipefail
+
+          range="${BASE_SHA}..pr-head"
+          missing=0
+          missing_list=""
+
+          while read -r c; do
+            msg="$(git log -1 --pretty=%B "$c")"
+            if ! printf '%s\n' "$msg" | grep -q '^Signed-off-by:'; then
+              echo "::error ::Commit $c has not been signed off"
+              missing=1
+              missing_list+=$'\n- '"$c"
+            fi
+          done < <(git rev-list --no-merges "$range")
+
+          if [ "$missing" -ne 0 ]; then
+            body="$(printf 'Please review the `CONTRIBUTING.md` guide as some commits are missing `Signed-off-by:` in their commit messages.\n\nTo correct, please amend the following commits and force-push:\n\n%s' "$missing_list")"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
+            exit 1
+          fi

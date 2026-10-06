@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -50,7 +50,8 @@ func (n *node48) findChild(c byte) *node {
 func (n *node48) isFull() bool { return n.size >= 48 }
 
 func (n *node48) grow() node {
-	nn := newNode256(n.prefix)
+	nn := &node256{}
+	nn.prefix = n.prefix
 	for c := 0; c < len(n.key); c++ {
 		if i := n.key[byte(c)]; i > 0 {
 			nn.addChild(byte(c), n.child[i-1])

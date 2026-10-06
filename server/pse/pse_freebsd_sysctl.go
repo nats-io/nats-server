@@ -1,4 +1,4 @@
-// Copyright 2015-2020 The NATS Authors
+// Copyright 2015-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -11,22 +11,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This is the amd64-specific FreeBSD implementation, with hard-coded offset
-// constants derived by running freebsd.txt; having this implementation allows
-// us to compile without CGO, which lets us cross-compile for FreeBSD from our
-// CI system and so supply binaries for FreeBSD amd64.
+// There are two FreeBSD implementations; one which uses cgo and should build
+// locally on any FreeBSD, and this one which uses sysctl but needs us to know
+// the offset constants for the fields we care about.
+//
+// The advantage of this one is that without cgo, it is much easier to
+// cross-compile to a target.  The official releases are all built with
+// cross-compilation.
+//
+// We've switched the other implementation to include '_cgo' in the filename,
+// to show that it's not the default.  This isn't an os or arch build tag,
+// so we have to use explicit build-tags within.
+// If lacking CGO support and targeting an unsupported arch, then before the
+// change you would have a compile failure for not being able to cross-compile.
+// After the change, you have a compile failure for not having the symbols
+// because no source file satisfies them.
+// Thus we are no worse off, and it's now much easier to extend support for
+// non-CGO to new architectures, just by editing this file.
 //
 // To generate for other architectures:
-//   1. Update pse_freebsd.go, change the build exclusion to exclude your arch
-//   2. Copy this file to be built for your arch
-//   3. Update `nativeEndian` below
-//   4. Link `freebsd.txt` to have a .c filename and compile and run, then
-//      paste the outputs into the const section below.
+//   1. Copy `freebsd.txt` to have a .c filename on a box running the target
+//      architecture, compile and run it.
+//   2. Update the init() function below to include a case for this architecture
+//   3. Update the build-tags in this file.
+
+//go:build !cgo && freebsd && (amd64 || arm64)
 
 package pse
 
 import (
 	"encoding/binary"
+	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -37,15 +52,34 @@ import (
 // than little or big endian.
 var nativeEndian = binary.LittleEndian
 
-const (
-	KIP_OFF_size   = 256
-	KIP_OFF_rssize = 264
-	KIP_OFF_pctcpu = 308
+var pageshift int // derived from getpagesize(3) in init() below
+
+var (
+	// These are populated in the init function, based on the current architecture.
+	// (It's less file-count explosion than having one small file for each
+	// FreeBSD architecture).
+	KIP_OFF_size   int
+	KIP_OFF_rssize int
+	KIP_OFF_pctcpu int
 )
 
-var pageshift int
-
 func init() {
+	switch runtime.GOARCH {
+	// These are the values which come from compiling and running
+	// freebsd.txt as a C program.
+	// Most recently validated: 2025-04 with FreeBSD 14.2R in AWS.
+	case "amd64":
+		KIP_OFF_size = 256
+		KIP_OFF_rssize = 264
+		KIP_OFF_pctcpu = 308
+	case "arm64":
+		KIP_OFF_size = 256
+		KIP_OFF_rssize = 264
+		KIP_OFF_pctcpu = 308
+	default:
+		panic("code bug: server/pse FreeBSD support missing case for '" + runtime.GOARCH + "' but build-tags allowed us to build anyway?")
+	}
+
 	// To get the physical page size, the C library checks two places:
 	//   process ELF auxiliary info, AT_PAGESZ
 	//   as a fallback, the hw.pagesize sysctl

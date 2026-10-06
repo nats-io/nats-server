@@ -1,4 +1,4 @@
-// Copyright 2013-2024 The NATS Authors
+// Copyright 2013-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,7 +18,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"hash/fnv"
+	"math/rand/v2"
 	"net"
 	"net/url"
 	"reflect"
@@ -52,6 +53,8 @@ var (
 	lUnsubBytes = []byte{'L', 'S', '-', ' '}
 )
 
+const leafNoOriginCluster = "_"
+
 type route struct {
 	remoteID     string
 	remoteName   string
@@ -59,6 +62,7 @@ type route struct {
 	retry        bool
 	lnoc         bool
 	lnocu        bool
+	ln           bool
 	routeType    RouteType
 	url          *url.URL
 	authRequired bool
@@ -86,6 +90,17 @@ type route struct {
 	// Transient value used to set the Info.GossipMode when initiating
 	// an implicit route and sending to the remote.
 	gossipMode byte
+	// This will be set in case of pooling so that a route can trigger
+	// the creation of the next after receiving a PONG, ensuring
+	// that authentication did not fail.
+	startNewRoute *routeInfo
+}
+
+// This contains the information required to create a new route.
+type routeInfo struct {
+	url        *url.URL
+	rtype      RouteType
+	gossipMode byte
 }
 
 // Do not change the values/order since they are exchanged between servers.
@@ -108,6 +123,7 @@ type connectInfo struct {
 	Dynamic  bool   `json:"cluster_dynamic,omitempty"`
 	LNOC     bool   `json:"lnoc,omitempty"`
 	LNOCU    bool   `json:"lnocu,omitempty"` // Support for LS- with origin cluster name
+	LN       bool   `json:"ln,omitempty"`    // Support for LS+/LS- leaf interest using a sentinel origin cluster
 	Gateway  string `json:"gateway,omitempty"`
 }
 
@@ -131,6 +147,8 @@ const (
 // Can be changed for tests
 var (
 	routeConnectDelay    = DEFAULT_ROUTE_CONNECT
+	routeConnectMaxDelay = DEFAULT_ROUTE_CONNECT_MAX
+	routeReconnectDelay  = DEFAULT_ROUTE_RECONNECT
 	routeMaxPingInterval = defaultRouteMaxPingInterval
 )
 
@@ -168,8 +186,7 @@ func (c *client) processAccountUnsub(arg []byte) {
 // we have an origin cluster and we force header semantics.
 func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_HMSG_ARGS + 1][]byte{}
-	args := a[:0]
+	args := c.argsa[:0]
 	start := -1
 	for i, b := range arg {
 		switch b {
@@ -267,8 +284,7 @@ func (c *client) processRoutedOriginClusterMsgArgs(arg []byte) error {
 // Process an inbound HMSG specification from the remote route.
 func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_HMSG_ARGS][]byte{}
-	args := a[:0]
+	args := c.argsa[:0]
 	var an []byte
 	if c.kind == ROUTER {
 		if an = c.route.accName; len(an) > 0 {
@@ -364,8 +380,7 @@ func (c *client) processRoutedHeaderMsgArgs(arg []byte) error {
 // Process an inbound RMSG or LMSG specification from the remote route.
 func (c *client) processRoutedMsgArgs(arg []byte) error {
 	// Unroll splitArgs to avoid runtime/heap issues
-	a := [MAX_RMSG_ARGS][]byte{}
-	args := a[:0]
+	args := c.argsa[:0]
 	var an []byte
 	if c.kind == ROUTER {
 		if an = c.route.accName; len(an) > 0 {
@@ -448,7 +463,8 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 	// Update statistics
 	c.in.msgs++
 	// The msg includes the CR_LF, so pull back out for accounting.
-	c.in.bytes += int32(len(msg) - LEN_CR_LF)
+	size := len(msg) - LEN_CR_LF
+	c.in.bytes += int32(size)
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -470,6 +486,13 @@ func (c *client) processInboundRoutedMsg(msg []byte) {
 		c.Debugf("Unknown account %q for routed message on subject: %q", c.pa.account, c.pa.subject)
 		return
 	}
+
+	acc.stats.Lock()
+	acc.stats.inMsgs++
+	acc.stats.inBytes += int64(size)
+	acc.stats.rt.inMsgs++
+	acc.stats.rt.inBytes += int64(size)
+	acc.stats.Unlock()
 
 	// Check for no interest, short circuit if so.
 	// This is the fanout scale.
@@ -498,6 +521,7 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 		Cluster:  clusterName,
 		Dynamic:  s.isClusterNameDynamic(),
 		LNOC:     true,
+		LN:       true,
 	}
 
 	b, err := json.Marshal(cinfo)
@@ -507,6 +531,21 @@ func (c *client) sendRouteConnect(clusterName string, tlsRequired bool) error {
 	}
 	c.enqueueProto([]byte(fmt.Sprintf(ConProto, b)))
 	return nil
+}
+
+// Returns a route pool index for this account based on the given pool size.
+// If `poolSize` is smaller or equal to 1, the returned value will always
+// be 0, regardless of the account name. If not, the returned value will
+// be in the range [0..poolSize-1]. The value for a given account name
+// is constant and same on all servers (given the same `poolSize` value).
+func computeRoutePoolIdx(poolSize int, an string) int {
+	if poolSize <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(an))
+	sum32 := h.Sum32()
+	return int((sum32 % uint32(poolSize)))
 }
 
 // Process the info message if we are a route.
@@ -532,6 +571,11 @@ func (c *client) processRouteInfo(info *Info) {
 		c.route.remoteID = info.ID
 		c.mu.Unlock()
 		c.closeConnection(DuplicateRoute)
+		return
+	}
+	if info.Cluster == leafNoOriginCluster {
+		c.mu.Unlock()
+		c.closeConnection(ClusterNameConflict)
 		return
 	}
 
@@ -572,6 +616,12 @@ func (c *client) processRouteInfo(info *Info) {
 					return
 				}
 				s.mu.Lock()
+				// If running without system account and adding a dedicated
+				// route for an account for the first time, it could be that
+				// the map is nil. If so, create it.
+				if s.accRoutes == nil {
+					s.accRoutes = make(map[string]map[string]*client)
+				}
 				if _, ok := s.accRoutes[an]; !ok {
 					s.accRoutes[an] = make(map[string]*client)
 				}
@@ -586,13 +636,18 @@ func (c *client) processRouteInfo(info *Info) {
 					// to suppress possible remote subscription interest coming
 					// in while the transition is happening.
 					acc.routePoolIdx = accTransitioningToDedicatedRoute
-				} else if info.RoutePoolSize == s.routesPoolSize {
-					// Otherwise, and if the other side's pool size matches
-					// ours, get the route pool index that was handling this
-					// account.
-					rpi = s.computeRoutePoolIdx(acc)
 				}
 				acc.mu.Unlock()
+				// Since v2.11.0, we support remotes with a different pool size
+				// (for rolling upgrades), so we need to use the remote route
+				// pool index (based on the remote configured pool size) since
+				// the remote subscriptions will be attached to the route at
+				// that index, not at our account's route pool index. But we
+				// need to compute only if rpi is negative or the pool sizes
+				// are different.
+				if rpi <= 0 || info.RoutePoolSize != s.routesPoolSize {
+					rpi = computeRoutePoolIdx(info.RoutePoolSize, an)
+				}
 				// Go over each remote's route at pool index `rpi` and remove
 				// remote subs for this account.
 				s.forEachRouteIdx(rpi, func(r *client) bool {
@@ -767,8 +822,9 @@ func (c *client) processRouteInfo(info *Info) {
 	c.route.tlsRequired = info.TLSRequired
 	c.route.gatewayURL = info.GatewayURL
 	c.route.remoteName = info.Name
-	c.route.lnoc = info.LNOC
-	c.route.lnocu = info.LNOCU
+	c.route.ln = info.LN
+	c.route.lnoc = info.LNOC || c.route.ln
+	c.route.lnocu = info.LNOCU || c.route.ln
 	c.route.jetstream = info.JetStream
 
 	// When sent through route INFO, if the field is set, it should be of size 1.
@@ -984,7 +1040,7 @@ func (s *Server) sendAsyncInfoToClients(regCli, wsCli bool) {
 			c.flags.isSet(firstPongSent) {
 			// sendInfo takes care of checking if the connection is still
 			// valid or not, so don't duplicate tests here.
-			c.enqueueProto(c.generateClientInfoJSON(info))
+			c.enqueueProto(c.generateClientInfoJSON(info, true))
 		}
 		c.mu.Unlock()
 	}
@@ -1222,18 +1278,20 @@ type asubs struct {
 // This is invoked knowing that the key contains an account name, so for a sub
 // that is not from a pinned-account route.
 // The `keyHasSubType` boolean indicates that the key starts with the indicator
-// for leaf or regular routed subscriptions.
+// for leaf or regular routed subscriptions. No-origin leaf subscriptions always have the
+// indicator so they remain distinct from RS+ even without LNOCU.
 func getAccNameFromRoutedSubKey(sub *subscription, key string, keyHasSubType bool) string {
+	fields := strings.Fields(key)
 	var accIdx int
-	if keyHasSubType {
+	if keyHasSubType || (sub.leaf && len(sub.origin) == 0) {
 		// Start after the sub type indicator.
 		accIdx = 1
 		// But if there is an origin, bump its index.
-		if len(sub.origin) > 0 {
+		if len(sub.origin) > 0 || (sub.leaf && len(fields) > 1 && fields[1] == leafNoOriginCluster) {
 			accIdx = 2
 		}
 	}
-	return strings.Fields(key)[accIdx]
+	return fields[accIdx]
 }
 
 // Returns if the route is dedicated to an account, its name, and a boolean
@@ -1366,16 +1424,18 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 
 	c.mu.Lock()
 	originSupport := c.route.lnocu
+	lnSupport := c.route.ln
 	if c.route != nil && len(c.route.accName) > 0 {
 		accountName, accInProto = string(c.route.accName), false
 	}
 	c.mu.Unlock()
 
 	hasOrigin := leafUnsub && originSupport
-	_, accNameFromProto, subject, _, err := c.parseUnsubProto(arg, accInProto, hasOrigin)
+	origin, accNameFromProto, subject, _, err := c.parseUnsubProto(arg, accInProto, hasOrigin)
 	if err != nil {
 		return fmt.Errorf("processRemoteUnsub %s", err.Error())
 	}
+	noOrigin := lnSupport && bytesToString(origin) == leafNoOriginCluster
 	if accInProto {
 		accountName = accNameFromProto
 	}
@@ -1394,13 +1454,11 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 		return nil
 	}
 
-	updateGWs := false
-
 	_keya := [128]byte{}
 	_key := _keya[:0]
 
 	var key string
-	if !originSupport {
+	if !originSupport && !noOrigin {
 		// If it is an LS- or RS-, we use the protocol as-is as the key.
 		key = bytesToString(arg)
 	} else {
@@ -1419,19 +1477,21 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 	if ok {
 		delete(c.subs, key)
 		acc.sl.Remove(sub)
-		updateGWs = srv.gateway.enabled
 		if len(sub.queue) > 0 {
 			delta = sub.qw
 		}
 	}
 	c.mu.Unlock()
 
-	if updateGWs {
-		srv.gatewayUpdateSubInterest(accountName, sub, -delta)
-	}
+	// Update gateways and leaf nodes only if the subscription was found.
+	if ok {
+		if srv.gateway.enabled {
+			srv.gatewayUpdateSubInterest(accountName, sub, -delta)
+		}
 
-	// Now check on leafnode updates.
-	acc.updateLeafNodes(sub, -delta)
+		// Now check on leafnode updates.
+		acc.updateLeafNodes(sub, -delta)
+	}
 
 	if c.opts.Verbose {
 		c.sendOK()
@@ -1439,7 +1499,7 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 	return nil
 }
 
-func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
+func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err error) {
 	// Indicate activity.
 	c.in.subs++
 
@@ -1468,8 +1528,9 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// the sub in the map.
 	c.mu.Lock()
 	accountName := string(c.route.accName)
-	oldStyle := !c.route.lnocu
+	lnSupport := c.route.ln
 	c.mu.Unlock()
+	oldStyle := !c.route.lnocu && !(leafSub && !hasOrigin)
 
 	// Indicate if the account name should be in the protocol. It would be the
 	// case if accountName is empty.
@@ -1478,7 +1539,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// Copy so we do not reference a potentially large buffer.
 	// Add 2 more bytes for the routed sub type.
 	arg := make([]byte, 0, 2+len(argo))
-	if hasOrigin {
+	if leafSub {
 		arg = append(arg, keyRoutedLeafSubByte)
 	} else {
 		arg = append(arg, keyRoutedSubByte)
@@ -1508,7 +1569,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 
 	delta := int32(1)
-	sub := &subscription{client: c}
+	sub := &subscription{client: c, leaf: leafSub}
 
 	// There will always be at least a subject, but its location will depend
 	// on if there is an origin, an account name, etc.. Since we know that
@@ -1541,8 +1602,10 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// We know that the number of fields is correct. So we can access args[] based
 	// on where we expect the fields to be.
 
-	// If there is an origin, it will be at index 1.
-	if hasOrigin {
+	// If there is an origin, it will be at index 1. The negotiated sentinel
+	// denotes leaf interest without an actual origin cluster.
+	noOrigin := lnSupport && hasOrigin && bytesToString(args[1]) == leafNoOriginCluster
+	if hasOrigin && !noOrigin {
 		sub.origin = args[1]
 	}
 	// For subject, use subjIdx.
@@ -1646,7 +1709,6 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	// We use the sub.sid for the key of the c.subs map.
 	key := bytesToString(sub.sid)
 	osub := c.subs[key]
-	updateGWs := false
 	if osub == nil {
 		c.subs[key] = sub
 		// Now place into the account sl.
@@ -1657,7 +1719,6 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 			c.sendErr("Invalid Subscription")
 			return nil
 		}
-		updateGWs = srv.gateway.enabled
 	} else if sub.queue != nil {
 		// For a queue we need to update the weight.
 		delta = sub.qw - atomic.LoadInt32(&osub.qw)
@@ -1666,7 +1727,7 @@ func (c *client) processRemoteSub(argo []byte, hasOrigin bool) (err error) {
 	}
 	c.mu.Unlock()
 
-	if updateGWs {
+	if srv.gateway.enabled {
 		srv.gatewayUpdateSubInterest(acc.Name, sub, delta)
 	}
 
@@ -1696,6 +1757,14 @@ func (c *client) addRouteSubOrUnsubProtoToBuf(buf []byte, accName string, sub *s
 				buf = append(buf, ' ')
 			}
 		}
+	} else if sub.leaf && len(sub.origin) == 0 && c.route.ln {
+		if isSubProto {
+			buf = append(buf, lSubBytes...)
+		} else {
+			buf = append(buf, lUnsubBytes...)
+		}
+		buf = append(buf, leafNoOriginCluster...)
+		buf = append(buf, ' ')
 	} else {
 		if isSubProto {
 			buf = append(buf, rSubBytes...)
@@ -1801,13 +1870,15 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 			// Subject will always be the second field (index 1).
 			subj := stringToBytes(s[1])
 			// Check if the key is for a leaf (will be field 0).
-			forLeaf := s[0] == keyRoutedLeafSub
-			// For queue, if not for a leaf, we need 3 fields "R foo bar",
-			// but if for a leaf, we need 4 fields "L foo bar leaf_origin".
-			if l := len(s); (!forLeaf && l == 3) || (forLeaf && l == 4) {
+			leafWithOrigin := s[0] == keyRoutedLeafSub
+			leafWithoutOrigin := s[0] == keyRoutedLeafNoOriginSub
+			forLeaf := leafWithOrigin || leafWithoutOrigin
+			// For queue, regular and no-origin leaf keys have 3 fields,
+			// while a leaf key with an origin has 4.
+			if l := len(s); (!leafWithOrigin && l == 3) || (leafWithOrigin && l == 4) {
 				qn = stringToBytes(s[2])
 			}
-			if forLeaf {
+			if leafWithOrigin {
 				// The leaf origin will be the last field.
 				origin = stringToBytes(s[len(s)-1])
 			}
@@ -1816,7 +1887,7 @@ func (s *Server) sendSubsToRoute(route *client, idx int, account string) {
 			if !route.canImport(s[1]) {
 				continue
 			}
-			sub := subscription{origin: origin, subject: subj, queue: qn, qw: n}
+			sub := subscription{leaf: forLeaf, origin: origin, subject: subj, queue: qn, qw: n}
 			buf = route.addRouteSubOrUnsubProtoToBuf(buf, a.Name, &sub, true)
 		}
 		a.mu.RUnlock()
@@ -1973,7 +2044,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 			pingInterval = opts.Cluster.PingInterval
 		}
 		if opts.Cluster.MaxPingsOut > 0 {
-			pingMax = opts.MaxPingsOut
+			pingMax = opts.Cluster.MaxPingsOut
 		}
 		c.watchForStaleConnection(adjustPingInterval(ROUTER, pingInterval), pingMax)
 	} else {
@@ -2010,7 +2081,7 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
 		cs := c.nc.(*tls.Conn).ConnectionState()
-		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tlsCipher(cs.CipherSuite))
+		c.Debugf("TLS version %s, cipher suite %s", tlsVersion(cs.Version), tls.CipherSuiteName(cs.CipherSuite))
 	}
 
 	// Queue Connect proto if we solicited the connection.
@@ -2096,6 +2167,11 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 	// the first connection is established.
 	var noReconnectForOldServer bool
 
+	// To allow rolling updates, we now allow servers with different pool sizes
+	// so we will use as the effective pool size here, the max between our
+	// configured size and the size we receive in the info protocol.
+	effectivePoolSize := max(s.routesPoolSize, info.RoutePoolSize)
+
 	// If the remote is an old server, info.RoutePoolSize will be 0, or if
 	// this server's Cluster.PoolSize is negative, we will behave as an old
 	// server and need to handle things differently.
@@ -2115,15 +2191,12 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 			// sending subscriptions over routes.
 			s.routesNoPool++
 		}
-	} else if s.routesPoolSize != info.RoutePoolSize {
-		// The cluster's PoolSize configuration must be an exact match with the remote server.
-		invProtoErr = fmt.Sprintf("Mismatch route pool size: %v vs %v", s.routesPoolSize, info.RoutePoolSize)
 	} else if didSolicit {
 		// For solicited route, the incoming's RoutePoolIdx should not be set.
 		if info.RoutePoolIdx != 0 {
 			invProtoErr = fmt.Sprintf("Route pool index should not be set but is set to %v", info.RoutePoolIdx)
 		}
-	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= s.routesPoolSize {
+	} else if info.RoutePoolIdx < 0 || info.RoutePoolIdx >= effectivePoolSize {
 		// For non solicited routes, if the remote sends a RoutePoolIdx, make
 		// sure it is a valid one (in range of the pool size).
 		invProtoErr = fmt.Sprintf("Invalid route pool index: %v - pool size is %v", info.RoutePoolIdx, info.RoutePoolSize)
@@ -2192,9 +2265,9 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 	// Check if we know about the remote server
 	conns, exists := s.routes[id]
 	if !exists {
-		// No, create a slice for route connections of the size of the pool
+		// Now, create a slice for route connections of the size of the pool
 		// or 1 when not in pool mode.
-		conns = make([]*client, s.routesPoolSize)
+		conns = make([]*client, effectivePoolSize)
 		// Track this slice for this remote server.
 		s.routes[id] = conns
 		// Set the index to info.RoutePoolIdx because if this is a solicited
@@ -2202,6 +2275,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// will use whatever index the remote has chosen.
 		idx = info.RoutePoolIdx
 	} else if pool {
+		// The remote could have done a config reload and increased the pool size.
+		// It will close the connections before soliciting again, however, if
+		// on this side, one of the route is not yet fully removed, but the
+		// first one is, it would accept the new connection (with a greater pool
+		// size) and we would not go through the phase of `!exists` above creating
+		// the slice with the right size. So we need to check here and add new empty
+		// entries to complete the effective pool size.
+		if n := effectivePoolSize - len(conns); n > 0 {
+			for range n {
+				conns = append(conns, nil)
+			}
+			s.routes[id] = conns
+		}
 		// The remote was found. If this is a non solicited route, we will place
 		// the connection in the pool at the index given by info.RoutePoolIdx.
 		// But if there is already one, close this incoming connection as a
@@ -2263,6 +2349,19 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		}
 		c.mu.Unlock()
 
+		// With pooling, we keep track of the remote's configured route pool size.
+		// We do so when adding the connection in the first slot, not when `sz == 1`
+		// because there could be situations where we have old connections that have
+		// not yet been removed and so we would not have `sz == `. However, we will
+		// always have the condition where we are adding the new connection at `idx==0`
+		// so use that as the condition to store the remote pool size.
+		if pool && idx == 0 {
+			if s.remoteRoutePoolSize == nil {
+				s.remoteRoutePoolSize = make(map[string]int)
+			}
+			s.remoteRoutePoolSize[id] = info.RoutePoolSize
+		}
+
 		// Add to the slice and bump the count of connections for this remote
 		conns[idx] = c
 		sz++
@@ -2273,8 +2372,20 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		if doOnce {
 			// check to be consistent and future proof. but will be same domain
 			if s.sameDomain(info.Domain) {
-				s.nodeToInfo.Store(rHash,
-					nodeInfo{rn, s.info.Version, s.info.Cluster, info.Domain, id, nil, nil, nil, false, info.JetStream, false, false})
+				s.nodeToInfo.Store(rHash, nodeInfo{
+					name:            rn,
+					version:         s.info.Version,
+					cluster:         s.info.Cluster,
+					domain:          info.Domain,
+					id:              id,
+					tags:            nil,
+					cfg:             nil,
+					stats:           nil,
+					offline:         false,
+					js:              info.JetStream,
+					binarySnapshots: true, // Updated default to true. Versions 2.10.0+ support it.
+					accountNRG:      false,
+				})
 			}
 		}
 
@@ -2318,20 +2429,18 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		// Send the subscriptions interest.
 		s.sendSubsToRoute(c, idx, _EMPTY_)
 
-		// In pool mode, if we did not yet reach the cap, try to connect a new connection
-		if pool && didSolicit && sz != s.routesPoolSize {
-			s.startGoRoutine(func() {
-				select {
-				case <-time.After(time.Duration(rand.Intn(100)) * time.Millisecond):
-				case <-s.quitCh:
-					// Doing this here and not as a defer because connectToRoute is also
-					// calling s.grWG.Done() on exit, so we do this only if we don't
-					// invoke connectToRoute().
-					s.grWG.Done()
-					return
-				}
-				s.connectToRoute(url, rtype, true, gossipMode, _EMPTY_)
-			})
+		// In pool mode, if we did not yet reach the cap, try to connect a new connection,
+		// but do so only after receiving the first PONG to our PING, which will ensure
+		// that we have proper authentication.
+		if pool && didSolicit && sz != effectivePoolSize {
+			c.mu.Lock()
+			c.route.startNewRoute = &routeInfo{
+				url:        url,
+				rtype:      rtype,
+				gossipMode: gossipMode,
+			}
+			c.sendPing()
+			c.mu.Unlock()
 		}
 	}
 	s.mu.Unlock()
@@ -2377,10 +2486,13 @@ func upgradeRouteToSolicited(r *client, url *url.URL, rtype RouteType) {
 		return
 	}
 	r.mu.Lock()
-	if !r.route.didSolicit {
-		r.route.didSolicit = true
+	// On disconnect, an explicit route only reconnects if the connection's
+	// URL matches a configured route. So adopt the given URL rather than
+	// keeping a gossiped one, which may not match any configured route.
+	if !r.route.didSolicit || (rtype == Explicit && r.route.routeType != Explicit) {
 		r.route.url = url
 	}
+	r.route.didSolicit = true
 	if rtype == Explicit {
 		r.route.routeType = Explicit
 	}
@@ -2407,9 +2519,14 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 	}
 
 	remote.mu.Lock()
-	if didSolicit && !remote.route.didSolicit {
+	if didSolicit {
+		// On disconnect, an explicit route only reconnects if the connection's
+		// URL matches a configured route. So adopt the given URL rather than
+		// keeping a gossiped one, which may not match any configured route.
+		if !remote.route.didSolicit || (rtype == Explicit && remote.route.routeType != Explicit) {
+			remote.route.url = url
+		}
 		remote.route.didSolicit = true
-		remote.route.url = url
 	}
 	// The extra route might be an configured explicit route
 	// so keep the state that the remote was configured.
@@ -2459,21 +2576,21 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		// queue subscriptions updates (sub/unsub).
 		// See https://github.com/nats-io/nats-server/pull/1126 for more details.
 		if isq {
-			acc.sqmu.Lock()
+			acc.smu.Lock()
 		}
 		acc.mu.Lock()
 	}
 	accUnlock := func() {
 		acc.mu.Unlock()
 		if isq {
-			acc.sqmu.Unlock()
+			acc.smu.Unlock()
 		}
 	}
 
 	accLock()
 
 	// This is non-nil when we know we are in cluster mode.
-	rm, lqws := acc.rm, acc.lqws
+	rm, lws := acc.rm, acc.lws
 	if rm == nil {
 		accUnlock()
 		return
@@ -2493,9 +2610,7 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		n += delta
 		if n <= 0 {
 			delete(rm, key)
-			if isq {
-				delete(lqws, key)
-			}
+			delete(lws, key)
 			update = true // Update for deleting (N->0)
 		} else {
 			rm[key] = n
@@ -2570,29 +2685,29 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	trace := atomic.LoadInt32(&s.logging.trace) == 1
 	s.mu.RUnlock()
 
-	// If we are a queue subscriber we need to make sure our updates are serialized from
-	// potential multiple connections. We want to make sure that the order above is preserved
-	// here but not necessarily all updates need to be sent. We need to block and recheck the
-	// n count with the lock held through sending here. We will suppress duplicate sends of same qw.
-	if isq {
-		// However, we can't hold the acc.mu lock since we allow client.mu.Lock -> acc.mu.Lock
-		// but not the opposite. So use a dedicated lock while holding the route's lock.
-		acc.sqmu.Lock()
-		defer acc.sqmu.Unlock()
+	// We need to make sure our updates are serialized from potential multiple connections. We want
+	// to make sure that the order above is preserved here but not necessarily all updates need to
+	// be sent. We need to block and recheck the n count with the lock held through sending here.
+	//
+	// However, we can't hold the acc.mu lock since we allow client.mu.Lock -> acc.mu.Lock
+	// but not the opposite. So use a dedicated lock while holding the route's lock.
+	acc.smu.Lock()
+	defer acc.smu.Unlock()
 
-		acc.mu.Lock()
-		n = rm[key]
+	acc.mu.Lock()
+	n = rm[key]
+	if isq {
 		sub.qw = n
-		// Check the last sent weight here. If same, then someone
-		// beat us to it and we can just return here. Otherwise update
-		if ls, ok := lqws[key]; ok && ls == n {
-			acc.mu.Unlock()
-			return
-		} else if n > 0 {
-			lqws[key] = n
-		}
-		acc.mu.Unlock()
 	}
+	// Check the last sent value here. If same, then someone beat us to it and
+	// we can just return here. Otherwise update.
+	if ls, ok := lws[key]; ok && ls == n {
+		acc.mu.Unlock()
+		return
+	} else if n > 0 {
+		lws[key] = n
+	}
+	acc.mu.Unlock()
 
 	// Snapshot into array
 	subs := []*subscription{sub}
@@ -2665,6 +2780,7 @@ func (s *Server) startRouteAcceptLoop() {
 		Dynamic:      s.isClusterNameDynamic(),
 		LNOC:         true,
 		LNOCU:        true,
+		LN:           true,
 	}
 	// For tests that want to simulate old servers, do not set the compression
 	// on the INFO protocol if configured with CompressionNotSupported.
@@ -2781,9 +2897,9 @@ func (s *Server) reConnectToRoute(rURL *url.URL, rtype RouteType, accName string
 	// registers the route on the opposite TCP connection, the
 	// two connections will end-up being closed.
 	// Add some random delay to reduce risk of repeated failures.
-	delay := time.Duration(rand.Intn(100)) * time.Millisecond
+	delay := time.Duration(rand.IntN(100)) * time.Millisecond
 	if rtype == Explicit {
-		delay += DEFAULT_ROUTE_RECONNECT
+		delay += routeReconnectDelay
 	}
 	select {
 	case <-time.After(delay):
@@ -2823,9 +2939,15 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 	excludedAddresses := s.routesToSelf
 	s.mu.RUnlock()
 
+	attemptDelay := routeConnectDelay
+	reconnectTimer := time.NewTimer(attemptDelay)
+	reconnectTimer.Stop()
+	defer stopAndClearTimer(&reconnectTimer)
+
 	for attempts := 0; s.isRunning(); {
 		if tryForEver {
 			if !s.routeStillValid(rURL) {
+				s.Debugf("Not attempting to connect to explicit route %q, no longer part of configured routes", rURL.Redacted())
 				return
 			}
 			if accName != _EMPTY_ {
@@ -2833,6 +2955,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 				_, valid := s.accRoutes[accName]
 				s.mu.RUnlock()
 				if !valid {
+					s.Debugf("Not attempting to connect to route %q for account %q, no longer a per-account route", rURL.Redacted(), accName)
 					return
 				}
 			}
@@ -2862,10 +2985,18 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 					return
 				}
 			}
+			reconnectTimer.Reset(attemptDelay)
 			select {
 			case <-s.quitCh:
 				return
-			case <-time.After(routeConnectDelay):
+			case <-reconnectTimer.C:
+				if opts.Cluster.ConnectBackoff {
+					// Use exponential backoff for connection attempts.
+					attemptDelay *= 2
+					if attemptDelay > routeConnectMaxDelay {
+						attemptDelay = routeConnectMaxDelay
+					}
+				}
 				continue
 			}
 		}
@@ -2944,6 +3075,13 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	if srv == nil {
 		return ErrServerNotRunning
 	}
+	if proto.Cluster == leafNoOriginCluster {
+		errTxt := fmt.Sprintf("Rejecting connection, cluster name %q is reserved", proto.Cluster)
+		c.Errorf(errTxt)
+		c.sendErr(errTxt)
+		c.closeConnection(ClusterNameConflict)
+		return ErrClusterNameReserved
+	}
 
 	perms := srv.getOpts().Cluster.Permissions
 	clusterName := srv.ClusterName()
@@ -2982,8 +3120,9 @@ func (c *client) processRouteConnect(srv *Server, arg []byte, lang string) error
 	// Grab connection name of remote route.
 	c.mu.Lock()
 	c.route.remoteID = c.opts.Name
-	c.route.lnoc = proto.LNOC
-	c.route.lnocu = proto.LNOCU
+	c.route.ln = proto.LN // ... also implies LNOC+LNOCU
+	c.route.lnoc = proto.LNOC || c.route.ln
+	c.route.lnocu = proto.LNOCU || c.route.ln
 	c.setRoutePermissions(perms)
 	c.headers = supportsHeaders && proto.Headers
 	c.mu.Unlock()
@@ -3113,6 +3252,8 @@ func (s *Server) removeRoute(c *client) {
 			if lnURL != _EMPTY_ && s.removeLeafNodeURL(lnURL) {
 				s.sendAsyncLeafNodeInfo()
 			}
+			// We can remove the configured route pool size of this remote.
+			delete(s.remoteRoutePoolSize, rID)
 			// If this server has pooling/pinned accounts and the route for
 			// this remote was a "no pool" route, attempt to reconnect.
 			if noPool {

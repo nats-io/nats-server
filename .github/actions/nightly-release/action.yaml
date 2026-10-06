@@ -2,14 +2,6 @@ name: Nightly Docker Releaser
 description: Builds nightly docker images
 
 inputs:
-  go:
-    description: The version of go to build with
-    required: true
-
-  label:
-    description: The label to use for built images
-    required: true
-
   hub_username:
     description: Docker hub username
     required: true
@@ -18,42 +10,38 @@ inputs:
     description: Docker hub password
     required: true
 
-  workdir:
-    description: The working directory for actions requiring it
-    required: true
+  name:
+    description: The name of the build
+    default: nightly
+    required: false
 
 runs:
   using: composite
   steps:
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: "${{ inputs.go }}"
-
-    - name: goreleaser
-      # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-      # Commit 9ed2f89a662bf1735a48bc8557fd212fa902bebf = tag v6.1.0
-      uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf
-      with:
-        workdir: "${{ inputs.workdir }}"
-        version: '~> v2'
-        args: release --snapshot --config .goreleaser-nightly.yml
-
-    - name: images
-      shell: bash
-      run: docker images
-
-    - name: docker_login
+    - name: Log in to Docker Hub
       shell: bash
       run: docker login -u "${{ inputs.hub_username }}" -p "${{ inputs.hub_password }}"
 
-    - name: docker_push
-      shell: bash
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Generate build metadata
+      shell: sh
       run: |
-        NDATE=$(date +%Y%m%d)
+        echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+        echo "GIT_COMMIT=$(cd ${{ inputs.workdir }}/nats-server && git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "BUILD_NAME=$(echo ${{ inputs.name }} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g')" >> $GITHUB_ENV
 
-        docker tag synadia/nats-server:nightly-${NDATE} synadia/nats-server:${{ inputs.label }}-${NDATE}
-        docker tag synadia/nats-server:nightly-${NDATE} synadia/nats-server:${{ inputs.label }}
-
-        docker push synadia/nats-server:${{ inputs.label }}-${NDATE}
-        docker push synadia/nats-server:${{ inputs.label }}
+    - name: Build and push Docker images
+      uses: docker/build-push-action@v6
+      with:
+        context: "${{ github.workspace }}/src/github.com/nats-io"
+        file: "${{ github.workspace }}/src/github.com/nats-io/nats-server/docker/Dockerfile.nightly"
+        build-args: |
+          VERSION=nightly-${{ env.BUILD_DATE }}
+          GIT_COMMIT=${{ env.GIT_COMMIT }}
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          synadia/nats-server:${{ env.BUILD_NAME }}
+          synadia/nats-server:${{ env.BUILD_NAME }}-${{ env.BUILD_DATE }}

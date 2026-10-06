@@ -1,4 +1,4 @@
-// Copyright 2015-2019 The NATS Authors
+// Copyright 2015-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -30,7 +30,7 @@ func TestMaxPayload(t *testing.T) {
 	srv, opts := RunServerWithConfig("./configs/override.conf")
 	defer srv.Shutdown()
 
-	endpoint := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	endpoint := net.JoinHostPort(opts.Host, fmt.Sprintf("%d", opts.Port))
 	nc, err := nats.Connect(fmt.Sprintf("nats://%s/", endpoint))
 	if err != nil {
 		t.Fatalf("Could not connect to server: %v", err)

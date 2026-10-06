@@ -1,4 +1,4 @@
-// Copyright 2012-2021 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -30,6 +30,14 @@ var (
 
 	// ErrAuthExpired represents an expired authorization due to timeout.
 	ErrAuthExpired = errors.New("authentication expired")
+
+	// ErrAuthProxyNotTrusted represents an error condition on failed authentication
+	// due to a connection from a proxy not in the list of trusted proxies.
+	ErrAuthProxyNotTrusted = errors.New("proxy is not trusted")
+
+	// ErrAuthProxyRequired represents an error condition on failed authentication
+	// due to a connection not coming from a proxy.
+	ErrAuthProxyRequired = errors.New("proxy connection required")
 
 	// ErrMaxPayload represents an error condition when the payload is too big.
 	ErrMaxPayload = errors.New("maximum payload exceeded")
@@ -189,6 +197,9 @@ var (
 	// ErrClusterNameHasSpaces signals that the cluster name contains spaces, which is not allowed.
 	ErrClusterNameHasSpaces = errors.New("cluster name cannot contain spaces")
 
+	// ErrClusterNameReserved signals that the cluster name is reserved for internal protocol use.
+	ErrClusterNameReserved = errors.New("cluster name is reserved")
+
 	// ErrMalformedSubject is returned when a subscription is made with a subject that does not conform to subject rules.
 	ErrMalformedSubject = errors.New("malformed subject")
 
@@ -207,6 +218,9 @@ var (
 
 	// ErrMinimumVersionRequired is returned when a connection is not at the minimum version required.
 	ErrMinimumVersionRequired = errors.New("minimum version required")
+	// ErrLeafNodeMinVersionRejected is the leafnode protocol error prefix used
+	// when rejecting a remote due to leafnodes.min_version.
+	ErrLeafNodeMinVersionRejected = errors.New("connection rejected since minimum version required is")
 
 	// ErrInvalidMappingDestination is used for all subject mapping destination errors
 	ErrInvalidMappingDestination = errors.New("invalid mapping destination")
@@ -243,6 +257,9 @@ type mappingDestinationErr struct {
 }
 
 func (e *mappingDestinationErr) Error() string {
+	if e.token == _EMPTY_ {
+		return e.err.Error()
+	}
 	return fmt.Sprintf("%s in %s", e.err, e.token)
 }
 

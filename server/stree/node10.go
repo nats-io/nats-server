@@ -1,4 +1,4 @@
-// Copyright 2023-2024 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -52,7 +52,8 @@ func (n *node10) findChild(c byte) *node {
 func (n *node10) isFull() bool { return n.size >= 10 }
 
 func (n *node10) grow() node {
-	nn := newNode16(n.prefix)
+	nn := &node16{}
+	nn.prefix = n.prefix
 	for i := 0; i < 10; i++ {
 		nn.addChild(n.key[i], n.child[i])
 	}

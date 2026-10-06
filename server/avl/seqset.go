@@ -1,4 +1,4 @@
-// Copyright 2023 The NATS Authors
+// Copyright 2023-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -42,6 +42,22 @@ type SequenceSet struct {
 // Insert will insert the sequence into the set.
 // The tree will be balanced inline.
 func (ss *SequenceSet) Insert(seq uint64) {
+	// If a node covering seq already exists, setting a bit can not change the
+	// tree shape, so skip the recursive descent and rebalance checks.
+	for n := ss.root; n != nil; {
+		if seq < n.base {
+			n = n.l
+		} else if seq >= n.base+numEntries {
+			n = n.r
+		} else {
+			n.set(seq, &ss.changed)
+			if ss.changed {
+				ss.changed = false
+				ss.size++
+			}
+			return
+		}
+	}
 	if ss.root = ss.root.insert(seq, &ss.changed, &ss.nodes); ss.changed {
 		ss.changed = false
 		ss.size++
@@ -61,6 +77,75 @@ func (ss *SequenceSet) Exists(seq uint64) bool {
 		return n.exists(seq)
 	}
 	return false
+}
+
+// SpanEnd returns the last sequence in the consecutive span starting at seq.
+// If seq is not in the set, it returns 0, false.
+func (ss *SequenceSet) SpanEnd(seq uint64) (end uint64, found bool) {
+	if ss == nil {
+		return 0, false
+	}
+
+	// Keep only ancestors that are successors of the node being searched for.
+	var path [32]*node
+	parents := path[:0]
+	n := ss.root
+	for n != nil {
+		if seq < n.base {
+			parents = append(parents, n)
+			n = n.l
+		} else if seq-n.base >= numEntries {
+			n = n.r
+		} else {
+			break
+		}
+	}
+	if n == nil || !n.exists(seq) {
+		return 0, false
+	}
+
+	offset := seq - n.base
+	bucket, bit := offset/bitsPerBucket, offset%bitsPerBucket
+	for {
+		for ; bucket < numBuckets; bucket++ {
+			// Ignore bits before seq and find the first missing sequence.
+			if missing := ^n.bits[bucket] & (^uint64(0) << bit); missing != 0 {
+				delta := uint64(bits.TrailingZeros64(missing)) - bit
+				if delta > ^uint64(0)-seq {
+					return ^uint64(0), true
+				}
+				return seq + delta - 1, true
+			}
+			// A full word can be skipped, unless it reaches the sequence limit.
+			step := uint64(bitsPerBucket) - bit
+			if step > ^uint64(0)-seq {
+				return ^uint64(0), true
+			}
+			seq += step
+			bit = 0
+		}
+
+		// Advance to the next node in tree order without searching from the root.
+		if n.r != nil {
+			n = n.r
+			for n.l != nil {
+				parents = append(parents, n)
+				n = n.l
+			}
+		} else if len(parents) > 0 {
+			n = parents[len(parents)-1]
+			parents = parents[:len(parents)-1]
+		} else {
+			return seq - 1, true
+		}
+		// A gap in node coverage ends the span. SetInitialMin can leave an
+		// unaligned node overlapping its successor, so resume at seq's offset.
+		if n.base > seq || seq-n.base >= numEntries {
+			return seq - 1, true
+		}
+		offset = seq - n.base
+		bucket, bit = offset/bitsPerBucket, offset%bitsPerBucket
+	}
 }
 
 // SetInitialMin should be used to set the initial minimum sequence when known.
@@ -187,17 +272,32 @@ func (ss *SequenceSet) Clone() *SequenceSet {
 	return css
 }
 
+// Equal returns whether the two sets contain exactly the same sequences.
+func (ss *SequenceSet) Equal(other *SequenceSet) bool {
+	if ss.IsEmpty() || other.IsEmpty() {
+		return ss.IsEmpty() && other.IsEmpty()
+	}
+	if ss.size != other.size {
+		return false
+	}
+	// Sizes are equal, so a one-way membership check suffices.
+	equal := true
+	ss.Range(func(seq uint64) bool {
+		equal = other.Exists(seq)
+		return equal
+	})
+	return equal
+}
+
 // Union will union this SequenceSet with ssa.
 func (ss *SequenceSet) Union(ssa ...*SequenceSet) {
 	for _, sa := range ssa {
 		sa.root.nodeIter(func(n *node) {
 			for nb, b := range n.bits {
-				for pos := uint64(0); b != 0; pos++ {
-					if b&1 == 1 {
-						seq := n.base + (uint64(nb) * uint64(bitsPerBucket)) + pos
-						ss.Insert(seq)
-					}
-					b >>= 1
+				base := n.base + uint64(nb)*bitsPerBucket
+				for b != 0 {
+					ss.Insert(base + uint64(bits.TrailingZeros64(b)))
+					b &= b - 1
 				}
 			}
 		})
@@ -239,7 +339,7 @@ func (ss SequenceSet) EncodeLen() int {
 	return minLen + (ss.Nodes() * ((numBuckets+1)*8 + 2))
 }
 
-func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
+func (ss SequenceSet) Encode(buf []byte) []byte {
 	nn, encLen := ss.Nodes(), ss.EncodeLen()
 
 	if cap(buf) < encLen {
@@ -248,10 +348,6 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 		buf = buf[:encLen]
 	}
 
-	// TODO(dlc) - Go 1.19 introduced Append to not have to keep track.
-	// Once 1.20 is out we could change this over.
-	// Also binary.Write() is way slower, do not use.
-
 	var le = binary.LittleEndian
 	buf[0], buf[1] = magic, version
 	i := hdrLen
@@ -259,16 +355,17 @@ func (ss SequenceSet) Encode(buf []byte) ([]byte, error) {
 	le.PutUint32(buf[i+4:], uint32(ss.size))
 	i += 8
 	ss.root.nodeIter(func(n *node) {
-		le.PutUint64(buf[i:], n.base)
-		i += 8
-		for _, b := range n.bits {
-			le.PutUint64(buf[i:], b)
-			i += 8
+		// Bound the whole record once, and read buckets without copying the array.
+		const nodeLen = (numBuckets+1)*8 + 2
+		record := buf[i : i+nodeLen]
+		le.PutUint64(record, n.base)
+		for j := range n.bits {
+			le.PutUint64(record[8+j*8:], n.bits[j])
 		}
-		le.PutUint16(buf[i:], uint16(n.h))
-		i += 2
+		le.PutUint16(record[nodeLen-2:], uint16(n.h))
+		i += nodeLen
 	})
-	return buf[:i], nil
+	return buf[:i]
 }
 
 // ErrBadEncoding is returned when we can not decode properly.
@@ -302,8 +399,11 @@ func decodev2(buf []byte) (*SequenceSet, int, error) {
 	sz := int(le.Uint32(buf[index+4:]))
 	index += 8
 
-	expectedLen := minLen + (nn * ((numBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// nn is decoded as a uint32 but held in an int. On 32-bit builds a value
+	// above MaxInt32 turns negative and nn*perNode below overflows, so the
+	// length check would pass for a short buffer and the following make/reads
+	// run off the end. Compare with division so the bound holds on every arch.
+	if nn < 0 || nn > (len(buf)-minLen)/((numBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -335,8 +435,9 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 
 	const v1NumBuckets = 64
 
-	expectedLen := minLen + (nn * ((v1NumBuckets+1)*8 + 2))
-	if len(buf) < expectedLen {
+	// See decodev2: guard the node count without overflowing the multiply so
+	// the bound stays correct on 32-bit builds too.
+	if nn < 0 || nn > (len(buf)-minLen)/((v1NumBuckets+1)*8+2) {
 		return nil, -1, ErrBadEncoding
 	}
 
@@ -347,12 +448,9 @@ func decodev1(buf []byte) (*SequenceSet, int, error) {
 		for nb := uint64(0); nb < v1NumBuckets; nb++ {
 			n := le.Uint64(buf[index:])
 			// Walk all set bits and insert sequences manually for this decode from v1.
-			for pos := uint64(0); n != 0; pos++ {
-				if n&1 == 1 {
-					seq := base + (nb * uint64(bitsPerBucket)) + pos
-					ss.Insert(seq)
-				}
-				n >>= 1
+			for n != 0 {
+				ss.Insert(base + (nb * uint64(bitsPerBucket)) + uint64(bits.TrailingZeros64(n)))
+				n &= n - 1
 			}
 			index += 8
 		}
@@ -527,9 +625,15 @@ func (n *node) clear(seq uint64, deleted *bool) bool {
 	seq -= n.base
 	i := seq / bitsPerBucket
 	mask := uint64(1) << (seq % bitsPerBucket)
-	if (n.bits[i] & mask) != 0 {
-		n.bits[i] &^= mask
-		*deleted = true
+	if (n.bits[i] & mask) == 0 {
+		// Nothing cleared, and nodes in the tree are never empty,
+		// so no need to scan the buckets.
+		return false
+	}
+	n.bits[i] &^= mask
+	*deleted = true
+	if n.bits[i] != 0 {
+		return false
 	}
 	for _, b := range n.bits {
 		if b != 0 {
@@ -543,6 +647,7 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 	if n == nil {
 		return nil
 	}
+	nn := *nodes
 
 	if seq < n.base {
 		n.l = n.l.delete(seq, deleted, nodes)
@@ -561,6 +666,10 @@ func (n *node) delete(seq uint64, deleted *bool, nodes *int) *node {
 		}
 	}
 
+	// Clearing a bit without removing a node leaves heights and balance unchanged.
+	if *nodes == nn {
+		return n
+	}
 	if n != nil {
 		n.h = maxH(n) + 1
 	}
@@ -663,11 +772,13 @@ func (n *node) iter(f func(uint64) bool) bool {
 	if ok := n.l.iter(f); !ok {
 		return false
 	}
-	for num := n.base; num < n.base+numEntries; num++ {
-		if n.exists(num) {
-			if ok := f(num); !ok {
+	for i, b := range n.bits {
+		base := n.base + uint64(i)*bitsPerBucket
+		for b != 0 {
+			if ok := f(base + uint64(bits.TrailingZeros64(b))); !ok {
 				return false
 			}
+			b &= b - 1
 		}
 	}
 	if ok := n.r.iter(f); !ok {

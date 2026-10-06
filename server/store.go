@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,11 +18,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+	"math/bits"
+	"os"
 	"strings"
 	"time"
 	"unsafe"
 
 	"github.com/nats-io/nats-server/v2/server/avl"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 )
 
 // StorageType determines how messages are stored for retention.
@@ -33,8 +37,6 @@ const (
 	FileStorage = StorageType(22)
 	// MemoryStorage specifies in memory only.
 	MemoryStorage = StorageType(33)
-	// Any is for internals.
-	AnyStorage = StorageType(44)
 )
 
 var (
@@ -54,19 +56,19 @@ var (
 	// while a snapshot is in progress.
 	ErrStoreSnapshotInProgress = errors.New("snapshot in progress")
 	// ErrMsgTooLarge is returned when a message is considered too large.
-	ErrMsgTooLarge = errors.New("message to large")
+	ErrMsgTooLarge = errors.New("message too large")
 	// ErrStoreWrongType is for when you access the wrong storage type.
 	ErrStoreWrongType = errors.New("wrong storage type")
 	// ErrNoAckPolicy is returned when trying to update a consumer's acks with no ack policy.
 	ErrNoAckPolicy = errors.New("ack policy is none")
-	// ErrInvalidSequence is returned when the sequence is not present in the stream store.
-	ErrInvalidSequence = errors.New("invalid sequence")
 	// ErrSequenceMismatch is returned when storing a raw message and the expected sequence is wrong.
 	ErrSequenceMismatch = errors.New("expected sequence does not match store")
 	// ErrCorruptStreamState
 	ErrCorruptStreamState = errors.New("stream state snapshot is corrupt")
 	// ErrTooManyResults
 	ErrTooManyResults = errors.New("too many matching results for request")
+	// ErrStoreOldUpdate is returned when a consumer update is older than the current state.
+	ErrStoreOldUpdate = errors.New("old update ignored")
 )
 
 // StoreMsg is the stored message format for messages that are retained by the Store layer.
@@ -83,15 +85,26 @@ type StoreMsg struct {
 // For the cases where its a single message we will also supply sequence number and subject.
 type StorageUpdateHandler func(msgs, bytes int64, seq uint64, subj string)
 
+// Used to call back into the upper layers to remove a message.
+type StorageRemoveMsgHandler func(seq uint64)
+
+// Used to call back into the upper layers to process a JetStream message.
+// Will propose the message if the stream is replicated.
+type ProcessJetStreamMsgHandler func(*inMsg)
+
 type StreamStore interface {
-	StoreMsg(subject string, hdr, msg []byte) (uint64, int64, error)
-	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64) error
-	SkipMsg() uint64
+	StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error)
+	StoreRawMsg(subject string, hdr, msg []byte, seq uint64, ts int64, ttl int64, discardNewCheck bool) error
+	SkipMsg(seq uint64) (uint64, error)
+	SkipMsgNoInterest(seq uint64) (uint64, error)
 	SkipMsgs(seq uint64, num uint64) error
+	FlushAllPending() error
 	LoadMsg(seq uint64, sm *StoreMsg) (*StoreMsg, error)
 	LoadNextMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
-	LoadNextMsgMulti(sl *Sublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
+	LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	LoadLastMsg(subject string, sm *StoreMsg) (*StoreMsg, error)
+	LoadPrevMsg(filter string, wc bool, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
+	LoadPrevMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error)
 	RemoveMsg(seq uint64) (bool, error)
 	EraseMsg(seq uint64) (bool, error)
 	Purge() (uint64, error)
@@ -99,26 +112,36 @@ type StreamStore interface {
 	Compact(seq uint64) (uint64, error)
 	Truncate(seq uint64) error
 	GetSeqFromTime(t time.Time) uint64
-	FilteredState(seq uint64, subject string) SimpleState
+	FilteredState(seq uint64, subject string) (SimpleState, error)
 	SubjectsState(filterSubject string) map[string]SimpleState
 	SubjectsTotals(filterSubject string) map[string]uint64
+	SourcesState() map[string]StreamSourceState
+	AllLastSeqs() ([]uint64, error)
 	MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error)
-	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64)
-	NumPendingMulti(sseq uint64, sl *Sublist, lastPerSubject bool) (total, validThrough uint64)
+	MultiLastMsgs(filters []string, minSeq, maxSeq uint64, maxAllowed int, cb func(sm *StoreMsg, np uint64) bool) (uint64, uint64, error)
+	SubjectForSeq(seq uint64) (string, error)
+	NumPending(sseq uint64, filter string, lastPerSubject bool) (total, validThrough uint64, err error)
+	NumPendingMulti(sseq uint64, sl *gsl.SimpleSublist, lastPerSubject bool) (total, validThrough uint64, err error)
 	State() StreamState
 	FastState(*StreamState)
-	EncodedStreamState(failed uint64) (enc []byte, err error)
-	SyncDeleted(dbs DeleteBlocks)
+	EncodedStreamState(failed uint64, withSources bool) (enc []byte, err error)
+	ApplySourcesState(sources map[string]StreamSourceState)
+	SyncDeleted(dbs DeleteBlocks) error
 	Type() StorageType
 	RegisterStorageUpdates(StorageUpdateHandler)
+	RegisterStorageRemoveMsg(StorageRemoveMsgHandler)
+	RegisterProcessJetStreamMsg(ProcessJetStreamMsgHandler)
 	UpdateConfig(cfg *StreamConfig) error
-	Delete() error
+	Ready() // Only needed if store started in recovering mode.
+	Delete(inline bool) error
 	Stop() error
-	ConsumerStore(name string, cfg *ConsumerConfig) (ConsumerStore, error)
+	ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error)
 	AddConsumer(o ConsumerStore) error
 	RemoveConsumer(o ConsumerStore) error
+	Consumers() iter.Seq[ConsumerStore]
 	Snapshot(deadline time.Duration, includeConsumers, checkMsgs bool) (*SnapshotResult, error)
 	Utilization() (total, reported uint64, err error)
+	ResetState()
 }
 
 // RetentionPolicy determines how messages in a set are retained.
@@ -183,7 +206,7 @@ type LostStreamData struct {
 type SnapshotResult struct {
 	Reader io.ReadCloser
 	State  StreamState
-	errCh  chan string
+	errCh  chan error
 }
 
 const (
@@ -191,6 +214,10 @@ const (
 	streamStateMagic = uint8(42)
 	// Version
 	streamStateVersion = uint8(1)
+	// Version that additionally carries the stream's sourcing state. Only emitted
+	// when explicitly enabled, since a server that only understands the previous
+	// version rejects the encoding outright.
+	streamStateVersionSources = uint8(2)
 	// Magic / Identifier for run length encodings.
 	runLengthMagic = uint8(33)
 	// Magic / Identifier for AVL seqsets.
@@ -218,20 +245,27 @@ type StreamReplicatedState struct {
 	LastSeq  uint64
 	Failed   uint64
 	Deleted  DeleteBlocks
+	// Sources is the stream's sourcing state, only present in encodings of
+	// streamStateVersionSources and above. It can't be derived from the messages
+	// alone, since it outlives the messages it was collected from.
+	Sources map[string]StreamSourceState
 }
 
 // Determine if this is an encoded stream state.
 func IsEncodedStreamState(buf []byte) bool {
-	return len(buf) >= hdrLen && buf[0] == streamStateMagic && buf[1] == streamStateVersion
+	return len(buf) >= hdrLen && buf[0] == streamStateMagic &&
+		(buf[1] == streamStateVersion || buf[1] == streamStateVersionSources)
 }
 
 var ErrBadStreamStateEncoding = errors.New("bad stream state encoding")
 
 func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 	ss := &StreamReplicatedState{}
-	if len(buf) < hdrLen || buf[0] != streamStateMagic || buf[1] != streamStateVersion {
+	if len(buf) < hdrLen || buf[0] != streamStateMagic ||
+		(buf[1] != streamStateVersion && buf[1] != streamStateVersionSources) {
 		return nil, ErrBadStreamStateEncoding
 	}
+	withSources := buf[1] == streamStateVersionSources
 	var bi = hdrLen
 
 	readU64 := func() uint64 {
@@ -262,6 +296,42 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 		return nil, ErrCorruptStreamState
 	}
 
+	// Sources come before the deleted blocks, since those are read up to the end
+	// of the buffer and can't be followed by anything else.
+	if withSources {
+		numSources := readU64()
+		if parserFailed() {
+			return nil, ErrCorruptStreamState
+		}
+		// Same entry layout as the on-disk sources index, all lengths as varints
+		// since both strings are short.
+		readStr := func() (string, bool) {
+			n := readU64()
+			if parserFailed() || uint64(len(buf)-bi) < n {
+				bi = -1
+				return _EMPTY_, false
+			}
+			s := string(buf[bi : bi+int(n)])
+			bi += int(n)
+			return s, true
+		}
+		for i := uint64(0); i < numSources; i++ {
+			name, ok := readStr()
+			if !ok {
+				return nil, ErrCorruptStreamState
+			}
+			seq := readU64()
+			ident, ok := readStr()
+			if !ok || parserFailed() {
+				return nil, ErrCorruptStreamState
+			}
+			if ss.Sources == nil {
+				ss.Sources = make(map[string]StreamSourceState, numSources)
+			}
+			ss.Sources[name] = StreamSourceState{Seq: seq, Ident: ident}
+		}
+	}
+
 	if numDeleted := readU64(); numDeleted > 0 {
 		// If we have some deleted blocks.
 		for l := len(buf); l > bi; {
@@ -289,6 +359,27 @@ func DecodeStreamState(buf []byte) (*StreamReplicatedState, error) {
 	}
 
 	return ss, nil
+}
+
+// uvarintLen returns the number of bytes binary.PutUvarint/binary.AppendUvarint
+// write for v: ceil(bits/7), with v=0 taking one byte.
+func uvarintLen(v uint64) int {
+	return (bits.Len64(v|1) + 6) / 7
+}
+
+// runLengthEncodeLen returns the encoded size of a run-length delete record,
+// exactly matching what appendRunLength writes.
+func runLengthEncodeLen(first, num uint64) int {
+	return 1 + uvarintLen(first) + uvarintLen(num)
+}
+
+// appendRunLength appends a run-length encoded delete record for num
+// deleted sequences starting at first.
+func appendRunLength(b []byte, first, num uint64) []byte {
+	b = append(b, runLengthMagic)
+	b = binary.AppendUvarint(b, first)
+	b = binary.AppendUvarint(b, num)
+	return b
 }
 
 // DeleteRange is a run length encoded delete range.
@@ -344,11 +435,16 @@ func (dbs DeleteBlocks) NumDeleted() (total uint64) {
 // ConsumerStore stores state on consumers for streams.
 type ConsumerStore interface {
 	SetStarting(sseq uint64) error
+	UpdateStarting(sseq uint64)
+	Reset(sseq uint64) error
 	HasState() bool
 	UpdateDelivered(dseq, sseq, dc uint64, ts int64) error
 	UpdateAcks(dseq, sseq uint64) error
+	RemoveRedeliveredBelow(seq uint64)
+	GetConfig() *ConsumerConfig
 	UpdateConfig(cfg *ConsumerConfig) error
 	Update(*ConsumerState) error
+	ForceUpdate(*ConsumerState) error
 	State() (*ConsumerState, error)
 	BorrowState() (*ConsumerState, error)
 	EncodedState() ([]byte, error)
@@ -448,12 +544,6 @@ type Pending struct {
 	Timestamp int64
 }
 
-// TemplateStore stores templates.
-type TemplateStore interface {
-	Store(*streamTemplate) error
-	Delete(*streamTemplate) error
-}
-
 const (
 	limitsPolicyJSONString    = `"limits"`
 	interestPolicyJSONString  = `"interest"`
@@ -543,13 +633,11 @@ func (dp *DiscardPolicy) UnmarshalJSON(data []byte) error {
 const (
 	memoryStorageJSONString = `"memory"`
 	fileStorageJSONString   = `"file"`
-	anyStorageJSONString    = `"any"`
 )
 
 var (
 	memoryStorageJSONBytes = []byte(memoryStorageJSONString)
 	fileStorageJSONBytes   = []byte(fileStorageJSONString)
-	anyStorageJSONBytes    = []byte(anyStorageJSONString)
 )
 
 func (st StorageType) String() string {
@@ -558,8 +646,6 @@ func (st StorageType) String() string {
 		return "Memory"
 	case FileStorage:
 		return "File"
-	case AnyStorage:
-		return "Any"
 	default:
 		return "Unknown Storage Type"
 	}
@@ -571,8 +657,6 @@ func (st StorageType) MarshalJSON() ([]byte, error) {
 		return memoryStorageJSONBytes, nil
 	case FileStorage:
 		return fileStorageJSONBytes, nil
-	case AnyStorage:
-		return anyStorageJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", st)
 	}
@@ -584,8 +668,6 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 		*st = MemoryStorage
 	case fileStorageJSONString:
 		*st = FileStorage
-	case anyStorageJSONString:
-		*st = AnyStorage
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}
@@ -593,15 +675,17 @@ func (st *StorageType) UnmarshalJSON(data []byte) error {
 }
 
 const (
-	ackNonePolicyJSONString     = `"none"`
-	ackAllPolicyJSONString      = `"all"`
-	ackExplicitPolicyJSONString = `"explicit"`
+	ackNonePolicyJSONString        = `"none"`
+	ackAllPolicyJSONString         = `"all"`
+	ackExplicitPolicyJSONString    = `"explicit"`
+	ackFlowControlPolicyJSONString = `"flow_control"`
 )
 
 var (
-	ackNonePolicyJSONBytes     = []byte(ackNonePolicyJSONString)
-	ackAllPolicyJSONBytes      = []byte(ackAllPolicyJSONString)
-	ackExplicitPolicyJSONBytes = []byte(ackExplicitPolicyJSONString)
+	ackNonePolicyJSONBytes        = []byte(ackNonePolicyJSONString)
+	ackAllPolicyJSONBytes         = []byte(ackAllPolicyJSONString)
+	ackExplicitPolicyJSONBytes    = []byte(ackExplicitPolicyJSONString)
+	ackFlowControlPolicyJSONBytes = []byte(ackFlowControlPolicyJSONString)
 )
 
 func (ap AckPolicy) MarshalJSON() ([]byte, error) {
@@ -612,6 +696,8 @@ func (ap AckPolicy) MarshalJSON() ([]byte, error) {
 		return ackAllPolicyJSONBytes, nil
 	case AckExplicit:
 		return ackExplicitPolicyJSONBytes, nil
+	case AckFlowControl:
+		return ackFlowControlPolicyJSONBytes, nil
 	default:
 		return nil, fmt.Errorf("can not marshal %v", ap)
 	}
@@ -625,6 +711,8 @@ func (ap *AckPolicy) UnmarshalJSON(data []byte) error {
 		*ap = AckAll
 	case ackExplicitPolicyJSONString:
 		*ap = AckExplicit
+	case ackFlowControlPolicyJSONString:
+		*ap = AckFlowControl
 	default:
 		return fmt.Errorf("can not unmarshal %q", data)
 	}
@@ -732,7 +820,7 @@ func isOutOfSpaceErr(err error) bool {
 var errFirstSequenceMismatch = errors.New("first sequence mismatch")
 
 func isClusterResetErr(err error) bool {
-	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch || errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries
+	return err == errLastSeqMismatch || err == ErrStoreEOF || err == errFirstSequenceMismatch || errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries || err == errAlreadyLeader
 }
 
 // Copy all fields.
@@ -783,4 +871,8 @@ func copyString(s string) string {
 	b := make([]byte, len(s))
 	copy(b, s)
 	return bytesToString(b)
+}
+
+func isPermissionError(err error) bool {
+	return err != nil && os.IsPermission(err)
 }

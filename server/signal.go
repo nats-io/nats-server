@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !windows && !wasm
-// +build !windows,!wasm
 
 package server
 
@@ -47,39 +46,43 @@ func (s *Server) handleSignals() {
 		for {
 			select {
 			case sig := <-c:
-				s.Debugf("Trapped %q signal", sig)
-				switch sig {
-				case syscall.SIGINT:
-					s.Shutdown()
-					s.WaitForShutdown()
-					os.Exit(0)
-				case syscall.SIGTERM:
-					// Shutdown unless graceful shutdown already in progress.
-					s.mu.Lock()
-					ldm := s.ldm
-					s.mu.Unlock()
-
-					if !ldm {
-						s.Shutdown()
-						s.WaitForShutdown()
-						os.Exit(1)
-					}
-				case syscall.SIGUSR1:
-					// File log re-open for rotating file logs.
-					s.ReOpenLogFile()
-				case syscall.SIGUSR2:
-					go s.lameDuckMode()
-				case syscall.SIGHUP:
-					// Config reload.
-					if err := s.Reload(); err != nil {
-						s.Errorf("Failed to reload server configuration: %s", err)
-					}
-				}
+				s.handleSignal(sig)
 			case <-s.quitCh:
 				return
 			}
 		}
 	}()
+}
+
+func (s *Server) handleSignal(sig os.Signal) {
+	s.Noticef("Trapped %q signal", sig)
+	switch sig {
+	case syscall.SIGINT:
+		s.Shutdown()
+		s.WaitForShutdown()
+		os.Exit(0)
+	case syscall.SIGTERM:
+		// Shutdown unless graceful shutdown already in progress.
+		s.mu.Lock()
+		ldm := s.ldm
+		s.mu.Unlock()
+
+		if !ldm {
+			s.Shutdown()
+			s.WaitForShutdown()
+			os.Exit(0)
+		}
+	case syscall.SIGUSR1:
+		// File log re-open for rotating file logs.
+		s.ReOpenLogFile()
+	case syscall.SIGUSR2:
+		go s.lameDuckMode()
+	case syscall.SIGHUP:
+		// Config reload.
+		if err := s.Reload(); err != nil {
+			s.Errorf("Failed to reload server configuration: %s", err)
+		}
+	}
 }
 
 // ProcessSignal sends the given signal command to the given process. If pidStr

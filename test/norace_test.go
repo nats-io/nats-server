@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -11,8 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !race && !skip_no_race_tests
-// +build !race,!skip_no_race_tests
+//go:build !race && !skip_no_race_tests && !skip_no_race_1_tests
 
 package test
 

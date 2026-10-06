@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -2026,6 +2026,22 @@ func TestConfigCheck(t *testing.T) {
 			errorPos:  8,
 		},
 		{
+			name: "duplicate remote leafnode",
+			config: `
+				leafnodes {
+					port: -1
+					remotes [
+						{ url: "nats://user1:pwd@127.0.0.1:1234" }
+						{ url: "nats://user2:pwd@127.0.0.1:1235" }
+						{ url: "nats://user1:pwd@127.0.0.1:1234" }
+					]
+				}
+			`,
+			err:       fmt.Errorf("duplicate remote"),
+			errorLine: 7,
+			errorPos:  9,
+		},
+		{
 			name:       "show warnings on empty configs without values",
 			config:     ``,
 			warningErr: errors.New(`config has no values or is empty`),
@@ -2152,6 +2168,343 @@ func TestConfigCheck(t *testing.T) {
 			err:       fmt.Errorf("error parsing X509 certificate/key pair 2/2: open configs/certs/key.new.pom: no such file or directory"),
 			errorLine: 3,
 			errorPos:  5,
+		},
+		{
+			name: "Proxies wrong type",
+			config: `
+				port: -1
+				proxies: 123
+			`,
+			err:       errors.New("expected proxies to be a map/struct, got int64"),
+			errorLine: 3,
+			errorPos:  5,
+		},
+		{
+			name: "Proxies unknown field",
+			config: `
+				port: -1
+				proxies: {
+					field1: 123
+				}
+			`,
+			err:       errors.New("unknown field"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "Proxies trusted wrong type",
+			config: `
+				port: -1
+				proxies: {
+					trusted: 123
+				}
+			`,
+			err:       errors.New("expected proxies' trusted field to be an array, got int64"),
+			errorLine: 4,
+			errorPos:  6,
+		},
+		{
+			name: "Proxies trusted key wrong type",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						"abc",
+						"def"
+					]
+				}
+			`,
+			err:       errors.New("expected proxies' trusted entry to be a map/struct, got string"),
+			errorLine: 5,
+			errorPos:  8,
+		},
+		{
+			name: "Proxies trusted unknown field",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						{
+							key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+							field1: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("unknown field"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
+			name: "Proxies trusted key invalid",
+			config: `
+				port: -1
+				proxies: {
+					trusted: [
+						{key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"}
+						{key: "bad1"}
+						{key: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"}
+						{key: "bad2"}
+					]
+				}
+			`,
+			err:       errors.New("invalid proxy key"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "Auth user require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					user: user
+					password: pwd
+					proxy_required: 123
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 6,
+			errorPos:  6,
+		},
+		{
+			name: "Auth users require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					users: [
+						{
+							user: user
+							password: pwd
+							proxy_required: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  8,
+		},
+		{
+			name: "Auth nkey users require proxied wrong type",
+			config: `
+				port: -1
+				authorization {
+					users: [
+						{
+							nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+							proxy_required: 123
+						}
+					]
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 7,
+			errorPos:  8,
+		},
+		{
+			name: "Account users require proxied wrong type",
+			config: `
+				port: -1
+				accounts {
+					A: {
+						users: [
+							{
+								user: user
+								password: pwd
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 9,
+			errorPos:  9,
+		},
+		{
+			name: "Account nkey users require proxied wrong type",
+			config: `
+				port: -1
+				accounts {
+					A: {
+						users: [
+							{
+								nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  9,
+		},
+		{
+			name: "Leafnode user require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						user: user
+						password: pwd
+						proxy_required: 123
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 8,
+			errorPos:  7,
+		},
+		{
+			name: "Leafnode neky user require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+						proxy_required: 123
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 7,
+			errorPos:  7,
+		},
+		{
+			name: "Leafnode users require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						users: [
+							{
+								user: user
+								password: pwd
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 10,
+			errorPos:  9,
+		},
+		{
+			name: "Leafnode nkey users require proxied wrong type",
+			config: `
+				port: -1
+				leafnodes {
+					port: -1
+					authorization {
+						users: [
+							{
+								nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+								proxy_required: 123
+							}
+						]
+					}
+				}
+			`,
+			err:       errors.New("interface conversion"),
+			errorLine: 9,
+			errorPos:  9,
+		},
+		{
+			name: "leafnode proxy with unsupported scheme",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "ftp://proxy.example.com:8080"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy URL scheme must be http or https, got: ftp"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with missing host",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy URL must specify a host"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with username but no password",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+								username: "testuser"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy username and password must both be specified or both be empty"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with password but no username",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "ws://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+								password: "testpass"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy username and password must both be specified or both be empty"),
+			errorLine: 6,
+			errorPos:  8,
+		},
+		{
+			name: "leafnode proxy with WSS URL but no TLS config",
+			config: `
+				leafnodes {
+					remotes = [
+						{
+							url: "wss://127.0.0.1:7422"
+							proxy {
+								url: "http://proxy.example.com:8080"
+							}
+						}
+					]
+				}
+			`,
+			err:       errors.New("proxy is configured but remote URL wss://127.0.0.1:7422 requires TLS and no TLS configuration is provided"),
+			errorLine: 6,
+			errorPos:  8,
 		},
 	}
 

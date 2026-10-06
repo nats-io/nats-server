@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/conf"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -74,6 +76,11 @@ func TestDefaultOptions(t *testing.T) {
 		JetStreamMaxStore:          -1,
 		SyncInterval:               2 * time.Minute,
 		JetStreamRequestQueueLimit: JSDefaultRequestQueueLimit,
+		JetStreamInfoQueueLimit:    JSDefaultRequestQueueLimit,
+		JetStreamConcurrentIOs:     defaultConcurrentIOs,
+		JetStreamLimits: JSLimitOpts{
+			DefaultMaxConsumers: JSDefaultMaxConsumersPerStream,
+		},
 	}
 
 	opts := &Options{}
@@ -121,7 +128,9 @@ func TestConfigFile(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
-		configDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
+		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
+		FeatureFlags:          map[string]bool{"feature": false, "fix": true, "revert_fix": true},
+		configDigest:          "sha256:f10eacddb9ce83a6bdc79b42c851b9628d49cf8b3c6ba95b1ecf090307504948",
 		authBlockDefined:      true,
 	}
 
@@ -166,10 +175,6 @@ func TestTLSConfigFile(t *testing.T) {
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("Expected MinVersion of 1.2 [%v], got [%v]", tls.VersionTLS12, tlsConfig.MinVersion)
 	}
-	//lint:ignore SA1019 We want to retry on a bunch of errors here.
-	if !tlsConfig.PreferServerCipherSuites { // nolint:staticcheck
-		t.Fatal("Expected PreferServerCipherSuites to be true")
-	}
 	// Verify hostname is correct in certificate
 	if len(tlsConfig.Certificates) != 1 {
 		t.Fatal("Expected 1 certificate")
@@ -177,6 +182,16 @@ func TestTLSConfigFile(t *testing.T) {
 	cert := tlsConfig.Certificates[0].Leaf
 	if err := cert.VerifyHostname("127.0.0.1"); err != nil {
 		t.Fatalf("Could not verify hostname in certificate: %v", err)
+	}
+
+	// First make sure that we can't add insecure cipher suites accidentally.
+	_, err = ProcessConfigFile("./configs/tls_insecure_ciphers.conf")
+	if err == nil || !strings.Contains(err.Error(), "insecure") {
+		t.Fatalf("Expected to receive insecure cipher error reading configuration file but didn't")
+	}
+	_, err = ProcessConfigFile("./configs/tls_insecure_ciphers_allowed.conf")
+	if err != nil {
+		t.Fatalf("Received an error reading config file: %v", err)
 	}
 
 	// Now test adding cipher suites.
@@ -191,15 +206,8 @@ func TestTLSConfigFile(t *testing.T) {
 
 	// CipherSuites listed in the config - test all of them.
 	ciphers = []uint16{
-		tls.TLS_RSA_WITH_RC4_128_SHA,
-		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
@@ -288,8 +296,12 @@ func TestMergeOverrides(t *testing.T) {
 		LameDuckDuration:      4 * time.Minute,
 		ConnectErrorReports:   86400,
 		ReconnectErrorReports: 5,
+		JetStream:             true,
+		StoreDir:              "/store/dir",
 		authBlockDefined:      true,
-		configDigest:          "sha256:314adbd9997c1183f028f5b620362daa45893da76bac746136bfb48b2fd14996",
+		Metadata:              map[string]string{"key1": "value1", "key2": "value2"},
+		FeatureFlags:          map[string]bool{"feature": false, "fix": true, "revert_fix": true},
+		configDigest:          "sha256:f10eacddb9ce83a6bdc79b42c851b9628d49cf8b3c6ba95b1ecf090307504948",
 	}
 	fopts, err := ProcessConfigFile("./configs/test.conf")
 	if err != nil {
@@ -308,45 +320,12 @@ func TestMergeOverrides(t *testing.T) {
 			NoAdvertise:    true,
 			ConnectRetries: 2,
 		},
+		JetStream: true,
+		StoreDir:  "/store/dir",
 	}
 	merged := MergeOptions(fopts, opts)
 
 	checkOptionsEqual(t, golden, merged)
-}
-
-func TestRemoveSelfReference(t *testing.T) {
-	url1, _ := url.Parse("nats-route://user:password@10.4.5.6:4223")
-	url2, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
-	url3, _ := url.Parse("nats-route://user:password@127.0.0.1:4223")
-
-	routes := []*url.URL{url1, url2, url3}
-
-	newroutes, err := RemoveSelfReference(4223, routes)
-	if err != nil {
-		t.Fatalf("Error during RemoveSelfReference: %v", err)
-	}
-
-	if len(newroutes) != 1 {
-		t.Fatalf("Wrong number of routes: %d", len(newroutes))
-	}
-
-	if newroutes[0] != routes[0] {
-		t.Fatalf("Self reference IP address %s in Routes", routes[0])
-	}
-}
-
-func TestAllowRouteWithDifferentPort(t *testing.T) {
-	url1, _ := url.Parse("nats-route://user:password@127.0.0.1:4224")
-	routes := []*url.URL{url1}
-
-	newroutes, err := RemoveSelfReference(4223, routes)
-	if err != nil {
-		t.Fatalf("Error during RemoveSelfReference: %v", err)
-	}
-
-	if len(newroutes) != 1 {
-		t.Fatalf("Wrong number of routes: %d", len(newroutes))
-	}
 }
 
 func TestRouteFlagOverride(t *testing.T) {
@@ -1267,6 +1246,7 @@ func TestOptionsClone(t *testing.T) {
 		Cluster: ClusterOpts{
 			NoAdvertise:    true,
 			ConnectRetries: 2,
+			WriteDeadline:  3 * time.Second,
 		},
 		Gateway: GatewayOpts{
 			Name: "A",
@@ -1358,6 +1338,13 @@ func TestPanic(t *testing.T) {
 			t.Fatalf("This was supposed to trip a panic on interface conversion right at the beginning")
 		}
 	}
+}
+
+func TestMaxClosedClients(t *testing.T) {
+	conf := createConfFile(t, []byte(`max_closed_clients: 5`))
+	opts, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Equal(t, opts.MaxClosedClients, 5)
 }
 
 func TestPingIntervalOld(t *testing.T) {
@@ -2083,6 +2070,7 @@ func TestParsingGateways(t *testing.T) {
 		}
 		advertise: "me:1"
 		connect_retries: 10
+		connect_backoff: true
 		gateways: [
 			{
 				name: "B"
@@ -2114,6 +2102,7 @@ func TestParsingGateways(t *testing.T) {
 		AuthTimeout:    2.0,
 		Advertise:      "me:1",
 		ConnectRetries: 10,
+		ConnectBackoff: true,
 		TLSTimeout:     3.0,
 		RejectUnknown:  true,
 	}
@@ -2492,14 +2481,20 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 
 		content := `
 		port: -1
+		accounts: {
+			A { users [ {user: a, password: a} ]}
+			B { users [ {user: b, password: b} ]}
+		}
 		leafnodes {
 			remotes = [
 				{
 					dont_randomize: true
 					urls: %[1]s
+					account: "A"
 				}
 				{
 					urls: %[1]s
+					account: "B"
 				}
 			]
 		}
@@ -2509,10 +2504,16 @@ func TestParsingLeafNodeRemotes(t *testing.T) {
 		s, _ := RunServerWithConfig(conf)
 		defer s.Shutdown()
 
-		s.mu.Lock()
-		r1 := s.leafRemoteCfgs[0]
-		r2 := s.leafRemoteCfgs[1]
-		s.mu.Unlock()
+		var r1, r2 *leafNodeCfg
+		s.mu.RLock()
+		for r := range s.leafRemoteCfgs {
+			if r.NoRandomize {
+				r1 = r
+			} else {
+				r2 = r
+			}
+		}
+		s.mu.RUnlock()
 
 		r1.RLock()
 		gotOrdered := r1.urls
@@ -3246,6 +3247,95 @@ func TestQueuePermissions(t *testing.T) {
 	}
 }
 
+func TestQueueQualifierOnlyAllowedForSubscribePermissions(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		config    string
+		shouldErr bool
+	}{
+		{
+			name: "subscribe deny",
+			config: `
+				authorization {
+					users: [{
+						user: u
+						password: p
+						permissions: { subscribe: { deny: ["admin.secret workers"] } }
+					}]
+				}
+			`,
+		},
+		{
+			name: "publish deny",
+			config: `
+				authorization {
+					users: [{
+						user: u
+						password: p
+						permissions: { publish: { deny: ["admin.secret workers"] } }
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "leaf deny imports",
+			config: `
+				leafnodes {
+					remotes: [{
+						url: "nats://127.0.0.1:7422"
+						deny_imports: ["admin.secret workers"]
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "leaf deny exports",
+			config: `
+				leafnodes {
+					remotes: [{
+						url: "nats://127.0.0.1:7422"
+						deny_exports: ["admin.secret workers"]
+					}]
+				}
+			`,
+			shouldErr: true,
+		},
+		{
+			name: "cluster export deny",
+			config: `
+				cluster {
+					name: "C"
+					permissions {
+						export { deny: ["admin.secret workers"] }
+					}
+				}
+			`,
+			shouldErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := createConfFile(t, []byte(tc.config))
+			_, err := ProcessConfigFile(conf)
+			if tc.shouldErr && err == nil {
+				t.Fatal("Expected queue-qualified permission to be rejected")
+			}
+			if !tc.shouldErr && err != nil {
+				t.Fatalf("Expected queue-qualified subscribe permission to be accepted, got %v", err)
+			}
+		})
+	}
+
+	opts := DefaultOptions()
+	opts.Cluster.Permissions = &RoutePermissions{
+		Export: &SubjectPermission{Deny: []string{"admin.secret workers"}},
+	}
+	if _, err := NewServer(opts); err == nil {
+		t.Fatal("Expected programmatic queue-qualified cluster export permission to be rejected")
+	}
+}
+
 func TestResolverPinnedAccountsFail(t *testing.T) {
 	cfgFmt := `
 		operator: %s
@@ -3498,4 +3588,1194 @@ func TestProcessConfigString(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDefaultSentinel(t *testing.T) {
+	d := `
+		default_sentinel: "hello"
+	`
+	conf := createConfFile(t, []byte(d))
+	opts := LoadConfig(conf)
+	require_Equal(t, "hello", opts.DefaultSentinel)
+
+	// if we validate, it will fail, we need an operator
+	// tests verifying run of configured, elsewhere
+	err := validateOptions(opts)
+	require_Error(t, err)
+	require_Equal(t, "default sentinel requires operators and accounts", err.Error())
+}
+
+func TestAuthorizationTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name                string
+		config              string
+		expectParsed        float64
+		expectRunning       float64
+		expectErrorContains string
+	}
+
+	for _, tc := range []testCase{{
+		name:          "defaults",
+		config:        "authorization {}",
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit zero",
+		config: `
+			authorization {
+				timeout: 0
+			}`,
+		expectParsed:  0,
+		expectRunning: 2,
+	}, {
+		name: "explicit one",
+		config: `
+			authorization {
+				timeout: 1
+			}`,
+		expectParsed:  1,
+		expectRunning: 1,
+	}, {
+		name: "garbage",
+		config: `
+			authorization {
+				timeout: random_garbage
+			}`,
+		expectErrorContains: `invalid duration "random_garbage"`,
+	}, {
+		name: "human readable",
+		config: `
+			authorization {
+				timeout: 10s
+			}`,
+		expectParsed:  10,
+		expectRunning: 10,
+	}, {
+		name: "bare values could be parsed as integers",
+		config: `
+			authorization {
+				timeout: 1m
+			}`,
+		expectParsed:  1000000,
+		expectRunning: 1000000,
+	}, {
+		name: "but quoted values will be parsed as durations",
+		config: `
+			authorization {
+				timeout: "1m"
+			}`,
+		expectParsed:  60,
+		expectRunning: 60,
+	}, {
+		name: "human readable minutes quoted",
+		config: `
+			authorization {
+				timeout: "10m5s30ms"
+			}`,
+		expectParsed:  605.03,
+		expectRunning: 605.03,
+	}, {
+		name: "floats work",
+		config: `
+			authorization {
+				timeout: 0.091
+			}`,
+		expectParsed:  .091,
+		expectRunning: .091,
+	}, {
+		name: "but no leading digit fails",
+		config: `
+			authorization {
+				timeout: .091
+			}`,
+		expectErrorContains: "Floats must start with a digit",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			if tc.expectErrorContains != "" {
+				if !strings.Contains(err.Error(), tc.expectErrorContains) {
+					t.Errorf("Expected error like %q, got %v", tc.expectErrorContains, err)
+				}
+				return
+			} else {
+				if err != nil {
+					t.Errorf("Error processing config: %v", err)
+				}
+			}
+
+			if opts.AuthTimeout != tc.expectParsed {
+				t.Errorf("Expected Parsed AuthTimeout to be %f, got %f", tc.expectParsed, opts.AuthTimeout)
+			}
+
+			s := RunServer(opts)
+			defer s.Shutdown()
+
+			sopts := s.getOpts()
+			if sopts.AuthTimeout != tc.expectRunning {
+				t.Errorf("Expected Running AuthTimeout to be %f, got %f", tc.expectRunning, sopts.AuthTimeout)
+			}
+		})
+	}
+}
+
+func TestLeafnodeAuthorizationTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name                string
+		config              string
+		expect              float64
+		expectErrorContains string
+	}
+
+	for _, tc := range []testCase{{
+		name:   "defaults",
+		config: "leafnodes { authorization {} }",
+		expect: 0,
+	}, {
+		name: "explicit zero",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 0
+				}
+			}`,
+		expect: 0,
+	}, {
+		name: "explicit one",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 1
+				}
+			}`,
+		expect: 1,
+	}, {
+		name: "garbage",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: random_garbage
+				}
+			}`,
+		expectErrorContains: `invalid duration "random_garbage"`,
+	}, {
+		name: "human readable",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 10s
+				}
+			}`,
+		expect: 10,
+	}, {
+		name: "bare values could be parsed as integers",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 1m
+				}
+			}`,
+		expect: 1000000,
+	}, {
+		name: "but quoted values will be parsed as durations",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: "1m"
+				}
+			}`,
+		expect: 60,
+	}, {
+		name: "human readable minutes quoted",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: "10m5s30ms"
+				}
+			}`,
+		expect: 605.03,
+	}, {
+		name: "floats work",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: 0.091
+				}
+			}`,
+		expect: .091,
+	}, {
+		name: "but no leading digit fails",
+		config: `
+			leafnodes {
+				authorization {
+					timeout: .091
+				}
+			}`,
+		expectErrorContains: "Floats must start with a digit",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			if tc.expectErrorContains != "" {
+				if !strings.Contains(err.Error(), tc.expectErrorContains) {
+					t.Errorf("Expected error like %q, got %v", tc.expectErrorContains, err)
+				}
+				return
+			} else {
+				if err != nil {
+					t.Errorf("Error processing config: %v", err)
+				}
+			}
+
+			if opts.LeafNode.AuthTimeout != tc.expect {
+				t.Errorf("Expected Parsed LeafNode AuthTimeout to be %f, got %f", tc.expect, opts.LeafNode.AuthTimeout)
+			}
+		})
+	}
+}
+
+func parseConfigTolerantly(t *testing.T, data string) (*Options, error) {
+	t.Helper()
+
+	m, err := conf.ParseWithChecks(data)
+	if err != nil {
+		return nil, err
+	}
+
+	o := new(Options)
+	if err = o.processConfigFile(_EMPTY_, m); err != nil {
+		switch v := err.(type) {
+		case *processConfigErr:
+			if len(v.errors) > 0 {
+				return o, err
+			}
+			for _, w := range v.warnings {
+				t.Logf("WARNING: %v", w)
+			}
+			return o, nil
+		default:
+			t.Logf("Unexpected error type %T", v)
+			return o, err
+		}
+	}
+
+	return o, nil
+}
+
+func TestOptionsProxyTrustedKeys(t *testing.T) {
+	o := DefaultOptions()
+	o.Proxies = &ProxiesConfig{
+		Trusted: []*ProxyConfig{
+			{Key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"},
+			{Key: "bad1"},
+			{Key: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"},
+			{Key: "bad2"},
+		},
+	}
+	err := validateOptions(o)
+	require_Error(t, err)
+	require_Equal(t, "proxy trusted key \"bad1\" is invalid", err.Error())
+
+	o.Proxies = &ProxiesConfig{
+		Trusted: []*ProxyConfig{
+			{Key: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"},
+			{Key: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI"},
+		},
+	}
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	opts := s.getOpts()
+	for i, kp := range s.proxiesKeyPairs {
+		pub, err := kp.PublicKey()
+		require_NoError(t, err)
+		require_Equal(t, opts.Proxies.Trusted[i].Key, pub)
+	}
+}
+
+func TestOptionsProxyRequired(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		port: -1
+		authorization {
+			user: user
+			password: pwd
+			proxy_required: true
+		}
+	`))
+	o, err := ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Equal(t, o.Username, "user")
+	require_Equal(t, o.Password, "pwd")
+	require_True(t, o.ProxyRequired)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		authorization {
+			users: [
+				{user: user1, password: pwd1}
+				{user: user2, password: pwd2, proxy_required: true}
+				{user: user3, password: pwd3, proxy_required: false}
+				{nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3", proxy_required: true}
+				{nkey: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI", proxy_required: false}
+			]
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+
+	checkUsersAndNkeys := func(users []*User, hasNkeys bool, nkeys []*NkeyUser) {
+		t.Helper()
+		var found bool
+
+		require_Len(t, len(users), 3)
+		for _, u := range users {
+			switch u.Username {
+			case "user1", "user3":
+				require_False(t, u.ProxyRequired)
+			case "user2":
+				require_True(t, u.ProxyRequired)
+				found = true
+			}
+		}
+		require_True(t, found)
+
+		if !hasNkeys {
+			return
+		}
+
+		found = false
+		require_Len(t, len(nkeys), 2)
+		for _, u := range nkeys {
+			switch u.Nkey {
+			case "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3":
+				require_True(t, u.ProxyRequired)
+				found = true
+			case "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI":
+				require_False(t, u.ProxyRequired)
+			}
+		}
+		require_True(t, found)
+	}
+	checkUsersAndNkeys(o.Users, true, o.Nkeys)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		accounts {
+			A {
+				users: [
+					{user: user1, password: pwd1}
+					{user: user2, password: pwd2, proxy_required: true}
+					{user: user3, password: pwd3, proxy_required: false}
+					{nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3", proxy_required: true}
+					{nkey: "UD6AYQSOIN2IN5OGC6VQZCR4H3UFMIOXSW6NNS6N53CLJA4PB56CEJJI", proxy_required: false}
+				]
+			}
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Len(t, len(o.Accounts), 1)
+	require_Equal(t, o.Accounts[0].Name, "A")
+	checkUsersAndNkeys(o.Users, true, o.Nkeys)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+			authorization {
+				user: user
+				password: pwd
+				proxy_required: true
+			}
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Equal(t, o.LeafNode.Username, "user")
+	require_Equal(t, o.LeafNode.Password, "pwd")
+	require_True(t, o.LeafNode.ProxyRequired)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes {
+			port: -1
+			authorization {
+				nkey: "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3"
+				proxy_required: true
+			}
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+	require_Equal(t, o.LeafNode.Nkey, "UCARKS2E3KVB7YORL2DG34XLT7PUCOL2SVM7YXV6ETHLW6Z46UUJ2VZ3")
+	require_True(t, o.LeafNode.ProxyRequired)
+
+	conf = createConfFile(t, []byte(`
+		port: -1
+		leafnodes: {
+			port: -1
+			authorization {
+				users: [
+					{user: user1, password: pwd1}
+					{user: user2, password: pwd2, proxy_required: true}
+					{user: user3, password: pwd3, proxy_required: false}
+				]
+			}
+		}
+	`))
+	o, err = ProcessConfigFile(conf)
+	require_NoError(t, err)
+	checkUsersAndNkeys(o.LeafNode.Users, false, nil)
+}
+
+// TestNewServerFromConfigFunctionality tests the NewServerFromConfig() function
+// to ensure it properly processes config files and creates servers correctly.
+func TestNewServerFromConfigFunctionality(t *testing.T) {
+	// Test 1: Error handling - invalid configuration
+	confFileName := createConfFile(t, []byte(`
+		max_payload = 3000000000
+	`))
+
+	opts1 := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// Should fail due to oversized max_payload (same as TestLargeMaxPayload)
+	if _, err := NewServerFromConfig(opts1); err == nil {
+		t.Fatalf("Expected an error from too large of a max_payload entry")
+	}
+
+	// Test 2: Config validation error - max_pending > max_payload
+	confFileName = createConfFile(t, []byte(`
+		max_payload = 100000
+		max_pending = 50000
+	`))
+
+	opts2 := &Options{
+		ConfigFile: confFileName,
+	}
+
+	// This should trigger validation error (same as TestLargeMaxPayload)
+	server, err := NewServerFromConfig(opts2)
+	if err == nil || !strings.Contains(err.Error(), "cannot be higher") {
+		if server != nil {
+			server.Shutdown()
+		}
+		t.Fatalf("Expected validation error, got: %v", err)
+	}
+}
+
+// TestNewServerFromConfigVsLoadConfig tests that NewServerFromConfig produces
+// equivalent results to the traditional LoadConfig approach.
+func TestNewServerFromConfigVsLoadConfig(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		port = 4224
+		max_payload = 4194304
+		max_connections = 200
+		ping_interval = "30s"
+	`))
+
+	// Method 1: Using LoadConfig (traditional approach)
+	opts1 := LoadConfig(confFileName)
+
+	// Method 2: Using NewServerFromConfig (new approach for embedded servers)
+	opts2 := &Options{ConfigFile: confFileName}
+
+	// Test 1: Both should be able to create servers successfully
+	server1, err := NewServer(opts1)
+	if err != nil {
+		t.Fatalf("Failed to create server with LoadConfig options: %v", err)
+	}
+	server1.Shutdown()
+
+	server2, err := NewServerFromConfig(opts2)
+	if err != nil {
+		t.Fatalf("Failed to create server with NewServerFromConfig: %v", err)
+	}
+	server2.Shutdown()
+
+	// Test 2: Both methods should produce equivalent results - normalize test environment fields
+	// LoadConfig sets these fields for testing, so we need to match them for fair comparison
+	opts2.NoSigs, opts2.NoLog = true, opts2.LogFile == _EMPTY_
+
+	checkOptionsEqual(t, opts1, opts2)
+}
+
+func TestWriteDeadlineConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for _, tc := range []testCase{
+		{
+			name: "LeafNode",
+			config: `
+				leafnodes {
+					write_deadline: 5s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.LeafNode.WriteDeadline, 5*time.Second)
+			},
+		},
+		{
+			name: "Gateway",
+			config: `
+				gateway {
+					write_deadline: 6s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Gateway.WriteDeadline, 6*time.Second)
+			},
+		},
+		{
+			name: "Cluster",
+			config: `
+				cluster {
+					write_deadline: 7s
+				}
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.Cluster.WriteDeadline, 7*time.Second)
+			},
+		},
+		{
+			name: "Global",
+			config: `
+				write_deadline: 8s
+			`,
+			expect: func(t *testing.T, opts *Options) {
+				require_Equal(t, opts.WriteDeadline, 8*time.Second)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseConfigTolerantly(t, tc.config)
+			require_NoError(t, err)
+			tc.expect(t, opts)
+		})
+	}
+}
+
+func TestWriteTimeoutConfigParsing(t *testing.T) {
+	type testCase struct {
+		name   string
+		config string
+		expect func(t *testing.T, opts *Options)
+	}
+
+	for str, pol := range map[string]WriteTimeoutPolicy{
+		"default": WriteTimeoutPolicyDefault,
+		"retry":   WriteTimeoutPolicyRetry,
+		"close":   WriteTimeoutPolicyClose,
+	} {
+		for _, tc := range []testCase{
+			{
+				name: "LeafNode",
+				config: fmt.Sprintf(`
+					leafnodes {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.LeafNode.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Gateway",
+				config: fmt.Sprintf(`
+					gateway {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Gateway.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Cluster",
+				config: fmt.Sprintf(`
+					cluster {
+						write_timeout: %s
+					}
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.Cluster.WriteTimeout, pol)
+				},
+			},
+			{
+				name: "Global",
+				config: fmt.Sprintf(`
+					write_timeout: %s
+				`, str),
+				expect: func(t *testing.T, opts *Options) {
+					require_Equal(t, opts.WriteTimeout, pol)
+				},
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", tc.name, str), func(t *testing.T) {
+				opts, err := parseConfigTolerantly(t, tc.config)
+				require_NoError(t, err)
+				tc.expect(t, opts)
+			})
+		}
+	}
+}
+
+func TestWebsocketPingIntervalConfig(t *testing.T) {
+	// Test with string format (duration string)
+	confFile := createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: "30s"
+		}
+	`))
+	opts, err := ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 30*time.Second {
+		t.Fatalf("Expected websocket ping_interval to be 30s, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test with integer format (seconds)
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: 45
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 45*time.Second {
+		t.Fatalf("Expected websocket ping_interval to be 45s, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test with different duration format
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+			ping_interval: "2m"
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 2*time.Minute {
+		t.Fatalf("Expected websocket ping_interval to be 2m, got %v", opts.Websocket.PingInterval)
+	}
+
+	// Test without ping_interval (should be zero/unset)
+	confFile = createConfFile(t, []byte(`
+		websocket {
+			port: 8080
+		}
+	`))
+	opts, err = ProcessConfigFile(confFile)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Websocket.PingInterval != 0 {
+		t.Fatalf("Expected websocket ping_interval to be 0 (unset), got %v", opts.Websocket.PingInterval)
+	}
+}
+
+// Test variables that reference other variables
+func TestVarReferencesVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		A: 7890
+		B: $A
+		C: $B
+		port: $C
+	`))
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// A variables that reference an environment variable
+func TestVarReferencesEnvVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		A: $_TEST_ENV_NATS_PORT_
+		B: $A
+		C: $B
+		port: $C
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_NATS_PORT_")
+	os.Setenv("_TEST_ENV_NATS_PORT_", "7890")
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// Test a variable that references itself
+func TestVarReferencesSelf(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`A: $A`))
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected var not found error")
+	}
+	require_Contains(t, err.Error(),
+		"variable reference for 'A' on line 1 can not be found")
+}
+
+// An environment variable can't reference a variable
+func TestEnvVarReferencesVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		P: 8080
+		port: $_TEST_ENV_NATS_PORT_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_NATS_PORT_")
+	os.Setenv("_TEST_ENV_NATS_PORT_", "$P")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected var not found error")
+	}
+	require_Contains(t, err.Error(),
+		"variable reference for 'P' on line 1 can not be found")
+}
+
+// Environment variables can reference other environment variables
+func TestEnvVarReferencesEnvVar(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		port: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+	defer os.Unsetenv("_TEST_ENV_B_")
+	defer os.Unsetenv("_TEST_ENV_C_")
+
+	os.Setenv("_TEST_ENV_A_", "$_TEST_ENV_B_")
+	os.Setenv("_TEST_ENV_B_", "$_TEST_ENV_C_")
+	os.Setenv("_TEST_ENV_C_", "7890")
+
+	opts, err := ProcessConfigFile(confFileName)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+// Test an environment variable that references itself
+func TestEnvVarReferencesSelf(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_")
+
+	os.Setenv("_TEST_ENV_", "$_TEST_ENV_")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error")
+	}
+	require_Contains(t, err.Error(), "variable reference cycle")
+}
+
+// Test an environment variable that references itself through a cycle
+func TestEnvVarReferencesSelfCycle(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+	defer os.Unsetenv("_TEST_ENV_B_")
+	defer os.Unsetenv("_TEST_ENV_C_")
+
+	os.Setenv("_TEST_ENV_A_", "$_TEST_ENV_B_")
+	os.Setenv("_TEST_ENV_B_", "$_TEST_ENV_C_")
+	os.Setenv("_TEST_ENV_C_", "$_TEST_ENV_A_")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatalf("Expected an error")
+	}
+	require_Contains(t, err.Error(), "variable reference cycle")
+}
+
+// Test can't include from environment variable
+func TestEnvVarInclude(t *testing.T) {
+	confFileName := createConfFile(t, []byte(`
+		TEST: $_TEST_ENV_A_
+	`))
+
+	defer os.Unsetenv("_TEST_ENV_A_")
+
+	os.Setenv("_TEST_ENV_A_", "include x")
+
+	_, err := ProcessConfigFile(confFileName)
+	if err == nil {
+		t.Fatal("Expected an error")
+	}
+	require_Contains(t, err.Error(), "Expected a top-level value to end with a new line, comment or EOF")
+}
+
+func TestEnvVarFromIncludedFile(t *testing.T) {
+	includeFileName := createConfFile(t, []byte(`
+		TEST_PORT: $_TEST_ENV_PORT_A_
+	`))
+
+	confFileContent := fmt.Sprintf(`
+		include "./%s"
+		port: $TEST_PORT
+	`, filepath.Base(includeFileName))
+
+	dir := filepath.Dir(includeFileName)
+	conf, err := os.CreateTemp(dir, "conf-")
+	require_NoError(t, err)
+	if err := os.WriteFile(conf.Name(), []byte(confFileContent), 0666); err != nil {
+		t.Fatalf("Error writing conf file: %v", err)
+	}
+
+	defer os.Unsetenv("_TEST_ENV_PORT_A_")
+	defer os.Unsetenv("_TEST_ENV_PORT_B_")
+
+	os.Setenv("_TEST_ENV_PORT_A_", "$_TEST_ENV_PORT_B_")
+	os.Setenv("_TEST_ENV_PORT_B_", "7890")
+
+	opts, err := ProcessConfigFile(conf.Name())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if opts.Port != 7890 {
+		t.Fatalf("Expected port 7890, found %d", opts.Port)
+	}
+}
+
+func TestRedactArgs(t *testing.T) {
+	var tests []struct {
+		name     string
+		input    []string
+		expected []string
+	}
+
+	for _, dash := range []string{"-", "--"} {
+		for _, tag := range []string{"user", "pass", "auth"} {
+			for _, value := range []string{"hello", "hello world"} {
+				flag := dash + tag
+				tests = append(tests, struct {
+					name     string
+					input    []string
+					expected []string
+				}{
+					name:     fmt.Sprintf("%s%s-space-%q", dash, tag, value),
+					input:    []string{flag, value},
+					expected: []string{flag, "[REDACTED]"},
+				})
+				tests = append(tests, struct {
+					name     string
+					input    []string
+					expected []string
+				}{
+					name:     fmt.Sprintf("%s%s-equals-%q", dash, tag, value),
+					input:    []string{flag + "=" + value},
+					expected: []string{flag + "=[REDACTED]"},
+				})
+			}
+		}
+	}
+
+	for _, dash := range []string{"-", "--"} {
+		for _, test := range []struct {
+			name     string
+			tag      string
+			input    string
+			expected string
+		}{
+			{
+				name:     "routes-single",
+				tag:      "routes",
+				input:    "nats://ruser:s3cret@127.0.0.1:6222",
+				expected: "nats://[REDACTED]@127.0.0.1:6222",
+			},
+			{
+				name:     "routes-no-creds",
+				tag:      "routes",
+				input:    "nats://127.0.0.1:6222",
+				expected: "nats://127.0.0.1:6222",
+			},
+			{
+				name:     "routes-multi",
+				tag:      "routes",
+				input:    "nats://ruser:s3cret@127.0.0.1:6222, nats://ruser2:s3cret2@127.0.0.1:6223",
+				expected: "nats://[REDACTED]@127.0.0.1:6222,nats://[REDACTED]@127.0.0.1:6223",
+			},
+			{
+				name:     "cluster",
+				tag:      "cluster",
+				input:    "nats://cuser:s3cret@127.0.0.1:6224",
+				expected: "nats://[REDACTED]@127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-no-creds",
+				tag:      "cluster",
+				input:    "nats://127.0.0.1:6224",
+				expected: "nats://127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-comma-user",
+				tag:      "cluster",
+				input:    "nats://cuser,extra:s3cret@127.0.0.1:6224",
+				expected: "nats://[REDACTED]@127.0.0.1:6224",
+			},
+			{
+				name:     "cluster-random-port",
+				tag:      "cluster",
+				input:    "nats://cuser:s3cret@127.0.0.1:-1",
+				expected: "nats://[REDACTED]@127.0.0.1:-1",
+			},
+			{
+				name:     "cluster-listen",
+				tag:      "cluster_listen",
+				input:    "nats://luser:s3cret@127.0.0.1:6225",
+				expected: "nats://[REDACTED]@127.0.0.1:6225",
+			},
+			{
+				name:     "cluster-listen-comma-user",
+				tag:      "cluster_listen",
+				input:    "nats://luser,extra:s3cret@127.0.0.1:6225",
+				expected: "nats://[REDACTED]@127.0.0.1:6225",
+			},
+			{
+				name:     "cluster-listen-random-port",
+				tag:      "cluster_listen",
+				input:    "nats://luser:s3cret@127.0.0.1:-1",
+				expected: "nats://[REDACTED]@127.0.0.1:-1",
+			},
+		} {
+			tests = append(tests, struct {
+				name     string
+				input    []string
+				expected []string
+			}{
+				name:     fmt.Sprintf("%s%s-space", dash, test.name),
+				input:    []string{dash + test.tag, test.input},
+				expected: []string{dash + test.tag, test.expected},
+			})
+			tests = append(tests, struct {
+				name     string
+				input    []string
+				expected []string
+			}{
+				name:     fmt.Sprintf("%s%s-equals", dash, test.name),
+				input:    []string{dash + test.tag + "=" + test.input},
+				expected: []string{dash + test.tag + "=" + test.expected},
+			})
+		}
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := append([]string(nil), test.input...)
+			RedactArgs(input)
+			if !reflect.DeepEqual(input, test.expected) {
+				t.Fatalf("A %v\nB %v", test.expected, input)
+			}
+		})
+	}
+}
+
+func TestOptionsCompressionEqual(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		genOpts func() (*CompressionOpts, *CompressionOpts)
+		equal   bool
+	}{
+		{"same pointer", func() (*CompressionOpts, *CompressionOpts) {
+			c := &CompressionOpts{}
+			return c, c
+		}, true},
+		{"first nil", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{}, nil
+		}, false},
+		{"second nil", func() (*CompressionOpts, *CompressionOpts) {
+			return nil, &CompressionOpts{}
+		}, false},
+		{"both nil", func() (*CompressionOpts, *CompressionOpts) {
+			return nil, nil
+		}, true},
+		{"different mode", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{Mode: CompressionS2Fast},
+				&CompressionOpts{Mode: CompressionS2Best}
+		}, false},
+		{"same mode", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{Mode: CompressionS2Best},
+				&CompressionOpts{Mode: CompressionS2Best}
+		}, true},
+		{"s2 auto c1 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
+		}, true},
+		{"s2 auto c2 default rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: defaultCompressionS2AutoRTTThresholds,
+			}
+		}, true},
+		{"s2 auto same rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}
+		}, true},
+		{"s2 auto different rtt thresholds", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}
+		}, false},
+		{"s2 auto different rtt thresholds c1 not set", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}
+		}, false},
+		{"s2 auto different rtt thresholds c2 not set", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{15 * time.Millisecond, 30 * time.Millisecond},
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
+		}, false},
+		{"s2 auto both rtt thresholds empty", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{},
+			}, &CompressionOpts{
+				Mode:          CompressionS2Auto,
+				RTTThresholds: []time.Duration{},
+			}
+		}, true},
+		{"s2 auto both rtt thresholds nil", func() (*CompressionOpts, *CompressionOpts) {
+			return &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}, &CompressionOpts{
+				Mode: CompressionS2Auto,
+			}
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c1, c2 := test.genOpts()
+			res := c1.equals(c2)
+			require_Equal(t, test.equal, res)
+		})
+	}
+}
+
+func TestOptionsRemoteLeafNodeName(t *testing.T) {
+	u1, err := url.Parse("nats://user1:secretpwd@127.0.0.1:7222")
+	require_NoError(t, err)
+	u2, err := url.Parse("nats://user2:secretpwd@127.0.0.1:7222")
+	require_NoError(t, err)
+	// With unredacted versions of the URLs
+	urls := []*url.URL{u1, u2}
+	safeURLs := redactURLList(urls)
+	// Some Nkey
+	nkey := "SUACJN3OSKWWPQXME4JUNFJ3PARXPO657GGNWNU7PK7G3AUQQYHLW26XH4"
+	for _, test := range []struct {
+		name       string
+		input      *RemoteLeafOpts
+		output     string
+		safeOutput string
+	}{
+		{
+			"url only", &RemoteLeafOpts{
+				URLs: []*url.URL{u1, u2},
+			},
+			fmt.Sprintf("urls=%q, account=%q", urls, globalAccountName),
+			fmt.Sprintf("urls=%q, account=%q", safeURLs, globalAccountName),
+		},
+		{
+			"url with account", &RemoteLeafOpts{
+				URLs:         []*url.URL{u1, u2},
+				LocalAccount: "A",
+			},
+			fmt.Sprintf("urls=%q, account=%q", urls, "A"),
+			fmt.Sprintf("urls=%q, account=%q", safeURLs, "A"),
+		},
+		{
+			"url with credentials", &RemoteLeafOpts{
+				URLs:        []*url.URL{u1, u2},
+				Credentials: "credsfile",
+			},
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", urls, globalAccountName, "credsfile"),
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, globalAccountName, "credsfile"),
+		},
+		{
+			"url with nkey", &RemoteLeafOpts{
+				URLs: []*url.URL{u1, u2},
+				Nkey: nkey,
+			},
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", urls, globalAccountName, nkey),
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", safeURLs, globalAccountName, "[REDACTED]"),
+		},
+		{
+			"url with account and credentials", &RemoteLeafOpts{
+				URLs:         []*url.URL{u1, u2},
+				LocalAccount: "A",
+				Credentials:  "credsfile",
+			},
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", urls, "A", "credsfile"),
+			fmt.Sprintf("urls=%q, account=%q, credentials=%q", safeURLs, "A", "credsfile"),
+		},
+		{
+			"url with account and nkey", &RemoteLeafOpts{
+				URLs:         []*url.URL{u1, u2},
+				LocalAccount: "A",
+				Nkey:         nkey,
+			},
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", urls, "A", nkey),
+			fmt.Sprintf("urls=%q, account=%q, nkey=%q", safeURLs, "A", "[REDACTED]"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			name := test.input.name()
+			require_Equal(t, name, test.output)
+			name = test.input.safeName()
+			require_Equal(t, name, test.safeOutput)
+		})
+	}
+
+	// Because we use `%q` when building the name, those two will have different
+	// names:
+	// r1=urls=["nats://user1:secretpwd@127.0.0.1:7222"], account="A", credentials="creds"
+	// r2=urls=["nats://user1:secretpwd@127.0.0.1:7222"], account="A\", credentials=\"creds"
+	r1 := &RemoteLeafOpts{URLs: []*url.URL{u1}, LocalAccount: "A", Credentials: "creds"}
+	r2 := &RemoteLeafOpts{URLs: []*url.URL{u1}, LocalAccount: `A", credentials="creds`}
+	require_False(t, r1.name() == r2.name())
 }

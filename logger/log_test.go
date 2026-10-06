@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -30,7 +30,7 @@ func TestStdLogger(t *testing.T) {
 
 	flags := logger.logger.Flags()
 	if flags != 0 {
-		t.Fatalf("Expected %q, received %q\n", 0, flags)
+		t.Fatalf("Expected %v, received %v\n", 0, flags)
 	}
 
 	if logger.debug {

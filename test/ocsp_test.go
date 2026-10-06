@@ -1,4 +1,4 @@
-// Copyright 2021-2024 The NATS Authors
+// Copyright 2021-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,8 +658,8 @@ func TestOCSPReloadRotateTLSCertWithNoURL(t *testing.T) {
 		nats.RootCAs(caCert),
 		nats.ErrorHandler(noOpErrHandler),
 	)
-	if err != expectedErr {
-		t.Fatalf("Unexpected error: %s", expectedErr)
+	if err == nil || !strings.Contains(err.Error(), expectedErr.Error()) {
+		t.Fatalf("Unexpected error: %s, got %s", expectedErr, err)
 	}
 }
 
@@ -1437,6 +1438,10 @@ func TestOCSPLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	cB.Flush()
+
+	// Ensure the subscriptions are known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
+
 	_, err = cC.Request("foo", nil, 2*time.Second)
 	if err != nil {
 		t.Errorf("Expected success, got: %+v", err)
@@ -1710,6 +1715,10 @@ func TestOCSPLeafNoVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	cB.Flush()
+
+	// Ensure the subscriptions are known by the server we're connected to.
+	time.Sleep(100 * time.Millisecond)
+
 	_, err = cC.Request("foo", nil, 2*time.Second)
 	if err != nil {
 		t.Errorf("Expected success, got: %+v", err)

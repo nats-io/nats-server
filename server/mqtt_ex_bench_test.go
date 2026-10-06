@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_mqtt_tests
-// +build !skip_mqtt_tests
 
 package server
 
@@ -91,6 +90,7 @@ func BenchmarkXMQTT(b *testing.B) {
 
 func (bc mqttBenchContext) runAll(b *testing.B) {
 	bc.benchmarkPub(b)
+	bc.benchmarkPubPipelined(b)
 	bc.benchmarkPubRetained(b)
 	bc.benchmarkPubSub(b)
 	bc.benchmarkSubRet(b)
@@ -109,6 +109,31 @@ func (bc mqttBenchContext) benchmarkPub(b *testing.B) {
 				"--messages", strconv.Itoa(b.N),
 				"--size", strconv.Itoa(bc.MessageSize),
 				"--publishers", strconv.Itoa(bc.Publishers),
+				"--mps", "0", // no rate throttle
+			)
+		})
+	})
+}
+
+// makes a copy of bc
+//
+// Like PUB, but with up to 256 messages in flight: measures per-connection
+// throughput rather than round-trip latency.
+func (bc mqttBenchContext) benchmarkPubPipelined(b *testing.B) {
+	m := mqttBenchDefaultMatrix.
+		NoSubscribers().
+		NoTopics().
+		QOS12Only()
+
+	b.Run("PUBX", func(b *testing.B) {
+		m.runMatrix(b, bc, func(b *testing.B, bc *mqttBenchContext) {
+			bc.runAndReport(b, "pub",
+				"--qos", strconv.Itoa(bc.QOS),
+				"--messages", strconv.Itoa(b.N),
+				"--size", strconv.Itoa(bc.MessageSize),
+				"--publishers", strconv.Itoa(bc.Publishers),
+				"--mps", "0", // no rate throttle
+				"--pipeline", "256",
 			)
 		})
 	})
@@ -188,8 +213,6 @@ func (bc mqttBenchContext) runAndReport(b *testing.B, name string, extraArgs ...
 func (bc *mqttBenchContext) startServer(b *testing.B, disableRMSCache bool) func() {
 	b.Helper()
 	b.StopTimer()
-	prevDisableRMSCache := testDisableRMSCache
-	testDisableRMSCache = disableRMSCache
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(b, o)
 
@@ -199,15 +222,12 @@ func (bc *mqttBenchContext) startServer(b *testing.B, disableRMSCache bool) func
 	mqttInitTestServer(b, mqttNewDial("", "", bc.Host, bc.Port, ""))
 	return func() {
 		testMQTTShutdownServer(s)
-		testDisableRMSCache = prevDisableRMSCache
 	}
 }
 
 func (bc *mqttBenchContext) startCluster(b *testing.B, disableRMSCache bool) func() {
 	b.Helper()
 	b.StopTimer()
-	prevDisableRMSCache := testDisableRMSCache
-	testDisableRMSCache = disableRMSCache
 	conf := `
 		listen: 127.0.0.1:-1
 		server_name: %s
@@ -235,7 +255,6 @@ func (bc *mqttBenchContext) startCluster(b *testing.B, disableRMSCache bool) fun
 	mqttInitTestServer(b, mqttNewDial("", "", bc.Host, bc.Port, ""))
 	return func() {
 		cl.shutdown()
-		testDisableRMSCache = prevDisableRMSCache
 	}
 }
 
@@ -302,6 +321,11 @@ func (m mqttBenchMatrix) QOS0Only() mqttBenchMatrix {
 
 func (m mqttBenchMatrix) QOS1Only() mqttBenchMatrix {
 	m.QOS = []int{1}
+	return m
+}
+
+func (m mqttBenchMatrix) QOS12Only() mqttBenchMatrix {
+	m.QOS = []int{1, 2}
 	return m
 }
 

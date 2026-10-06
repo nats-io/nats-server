@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,7 +12,6 @@
 // limitations under the License.
 
 //go:build !skip_js_tests
-// +build !skip_js_tests
 
 package server
 
@@ -21,14 +20,29 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/nats.go"
 )
+
+func TestGetAndSupportsRequiredApiLevel(t *testing.T) {
+	require_Equal(t, getRequiredApiLevel(nil), _EMPTY_)
+	require_Equal(t, getRequiredApiLevel(map[string]string{}), _EMPTY_)
+	require_Equal(t, getRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "1"}), "1")
+	require_Equal(t, getRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "text"}), "text")
+
+	require_True(t, supportsRequiredApiLevel(nil))
+	require_True(t, supportsRequiredApiLevel(map[string]string{}))
+	require_True(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "1"}))
+	require_True(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: strconv.Itoa(JSApiLevel)}))
+	require_False(t, supportsRequiredApiLevel(map[string]string{JSRequiredLevelMetadataKey: "text"}))
+}
 
 func metadataAtLevel(featureLevel string) map[string]string {
 	return map[string]string{
@@ -46,43 +60,68 @@ func TestJetStreamSetStaticStreamMetadata(t *testing.T) {
 	for _, test := range []struct {
 		desc             string
 		cfg              *StreamConfig
-		prev             *StreamConfig
 		expectedMetadata map[string]string
 	}{
 		{
-			desc:             "create",
+			desc:             "empty",
 			cfg:              &StreamConfig{},
-			prev:             nil,
 			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
-			desc:             "create/overwrite-user-provided",
+			desc:             "overwrite-user-provided",
 			cfg:              &StreamConfig{Metadata: metadataPrevious()},
-			prev:             nil,
 			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
-			desc:             "update",
-			cfg:              &StreamConfig{},
-			prev:             &StreamConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataAtLevel("0"),
-		},
-		{
-			desc:             "update/empty-prev-metadata",
-			cfg:              &StreamConfig{},
-			prev:             &StreamConfig{},
-			expectedMetadata: metadataAtLevel("0"),
-		},
-		{
-			desc:             "update/empty-prev-metadata/delete-user-provided",
+			desc:             "empty-prev-metadata/delete-user-provided",
 			cfg:              &StreamConfig{Metadata: metadataPrevious()},
-			prev:             &StreamConfig{},
 			expectedMetadata: metadataAtLevel("0"),
+		},
+		{
+			desc:             "AllowMsgTTL",
+			cfg:              &StreamConfig{AllowMsgTTL: true},
+			expectedMetadata: metadataAtLevel("1"),
+		},
+		{
+			desc:             "SubjectDeleteMarkerTTL",
+			cfg:              &StreamConfig{SubjectDeleteMarkerTTL: time.Second},
+			expectedMetadata: metadataAtLevel("1"),
+		},
+		{
+			desc:             "AllowMsgCounter",
+			cfg:              &StreamConfig{AllowMsgCounter: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
+		{
+			desc:             "AllowAtomicPublish",
+			cfg:              &StreamConfig{AllowAtomicPublish: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
+		{
+			desc:             "AllowMsgSchedules",
+			cfg:              &StreamConfig{AllowMsgSchedules: true},
+			expectedMetadata: metadataAtLevel("2"),
+		},
+		{
+			desc:             "AsyncPersistMode",
+			cfg:              &StreamConfig{PersistMode: AsyncPersistMode},
+			expectedMetadata: metadataAtLevel("2"),
+		},
+		{
+			desc:             "AllowBatchPublish",
+			cfg:              &StreamConfig{AllowBatchPublish: true},
+			expectedMetadata: metadataAtLevel("4"),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setStaticStreamMetadata(test.cfg, test.prev)
-			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
+			setStaticStreamMetadata(test.cfg)
+			level := test.cfg.Metadata[JSRequiredLevelMetadataKey]
+			require_Equal(t, level, test.expectedMetadata[JSRequiredLevelMetadataKey])
+
+			// Ensure we up the server API level if we introduced a feature that requires it.
+			l, err := strconv.Atoi(level)
+			require_NoError(t, err)
+			require_True(t, l <= JSApiLevel)
 		})
 	}
 }
@@ -96,12 +135,7 @@ func TestJetStreamSetStaticStreamMetadataRemoveDynamicFields(t *testing.T) {
 	}
 
 	cfg := StreamConfig{Metadata: dynamicMetadata()}
-	setStaticStreamMetadata(&cfg, nil)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
-
-	cfg = StreamConfig{Metadata: dynamicMetadata()}
-	prevCfg := StreamConfig{Metadata: metadataAtLevel("0")}
-	setStaticStreamMetadata(&cfg, &prevCfg)
+	setStaticStreamMetadata(&cfg)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 }
 
@@ -117,79 +151,124 @@ func TestJetStreamSetDynamicStreamMetadata(t *testing.T) {
 	require_True(t, reflect.DeepEqual(newCfg.Metadata, metadata))
 }
 
+func TestJetStreamCopyStreamMetadata(t *testing.T) {
+	for _, test := range []struct {
+		desc string
+		cfg  *StreamConfig
+		prev *StreamConfig
+	}{
+		{
+			desc: "no-previous-ignore",
+			cfg:  &StreamConfig{Metadata: metadataAtLevel("-1")},
+			prev: nil,
+		},
+		{
+			desc: "nil-previous-metadata-ignore",
+			cfg:  &StreamConfig{Metadata: metadataAtLevel("-1")},
+			prev: &StreamConfig{Metadata: nil},
+		},
+		{
+			desc: "nil-current-metadata-ignore",
+			cfg:  &StreamConfig{Metadata: nil},
+			prev: &StreamConfig{Metadata: metadataPrevious()},
+		},
+		{
+			desc: "copy-previous",
+			cfg:  &StreamConfig{Metadata: metadataAtLevel("-1")},
+			prev: &StreamConfig{Metadata: metadataPrevious()},
+		},
+		{
+			desc: "delete-missing-fields",
+			cfg:  &StreamConfig{Metadata: metadataAtLevel("-1")},
+			prev: &StreamConfig{Metadata: make(map[string]string)},
+		},
+	} {
+		t.Run(test.desc, func(t *testing.T) {
+			copyStreamMetadata(test.cfg, test.prev)
+
+			var expectedMetadata map[string]string
+			if test.prev != nil {
+				expectedMetadata = test.prev.Metadata
+			}
+
+			value, ok := expectedMetadata[JSRequiredLevelMetadataKey]
+			if ok {
+				require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], value)
+			} else {
+				// Key shouldn't exist.
+				_, ok = test.cfg.Metadata[JSRequiredLevelMetadataKey]
+				require_False(t, ok)
+			}
+		})
+	}
+}
+
+func TestJetStreamCopyStreamMetadataRemoveDynamicFields(t *testing.T) {
+	dynamicMetadata := func() map[string]string {
+		return map[string]string{
+			JSServerVersionMetadataKey: "dynamic-version",
+			JSServerLevelMetadataKey:   "dynamic-version",
+		}
+	}
+
+	cfg := StreamConfig{Metadata: dynamicMetadata()}
+	copyStreamMetadata(&cfg, nil)
+	require_Equal(t, len(cfg.Metadata), 0)
+
+	cfg = StreamConfig{Metadata: dynamicMetadata()}
+	prevCfg := StreamConfig{Metadata: metadataAtLevel("0")}
+	copyStreamMetadata(&cfg, &prevCfg)
+	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
+}
+
 func TestJetStreamSetStaticConsumerMetadata(t *testing.T) {
 	pauseUntil := time.Unix(0, 0)
 	pauseUntilZero := time.Time{}
 	for _, test := range []struct {
 		desc             string
 		cfg              *ConsumerConfig
-		prev             *ConsumerConfig
 		expectedMetadata map[string]string
 	}{
 		{
-			desc:             "create",
+			desc:             "empty",
 			cfg:              &ConsumerConfig{},
-			prev:             nil,
 			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
-			desc:             "create/PauseUntil/zero",
-			cfg:              &ConsumerConfig{PauseUntil: &pauseUntilZero},
-			prev:             nil,
-			expectedMetadata: metadataAtLevel("0"),
-		},
-		{
-			desc:             "create/PauseUntil",
-			cfg:              &ConsumerConfig{PauseUntil: &pauseUntil},
-			prev:             nil,
-			expectedMetadata: metadataAtLevel("1"),
-		},
-		{
-			desc:             "create/overwrite-user-provided",
+			desc:             "overwrite-user-provided",
 			cfg:              &ConsumerConfig{Metadata: metadataPrevious()},
-			prev:             nil,
 			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
-			desc:             "update",
-			cfg:              &ConsumerConfig{},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
-			expectedMetadata: metadataAtLevel("0"),
-		},
-		{
-			desc:             "create/PauseUntil/zero",
+			desc:             "PauseUntil/zero",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntilZero},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
 			expectedMetadata: metadataAtLevel("0"),
 		},
 		{
-			desc:             "update/PauseUntil",
+			desc:             "PauseUntil",
 			cfg:              &ConsumerConfig{PauseUntil: &pauseUntil},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
 			expectedMetadata: metadataAtLevel("1"),
 		},
 		{
-			desc:             "create/Pinned",
+			desc:             "Pinned",
 			cfg:              &ConsumerConfig{PriorityPolicy: PriorityPinnedClient, PriorityGroups: []string{"a"}},
-			prev:             &ConsumerConfig{Metadata: metadataPrevious()},
 			expectedMetadata: metadataAtLevel("1"),
 		},
 		{
-			desc:             "update/empty-prev-metadata",
-			cfg:              &ConsumerConfig{},
-			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataAtLevel("0"),
-		},
-		{
-			desc:             "update/empty-prev-metadata/delete-user-provided",
-			cfg:              &ConsumerConfig{Metadata: metadataPrevious()},
-			prev:             &ConsumerConfig{},
-			expectedMetadata: metadataAtLevel("0"),
+			desc:             "AckFlowControl",
+			cfg:              &ConsumerConfig{AckPolicy: AckFlowControl},
+			expectedMetadata: metadataAtLevel("4"),
 		},
 	} {
 		t.Run(test.desc, func(t *testing.T) {
-			setStaticConsumerMetadata(test.cfg, test.prev)
-			require_Equal(t, test.cfg.Metadata[JSRequiredLevelMetadataKey], test.expectedMetadata[JSRequiredLevelMetadataKey])
+			setStaticConsumerMetadata(test.cfg)
+			level := test.cfg.Metadata[JSRequiredLevelMetadataKey]
+			require_Equal(t, level, test.expectedMetadata[JSRequiredLevelMetadataKey])
+
+			// Ensure we up the server API level if we introduced a feature that requires it.
+			l, err := strconv.Atoi(level)
+			require_NoError(t, err)
+			require_True(t, l <= JSApiLevel)
 		})
 	}
 }
@@ -203,12 +282,7 @@ func TestJetStreamSetStaticConsumerMetadataRemoveDynamicFields(t *testing.T) {
 	}
 
 	cfg := ConsumerConfig{Metadata: dynamicMetadata()}
-	setStaticConsumerMetadata(&cfg, nil)
-	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
-
-	cfg = ConsumerConfig{Metadata: dynamicMetadata()}
-	prevCfg := ConsumerConfig{Metadata: metadataAtLevel("0")}
-	setStaticConsumerMetadata(&cfg, &prevCfg)
+	setStaticConsumerMetadata(&cfg)
 	require_True(t, reflect.DeepEqual(cfg.Metadata, metadataAtLevel("0")))
 }
 
@@ -573,4 +647,88 @@ func restoreEmptyStream(t *testing.T, nc *nats.Conn, replicas int) {
 	err = json.Unmarshal(msg.Data, &cresp)
 	require_NoError(t, err)
 	require_True(t, reflect.DeepEqual(cresp.Config.Metadata, expectedMetadata))
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevel(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	var subs []*subscription
+	s.getJetStream().apiSubs.All(&subs)
+	require_True(t, len(subs) > 0)
+	for _, sub := range subs {
+		apiSubject := string(sub.subject)
+		t.Run(apiSubject, func(t *testing.T) {
+			req := nats.NewMsg(apiSubject)
+			req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+			msg, err := nc.RequestMsg(req, time.Second)
+			require_NoError(t, err)
+
+			var resp ApiResponse
+			require_NoError(t, json.Unmarshal(msg.Data, &resp))
+			require_True(t, resp.Error != nil)
+			// Peer remove, stepdown or cancel move is not supported if not clustered.
+			if strings.Contains(apiSubject, ".STEPDOWN.") ||
+				strings.Contains(apiSubject, ".PEER.") ||
+				strings.Contains(apiSubject, ".CANCEL_MOVE.") {
+				require_Error(t, resp.Error, NewJSClusterRequiredError())
+			} else {
+				require_Error(t, resp.Error, NewJSRequiredApiLevelError())
+			}
+		})
+	}
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevelDirectGet(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	req := nats.NewMsg(fmt.Sprintf(JSDirectMsgGetT, "TEST"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err := nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
+
+	req = nats.NewMsg(fmt.Sprintf(JSDirectGetLastBySubjectT, "TEST", "foo"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err = nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
+}
+
+func TestJetStreamApiErrorOnRequiredApiLevelPullConsumerNextMsg(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo"},
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER"})
+	require_NoError(t, err)
+
+	req := nats.NewMsg(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"))
+	req.Header.Set("Nats-Required-Api-Level", strconv.Itoa(math.MaxInt))
+	msg, err := nc.RequestMsg(req, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Header.Get("Status"), "412")
+	require_Equal(t, msg.Header.Get("Description"), "Required Api Level")
 }

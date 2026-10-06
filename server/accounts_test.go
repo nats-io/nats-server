@@ -1,4 +1,4 @@
-// Copyright 2018-2024 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,10 +14,14 @@
 package server
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -984,6 +988,55 @@ func TestStreamImportLengthBug(t *testing.T) {
 	}
 }
 
+func TestStreamImportSubscribeDenyUsesMappedSubject(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			exporter {
+				users: [{user: publisher, password: pass}]
+				exports: [{stream: "foo.>"}]
+			}
+			importer {
+				users: [{
+					user: subscriber
+					password: pass
+					permissions: {
+						subscribe: {
+							allow: ["import.foo.>"]
+							deny: ["import.foo.secret"]
+						}
+					}
+				}]
+				imports: [{
+					stream: {account: exporter, subject: "foo.>"}
+					prefix: "import"
+				}]
+			}
+		}
+	`))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	publisher := natsConnect(t, s.ClientURL(), nats.UserInfo("publisher", "pass"))
+	defer publisher.Close()
+	subscriber := natsConnect(t, s.ClientURL(), nats.UserInfo("subscriber", "pass"))
+	defer subscriber.Close()
+
+	plain := natsSubSync(t, subscriber, "import.foo.>")
+	queue := natsQueueSubSync(t, subscriber, "import.foo.>", "workers")
+	natsFlush(t, subscriber)
+
+	natsPub(t, publisher, "foo.secret", []byte("blocked"))
+	natsPub(t, publisher, "foo.public", []byte("allowed"))
+	natsFlush(t, publisher)
+
+	for _, sub := range []*nats.Subscription{plain, queue} {
+		msg := natsNexMsg(t, sub, time.Second)
+		require_Equal(t, msg.Subject, "import.foo.public")
+		require_Equal(t, string(msg.Data), "allowed")
+	}
+}
+
 func TestShadowSubsCleanupOnClientClose(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
@@ -1546,7 +1599,7 @@ func TestServiceImportWithWildcards(t *testing.T) {
 	checkPayload(crBar, []byte("22\r\n"), t)
 
 	// Remove the service import with the wildcard and make sure hasWC is cleared.
-	barAcc.removeServiceImport("test.*")
+	barAcc.removeServiceImport(fooAcc.Name, "test.*")
 
 	barAcc.mu.Lock()
 	defer barAcc.mu.Unlock()
@@ -2423,6 +2476,167 @@ func TestAccountDuplicateServiceImportSubject(t *testing.T) {
 	if err := barAcc.AddServiceImport(fooAcc, "foo", "remote2"); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("Expected an error about duplicate service import subject, got %q", err)
 	}
+
+	// However, it is allowed to add more than one service import
+	// on the same subject for different exporting accounts
+	bazAcc, _ := s.RegisterAccount("baz")
+	bazAcc.AddServiceExport("remote1", nil)
+	if err := barAcc.AddServiceImport(bazAcc, "foo", "remote1"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+	batAcc, _ := s.RegisterAccount("bat")
+	batAcc.AddServiceExport("remote1", nil)
+	if err := barAcc.AddServiceImport(batAcc, "foo", "remote1"); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// But again, can't add for one that has been already added, say bazAcc.
+	if err := barAcc.AddServiceImport(bazAcc, "foo", "remote1"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("Expected an error about duplicate service import subject, got %q", err)
+	}
+}
+
+func TestAccountRemoveServiceImport(t *testing.T) {
+	opts := DefaultOptions()
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	fooAcc, _ := s.RegisterAccount("foo")
+	fooAcc.AddServiceExport("remote1", nil)
+
+	barAcc, _ := s.RegisterAccount("bar")
+	err := barAcc.AddServiceImport(fooAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	bazAcc, _ := s.RegisterAccount("baz")
+	bazAcc.AddServiceExport("remote1", nil)
+	err = barAcc.AddServiceImport(bazAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	batAcc, _ := s.RegisterAccount("bat")
+	batAcc.AddServiceExport("remote1", nil)
+	err = barAcc.AddServiceImport(batAcc, "foo", "remote1")
+	require_NoError(t, err)
+
+	// Check that we can get the service import we expect
+	checkGetSI := func(acc, subj string) bool {
+		barAcc.mu.RLock()
+		defer barAcc.mu.RUnlock()
+		si := barAcc.getServiceImportForAccountLocked(acc, subj)
+		if si == nil {
+			return false
+		}
+		return si.acc.Name == acc
+	}
+	require_False(t, checkGetSI("nonsense", "foo"))
+	require_False(t, checkGetSI("foo", "nonsense"))
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove service imports one by one and check expected map content.
+
+	// Try first to remove one that does not exists, because of subject
+	// or because of account.
+	barAcc.removeServiceImport("nonsense", "foo")
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+	barAcc.removeServiceImport("baz", "nonsense")
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove the 2nd account that was added
+	barAcc.removeServiceImport("baz", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+	require_True(t, checkGetSI("bat", "foo"))
+
+	// Remove the last account that was added
+	barAcc.removeServiceImport("bat", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+
+	// There is only one left, make sure that we still properly check
+	// for appropriate subject and account name.
+	barAcc.removeServiceImport("nonsense", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+	barAcc.removeServiceImport("foo", "nonsense")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_True(t, checkGetSI("foo", "foo"))
+
+	// Remove the first account that was added
+	barAcc.removeServiceImport("foo", "foo")
+	require_False(t, checkGetSI("baz", "foo"))
+	require_False(t, checkGetSI("bat", "foo"))
+	require_False(t, checkGetSI("foo", "foo"))
+
+	// Make sure that the service import map is cleared
+	barAcc.mu.RLock()
+	sis, ok := barAcc.imports.services["foo"]
+	barAcc.mu.RUnlock()
+	require_False(t, ok)
+	require_Len(t, len(sis), 0)
+}
+
+func TestAccountMultipleServiceImportsWithSameSubjectFromDifferentAccounts(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		accounts: {
+			SVC-E: {
+				users: [ { user:svc-e, password:svc-e } ]
+				exports: [ { accounts: [CLIENTS], service: "SvcReq.>", response_type: singleton } ]
+			}
+
+			SVC-W: {
+				users: [ { user:svc-w, password:svc-w } ]
+				exports: [ { accounts: [CLIENTS], service: "SvcReq.>", response_type: singleton } ]
+			}
+
+			CLIENTS: {
+				users: [ { user:cl, password:cl } ]
+				imports: [
+					{ service: { account: SVC-E, subject: "SvcReq.>" } }
+					{ service: { account: SVC-W, subject: "SvcReq.>" } }
+				]
+			}
+		}
+		listen: "127.0.0.1:-1"
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncE := natsConnect(t, s.ClientURL(), nats.UserInfo("svc-e", "svc-e"))
+	defer ncE.Close()
+	natsSub(t, ncE, "SvcReq.>", func(m *nats.Msg) {
+		m.Respond([]byte("From SVC-E"))
+	})
+	natsFlush(t, ncE)
+
+	ncW := natsConnect(t, s.ClientURL(), nats.UserInfo("svc-w", "svc-w"))
+	defer ncW.Close()
+	natsSub(t, ncW, "SvcReq.>", func(m *nats.Msg) {
+		m.Respond([]byte("From SVC-W"))
+	})
+	natsFlush(t, ncW)
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("cl", "cl"))
+	defer nc.Close()
+	sub := natsSubSync(t, nc, nats.NewInbox())
+	natsPubReq(t, nc, "SvcReq.Test", sub.Subject, []byte("test"))
+	msg1 := natsNexMsg(t, sub, time.Second)
+	msg2 := natsNexMsg(t, sub, time.Second)
+	m1 := string(msg1.Data)
+	m2 := string(msg2.Data)
+	if (m1 == "From SVC-E" && m2 == "From SVC-W") || (m1 == "From SVC-W" && m2 == "From SVC-E") {
+		// Ok
+		return
+	}
+	t.Fatalf("Unexpected responses: m1=%s m2=%s", m1, m2)
 }
 
 func TestMultipleStreamImportsWithSameSubjectDifferentPrefix(t *testing.T) {
@@ -2597,6 +2811,47 @@ func TestAccountBasicRouteMapping(t *testing.T) {
 
 	checkPending(fsub, 1)
 	checkPending(bsub, 1)
+}
+
+func TestAccountLeftRightMapping(t *testing.T) {
+	// left and right are supported by the subject transform since 2.10.16,
+	// so account mappings must accept them like the other functions.
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			A {
+				users = [{user: a, password: p}]
+				mappings = {
+					"foo.*": "bar.{{right(1,2)}}"
+					"baz.*": "qux.{{left(1,3)}}"
+				}
+			}
+		}
+	`))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "p"))
+	defer nc.Close()
+
+	sub, err := nc.SubscribeSync("bar.>")
+	require_NoError(t, err)
+	sub2, err := nc.SubscribeSync("qux.>")
+	require_NoError(t, err)
+	require_NoError(t, nc.Flush())
+
+	require_NoError(t, nc.Publish("foo.1234", nil))
+	require_NoError(t, nc.Publish("baz.1234", nil))
+	require_NoError(t, nc.Flush())
+
+	msg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Subject, "bar.34")
+
+	msg, err = sub2.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, msg.Subject, "qux.123")
 }
 
 func TestAccountWildcardRouteMapping(t *testing.T) {
@@ -3375,6 +3630,273 @@ func TestAccountLimitsServerConfig(t *testing.T) {
 	require_Error(t, err)
 }
 
+// Connections being closed should be the newer ones in case of JWT limits.
+func TestAccountMaxConnectionsDisconnectsNewestFirst(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        server_name: A
+        accounts {
+                TEST {
+                        users = [
+                          {user: user1, password: foo}
+                          {user: user2, password: foo}
+                          {user: user3, password: foo}
+                        ]
+                        limits {
+                                max_connections: 3
+                        }
+                }
+        }
+        `))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	var conns []*nats.Conn
+
+	disconnects := make([]chan error, 0)
+	for i := 1; i <= 3; i++ {
+		disconnectCh := make(chan error)
+		c, err := nats.Connect(
+			s.ClientURL(),
+			nats.UserInfo(fmt.Sprintf("user%d", i), "foo"),
+			nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+				disconnectCh <- err
+			}),
+			nats.NoReconnect(),
+		)
+		require_NoError(t, err)
+		defer c.Close()
+		conns = append(conns, c)
+		disconnects = append(disconnects, disconnectCh)
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	acc, err := s.lookupAccount("TEST")
+	require_NoError(t, err)
+	require_Equal(t, acc.NumConnections(), 3)
+
+	// Force account update to trigger connection limit enforcement.
+	accClaims := jwt.NewAccountClaims(acc.Name)
+	accClaims.Limits.Conn = 2
+	s.UpdateAccountClaims(acc, accClaims)
+
+	// Wait for disconnections from the most recent client.
+	disconnectCh := disconnects[2]
+	select {
+	case <-disconnectCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected newest connection to disconnect!")
+	}
+
+	// Check which connections are still active
+	// The newest connection (last one created) should be disconnected first.
+	activeConnections := 0
+	var connected []int
+	for i, conn := range conns {
+		if !conn.IsClosed() {
+			activeConnections++
+			connected = append(connected, i)
+		}
+	}
+	require_Equal(t, activeConnections, 2)
+	require_Equal(t, len(connected), 2)
+
+	// The first two connections should still be connected.
+	require_Equal(t, connected[0], 0)
+	require_Equal(t, connected[1], 1)
+
+	// The newest connection should be closed.
+	require_True(t, conns[2].IsClosed())
+}
+
+func TestAccountUpdateRemoteServerDisconnectsNewestFirst(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+          port: -1
+          accounts {
+            TEST {
+              users = [{user: dummy, password: foo}]
+              limits {
+                max_connections: 5
+              }
+            }
+          }
+        `))
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	acc, err := s.lookupAccount("TEST")
+	require_NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		c, err := nats.Connect(s.ClientURL(), nats.UserInfo("dummy", "foo"))
+		require_NoError(t, err)
+		defer c.Close()
+
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	require_Equal(t, acc.NumConnections(), 3)
+
+	// Simulate remote server reporting connections that would exceed the limit.
+	// Remote has 4 + we have 3, meaning that 2 will have to be disconnected.
+	remoteServerMsg := &AccountNumConns{
+		Server: ServerInfo{
+			ID:   "fake-server-1",
+			Name: "fake-nats-1",
+		},
+		AccountStat: AccountStat{
+			Account: "TEST",
+			Conns:   4,
+		},
+	}
+	toDisconnect := acc.updateRemoteServer(remoteServerMsg)
+
+	// Should want to disconnect 2 clients (7 total - 5 max conns limit = 2 over).
+	require_Equal(t, len(toDisconnect), 2)
+
+	// Verify the returned clients are in reverse chronological order.
+	var startTimes []time.Time
+	for _, c := range toDisconnect {
+		startTimes = append(startTimes, c.start)
+	}
+	if !startTimes[0].After(startTimes[1]) {
+		t.Fatalf("Expected clients to be in reverse chronological order: %v is before %v", startTimes[0], startTimes[1])
+	}
+
+	// The clients to disconnect should be the newest ones we created.
+	disconnected := make(map[uint64]bool)
+	for _, c := range toDisconnect {
+		disconnected[c.cid] = true
+	}
+
+	// Get all current clients and find the oldest ones.
+	allClients := acc.getClients()
+	byStartTime := make([]*client, len(allClients))
+	copy(byStartTime, allClients)
+	slices.SortFunc(byStartTime, func(i, j *client) int {
+		return i.start.Compare(j.start)
+	})
+
+	// The last two clients in the sorted list should be the ones selected for disconnection.
+	require_False(t, disconnected[byStartTime[0].cid])
+	require_True(t, disconnected[byStartTime[1].cid])
+	require_True(t, disconnected[byStartTime[2].cid])
+}
+
+func TestAccountMaxConnectionsDuringLameDuckMode(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        accounts {
+                TEST {
+                        users = [
+                          {user: user, password: user}
+                        ]
+                        limits {
+                                max_connections: 3
+                        }
+                }
+        }
+		cluster {
+		  listen: 127.0.0.1:7248
+		  name: "abc"
+		}
+		no_auth_user: user
+		lame_duck_grace_period: 1s
+        `))
+
+	optsA, err := ProcessConfigFile(cf)
+	require_NoError(t, err)
+	optsA.NoSigs, optsA.NoLog = true, true
+	optsA.ServerName = "A"
+	srvA := RunServer(optsA)
+	defer srvA.Shutdown()
+	optsB := nextServerOpts(optsA)
+	optsB.Routes = RoutesFromStr(fmt.Sprintf("nats://%s:%d", optsA.Cluster.Host, optsA.Cluster.Port))
+	optsB.ServerName = "B"
+	srvB := RunServer(optsB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	disconnects := make([]chan error, 0)
+	for range 3 {
+		disconnectCh := make(chan error)
+		c, err := nats.Connect(
+			srvA.ClientURL(),
+			nats.UserInfo("user", "user"),
+			nats.DisconnectErrHandler(func(c *nats.Conn, err error) {
+				disconnectCh <- err
+			}),
+		)
+		require_NoError(t, err)
+		defer c.Close()
+		disconnects = append(disconnects, disconnectCh)
+		// Small delay to ensure distinct start times.
+		time.Sleep(10 * time.Millisecond)
+	}
+	acc, err := srvA.lookupAccount("TEST")
+	require_NoError(t, err)
+	require_Equal(t, acc.NumConnections(), 3)
+
+	go srvA.LameDuckShutdown()
+
+	for _, disconnectCh := range disconnects {
+		select {
+		case err := <-disconnectCh:
+			require_Equal(t, err.Error(), "EOF")
+		case <-time.After(5 * time.Second):
+			t.Fatal("Expected LDM reconnect")
+		}
+	}
+}
+
+func TestAccountMaxConnectionsRejectsPipelinedOps(t *testing.T) {
+	cf := createConfFile(t, []byte(`
+        port: -1
+        no_auth_user: user
+        accounts {
+                TEST {
+                        users = [ {user: user, password: pwd} ]
+                        limits {
+                                max_connections: 1
+                        }
+                }
+        }
+        `))
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	// Observer takes the only slot.
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+	sub := natsSubSync(t, nc, "foo")
+	natsFlush(t, nc)
+
+	// Raw client sends CONNECT with pipelined PUB in a single write.
+	c, err := net.Dial("tcp", s.Addr().String())
+	require_NoError(t, err)
+	defer c.Close()
+	require_NoError(t, c.SetDeadline(time.Now().Add(2*time.Second)))
+	r := bufio.NewReader(c)
+	info, err := r.ReadString('\n')
+	require_NoError(t, err)
+	require_True(t, strings.HasPrefix(info, "INFO"))
+	_, err = c.Write([]byte("CONNECT {}\r\nPUB foo 2\r\nhi\r\n"))
+	require_NoError(t, err)
+
+	// Only the rejection error should come back before the server closes the connection.
+	l, err := r.ReadString('\n')
+	require_NoError(t, err)
+	require_Contains(t, l, ErrTooManyAccountConnections.Error())
+	_, err = r.ReadString('\n')
+	require_Error(t, err, io.EOF)
+
+	if m, err := sub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Pipelined PUB was delivered: %q", m.Data)
+	}
+}
+
 func TestAccountUserSubPermsWithQueueGroups(t *testing.T) {
 	cf := createConfFile(t, []byte(`
 	listen: 127.0.0.1:-1
@@ -3600,6 +4122,8 @@ func TestAccountReloadServiceImportPanic(t *testing.T) {
 
 	_, err := nc.Subscribe("HELP", func(m *nats.Msg) { m.Respond([]byte("OK")) })
 	require_NoError(t, err)
+	// Make sure the subscription is processed before using a new connection to publish.
+	natsFlush(t, nc)
 
 	// Now create connection to account b where we will publish to HELP.
 	nc, _ = jsClientConnect(t, s, nats.UserInfo("b", "p"))
@@ -3687,4 +4211,510 @@ func TestAccountServiceAndStreamExportDoubleDelivery(t *testing.T) {
 	nc.Publish("DW.test.123", []byte("test"))
 	time.Sleep(200 * time.Millisecond)
 	require_Equal(t, msgs.Load(), 1)
+}
+
+func TestAccountServiceImportNoResponders(t *testing.T) {
+	// Setup NATS server.
+	cf := createConfFile(t, []byte(`
+				port: -1
+				accounts: {
+					accExp: {
+						users: [{user: accExp, password: accExp}]
+						exports: [{service: "foo"}]
+					}
+					accImp: {
+						users: [{user: accImp, password: accImp}]
+						imports: [{service: {account: accExp, subject: "foo"}}]
+					}
+				}
+			`))
+
+	s, _ := RunServerWithConfig(cf)
+	defer s.Shutdown()
+
+	// Connect to the import account. We will not setup any responders, so a request should
+	// error out with ErrNoResponders.
+	nc := natsConnect(t, s.ClientURL(), nats.UserInfo("accImp", "accImp"))
+	defer nc.Close()
+
+	_, err := nc.Request("foo", []byte("request"), 250*time.Millisecond)
+	require_Error(t, err, nats.ErrNoResponders)
+}
+
+// Test that service import replies are delivered when the requester's reply inbox
+// is subscribed on a different cluster node.
+func TestAccountServiceImportReplyDroppedAcrossClusterRoutes(t *testing.T) {
+	tmpl := `
+		server_name: %s
+		listen: 127.0.0.1:-1
+		cluster {
+			name: test
+			listen: 127.0.0.1:-1
+			%s
+		}
+		accounts {
+			A {
+				users = [{ user: a, password: a }]
+				imports = [{ service: { account: B, subject: svc } }]
+			}
+			B {
+				users = [{ user: b, password: b }]
+				exports = [{ service: svc, accounts: [A] }]
+			}
+		}
+	`
+	confA := createConfFile(t, []byte(fmt.Sprintf(tmpl, "node-A", "")))
+	srvA, optsA := RunServerWithConfig(confA)
+	defer srvA.Shutdown()
+
+	confB := createConfFile(t, []byte(fmt.Sprintf(tmpl, "node-B",
+		fmt.Sprintf(`routes = ["nats-route://127.0.0.1:%d"]`, optsA.Cluster.Port))))
+	srvB, _ := RunServerWithConfig(confB)
+	defer srvB.Shutdown()
+
+	checkClusterFormed(t, srvA, srvB)
+
+	// Responder on node-A, account B.
+	ncB := natsConnect(t, srvA.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncB.Close()
+	natsSub(t, ncB, "svc", func(m *nats.Msg) { m.Respond([]byte("pong")) })
+	natsFlush(t, ncB)
+
+	// Wait for B's "svc" sub to propagate to node-B so it can route the request.
+	checkSubInterest(t, srvB, "B", "svc", time.Second)
+
+	// Subscriber on node-A, account A: explicit reply inbox.
+	// This subscription will be a ROUTE sub on node-B once it propagates.
+	ncSub := natsConnect(t, srvA.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncSub.Close()
+	inbox := "_INBOX.xroute.reply"
+	replyCh := make(chan *nats.Msg, 1)
+	_, err := ncSub.Subscribe(inbox, func(m *nats.Msg) { replyCh <- m })
+	require_NoError(t, err)
+	natsFlush(t, ncSub)
+
+	// Wait for the inbox to appear as a ROUTE sub on node-B.
+	checkSubInterest(t, srvB, "A", inbox, time.Second)
+
+	// Publisher on node-B, account A: publish with explicit cross-node reply.
+	// The response service import on node-B receives the reply via route
+	// (c.kind==ROUTER) and must forward it back to the ROUTE sub for the inbox.
+	ncPub := natsConnect(t, srvB.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncPub.Close()
+	err = ncPub.PublishMsg(&nats.Msg{Subject: "svc", Reply: inbox, Data: []byte("ping")})
+	require_NoError(t, err)
+
+	select {
+	case msg := <-replyCh:
+		require_Equal(t, string(msg.Data), "pong")
+	case <-time.After(3 * time.Second):
+		t.Fatal("reply not received — service import reply was dropped across cluster routes")
+	}
+
+	// Reverse: subscribe on node-B, publish from node-A.
+	ncSub2 := natsConnect(t, srvB.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncSub2.Close()
+	inbox2 := "_INBOX.xroute.reply2"
+	replyCh2 := make(chan *nats.Msg, 1)
+	_, err = ncSub2.Subscribe(inbox2, func(m *nats.Msg) { replyCh2 <- m })
+	require_NoError(t, err)
+	natsFlush(t, ncSub2)
+	checkSubInterest(t, srvA, "A", inbox2, time.Second)
+
+	err = ncSub.PublishMsg(&nats.Msg{Subject: "svc", Reply: inbox2, Data: []byte("ping")})
+	require_NoError(t, err)
+
+	select {
+	case msg := <-replyCh2:
+		require_Equal(t, string(msg.Data), "pong")
+	case <-time.After(3 * time.Second):
+		t.Fatal("reverse reply not received — service import reply was dropped across cluster routes")
+	}
+}
+
+func TestStreamActivationExpiredNoMatchDoesNotInvalidate(t *testing.T) {
+	// Account performing the import.
+	a := NewAccount("importer")
+	// The account we will pass as the (non-matching) export account.
+	exportAcc := NewAccount("exporter")
+	// A different, still-valid stream import that does NOT match the
+	// (exportAcc, subject) pair passed to streamActivationExpired.
+	otherAcc := NewAccount("other")
+	si := &streamImport{
+		acc:  otherAcc,
+		from: "other.subject",
+		// claim is nil, so checkActivation would return false and the
+		// buggy code would wrongly mark this import invalid.
+		claim: nil,
+	}
+	a.imports.streams = []*streamImport{si}
+
+	// No matching import.
+	a.streamActivationExpired(exportAcc, "nomatch.subject")
+	if si.invalid {
+		t.Fatalf("unrelated stream import was wrongly invalidated on no match")
+	}
+}
+
+func TestRemoveAllServiceImportSubsNoRaceUnderConcurrentReaders(t *testing.T) {
+	for range 2000 {
+		a := &Account{}
+		a.imports.services = make(map[string][]*serviceImport)
+		for i := 0; i < 8; i++ {
+			si := &serviceImport{sid: []byte("sid")}
+			a.imports.services[fmt.Sprintf("svc.%d", i)] = []*serviceImport{si}
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Reader: mimics updateAccountClaimsWithRefresh reading a.ic and
+		// iterating si.sid under a read lock.
+		go func() {
+			defer wg.Done()
+			a.mu.RLock()
+			_ = a.ic
+			for _, sis := range a.imports.services {
+				for _, si := range sis {
+					_ = si.sid
+				}
+			}
+			a.mu.RUnlock()
+		}()
+
+		// Writer: nils si.sid and a.ic. a.ic is nil so the post-unlock
+		// path returns early and does not touch a real client.
+		go func() {
+			defer wg.Done()
+			a.removeAllServiceImportSubs()
+		}()
+
+		wg.Wait()
+	}
+}
+
+func TestAccountDefaultPermsRaceDuringAuth(t *testing.T) {
+	acc := NewAccount("foo")
+
+	// User claims with no permissions so buildInternalNkeyUser hits the
+	// acc.defaultPerms read path (p == nil).
+	uc := jwt.NewUserClaims("U" + strings.Repeat("A", 51))
+
+	var someClaims jwt.Permissions
+	someClaims.Pub.Allow.Add("foo")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Reader: mimics authentication path.
+	go func() {
+		defer wg.Done()
+		for range 1000 {
+			_ = buildInternalNkeyUser(uc, nil, acc)
+		}
+	}()
+
+	// Writer: mimics updateAccountClaimsWithRefresh refreshing defaultPerms.
+	go func() {
+		defer wg.Done()
+		for range 1000 {
+			acc.mu.Lock()
+			acc.defaultPerms = buildPermissionsFromJwt(&someClaims)
+			acc.mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// Must be run with -race.
+func TestAccountRemoveCbJSWriteRace(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	s := RunServer(&opts)
+	defer s.Shutdown()
+
+	for i := range 50 {
+		name := fmt.Sprintf("ACC_%d", i)
+		acc, _ := s.LookupOrRegisterAccount(name)
+		require_NoError(t, acc.EnableJetStream(nil, nil))
+		// Confirm a.js is set, so removeCb will reach the `a.js = nil` write.
+		if !acc.JetStreamEnabled() {
+			t.Fatalf("expected JetStream enabled (a.js != nil) for %s", name)
+		}
+
+		var stop atomic.Bool
+		done := make(chan struct{})
+		// Reader: read a.js under a.mu.RLock, exactly like maxBytesLimits does.
+		go func(a *Account) {
+			defer close(done)
+			for !stop.Load() {
+				a.mu.RLock()
+				_ = a.js
+				a.mu.RUnlock()
+			}
+		}(acc)
+
+		// Writer: removeCb sets `a.js = nil`, which must synchronize with the
+		// locked read above.
+		removeCb(s, name)
+
+		stop.Store(true)
+		<-done
+	}
+}
+
+// Must be run with -race.
+func TestAccountSendTrackingLatencyRcRace(t *testing.T) {
+	a := NewAccount("A")
+	rc := &client{kind: CLIENT}
+	responder := &client{kind: SYSTEM}
+
+	si := &serviceImport{
+		acc:      a,
+		rc:       rc,
+		share:    false,
+		ts:       time.Now().UnixNano(),
+		tracking: true,
+		latency:  &serviceLatency{subject: "latency.subj"},
+	}
+
+	const iters = 1000
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Reader goroutine: exercises the unlocked re-read of si.rc.
+	go func() {
+		defer wg.Done()
+		for range iters {
+			a.sendTrackingLatency(si, responder)
+			a.mu.Lock()
+			si.m1 = nil
+			a.mu.Unlock()
+		}
+	}()
+
+	// Writer goroutine: mimics sendLatencyResult writing si.rc under a.mu.Lock.
+	go func() {
+		defer wg.Done()
+		for range iters {
+			a.mu.Lock()
+			si.rc = rc
+			a.mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// sharedInboxRequests stands up a foo/bar service export/import pair and has
+// bar send numReqs requests that all share one reply subject. The responder
+// never answers, so every response is left outstanding under that single rrMap
+// key. Returns both accounts and the shared reply subject.
+func sharedInboxRequests(t *testing.T, numReqs int) (*Account, *Account, string) {
+	t.Helper()
+
+	s, fooAcc, barAcc := simpleAccountServer(t)
+	t.Cleanup(s.Shutdown)
+
+	if err := fooAcc.AddServiceExport("test", nil); err != nil {
+		t.Fatalf("Error adding service export: %v", err)
+	}
+	if err := barAcc.AddServiceImport(fooAcc, "test", _EMPTY_); err != nil {
+		t.Fatalf("Error adding service import: %v", err)
+	}
+
+	// Both connections are net.Pipe, so anything the server writes blocks until
+	// it is read. Drain them, otherwise the write loops sit on the flush
+	// deadline and shutdown takes ten seconds.
+	cfoo, rfoo, _ := newClientForServer(s)
+	t.Cleanup(cfoo.close)
+	go io.Copy(io.Discard, rfoo)
+	if err := cfoo.registerWithAccount(fooAcc); err != nil {
+		t.Fatalf("Error registering client with 'foo' account: %v", err)
+	}
+	// Responder never answers, so the entries stay outstanding.
+	cfoo.parse([]byte("SUB test 1\r\n"))
+
+	cbar, rbar, _ := newClientForServer(s)
+	t.Cleanup(cbar.close)
+	go io.Copy(io.Discard, rbar)
+	if err := cbar.registerWithAccount(barAcc); err != nil {
+		t.Fatalf("Error registering client with 'bar' account: %v", err)
+	}
+
+	const inbox = "my.inbox"
+	cbar.parse([]byte("SUB my.inbox 11\r\n"))
+	for i := 0; i < numReqs; i++ {
+		cbar.parse([]byte("PUB test my.inbox 4\r\nhelp\r\n"))
+	}
+
+	return fooAcc, barAcc, inbox
+}
+
+// A client is allowed to reuse a single reply subject across many concurrent
+// service import requests, which piles every outstanding response entry under
+// one rrMap key. Make sure those entries are tracked and removed correctly in
+// both the small (unindexed) and large (indexed) cases.
+func TestServiceImportReverseEntriesSharedReplySubject(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		numReqs int
+		indexed bool
+	}{
+		{"below index threshold", rrIndexThreshold - 1, false},
+		{"above index threshold", rrIndexThreshold * 100, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fooAcc, barAcc, inbox := sharedInboxRequests(t, test.numReqs)
+
+			barAcc.mu.RLock()
+			re, ok := barAcc.imports.rrMap[inbox]
+			numEntries, indexed := len(re.list), re.idx != nil
+			barAcc.mu.RUnlock()
+
+			if !ok {
+				t.Fatalf("Expected a reverse entry for %q", inbox)
+			}
+			if numEntries != test.numReqs {
+				t.Fatalf("Expected %d reverse entries, got %d", test.numReqs, numEntries)
+			}
+			if indexed != test.indexed {
+				t.Fatalf("Expected indexed to be %v, got %v", test.indexed, indexed)
+			}
+
+			// Now expire them the way the response threshold timer does, and make
+			// sure every entry is accounted for as we go.
+			fooAcc.mu.RLock()
+			var expired []*serviceImport
+			for _, si := range fooAcc.exports.responses {
+				expired = append(expired, si)
+			}
+			fooAcc.mu.RUnlock()
+
+			if len(expired) != test.numReqs {
+				t.Fatalf("Expected %d outstanding responses, got %d", test.numReqs, len(expired))
+			}
+
+			for i, si := range expired {
+				fooAcc.removeRespServiceImport(si, rsiTimeout)
+				barAcc.mu.RLock()
+				re, ok := barAcc.imports.rrMap[inbox]
+				remaining := len(re.list)
+				idxLen := len(re.idx)
+				barAcc.mu.RUnlock()
+
+				if expect := test.numReqs - i - 1; remaining != expect {
+					t.Fatalf("After %d removals expected %d entries, got %d", i+1, expect, remaining)
+				} else if expect == 0 {
+					if ok {
+						t.Fatalf("Expected the reverse entry for %q to be removed once empty", inbox)
+					}
+				} else if re.idx != nil && idxLen != remaining {
+					t.Fatalf("Index out of sync with list: %d vs %d", idxLen, remaining)
+				}
+			}
+
+			fooAcc.mu.RLock()
+			left := len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if left != 0 {
+				t.Fatalf("Expected no outstanding responses left, got %d", left)
+			}
+		})
+	}
+}
+
+// The other removal path drops a whole reply subject at once instead of one
+// entry at a time. That is what runs when interest in the reply subject goes
+// away, so it is the path a disconnecting requestor takes.
+func TestServiceImportReverseEntriesBulkRemoval(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		numReqs int
+	}{
+		{"below index threshold", rrIndexThreshold - 1},
+		{"above index threshold", rrIndexThreshold * 100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fooAcc, barAcc, inbox := sharedInboxRequests(t, test.numReqs)
+
+			fooAcc.mu.RLock()
+			outstanding := len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if outstanding != test.numReqs {
+				t.Fatalf("Expected %d outstanding responses, got %d", test.numReqs, outstanding)
+			}
+
+			// A nil si means drop every entry under this reply subject and clean
+			// up the responses they point at on the exporting account.
+			barAcc.checkForReverseEntry(inbox, nil, false)
+
+			barAcc.mu.RLock()
+			_, ok := barAcc.imports.rrMap[inbox]
+			remaining := len(barAcc.imports.rrMap)
+			barAcc.mu.RUnlock()
+			if ok {
+				t.Fatalf("Expected the reverse entry for %q to be gone", inbox)
+			}
+			if remaining != 0 {
+				t.Fatalf("Expected no reverse entries left, got %d", remaining)
+			}
+
+			fooAcc.mu.RLock()
+			outstanding = len(fooAcc.exports.responses)
+			fooAcc.mu.RUnlock()
+			if outstanding != 0 {
+				t.Fatalf("Expected every outstanding response to be cleaned up, got %d", outstanding)
+			}
+		})
+	}
+}
+
+// Guards the cost of clearing outstanding responses. Each iteration clears the
+// whole set, so ns/op is the cost of draining n entries, not of one removal.
+// The shared case is the one that used to go quadratic; the unique case is the
+// common one and should stay where it is.
+func BenchmarkReverseRespMapRemoval(b *testing.B) {
+	for _, bench := range []struct {
+		name   string
+		shared bool
+	}{
+		{"SharedReplySubject", true},
+		{"UniqueReplySubjects", false},
+	} {
+		for _, n := range []int{1000, 10000, 40000} {
+			b.Run(fmt.Sprintf("%s/%d", bench.name, n), func(b *testing.B) {
+				replies, sis := make([]string, n), make([]*serviceImport, n)
+				for i := 0; i < n; i++ {
+					if bench.shared {
+						replies[i] = "my.inbox"
+					} else {
+						replies[i] = fmt.Sprintf("my.inbox.%d", i)
+					}
+					sis[i] = &serviceImport{from: fmt.Sprintf("_R_.%d", i), to: replies[i]}
+				}
+
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					acc := NewAccount("bar")
+					for j := 0; j < n; j++ {
+						acc.addReverseRespMapEntry(acc, replies[j], sis[j].from)
+					}
+					b.StartTimer()
+
+					for j := 0; j < n; j++ {
+						acc.checkForReverseEntry(replies[j], sis[j], false)
+					}
+
+					if left := len(acc.imports.rrMap); left != 0 {
+						b.Fatalf("Expected no reverse entries left, got %d", left)
+					}
+				}
+			})
+		}
+	}
 }

@@ -1,4 +1,4 @@
-// Copyright 2018-2024 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -245,13 +247,15 @@ type ServerCapability uint64
 
 // ServerInfo identifies remote servers.
 type ServerInfo struct {
-	Name    string   `json:"name"`
-	Host    string   `json:"host"`
-	ID      string   `json:"id"`
-	Cluster string   `json:"cluster,omitempty"`
-	Domain  string   `json:"domain,omitempty"`
-	Version string   `json:"ver"`
-	Tags    []string `json:"tags,omitempty"`
+	Name         string            `json:"name"`
+	Host         string            `json:"host"`
+	ID           string            `json:"id"`
+	Cluster      string            `json:"cluster,omitempty"`
+	Domain       string            `json:"domain,omitempty"`
+	Version      string            `json:"ver"`
+	Tags         []string          `json:"tags,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	FeatureFlags map[string]bool   `json:"feature_flags,omitempty"`
 	// Whether JetStream is enabled (deprecated in favor of the `ServerCapability`).
 	JetStream bool `json:"jetstream"`
 	// Generic capability flags
@@ -325,6 +329,7 @@ type ClientInfo struct {
 	ClientType string        `json:"client_type,omitempty"`
 	MQTTClient string        `json:"client_id,omitempty"` // This is the MQTT client ID
 	Nonce      string        `json:"nonce,omitempty"`
+	Reply      string        `json:"reply,omitempty"` // Original reply subject after a service import (only when needed).
 }
 
 // forAssignmentSnap returns the minimum amount of ClientInfo we need for assignment snapshots.
@@ -336,24 +341,53 @@ func (ci *ClientInfo) forAssignmentSnap() *ClientInfo {
 	}
 }
 
+// forProposal returns the minimum amount of ClientInfo we need for assignment proposals.
+func (ci *ClientInfo) forProposal() *ClientInfo {
+	if ci == nil {
+		return nil
+	}
+	cci := *ci
+	cci.Jwt = _EMPTY_
+	cci.IssuerKey = _EMPTY_
+	return &cci
+}
+
+// forAdvisory returns the minimum amount of ClientInfo we need for JS advisory events.
+func (ci *ClientInfo) forAdvisory() *ClientInfo {
+	if ci == nil {
+		return nil
+	}
+	cci := *ci
+	cci.Jwt = _EMPTY_
+	cci.Alternates = nil
+	return &cci
+}
+
 // ServerStats hold various statistics that we will periodically send out.
 type ServerStats struct {
-	Start              time.Time           `json:"start"`
-	Mem                int64               `json:"mem"`
-	Cores              int                 `json:"cores"`
-	CPU                float64             `json:"cpu"`
-	Connections        int                 `json:"connections"`
-	TotalConnections   uint64              `json:"total_connections"`
-	ActiveAccounts     int                 `json:"active_accounts"`
-	NumSubs            uint32              `json:"subscriptions"`
-	Sent               DataStats           `json:"sent"`
-	Received           DataStats           `json:"received"`
-	SlowConsumers      int64               `json:"slow_consumers"`
-	SlowConsumersStats *SlowConsumersStats `json:"slow_consumer_stats,omitempty"`
-	Routes             []*RouteStat        `json:"routes,omitempty"`
-	Gateways           []*GatewayStat      `json:"gateways,omitempty"`
-	ActiveServers      int                 `json:"active_servers,omitempty"`
-	JetStream          *JetStreamVarz      `json:"jetstream,omitempty"`
+	Start                time.Time             `json:"start"`
+	Mem                  int64                 `json:"mem"`
+	Cores                int                   `json:"cores"`
+	CPU                  float64               `json:"cpu"`
+	Connections          int                   `json:"connections"`
+	TotalConnections     uint64                `json:"total_connections"`
+	ActiveAccounts       int                   `json:"active_accounts"`
+	NumSubs              uint32                `json:"subscriptions"`
+	Sent                 DataStats             `json:"sent"`
+	SentToClients        DataStats             `json:"sent_to_clients"`
+	Received             DataStats             `json:"received"`
+	ReceivedFromClients  DataStats             `json:"received_from_clients"`
+	SlowConsumers        int64                 `json:"slow_consumers"`
+	SlowConsumersStats   *SlowConsumersStats   `json:"slow_consumer_stats,omitempty"`
+	StaleConnections     int64                 `json:"stale_connections,omitempty"`
+	StaleConnectionStats *StaleConnectionStats `json:"stale_connection_stats,omitempty"`
+	StalledClients       int64                 `json:"stalled_clients,omitempty"`
+	Routes               []*RouteStat          `json:"routes,omitempty"`
+	Gateways             []*GatewayStat        `json:"gateways,omitempty"`
+	ActiveServers        int                   `json:"active_servers,omitempty"`
+	JetStream            *JetStreamVarz        `json:"jetstream,omitempty"`
+	MemLimit             int64                 `json:"gomemlimit,omitempty"`
+	MaxProcs             int                   `json:"gomaxprocs,omitempty"`
 }
 
 // RouteStat holds route statistics.
@@ -374,10 +408,17 @@ type GatewayStat struct {
 	NumInbound int       `json:"inbound_connections"`
 }
 
-// DataStats reports how may msg and bytes. Applicable for both sent and received.
-type DataStats struct {
+type MsgBytes struct {
 	Msgs  int64 `json:"msgs"`
 	Bytes int64 `json:"bytes"`
+}
+
+// DataStats reports how may msg and bytes. Applicable for both sent and received.
+type DataStats struct {
+	MsgBytes
+	Gateways *MsgBytes `json:"gateways,omitempty"`
+	Routes   *MsgBytes `json:"routes,omitempty"`
+	Leafs    *MsgBytes `json:"leafs,omitempty"`
 }
 
 // Used for internally queueing up messages that the server wants to send.
@@ -386,7 +427,7 @@ type pubMsg struct {
 	sub  string
 	rply string
 	si   *ServerInfo
-	hdr  map[string]string
+	hdr  []byte
 	msg  any
 	oct  compressionType
 	echo bool
@@ -395,7 +436,7 @@ type pubMsg struct {
 
 var pubMsgPool sync.Pool
 
-func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr map[string]string,
+func newPubMsg(c *client, sub, rply string, si *ServerInfo, hdr []byte,
 	msg any, oct compressionType, echo, last bool) *pubMsg {
 
 	var m *pubMsg
@@ -479,8 +520,9 @@ RESET:
 	}
 	s.mu.RUnlock()
 
-	// Grab tags.
-	tags := s.getOpts().Tags
+	// Grab tags and metadata.
+	opts := s.getOpts()
+	tags, metadata, featureFlags := opts.Tags, opts.Metadata, opts.getMergedFeatureFlags()
 
 	for s.eventsRunning() {
 		select {
@@ -497,6 +539,8 @@ RESET:
 					si.Version = VERSION
 					si.Time = time.Now().UTC()
 					si.Tags = tags
+					si.Metadata = metadata
+					si.FeatureFlags = featureFlags
 					si.Flags = 0
 					if js {
 						// New capability based flags.
@@ -568,17 +612,28 @@ RESET:
 				// Add in NL
 				b = append(b, _CRLF_...)
 
+				// Optional raw header addition.
+				if pm.hdr != nil {
+					b = append(pm.hdr[:len(pm.hdr):len(pm.hdr)], b...)
+					nhdr := len(pm.hdr)
+					nsize := len(b) - LEN_CR_LF
+					// MQTT producers don't have CRLF, so add it back.
+					if c.isMqtt() {
+						nsize += LEN_CR_LF
+					}
+					// Update pubArgs
+					// If others will use this later we need to save and restore original.
+					c.pa.hdr = nhdr
+					c.pa.size = nsize
+					c.pa.hdb = []byte(strconv.Itoa(nhdr))
+					c.pa.szb = []byte(strconv.Itoa(nsize))
+				}
+
 				// Check if we should set content-encoding
 				if contentHeader != _EMPTY_ {
 					b = c.setHeader(contentEncodingHeader, contentHeader, b)
 				}
 
-				// Optional header processing.
-				if pm.hdr != nil {
-					for k, v := range pm.hdr {
-						b = c.setHeader(k, v, b)
-					}
-				}
 				// Tracing
 				if trace {
 					c.traceInOp(fmt.Sprintf("PUB %s %s %d", c.pa.subject, c.pa.reply, c.pa.size), nil)
@@ -655,7 +710,7 @@ func (s *Server) sendInternalAccountMsg(a *Account, subject string, msg any) err
 }
 
 // Used to send an internal message with an optional reply to an arbitrary account.
-func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr map[string]string, msg any, echo bool) error {
+func (s *Server) sendInternalAccountMsgWithReply(a *Account, subject, reply string, hdr []byte, msg any, echo bool) error {
 	s.mu.RLock()
 	if s.sys == nil || s.sys.sendq == nil {
 		s.mu.RUnlock()
@@ -799,6 +854,10 @@ func (s *Server) updateServerUsage(v *ServerStats) {
 	var vss int64
 	pse.ProcUsage(&v.CPU, &v.Mem, &vss)
 	v.Cores = runtime.NumCPU()
+	v.MaxProcs = runtime.GOMAXPROCS(-1)
+	if mm := debug.SetMemoryLimit(-1); mm < math.MaxInt64 {
+		v.MemLimit = mm
+	}
 }
 
 // Generate a route stat for our statz update.
@@ -812,12 +871,16 @@ func routeStat(r *client) *RouteStat {
 	rs := &RouteStat{
 		ID: r.cid,
 		Sent: DataStats{
-			Msgs:  r.outMsgs,
-			Bytes: r.outBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  r.outMsgs,
+				Bytes: r.outBytes,
+			},
 		},
 		Received: DataStats{
-			Msgs:  atomic.LoadInt64(&r.inMsgs),
-			Bytes: atomic.LoadInt64(&r.inBytes),
+			MsgBytes: MsgBytes{
+				Msgs:  atomic.LoadInt64(&r.inMsgs),
+				Bytes: atomic.LoadInt64(&r.inBytes),
+			},
 		},
 		Pending: int(r.out.pb),
 	}
@@ -887,8 +950,12 @@ func (s *Server) sendStatsz(subj string) {
 	m.Stats.ActiveAccounts = int(atomic.LoadInt32(&s.activeAccounts))
 	m.Stats.Received.Msgs = atomic.LoadInt64(&s.inMsgs)
 	m.Stats.Received.Bytes = atomic.LoadInt64(&s.inBytes)
+	m.Stats.ReceivedFromClients.Msgs = atomic.LoadInt64(&s.inClientMsgs)
+	m.Stats.ReceivedFromClients.Bytes = atomic.LoadInt64(&s.inClientBytes)
 	m.Stats.Sent.Msgs = atomic.LoadInt64(&s.outMsgs)
 	m.Stats.Sent.Bytes = atomic.LoadInt64(&s.outBytes)
+	m.Stats.SentToClients.Msgs = atomic.LoadInt64(&s.outClientMsgs)
+	m.Stats.SentToClients.Bytes = atomic.LoadInt64(&s.outClientBytes)
 	m.Stats.SlowConsumers = atomic.LoadInt64(&s.slowConsumers)
 	// Evaluate the slow consumer stats, but set it only if one of the value is not 0.
 	scs := &SlowConsumersStats{
@@ -899,6 +966,17 @@ func (s *Server) sendStatsz(subj string) {
 	}
 	if scs.Clients != 0 || scs.Routes != 0 || scs.Gateways != 0 || scs.Leafs != 0 {
 		m.Stats.SlowConsumersStats = scs
+	}
+	m.Stats.StaleConnections = atomic.LoadInt64(&s.staleConnections)
+	m.Stats.StalledClients = atomic.LoadInt64(&s.stalls)
+	stcs := &StaleConnectionStats{
+		Clients:  s.NumStaleConnectionsClients(),
+		Routes:   s.NumStaleConnectionsRoutes(),
+		Gateways: s.NumStaleConnectionsGateways(),
+		Leafs:    s.NumStaleConnectionsLeafs(),
+	}
+	if stcs.Clients != 0 || stcs.Routes != 0 || stcs.Gateways != 0 || stcs.Leafs != 0 {
+		m.Stats.StaleConnectionStats = stcs
 	}
 	m.Stats.NumSubs = s.numSubscriptions()
 	// Routes
@@ -916,8 +994,10 @@ func (s *Server) sendStatsz(subj string) {
 			// Note that *client.out[Msgs|Bytes] are not set using atomic,
 			// unlike the in[Msgs|bytes].
 			gs.Sent = DataStats{
-				Msgs:  c.outMsgs,
-				Bytes: c.outBytes,
+				MsgBytes: MsgBytes{
+					Msgs:  c.outMsgs,
+					Bytes: c.outBytes,
+				},
 			}
 			c.mu.Unlock()
 			// Gather matching inbound connections
@@ -964,25 +1044,40 @@ func (s *Server) sendStatsz(subj string) {
 			if mg.Leader() {
 				if ci := s.raftNodeToClusterInfo(mg); ci != nil {
 					jStat.Meta = &MetaClusterInfo{
-						Name:     ci.Name,
-						Leader:   ci.Leader,
-						Peer:     getHash(ci.Leader),
-						Replicas: ci.Replicas,
-						Size:     mg.ClusterSize(),
+						Name:         ci.Name,
+						Leader:       ci.Leader,
+						Replicas:     ci.Replicas,
+						Size:         mg.ClusterSize(),
+						QuorumNeeded: mg.QuorumNeeded(),
+						Rescue:       mg.InRescue(),
+					}
+					if ci.Leader != _EMPTY_ {
+						jStat.Meta.Peer = getHash(ci.Leader)
 					}
 				}
 			} else {
 				// non leader only include a shortened version without peers
 				leader := s.serverNameForNode(mg.GroupLeader())
 				jStat.Meta = &MetaClusterInfo{
-					Name:   mg.Group(),
-					Leader: leader,
-					Peer:   getHash(leader),
-					Size:   mg.ClusterSize(),
+					Name:         mg.Group(),
+					Leader:       leader,
+					Size:         mg.ClusterSize(),
+					QuorumNeeded: mg.QuorumNeeded(),
+					Rescue:       mg.InRescue(),
+				}
+				if leader != _EMPTY_ {
+					jStat.Meta.Peer = getHash(leader)
 				}
 			}
-			if ipq := s.jsAPIRoutedReqs; ipq != nil && jStat.Meta != nil {
-				jStat.Meta.Pending = ipq.len()
+			if jStat.Meta != nil {
+				if ipq := s.jsAPIRoutedReqs; ipq != nil {
+					jStat.Meta.PendingRequests = ipq.len()
+				}
+				if ipq := s.jsAPIRoutedInfoReqs; ipq != nil {
+					jStat.Meta.PendingInfos = ipq.len()
+				}
+				jStat.Meta.Pending = jStat.Meta.PendingRequests + jStat.Meta.PendingInfos
+				jStat.Meta.Snapshot = s.metaClusterSnapshotStats(js, mg)
 			}
 		}
 		jStat.Limits = &s.getOpts().JetStreamLimits
@@ -1221,6 +1316,14 @@ func (s *Server) initEventTracking() {
 			optz := &ExpvarzEventOptions{}
 			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.expvarz(optz), nil })
 		},
+		"IPQUEUESZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &IpqueueszEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Ipqueuesz(&optz.IpqueueszOptions), nil })
+		},
+		"RAFTZ": func(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
+			optz := &RaftzEventOptions{}
+			s.zReq(c, reply, hdr, msg, &optz.EventFilterOptions, optz, func() (any, error) { return s.Raftz(&optz.RaftzOptions), nil })
+		},
 	}
 	profilez := func(_ *subscription, c *client, _ *Account, _, rply string, rmsg []byte) {
 		hdr, msg := c.msgParts(rmsg)
@@ -1350,10 +1453,9 @@ func (s *Server) initEventTracking() {
 		}
 	}
 
-	// User info.
-	// TODO(dlc) - Can be internal and not forwarded since bound server for the client connection
-	// is only one that will answer. This breaks tests since we still forward on remote server connect.
-	if _, err := s.sysSubscribe(fmt.Sprintf(userDirectReqSubj, "*"), s.userInfoReq); err != nil {
+	// User info. Do not propagate interest so that we know the local server to the connection
+	// is the only one that will answer the requests.
+	if _, err := s.sysSubscribeInternal(fmt.Sprintf(userDirectReqSubj, "*"), s.userInfoReq); err != nil {
 		s.Errorf("Error setting up internal tracking: %v", err)
 		return
 	}
@@ -1422,6 +1524,8 @@ func (s *Server) initEventTracking() {
 type UserInfo struct {
 	UserID      string        `json:"user"`
 	Account     string        `json:"account"`
+	AccountName string        `json:"account_name,omitempty"`
+	UserName    string        `json:"user_name,omitempty"`
 	Permissions *Permissions  `json:"permissions,omitempty"`
 	Expires     time.Duration `json:"expires,omitempty"`
 }
@@ -1441,9 +1545,22 @@ func (s *Server) userInfoReq(sub *subscription, c *client, _ *Account, subject, 
 		return
 	}
 
+	// Look up the requester's account directly from ci.Account rather than
+	// using the acc returned by getRequestInfo, which may resolve to the
+	// service account (ci.Service) when the request arrives via a chained
+	// service import.
+	var accountName string
+	if ci.Account != _EMPTY_ {
+		if reqAcc, _ := s.LookupAccount(ci.Account); reqAcc != nil {
+			accountName = reqAcc.getNameTag()
+		}
+	}
+
 	response.Data = &UserInfo{
 		UserID:      ci.User,
 		Account:     ci.Account,
+		AccountName: accountName,
+		UserName:    ci.NameTag,
 		Permissions: c.publicPermissions(),
 		Expires:     c.claimExpiration(),
 	}
@@ -1656,25 +1773,33 @@ func (s *Server) remoteServerUpdate(sub *subscription, c *client, _ *Account, su
 
 	node := getHash(si.Name)
 	accountNRG := si.AccountNRG()
-	oldInfo, _ := s.nodeToInfo.Swap(node, nodeInfo{
-		si.Name,
-		si.Version,
-		si.Cluster,
-		si.Domain,
-		si.ID,
-		si.Tags,
-		cfg,
-		stats,
-		false,
-		si.JetStreamEnabled(),
-		si.BinaryStreamSnapshot(),
-		accountNRG,
-	})
+	newInfo := nodeInfo{
+		name:            si.Name,
+		version:         si.Version,
+		cluster:         si.Cluster,
+		domain:          si.Domain,
+		id:              si.ID,
+		tags:            si.Tags,
+		cfg:             cfg,
+		stats:           stats,
+		offline:         false,
+		js:              si.JetStreamEnabled(),
+		binarySnapshots: si.BinaryStreamSnapshot(),
+		accountNRG:      accountNRG,
+	}
+	oldInfo, _ := s.nodeToInfo.Swap(node, newInfo)
 	if oldInfo == nil || accountNRG != oldInfo.(nodeInfo).accountNRG {
 		// One of the servers we received statsz from changed its mind about
 		// whether or not it supports in-account NRG, so update the groups
 		// with this information.
 		s.updateNRGAccountStatus()
+	}
+
+	// Process a peer's statsz when it has sufficient information.
+	if newInfo.selectable() {
+		if js := s.getJetStream(); js != nil {
+			js.processPeerStatsz(node)
+		}
 	}
 }
 
@@ -1711,18 +1836,18 @@ func (s *Server) processNewServer(si *ServerInfo) {
 		// Only update if non-existent
 		if _, ok := s.nodeToInfo.Load(node); !ok {
 			s.nodeToInfo.Store(node, nodeInfo{
-				si.Name,
-				si.Version,
-				si.Cluster,
-				si.Domain,
-				si.ID,
-				si.Tags,
-				nil,
-				nil,
-				false,
-				si.JetStreamEnabled(),
-				si.BinaryStreamSnapshot(),
-				si.AccountNRG(),
+				name:            si.Name,
+				version:         si.Version,
+				cluster:         si.Cluster,
+				domain:          si.Domain,
+				id:              si.ID,
+				tags:            si.Tags,
+				cfg:             nil,
+				stats:           nil,
+				offline:         false,
+				js:              si.JetStreamEnabled(),
+				binarySnapshots: si.BinaryStreamSnapshot(),
+				accountNRG:      si.AccountNRG(),
 			})
 		}
 	}
@@ -1777,9 +1902,14 @@ func (s *Server) shutdownEventing() {
 	}
 
 	s.mu.Lock()
+	if s.sys == nil || s.sys.resetCh == nil {
+		s.mu.Unlock()
+		return
+	}
 	clearTimer(&s.sys.sweeper)
 	clearTimer(&s.sys.stmr)
-	rc := s.sys.resetCh
+	// We intentionally do not close resetCh. A sender that captured the channel
+	// may still attempt to send after the internal send loop has exited.
 	s.sys.resetCh = nil
 	wg := &s.sys.wg
 	s.mu.Unlock()
@@ -1799,9 +1929,6 @@ func (s *Server) shutdownEventing() {
 	})
 	// Turn everything off here.
 	s.sys = nil
-	// Make sure this is done after s.sys = nil, so that we don't
-	// get sends to closed channels on badly-timed config reloads.
-	close(rc)
 }
 
 // Request for our local connection count.
@@ -1866,11 +1993,12 @@ func (s *Server) leafNodeConnected(sub *subscription, _ *client, _ *Account, sub
 
 // Common filter options for system requests STATSZ VARZ SUBSZ CONNZ ROUTEZ GATEWAYZ LEAFZ
 type EventFilterOptions struct {
-	Name    string   `json:"server_name,omitempty"` // filter by server name
-	Cluster string   `json:"cluster,omitempty"`     // filter by cluster name
-	Host    string   `json:"host,omitempty"`        // filter by host name
-	Tags    []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
-	Domain  string   `json:"domain,omitempty"`      // filter by JS domain
+	Name       string   `json:"server_name,omitempty"` // filter by server name
+	Cluster    string   `json:"cluster,omitempty"`     // filter by cluster name
+	Host       string   `json:"host,omitempty"`        // filter by host name
+	ExactMatch bool     `json:"exact_match,omitempty"` // if the above filters should use exact matching or only "contains"
+	Tags       []string `json:"tags,omitempty"`        // filter by tags (must match all tags)
+	Domain     string   `json:"domain,omitempty"`      // filter by JS domain
 }
 
 // StatszEventOptions are options passed to Statsz
@@ -1956,19 +2084,34 @@ type ExpvarzEventOptions struct {
 	EventFilterOptions
 }
 
+// In the context of system events, IpqueueszEventOptions are options passed to Ipqueuesz
+type IpqueueszEventOptions struct {
+	EventFilterOptions
+	IpqueueszOptions
+}
+
+// In the context of system events, RaftzEventOptions are options passed to Raftz
+type RaftzEventOptions struct {
+	EventFilterOptions
+	RaftzOptions
+}
+
 // returns true if the request does NOT apply to this server and can be ignored.
-// DO NOT hold the server lock when
+// DO NOT hold the server lock when calling this.
 func (s *Server) filterRequest(fOpts *EventFilterOptions) bool {
-	if fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name) {
-		return true
+	if fOpts == nil {
+		return false
 	}
-	if fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host) {
-		return true
-	}
-	if fOpts.Cluster != _EMPTY_ {
-		if !strings.Contains(s.ClusterName(), fOpts.Cluster) {
+	if fOpts.ExactMatch {
+		if (fOpts.Name != _EMPTY_ && fOpts.Name != s.info.Name) ||
+			(fOpts.Host != _EMPTY_ && fOpts.Host != s.info.Host) ||
+			(fOpts.Cluster != _EMPTY_ && fOpts.Cluster != s.ClusterName()) {
 			return true
 		}
+	} else if (fOpts.Name != _EMPTY_ && !strings.Contains(s.info.Name, fOpts.Name)) ||
+		(fOpts.Host != _EMPTY_ && !strings.Contains(s.info.Host, fOpts.Host)) ||
+		(fOpts.Cluster != _EMPTY_ && !strings.Contains(s.ClusterName(), fOpts.Cluster)) {
+		return true
 	}
 	if len(fOpts.Tags) > 0 {
 		opts := s.getOpts()
@@ -2078,6 +2221,20 @@ type ServerAPIExpvarzResponse struct {
 	Error  *ApiError      `json:"error,omitempty"`
 }
 
+// ServerAPIpqueueszResponse is the response type for ipqueuesz
+type ServerAPIpqueueszResponse struct {
+	Server *ServerInfo      `json:"server"`
+	Data   *IpqueueszStatus `json:"data,omitempty"`
+	Error  *ApiError        `json:"error,omitempty"`
+}
+
+// ServerAPIRaftzResponse is the response type for raftz
+type ServerAPIRaftzResponse struct {
+	Server *ServerInfo  `json:"server"`
+	Data   *RaftzStatus `json:"data,omitempty"`
+	Error  *ApiError    `json:"error,omitempty"`
+}
+
 // statszReq is a request for us to respond with current statsz.
 func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, reply string, hdr, msg []byte) {
 	if !s.EventsEnabled() {
@@ -2087,7 +2244,7 @@ func (s *Server) statszReq(sub *subscription, c *client, _ *Account, subject, re
 	// No reply is a signal that we should use our normal broadcast subject.
 	if reply == _EMPTY_ {
 		reply = fmt.Sprintf(serverStatsSubj, s.info.ID)
-		s.wrapChk(s.resetLastStatsz)
+		s.wrapChk(s.resetLastStatsz)()
 	}
 
 	opts := StatszEventOptions{}
@@ -2228,10 +2385,11 @@ func (s *Server) registerSystemImports(a *Account) {
 	if sacc == nil || sacc == a {
 		return
 	}
+	dstAccName := sacc.Name
 	// FIXME(dlc) - make a shared list between sys exports etc.
 
 	importSrvc := func(subj, mappedSubj string) {
-		if !a.serviceImportExists(subj) {
+		if !a.serviceImportExists(dstAccName, subj) {
 			if err := a.addServiceImportWithClaim(sacc, subj, mappedSubj, nil, true); err != nil {
 				s.Errorf("Error setting up system service import %s -> %s for account: %v",
 					subj, mappedSubj, err)
@@ -2337,22 +2495,57 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 func (a *Account) statz() *AccountStat {
 	localConns := a.numLocalConnections()
 	leafConns := a.numLocalLeafNodes()
+
+	a.stats.Lock()
+	received := DataStats{
+		MsgBytes: MsgBytes{
+			Msgs:  a.stats.inMsgs,
+			Bytes: a.stats.inBytes,
+		},
+		Gateways: &MsgBytes{
+			Msgs:  a.stats.gw.inMsgs,
+			Bytes: a.stats.gw.inBytes,
+		},
+		Routes: &MsgBytes{
+			Msgs:  a.stats.rt.inMsgs,
+			Bytes: a.stats.rt.inBytes,
+		},
+		Leafs: &MsgBytes{
+			Msgs:  a.stats.ln.inMsgs,
+			Bytes: a.stats.ln.inBytes,
+		},
+	}
+	sent := DataStats{
+		MsgBytes: MsgBytes{
+			Msgs:  a.stats.outMsgs,
+			Bytes: a.stats.outBytes,
+		},
+		Gateways: &MsgBytes{
+			Msgs:  a.stats.gw.outMsgs,
+			Bytes: a.stats.gw.outBytes,
+		},
+		Routes: &MsgBytes{
+			Msgs:  a.stats.rt.outMsgs,
+			Bytes: a.stats.rt.outBytes,
+		},
+		Leafs: &MsgBytes{
+			Msgs:  a.stats.ln.outMsgs,
+			Bytes: a.stats.ln.outBytes,
+		},
+	}
+	slowConsumers := a.stats.slowConsumers
+	a.stats.Unlock()
+
 	return &AccountStat{
-		Account:    a.Name,
-		Name:       a.LogicalName,
-		Conns:      localConns,
-		LeafNodes:  leafConns,
-		TotalConns: localConns + leafConns,
-		NumSubs:    a.sl.Count(),
-		Received: DataStats{
-			Msgs:  atomic.LoadInt64(&a.inMsgs),
-			Bytes: atomic.LoadInt64(&a.inBytes),
-		},
-		Sent: DataStats{
-			Msgs:  atomic.LoadInt64(&a.outMsgs),
-			Bytes: atomic.LoadInt64(&a.outBytes),
-		},
-		SlowConsumers: atomic.LoadInt64(&a.slowConsumers),
+		Account:       a.Name,
+		Name:          a.getNameTagLocked(),
+		Conns:         localConns,
+		LeafNodes:     leafConns,
+		TotalConns:    localConns + leafConns,
+		NumSubs:       a.sl.Count(),
+		Received:      received,
+		Sent:          sent,
+		SlowConsumers: slowConsumers,
 	}
 }
 
@@ -2368,26 +2561,26 @@ func (s *Server) accConnsUpdate(a *Account) {
 	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
 }
 
-// server lock should be held
 func (s *Server) nextEventID() string {
-	return s.eventIds.Next()
+	s.eventIdsMu.Lock()
+	id := s.eventIds.Next()
+	s.eventIdsMu.Unlock()
+	return id
 }
 
 // accountConnectEvent will send an account client connect event if there is interest.
 // This is a billing event.
 func (s *Server) accountConnectEvent(c *client) {
-	s.mu.Lock()
-	if !s.eventsEnabled() {
-		s.mu.Unlock()
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
-	gacc := s.gacc
 	eid := s.nextEventID()
-	s.mu.Unlock()
 
 	c.mu.Lock()
-	// Ignore global account activity
-	if c.acc == nil || c.acc == gacc {
+	if c.acc == nil {
 		c.mu.Unlock()
 		return
 	}
@@ -2410,7 +2603,7 @@ func (s *Server) accountConnectEvent(c *client) {
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
@@ -2425,23 +2618,20 @@ func (s *Server) accountConnectEvent(c *client) {
 // accountDisconnectEvent will send an account client disconnect event if there is interest.
 // This is a billing event.
 func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string) {
-	s.mu.Lock()
-	if !s.eventsEnabled() {
-		s.mu.Unlock()
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
-	gacc := s.gacc
 	eid := s.nextEventID()
-	s.mu.Unlock()
 
 	c.mu.Lock()
 
-	// Ignore global account activity
-	if c.acc == nil || c.acc == gacc {
+	if c.acc == nil {
 		c.mu.Unlock()
 		return
 	}
-
 	m := DisconnectEventMsg{
 		TypedEvent: TypedEvent{
 			Type: DisconnectEventMsgType,
@@ -2462,18 +2652,22 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			Msgs:  atomic.LoadInt64(&c.inMsgs),
-			Bytes: atomic.LoadInt64(&c.inBytes),
+			MsgBytes: MsgBytes{
+				Msgs:  atomic.LoadInt64(&c.inMsgs),
+				Bytes: atomic.LoadInt64(&c.inBytes),
+			},
 		},
 		Received: DataStats{
-			Msgs:  c.outMsgs,
-			Bytes: c.outBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
+			},
 		},
 		Reason: reason,
 	}
@@ -2485,14 +2679,14 @@ func (s *Server) accountDisconnectEvent(c *client, now time.Time, reason string)
 }
 
 // This is the system level event sent to the system account for operators.
-func (s *Server) sendAuthErrorEvent(c *client) {
-	s.mu.Lock()
-	if !s.eventsEnabled() {
-		s.mu.Unlock()
+func (s *Server) sendAuthErrorEvent(c *client, reason string) {
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
 	eid := s.nextEventID()
-	s.mu.Unlock()
 
 	now := time.Now().UTC()
 	c.mu.Lock()
@@ -2516,20 +2710,24 @@ func (s *Server) sendAuthErrorEvent(c *client) {
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			Msgs:  c.inMsgs,
-			Bytes: c.inBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  c.inMsgs,
+				Bytes: c.inBytes,
+			},
 		},
 		Received: DataStats{
-			Msgs:  c.outMsgs,
-			Bytes: c.outBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
+			},
 		},
-		Reason: AuthenticationViolation.String(),
+		Reason: reason,
 	}
 	c.mu.Unlock()
 
@@ -2544,13 +2742,13 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 	if acc == nil {
 		return
 	}
-	s.mu.Lock()
-	if !s.eventsEnabled() {
-		s.mu.Unlock()
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
 	eid := s.nextEventID()
-	s.mu.Unlock()
 
 	now := time.Now().UTC()
 	c.mu.Lock()
@@ -2574,18 +2772,22 @@ func (s *Server) sendAccountAuthErrorEvent(c *client, acc *Account, reason strin
 			Jwt:        c.opts.JWT,
 			IssuerKey:  issuerForClient(c),
 			Tags:       c.tags,
-			NameTag:    c.nameTag,
+			NameTag:    c.acc.getNameTag(),
 			Kind:       c.kindString(),
 			ClientType: c.clientTypeString(),
 			MQTTClient: c.getMQTTClientID(),
 		},
 		Sent: DataStats{
-			Msgs:  c.inMsgs,
-			Bytes: c.inBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  c.inMsgs,
+				Bytes: c.inBytes,
+			},
 		},
 		Received: DataStats{
-			Msgs:  c.outMsgs,
-			Bytes: c.outBytes,
+			MsgBytes: MsgBytes{
+				Msgs:  c.outMsgs,
+				Bytes: c.outBytes,
+			},
 		},
 		Reason: reason,
 	}
@@ -2733,12 +2935,12 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 	}
 	// Now get the request id / reply. We need to see if we have a GW prefix and if so strip that off.
 	reply := rl.ReqId
-	if gwPrefix, old := isGWRoutedSubjectAndIsOldPrefix([]byte(reply)); gwPrefix {
-		reply = string(getSubjectFromGWRoutedReply([]byte(reply), old))
+	if isGWRoutedReply([]byte(reply)) {
+		reply = string(getSubjectFromGWRoutedReply([]byte(reply)))
 	}
 	acc.mu.RLock()
 	si := acc.exports.responses[reply]
-	if si == nil {
+	if si == nil || si.latency == nil {
 		acc.mu.RUnlock()
 		return
 	}
@@ -2768,8 +2970,6 @@ func (s *Server) remoteLatencyUpdate(sub *subscription, _ *client, _ *Account, s
 	si.rc = nil
 	acc.mu.Unlock()
 
-	// Make sure we remove the entry here.
-	acc.removeServiceImport(si.from)
 	// Send the metrics
 	s.sendInternalAccountMsg(acc, lsub, m1)
 }
@@ -2805,7 +3005,7 @@ func (s *Server) newRespInbox() string {
 	var b [respInboxPrefixLen + replySuffixLen]byte
 	pres := b[:respInboxPrefixLen]
 	copy(pres, s.sys.inboxPre)
-	rn := rand.Int63()
+	rn := rand.Int64()
 	for i, l := respInboxPrefixLen, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
 		l /= base
@@ -2935,7 +3135,7 @@ func (s *Server) debugSubscribers(sub *subscription, c *client, _ *Account, subj
 	replySubj := s.newRespInbox()
 	// Store our handler.
 	s.sys.replies[replySubj] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
-		if n, err := strconv.Atoi(string(msg)); err == nil {
+		if n, err := strconv.ParseInt(string(msg), 10, 32); err == nil {
 			atomic.AddInt32(&nsubs, int32(n))
 		}
 		if atomic.AddInt32(&responses, 1) >= expected {
@@ -3116,9 +3316,11 @@ func (s *Server) wrapChk(f func()) func() {
 // sendOCSPPeerRejectEvent sends a system level event to system account when a peer connection is
 // rejected due to OCSP invalid status of its trust chain(s).
 func (s *Server) sendOCSPPeerRejectEvent(kind string, peer *x509.Certificate, reason string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	serverID := s.info.ID
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
 	if peer == nil {
@@ -3142,16 +3344,18 @@ func (s *Server) sendOCSPPeerRejectEvent(kind string, peer *x509.Certificate, re
 		},
 		Reason: reason,
 	}
-	subj := fmt.Sprintf(ocspPeerRejectEventSubj, s.info.ID)
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	subj := fmt.Sprintf(ocspPeerRejectEventSubj, serverID)
+	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }
 
 // sendOCSPPeerChainlinkInvalidEvent sends a system level event to system account when a link in a peer's trust chain
 // is OCSP invalid.
 func (s *Server) sendOCSPPeerChainlinkInvalidEvent(peer *x509.Certificate, link *x509.Certificate, reason string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.eventsEnabled() {
+	s.mu.RLock()
+	eventsEnabled := s.eventsEnabled()
+	serverID := s.info.ID
+	s.mu.RUnlock()
+	if !eventsEnabled {
 		return
 	}
 	if peer == nil || link == nil {
@@ -3180,6 +3384,6 @@ func (s *Server) sendOCSPPeerChainlinkInvalidEvent(peer *x509.Certificate, link 
 		},
 		Reason: reason,
 	}
-	subj := fmt.Sprintf(ocspPeerChainlinkInvalidEventSubj, s.info.ID)
-	s.sendInternalMsg(subj, _EMPTY_, &m.Server, &m)
+	subj := fmt.Sprintf(ocspPeerChainlinkInvalidEventSubj, serverID)
+	s.sendInternalMsgLocked(subj, _EMPTY_, &m.Server, &m)
 }

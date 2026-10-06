@@ -1,4 +1,4 @@
-// Copyright 2021 The NATS Authors
+// Copyright 2021-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -111,6 +111,58 @@ func TestIPQueuePush(t *testing.T) {
 		t.Fatalf("Should not have been notified of addition")
 	default:
 		// OK
+	}
+}
+
+func TestIPQueuePushMany(t *testing.T) {
+	s := &Server{}
+	q := newIPQueue[int](s, "test")
+
+	l, err := q.pushMany(func(yield func(int) bool) {
+		for i := 1; i <= 3; i++ {
+			if !yield(i) {
+				return
+			}
+		}
+	})
+	require_NoError(t, err)
+	require_Equal(t, l, 3)
+	select {
+	case <-q.ch:
+	default:
+		t.Fatal("Should have been notified of additions")
+	}
+	values := q.pop()
+	require_Len(t, len(values), 3)
+	for i, value := range values {
+		require_Equal(t, value, i+1)
+	}
+	q.recycle(&values)
+
+	l, err = q.pushMany(func(func(int) bool) {})
+	require_NoError(t, err)
+	require_Equal(t, l, 0)
+	select {
+	case <-q.ch:
+		t.Fatal("Should not have been notified of additions")
+	default:
+	}
+
+	limited := newIPQueue[int](s, "limited", ipqLimitByLen[int](2))
+	l, err = limited.pushMany(func(yield func(int) bool) {
+		for i := 1; i <= 3; i++ {
+			if !yield(i) {
+				return
+			}
+		}
+	})
+	require_Error(t, err, errIPQLenLimitReached)
+	require_Equal(t, l, 0)
+	require_Equal(t, limited.len(), 0)
+	select {
+	case <-limited.ch:
+		t.Fatal("Should not have been notified of rejected additions")
+	default:
 	}
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -43,6 +43,14 @@ var (
 	semVerRe = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$`)
 )
 
+// formatRevision formats a VCS revision string for display.
+func formatRevision(revision string) string {
+	if len(revision) >= 7 {
+		return revision[:7]
+	}
+	return revision
+}
+
 func init() {
 	// Use build info if present, it would be if building using 'go build .'
 	// or when using a release.
@@ -50,7 +58,7 @@ func init() {
 		for _, setting := range info.Settings {
 			switch setting.Key {
 			case "vcs.revision":
-				gitCommit = setting.Value[:7]
+				gitCommit = formatRevision(setting.Value)
 			}
 		}
 	}
@@ -58,7 +66,7 @@ func init() {
 
 const (
 	// VERSION is the current version for the server.
-	VERSION = "2.11.0-dev"
+	VERSION = "2.16.0-dev"
 
 	// PROTO is the currently supported protocol.
 	// 0 was the original
@@ -138,7 +146,10 @@ const (
 	// DEFAULT_ROUTE_CONNECT Route solicitation intervals.
 	DEFAULT_ROUTE_CONNECT = 1 * time.Second
 
-	// DEFAULT_ROUTE_RECONNECT Route reconnect intervals.
+	// DEFAULT_ROUTE_CONNECT_MAX Route solicitation intervals (max).
+	DEFAULT_ROUTE_CONNECT_MAX = 30 * time.Second
+
+	// DEFAULT_ROUTE_RECONNECT Route reconnect delay.
 	DEFAULT_ROUTE_RECONNECT = 1 * time.Second
 
 	// DEFAULT_ROUTE_DIAL Route dial timeout.

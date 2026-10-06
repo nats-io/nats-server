@@ -1,4 +1,4 @@
-// Copyright 2018 The NATS Authors
+// Copyright 2018-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -34,7 +34,7 @@ func (s *Server) NonceRequired() bool {
 // nonceRequired tells us if we should send a nonce.
 // Lock should be held on entry.
 func (s *Server) nonceRequired() bool {
-	return s.getOpts().AlwaysEnableNonce || len(s.nkeys) > 0 || s.trustedKeys != nil
+	return s.getOpts().AlwaysEnableNonce || len(s.nkeys) > 0 || s.trustedKeys != nil || len(s.proxiesKeyPairs) > 0
 }
 
 // Generate a nonce for INFO challenge.

@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,6 +14,8 @@
 package thw
 
 import (
+	"encoding/binary"
+	"io"
 	"math"
 	"testing"
 	"time"
@@ -83,14 +85,89 @@ func TestHashWheelExpiration(t *testing.T) {
 
 	// Process expired tasks.
 	expired := make(map[uint64]bool)
-	hw.ExpireTasks(func(seq uint64, expires int64) {
+	hw.ExpireTasks(func(seq uint64, expires int64) bool {
 		expired[seq] = true
+		return true
 	})
 
 	// Verify only sequence 1 expired.
 	require_Equal(t, len(expired), 1)
 	require_True(t, expired[1])
 	require_Equal(t, hw.count, 3)
+}
+
+func TestHashWheelManualExpiration(t *testing.T) {
+	hw := NewHashWheel()
+	now := time.Now().UnixNano()
+
+	for seq := uint64(1); seq <= 4; seq++ {
+		require_NoError(t, hw.Add(seq, now))
+	}
+	require_Equal(t, hw.count, 4)
+
+	// Loop over expired multiple times, but without removing them.
+	expired := make(map[uint64]uint64)
+	for i := uint64(0); i <= 1; i++ {
+		hw.ExpireTasks(func(seq uint64, expires int64) bool {
+			expired[seq]++
+			return false
+		})
+
+		require_Equal(t, len(expired), 4)
+		require_Equal(t, expired[1], 1+i)
+		require_Equal(t, expired[2], 1+i)
+		require_Equal(t, expired[3], 1+i)
+		require_Equal(t, expired[4], 1+i)
+		require_Equal(t, hw.count, 4)
+	}
+
+	// Only remove even sequences.
+	for i := uint64(0); i <= 1; i++ {
+		hw.ExpireTasks(func(seq uint64, expires int64) bool {
+			expired[seq]++
+			return seq%2 == 0
+		})
+
+		// Verify even sequences are removed.
+		require_Equal(t, expired[1], 3+i)
+		require_Equal(t, expired[2], 3)
+		require_Equal(t, expired[3], 3+i)
+		require_Equal(t, expired[4], 3)
+		require_Equal(t, hw.count, 2)
+	}
+
+	// Manually remove last items.
+	require_NoError(t, hw.Remove(1, now))
+	require_NoError(t, hw.Remove(3, now))
+	require_Equal(t, hw.count, 0)
+}
+
+func TestHashWheelExpirationLargerThanWheel(t *testing.T) {
+	hw := NewHashWheel()
+
+	// Add sequences such that they can be expired immediately.
+	seqs := map[uint64]int64{
+		1: 0,
+		2: int64(time.Second),
+	}
+	for seq, expires := range seqs {
+		require_NoError(t, hw.Add(seq, expires))
+	}
+	require_Equal(t, hw.count, 2)
+
+	// Pick a timestamp such that the expiration needs to wrap around the whole wheel.
+	now := int64(time.Second) * wheelMask
+
+	// Process expired tasks.
+	expired := make(map[uint64]bool)
+	hw.expireTasks(now, func(seq uint64, expires int64) bool {
+		expired[seq] = true
+		return true
+	})
+
+	// Verify both sequences are expired.
+	require_Equal(t, len(expired), 2)
+	require_Equal(t, hw.count, 0)
 }
 
 func TestHashWheelNextExpiration(t *testing.T) {
@@ -173,6 +250,36 @@ func TestHashWheelEncodeDecode(t *testing.T) {
 			require_True(t, ok)
 			require_Equal(t, ts, nts)
 		}
+	}
+}
+
+func TestHashWheelDecodeRejectsMalformed(t *testing.T) {
+	// Build a valid header that claims the given number of entries.
+	header := func(count uint64) []byte {
+		b := make([]byte, headerLen)
+		b[0] = 1                                    // Magic version
+		binary.LittleEndian.PutUint64(b[1:], count) // Entry count
+		binary.LittleEndian.PutUint64(b[9:], 0)     // High sequence stamp
+		return b
+	}
+
+	for _, test := range []struct {
+		title string
+		buf   []byte
+		err   error
+	}{
+		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: ErrInvalidVersion},
+		// Claims one entry but the buffer ends right after the header.
+		{title: "TruncatedAtVarints", buf: header(1), err: io.ErrUnexpectedEOF},
+		// Has the timestamp varint but the seq varint is missing.
+		{title: "TruncatedSeq", buf: append(header(1), binary.AppendVarint(nil, 12345)...), err: io.ErrUnexpectedEOF},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			hw := NewHashWheel()
+			_, err := hw.Decode(test.buf)
+			require_Error(t, err, test.err)
+		})
 	}
 }
 

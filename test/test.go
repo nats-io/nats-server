@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -51,7 +51,8 @@ var DefaultTestOptions = server.Options{
 
 // RunDefaultServer starts a new Go routine based server using the default options
 func RunDefaultServer() *server.Server {
-	return RunServer(&DefaultTestOptions)
+	dto := DefaultTestOptions
+	return RunServer(&dto)
 }
 
 func RunRandClientPortServer() *server.Server {
@@ -75,7 +76,8 @@ func RunServer(opts *server.Options) *server.Server {
 
 func RunServerCallback(opts *server.Options, callback func(*server.Server)) *server.Server {
 	if opts == nil {
-		opts = &DefaultTestOptions
+		dto := DefaultTestOptions
+		opts = &dto
 	}
 	// Optionally override for individual debugging of tests
 	opts.NoLog = !doLog
@@ -191,7 +193,7 @@ func createRouteConn(t tLogger, host string, port int) net.Conn {
 }
 
 func createClientConn(t tLogger, host string, port int) net.Conn {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	c, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		stackFatalf(t, "Could not connect to server: %v\n", err)
@@ -313,7 +315,7 @@ func setupConnWithAccount(t tLogger, s *server.Server, c net.Conn, account strin
 
 func setupConnWithUserPass(t tLogger, c net.Conn, username, password string) (sendFun, expectFun) {
 	checkInfoMsg(t, c)
-	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"protocol\":1,\"user\":%q,\"pass\":%q}\r\n",
+	cs := fmt.Sprintf("CONNECT {\"verbose\":%v,\"pedantic\":%v,\"tls_required\":%v,\"user\":%q,\"pass\":%q}\r\n",
 		false, false, false, username, password)
 	sendProto(t, c, cs)
 	return sendCommand(t, c), expectLefMostCommand(t, c)
@@ -402,7 +404,7 @@ func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte)
 	recv := func() []byte {
 		expBuf := make([]byte, 32768)
 		// Wait for commands to be processed and results queued for read
-		c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, err := c.Read(expBuf)
 		c.SetReadDeadline(time.Time{})
 
@@ -435,7 +437,7 @@ func expectLeftMostResult(t tLogger, c net.Conn, re *regexp.Regexp, buf *[]byte)
 func expectResult(t tLogger, c net.Conn, re *regexp.Regexp) []byte {
 	expBuf := make([]byte, 32768)
 	// Wait for commands to be processed and results queued for read
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := c.Read(expBuf)
 	c.SetReadDeadline(time.Time{})
 

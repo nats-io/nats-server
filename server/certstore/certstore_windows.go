@@ -1,4 +1,4 @@
-// Copyright 2022-2024 The NATS Authors
+// Copyright 2022-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -593,7 +593,7 @@ func winSignECDSA(kh uintptr, digest []byte) ([]byte, error) {
 		return nil, ErrStoreECDSASigningError
 	}
 
-	return winPackECDSASigValue(bytes.NewReader(buf[:size]), len(digest))
+	return winPackECDSASigValue(bytes.NewReader(buf[:size]), int(size/2))
 }
 
 func winPackECDSASigValue(r io.Reader, digestLength int) ([]byte, error) {

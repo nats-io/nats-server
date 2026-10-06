@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "40 4 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   nightly_coverage:
     runs-on: ubuntu-latest
@@ -15,14 +18,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: src/github.com/nats-io/nats-server
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version-file: src/github.com/nats-io/nats-server/go.mod
+          go-version: stable
           cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
 
       - name: Run code coverage
@@ -35,16 +38,16 @@ jobs:
 
       - name: Convert coverage.out to coverage.lcov
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 4e1989767862652e6ca8d3e2e61aabe6d43be28b = tag v1.1.1
-        uses: jandelgado/gcov2lcov-action@4e1989767862652e6ca8d3e2e61aabe6d43be28b
+        # Commit e4612787670fc5b5f49026b8c29c5569921de1db = tag v1.2.0
+        uses: jandelgado/gcov2lcov-action@e4612787670fc5b5f49026b8c29c5569921de1db
         with:
           infile: acc.out
           working-directory: src/github.com/nats-io/nats-server
 
       - name: Coveralls
         # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 43f11c4e058174f808ee9cd63701b6c42fe3f5e3 = tag v2.3.2
-        uses: coverallsapp/github-action@cfd0633edbd2411b532b808ba7a8b5e04f76d2c8
+        # Commit 5cbfd81b66ca5d10c19b062c04de0199c215fb6e = tag v2.3.7
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e
         with:
           github-token: ${{ secrets.github_token }}
           file: src/github.com/nats-io/nats-server/coverage.lcov

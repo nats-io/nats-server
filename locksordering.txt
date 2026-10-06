@@ -6,6 +6,12 @@ jetStream -> jsAccount -> Server -> client -> Account
 
 jetStream -> jsAccount -> stream -> consumer
 
+The "prMu" lock protects the peer reconcile signaling state on jetStream, so
+signaling is cheap and never contends on the JS lock. It must not be held while
+acquiring the JetStream lock.
+
+  jetStream -> prMu
+
 A lock to protect jetstream account's usage has been introduced: jsAccount.usageMu.
 This lock is independent and can be invoked under any other lock: jsAccount -> jsa.usageMu, stream -> jsa.usageMu, etc...
 
@@ -28,5 +34,42 @@ clearObserverState so that they cannot interleave which would leave Raft nodes i
 inconsistent observer states.
 
     jscmMu -> Account -> jsAccount
-    jscmMu -> stream.clsMu 
+    jscmMu -> stream.clsMu
     jscmMu -> RaftNode
+
+The "clsMu" lock protects the consumer list on a stream, used for signalling consumer activity.
+
+    stream -> clsMu
+
+The "clMu" and "ddMu" locks protect clustered and dedupe state respectively.
+The stream lock (`mset.mu`) is optional, but if holding "clMu" or "ddMu",
+locking the stream lock afterward would violate locking order.
+
+    stream -> clMu
+    stream -> clMu -> ddMu
+
+The "mset.batches.mu" lock protects the batching state without needing to hold the stream lock.
+If "clMu" is used to commit a batch, it should only be acquired while already holding the batch lock.
+
+    stream -> mset.batches.mu -> clMu
+
+The "isolateMu" lock isolates direct get and msg get reads from writes, so those reads do not
+observe partially applied rollups or atomic batches. Other read paths (consumer delivery,
+mirrors/sources, info requests, etc.) are sequentially consistent and may observe a prefix of
+an inflight batch. It must be acquired before the stream lock, never while holding it.
+
+    isolateMu -> stream
+
+The "eventIdsMu" lock protects the server's event ID generator. It may be acquired
+while holding the Server lock, but the Server lock must not be acquired while
+holding eventIdsMu.
+
+    Server -> eventIdsMu
+
+The "cmu" lock in the Account serializes claim updates for that account so that
+rebuilding its exports/imports cannot overlap with another update's validity checks.
+It must be acquired before the account lock, and must not be held while updating
+another account (which would take that account's locks in unknown order).
+
+    cmu -> Account
+    cmu -> client

@@ -1,4 +1,4 @@
-// Copyright 2019-2024 The NATS Authors
+// Copyright 2019-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -24,13 +25,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
 	"github.com/nats-io/nkeys"
@@ -40,15 +41,20 @@ import (
 // JetStreamConfig determines this server's configuration.
 // MaxMemory and MaxStore are in bytes.
 type JetStreamConfig struct {
-	MaxMemory    int64         `json:"max_memory"`
-	MaxStore     int64         `json:"max_storage"`
-	StoreDir     string        `json:"store_dir,omitempty"`
-	SyncInterval time.Duration `json:"sync_interval,omitempty"`
-	SyncAlways   bool          `json:"sync_always,omitempty"`
-	Domain       string        `json:"domain,omitempty"`
-	CompressOK   bool          `json:"compress_ok,omitempty"`
-	UniqueTag    string        `json:"unique_tag,omitempty"`
-	Strict       bool          `json:"strict,omitempty"`
+	MaxMemory    int64         `json:"max_memory"`              // MaxMemory is the maximum size of memory type streams
+	MaxStore     int64         `json:"max_storage"`             // MaxStore is the maximum size of file store type streams
+	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored
+	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently we sync to disk in the background by calling fsync
+	SyncAlways   bool          `json:"sync_always,omitempty"`   // SyncAlways indicates flushes are done after every write
+	Domain       string        `json:"domain,omitempty"`        // Domain is the JetStream domain
+	CompressOK   bool          `json:"compress_ok,omitempty"`   // CompressOK indicates if compression is supported
+	UniqueTag    string        `json:"unique_tag,omitempty"`    // UniqueTag is the unique tag assigned to this instance
+	Strict       bool          `json:"strict,omitempty"`        // Strict indicates if strict JSON parsing is performed
+
+	// maxStorePending is set when MaxStore was derived from the available disk
+	// space rather than configured, and has not been adjusted yet for the space
+	// that recovered streams already occupy. See finalizeDynamicMaxStore.
+	maxStorePending bool
 }
 
 // Statistics about JetStream for this server.
@@ -91,35 +97,49 @@ type JetStreamAccountStats struct {
 	Tiers         map[string]JetStreamTier `json:"tiers,omitempty"` // indexed by tier name
 }
 
+// JetStreamAPIStats holds stats about the API usage for this server
 type JetStreamAPIStats struct {
-	Level    int    `json:"level"`
-	Total    uint64 `json:"total"`
-	Errors   uint64 `json:"errors"`
-	Inflight uint64 `json:"inflight,omitempty"`
+	Level    int    `json:"level"`              // Level is the active API level this server implements
+	Total    uint64 `json:"total"`              // Total is the total API requests received since start
+	Errors   uint64 `json:"errors"`             // Errors is the total API requests that resulted in error responses
+	Inflight uint64 `json:"inflight,omitempty"` // Inflight are the number of API requests currently being served
 }
 
 // This is for internal accounting for JetStream for this server.
 type jetStream struct {
 	// These are here first because of atomics on 32bit systems.
-	apiInflight   int64
-	apiTotal      int64
-	apiErrors     int64
-	memReserved   int64
-	storeReserved int64
-	memUsed       int64
-	storeUsed     int64
-	queueLimit    int64
-	clustered     int32
-	mu            sync.RWMutex
-	srv           *Server
-	config        JetStreamConfig
-	cluster       *jetStreamCluster
-	accounts      map[string]*jsAccount
-	apiSubs       *Sublist
-	started       time.Time
+	apiInflight    int64
+	apiTotal       int64
+	apiErrors      int64
+	memMax         int64
+	memReserved    int64 // Requires JS lock to be held.
+	memUsed        int64
+	storeMax       int64
+	storeReserved  int64 // Requires JS lock to be held.
+	storeUsed      int64
+	queueLimit     int64
+	infoQueueLimit int64
+	clustered      int32
+	mu             sync.RWMutex
+	srv            *Server
+	config         JetStreamConfig
+	cluster        *jetStreamCluster
+	accounts       map[string]*jsAccount
+	apiSubs        *Sublist
+	infoSubs       *gsl.SimpleSublist // Subjects for info-specific queue.
+	started        time.Time
 
 	// System level request to purge a stream move
 	accountPurge *subscription
+
+	// Debounced reconcile of assignments for peers that became selectable.
+	// Has its own lock so signaling is cheap and never contends on the JS lock.
+	prMu    sync.Mutex
+	prPeers map[string]struct{}
+	// Meta peers that were just added but that we can't place on yet, because
+	// we have no STATSZ for them. Their first STATSZ moves them into prPeers.
+	prNewPeers map[string]struct{}
+	prRunning  bool
 
 	// Some bools regarding general state.
 	metaRecovering bool
@@ -148,14 +168,12 @@ type jsaStorage struct {
 // an internal sub for a stream, so we will direct link to the stream
 // and walk backwards as needed vs multiple hash lookups and locks, etc.
 type jsAccount struct {
-	mu        sync.RWMutex
-	js        *jetStream
-	account   *Account
-	storeDir  string
-	inflight  sync.Map
-	streams   map[string]*stream
-	templates map[string]*streamTemplate
-	store     TemplateStore
+	mu       sync.RWMutex
+	js       *jetStream
+	account  *Account
+	storeDir string
+	inflight sync.Map
+	streams  map[string]*stream
 
 	// From server
 	sendq *ipQueue[*pubMsg]
@@ -176,9 +194,6 @@ type jsAccount struct {
 	updatesSub *subscription
 	lupdate    time.Time
 	utimer     *time.Timer
-
-	// Which account to send NRG traffic into. Empty string is system account.
-	nrgAccount string
 }
 
 // Track general usage for this account.
@@ -195,6 +210,11 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	}
 
 	s.Noticef("Starting JetStream")
+	start := time.Now()
+	defer func() {
+		s.Noticef("Took %s to start JetStream", time.Since(start))
+	}()
+
 	if config == nil || config.MaxMemory <= 0 || config.MaxStore <= 0 {
 		var storeDir, domain, uniqueTag string
 		var maxStore, maxMem int64
@@ -203,9 +223,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 			maxStore, maxMem = config.MaxStore, config.MaxMemory
 		}
 		config = s.dynJetStreamConfig(storeDir, maxStore, maxMem)
-		if maxMem > 0 {
-			config.MaxMemory = maxMem
-		}
 		if domain != _EMPTY_ {
 			config.Domain = domain
 		}
@@ -236,7 +253,6 @@ func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 type keyGen func(context []byte) ([]byte, error)
 
 // Return a key generation function or nil if encryption not enabled.
-// keyGen defined in filestore.go - keyGen func(iv, context []byte) []byte
 func (s *Server) jsKeyGen(jsKey, info string) keyGen {
 	if ek := jsKey; ek != _EMPTY_ {
 		return func(context []byte) ([]byte, error) {
@@ -412,15 +428,19 @@ func (s *Server) initJetStreamEncryption() (err error) {
 
 // enableJetStream will start up the JetStream subsystem.
 func (s *Server) enableJetStream(cfg JetStreamConfig) error {
-	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache()}
+	js := &jetStream{srv: s, config: cfg, accounts: make(map[string]*jsAccount), apiSubs: NewSublistNoCache(), infoSubs: gsl.NewSimpleSublist()}
 	s.gcbMu.Lock()
 	if s.gcbOutMax = s.getOpts().JetStreamMaxCatchup; s.gcbOutMax == 0 {
 		s.gcbOutMax = defaultMaxTotalCatchupOutBytes
 	}
 	s.gcbMu.Unlock()
 
+	atomic.StoreInt64(&js.memMax, cfg.MaxMemory)
+	atomic.StoreInt64(&js.storeMax, cfg.MaxStore)
+
 	// TODO: Not currently reloadable.
 	atomic.StoreInt64(&js.queueLimit, s.getOpts().JetStreamRequestQueueLimit)
+	atomic.StoreInt64(&js.infoQueueLimit, s.getOpts().JetStreamInfoQueueLimit)
 
 	s.js.Store(js)
 
@@ -510,6 +530,10 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 		return err
 	}
 
+	// All file based streams have been recovered, so we now know how much of
+	// the disk we already occupy and can settle on a dynamic limit.
+	js.finalizeDynamicMaxStore()
+
 	// If we are in clustered mode go ahead and start the meta controller.
 	if !standAlone || canExtend {
 		if err := s.enableJetStreamClustering(); err != nil {
@@ -523,6 +547,30 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 	js.setStarted()
 
 	return nil
+}
+
+// finalizeDynamicMaxStore settles a dynamic max store limit once all file based
+// streams have been recovered. diskAvailable only reports free space, so add back
+// what we occupy ourselves to keep the limit stable across restarts.
+func (js *jetStream) finalizeDynamicMaxStore() {
+	js.mu.Lock()
+	if !js.config.maxStorePending {
+		js.mu.Unlock()
+		return
+	}
+	// From here on the limit is real and can be enforced, see sufficientResources.
+	js.config.maxStorePending = false
+	recovered := atomic.LoadInt64(&js.storeUsed)
+	if recovered <= 0 {
+		js.mu.Unlock()
+		return
+	}
+	// diskAvailable is already scaled down to 75% of what is free, so scale the
+	// recovered bytes the same way before adding them back.
+	maxStore := addSaturate(js.config.MaxStore, recovered/4*3)
+	js.config.MaxStore = maxStore
+	atomic.StoreInt64(&js.storeMax, maxStore)
+	js.mu.Unlock()
 }
 
 const jsNoExtend = "no_extend"
@@ -562,13 +610,13 @@ func (s *Server) restartJetStream() error {
 		MaxMemory:    opts.JetStreamMaxMemory,
 		MaxStore:     opts.JetStreamMaxStore,
 		Domain:       opts.JetStreamDomain,
-		Strict:       opts.JetStreamStrict,
+		Strict:       !opts.NoJetStreamStrict,
 	}
 	s.Noticef("Restarting JetStream")
 	err := s.EnableJetStream(&cfg)
 	if err != nil {
 		s.Warnf("Can't start JetStream: %v", err)
-		return s.DisableJetStream()
+		return s.ShutdownJetStream()
 	}
 	s.updateJetStreamInfoStatus(true)
 	return nil
@@ -589,8 +637,19 @@ func (s *Server) checkJetStreamExports() {
 
 func (s *Server) setupJetStreamExports() {
 	// Setup our internal system export.
-	if err := s.SystemAccount().AddServiceExport(jsAllAPI, nil); err != nil {
+	sacc := s.SystemAccount()
+	if err := sacc.AddServiceExport(jsAllAPI, nil); err != nil {
 		s.Warnf("Error setting up jetstream service exports: %v", err)
+	}
+	// Map the domain prefixed API too, so an isolated JetStream is addressable by
+	// domain like an account is. Unprefixed always means this server's own JetStream.
+	if domain := s.getOpts().JetStreamDomain; domain != _EMPTY_ {
+		src, dest := fmt.Sprintf(jsDomainAPI, domain), jsAllAPI
+		if err := sacc.AddMapping(src, dest); err != nil {
+			s.Errorf("Error adding JetStream domain mapping to system account: %v", err)
+		} else {
+			s.Debugf("Adding JetStream Domain Mapping %q -> %s to system account", src, dest)
+		}
 	}
 }
 
@@ -620,7 +679,7 @@ func (s *Server) handleOutOfSpace(mset *stream) {
 			s.Errorf("JetStream out of resources, will be DISABLED")
 		}
 
-		go s.DisableJetStream()
+		go s.ShutdownJetStream()
 
 		adv := &JSServerOutOfSpaceAdvisory{
 			TypedEvent: TypedEvent{
@@ -639,8 +698,23 @@ func (s *Server) handleOutOfSpace(mset *stream) {
 }
 
 // DisableJetStream will turn off JetStream and signals in clustered mode
-// to have the metacontroller remove us from the peer list.
+// to have the metacontroller remove us from the peer list. Persistent
+// meta-raft state on disk is removed. For transient runtime errors where
+// the server should rejoin its existing meta group on restart, use
+// ShutdownJetStream instead.
 func (s *Server) DisableJetStream() error {
+	return s.disableJetStream(true)
+}
+
+// ShutdownJetStream is like DisableJetStream but preserves persistent
+// meta-raft state on disk so the server can rejoin the existing meta
+// group on restart. Use for transient runtime errors that the operator
+// is expected to fix before restarting.
+func (s *Server) ShutdownJetStream() error {
+	return s.disableJetStream(false)
+}
+
+func (s *Server) disableJetStream(deleteState bool) error {
 	if !s.JetStreamEnabled() {
 		return nil
 	}
@@ -671,7 +745,12 @@ func (s *Server) DisableJetStream() error {
 					s.Warnf("JetStream timeout waiting for meta leader transfer")
 				}
 			}
-			meta.Delete()
+			if deleteState {
+				meta.Delete()
+			} else {
+				meta.Stop()
+				meta.WaitForStop()
+			}
 		}
 	}
 
@@ -688,6 +767,11 @@ func (s *Server) DisableJetStream() error {
 }
 
 func (s *Server) enableJetStreamAccounts() error {
+	// Reuse the same task workers across all accounts, so that we don't explode
+	// with a large number of goroutines on multi-account systems.
+	tq := parallelTaskQueue(min(64, s.diskIOSemaphore().cap()))
+	defer close(tq)
+
 	// If we have no configured accounts setup then setup imports on global account.
 	if s.globalAccountOnly() {
 		gacc := s.GlobalAccount()
@@ -696,10 +780,10 @@ func (s *Server) enableJetStreamAccounts() error {
 			gacc.jsLimits = defaultJSAccountTiers
 		}
 		gacc.mu.Unlock()
-		if err := s.configJetStream(gacc); err != nil {
+		if err := s.configJetStream(gacc, tq); err != nil {
 			return err
 		}
-	} else if err := s.configAllJetStreamAccounts(); err != nil {
+	} else if err := s.configAllJetStreamAccounts(tq); err != nil {
 		return fmt.Errorf("Error enabling jetstream on configured accounts: %v", err)
 	}
 	return nil
@@ -715,7 +799,12 @@ func (a *Account) enableAllJetStreamServiceImportsAndMappings() error {
 		return fmt.Errorf("jetstream account not registered")
 	}
 
-	if !a.serviceImportExists(jsAllAPI) {
+	var dstAccName string
+	if sacc := s.SystemAccount(); sacc != nil {
+		dstAccName = sacc.Name
+	}
+
+	if !a.serviceImportExists(dstAccName, jsAllAPI) {
 		// Capture si so we can turn on implicit sharing with JetStream layer.
 		// Make sure to set "to" otherwise will incur performance slow down.
 		si, err := a.addServiceImport(s.SystemAccount(), jsAllAPI, jsAllAPI, nil)
@@ -758,7 +847,7 @@ func (a *Account) enableJetStreamInfoServiceImportOnly() error {
 	return a.enableAllJetStreamServiceImportsAndMappings()
 }
 
-func (s *Server) configJetStream(acc *Account) error {
+func (s *Server) configJetStream(acc *Account, tq chan<- func()) error {
 	if acc == nil {
 		return nil
 	}
@@ -775,7 +864,7 @@ func (s *Server) configJetStream(acc *Account) error {
 				return err
 			}
 		} else {
-			if err := acc.EnableJetStream(jsLimits); err != nil {
+			if err := acc.EnableJetStream(jsLimits, tq); err != nil {
 				return err
 			}
 			if s.gateway.enabled {
@@ -796,7 +885,7 @@ func (s *Server) configJetStream(acc *Account) error {
 }
 
 // configAllJetStreamAccounts walk all configured accounts and turn on jetstream if requested.
-func (s *Server) configAllJetStreamAccounts() error {
+func (s *Server) configAllJetStreamAccounts(tq chan<- func()) error {
 	// Check to see if system account has been enabled. We could arrive here via reload and
 	// a non-default system account.
 	s.checkJetStreamExports()
@@ -836,7 +925,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 	// Process any jetstream enabled accounts here. These will be accounts we are
 	// already aware of at startup etc.
 	for _, acc := range jsAccounts {
-		if err := s.configJetStream(acc); err != nil {
+		if err := s.configJetStream(acc, tq); err != nil {
 			return err
 		}
 	}
@@ -849,7 +938,7 @@ func (s *Server) configAllJetStreamAccounts() error {
 			// Only load up ones not already loaded since they are processed above.
 			if _, ok := accounts.Load(accName); !ok {
 				if acc, err := s.lookupAccount(accName); err != nil && acc != nil {
-					if err := s.configJetStream(acc); err != nil {
+					if err := s.configJetStream(acc, tq); err != nil {
 						return err
 					}
 				}
@@ -994,10 +1083,28 @@ func (s *Server) shutdownJetStream() {
 	js.accountPurge = nil
 	// Signal we are shutting down.
 	js.shuttingDown = true
+	var qch chan struct{}
+	var stopped chan struct{}
+	if cc := js.cluster; cc != nil && cc.qch != nil {
+		qch, stopped = cc.qch, cc.stopped
+		cc.qch, cc.stopped = nil, nil
+	}
 	js.mu.Unlock()
 
 	if accPurgeSub != nil {
 		s.sysUnsubscribe(accPurgeSub)
+	}
+
+	// If we were clustered signal the monitor cluster go routine.
+	// We will wait for a bit for it to close, before removing the accounts' JetStream.
+	// Do this without the lock.
+	if qch != nil {
+		close(qch) // Must be close() to signal *all* listeners
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			s.Warnf("Did not receive signal for successful shutdown of cluster routine")
+		}
 	}
 
 	for _, a := range accounts {
@@ -1009,14 +1116,12 @@ func (s *Server) shutdownJetStream() {
 	js.mu.Lock()
 	js.accounts = nil
 
-	var qch chan struct{}
-
 	if cc := js.cluster; cc != nil {
-		if cc.qch != nil {
-			qch = cc.qch
-			cc.qch = nil
-		}
 		js.stopUpdatesSub()
+		if cc.metaRescue != nil {
+			s.sysUnsubscribe(cc.metaRescue)
+			cc.metaRescue = nil
+		}
 		if cc.c != nil {
 			cc.c.closeConnection(ClientClosed)
 			cc.c = nil
@@ -1026,21 +1131,6 @@ func (s *Server) shutdownJetStream() {
 		s.jsClustered.Store(false)
 	}
 	js.mu.Unlock()
-
-	// If we were clustered signal the monitor cluster go routine.
-	// We will wait for a bit for it to close.
-	// Do this without the lock.
-	if qch != nil {
-		select {
-		case qch <- struct{}{}:
-			select {
-			case <-qch:
-			case <-time.After(2 * time.Second):
-				s.Warnf("Did not receive signal for successful shutdown of cluster routine")
-			}
-		default:
-		}
-	}
 }
 
 // JetStreamConfig will return the current config. Useful if the system
@@ -1048,8 +1138,10 @@ func (s *Server) shutdownJetStream() {
 func (s *Server) JetStreamConfig() *JetStreamConfig {
 	var c *JetStreamConfig
 	if js := s.getJetStream(); js != nil {
+		js.mu.RLock()
 		copy := js.config
 		c = &(copy)
+		js.mu.RUnlock()
 	}
 	return c
 }
@@ -1097,7 +1189,7 @@ func (a *Account) assignJetStreamLimits(limits map[string]JetStreamAccountLimits
 
 // EnableJetStream will enable JetStream on this account with the defined limits.
 // This is a helper for JetStreamEnableAccount.
-func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) error {
+func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq chan<- func()) error {
 	a.mu.RLock()
 	s := a.srv
 	a.mu.RUnlock()
@@ -1132,6 +1224,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 	}
 
 	js.mu.Lock()
+	// Accounts get reset to nil on shutdown, since we re-acquire the locks here, we need to check again.
+	if js.accounts == nil {
+		js.mu.Unlock()
+		return NewJSNotEnabledError()
+	}
+
 	if jsa, ok := js.accounts[a.Name]; ok {
 		a.mu.Lock()
 		a.js = jsa
@@ -1203,80 +1301,141 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		s.Debugf("Recovering JetStream state for account %q", a.Name)
 	}
 
-	// Check templates first since messsage sets will need proper ownership.
-	// FIXME(dlc) - Make this consistent.
-	tdir := filepath.Join(jsa.storeDir, tmplsDir)
-	if stat, err := os.Stat(tdir); err == nil && stat.IsDir() {
-		key := sha256.Sum256([]byte("templates"))
-		hh, err := highwayhash.New64(key[:])
-		if err != nil {
-			return err
+	// Remember if we should be encrypted and what cipher we think we should use.
+	encrypted := s.getOpts().JetStreamKey != _EMPTY_
+	sc := s.getOpts().JetStreamCipher
+
+	doConsumers := func(mset *stream, odir string) {
+		ofis, _ := os.ReadDir(odir)
+		if len(ofis) > 0 {
+			s.Noticef("  Recovering %d consumers for stream - '%s > %s'", len(ofis), mset.accName(), mset.name())
 		}
-		fis, _ := os.ReadDir(tdir)
-		for _, fi := range fis {
-			metafile := filepath.Join(tdir, fi.Name(), JetStreamMetaFile)
-			metasum := filepath.Join(tdir, fi.Name(), JetStreamMetaFileSum)
+		for _, ofi := range ofis {
+			metafile := filepath.Join(odir, ofi.Name(), JetStreamMetaFile)
+			metasum := filepath.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			if _, err := os.Stat(metafile); os.IsNotExist(err) {
+				s.Warnf("    Missing consumer metafile %q", metafile)
+				continue
+			}
 			buf, err := os.ReadFile(metafile)
 			if err != nil {
-				s.Warnf("  Error reading StreamTemplate metafile %q: %v", metasum, err)
+				s.Warnf("    Error reading consumer metafile %q: %v", metafile, err)
 				continue
 			}
 			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("  Missing StreamTemplate checksum for %q", metasum)
+				s.Warnf("    Missing consumer checksum for %q", metasum)
 				continue
 			}
-			sum, err := os.ReadFile(metasum)
+
+			// Check if we are encrypted.
+			if key, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
+				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
+				// Decode the buffer before proceeding.
+				ctxName := mset.name() + tsep + ofi.Name()
+				nbuf, _, err := s.decryptMeta(sc, key, buf, a.Name, ctxName)
+				if err != nil {
+					s.Warnf("  Error decrypting our consumer metafile: %v", err)
+					continue
+				}
+				buf = nbuf
+			}
+
+			var cfg FileConsumerInfo
+			decoder := json.NewDecoder(bytes.NewReader(buf))
+			decoder.DisallowUnknownFields()
+			strictErr := decoder.Decode(&cfg)
+			if strictErr != nil {
+				cfg = FileConsumerInfo{}
+				if err := json.Unmarshal(buf, &cfg); err != nil {
+					s.Warnf("    Error unmarshalling consumer metafile %q: %v", metafile, err)
+					continue
+				}
+			}
+			if supported := supportsRequiredApiLevel(cfg.Metadata); !supported || strictErr != nil {
+				var offlineReason string
+				if !supported {
+					apiLevel := getRequiredApiLevel(cfg.Metadata)
+					if strictErr != nil {
+						offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
+					} else {
+						offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+					}
+					s.Warnf("  Detected unsupported consumer '%s > %s > %s': %s", a.Name, mset.name(), cfg.Name, offlineReason)
+				} else {
+					offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
+					s.Warnf("  Error unmarshalling consumer metafile %q: %v", metafile, strictErr)
+				}
+				singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+				if singleServerMode {
+					if !mset.closed.Load() {
+						s.Warnf("  Stopping unsupported stream '%s > %s'", a.Name, mset.name())
+						mset.mu.Lock()
+						mset.offlineReason = fmt.Sprintf("stopped - unsupported consumer %q", cfg.Name)
+						mset.mu.Unlock()
+						mset.stop(false, false)
+					}
+
+					// Fake a consumer, so we can respond to API requests as single-server.
+					o := &consumer{
+						mset:          mset,
+						js:            s.getJetStream(),
+						acc:           a,
+						srv:           s,
+						cfg:           cfg.ConsumerConfig,
+						direct:        cfg.Direct,
+						sourcing:      cfg.Sourcing,
+						active:        false,
+						stream:        mset.name(),
+						name:          cfg.Name,
+						dseq:          1,
+						sseq:          1,
+						created:       time.Now().UTC(),
+						closed:        true,
+						offlineReason: offlineReason,
+					}
+					if !cfg.Created.IsZero() {
+						o.created = cfg.Created
+					}
+
+					mset.mu.Lock()
+					mset.setConsumer(o)
+					mset.mu.Unlock()
+				}
+				continue
+			}
+
+			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
+			if isEphemeral {
+				// This is an ephemeral consumer and this could fail on restart until
+				// the consumer can reconnect. We will create it as a durable and switch it.
+				cfg.ConsumerConfig.Durable = ofi.Name()
+			}
+			obs, err := mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
 			if err != nil {
-				s.Warnf("  Error reading StreamTemplate checksum %q: %v", metasum, err)
+				s.Warnf("    Error adding consumer '%s > %s > %s': %v", a.Name, mset.name(), cfg.Name, err)
 				continue
 			}
-			hh.Reset()
-			hh.Write(buf)
-			checksum := hex.EncodeToString(hh.Sum(nil))
-			if checksum != string(sum) {
-				s.Warnf("  StreamTemplate checksums do not match %q vs %q", sum, checksum)
-				continue
+			if isEphemeral {
+				obs.switchToEphemeral()
 			}
-			var cfg StreamTemplateConfig
-			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("  Error unmarshalling StreamTemplate metafile: %v", err)
-				continue
-			}
-			cfg.Config.Name = _EMPTY_
-			if _, err := a.addStreamTemplate(&cfg); err != nil {
-				s.Warnf("  Error recreating StreamTemplate %q: %v", cfg.Name, err)
-				continue
+			if !cfg.Created.IsZero() {
+				obs.setCreatedTime(cfg.Created)
 			}
 		}
 	}
 
-	// Collect consumers, do after all streams.
-	type ce struct {
-		mset *stream
-		odir string
-	}
-	var consumers []*ce
-
-	// Collect any interest policy streams to check for
-	// https://github.com/nats-io/nats-server/issues/3612
-	var ipstreams []*stream
-
-	// Remember if we should be encrypted and what cipher we think we should use.
-	encrypted := s.getOpts().JetStreamKey != _EMPTY_
-	plaintext := true
-	sc := s.getOpts().JetStreamCipher
-
 	// Now recover the streams.
 	fis, _ := os.ReadDir(sdir)
-	for _, fi := range fis {
+	doStream := func(fi os.DirEntry) error {
+		plaintext := true
 		mdir := filepath.Join(sdir, fi.Name())
 		// Check for partially deleted streams. They are marked with "." prefix.
 		if strings.HasPrefix(fi.Name(), tsep) {
 			go os.RemoveAll(mdir)
-			continue
+			return nil
 		}
 		key := sha256.Sum256([]byte(fi.Name()))
-		hh, err := highwayhash.New64(key[:])
+		hh, err := highwayhash.NewDigest64(key[:])
 		if err != nil {
 			return err
 		}
@@ -1284,27 +1443,28 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		metasum := filepath.Join(mdir, JetStreamMetaFileSum)
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
 			s.Warnf("  Missing stream metafile for %q", metafile)
-			continue
+			return nil
 		}
 		buf, err := os.ReadFile(metafile)
 		if err != nil {
 			s.Warnf("  Error reading metafile %q: %v", metafile, err)
-			continue
+			return nil
 		}
 		if _, err := os.Stat(metasum); os.IsNotExist(err) {
 			s.Warnf("  Missing stream checksum file %q", metasum)
-			continue
+			return nil
 		}
 		sum, err := os.ReadFile(metasum)
 		if err != nil {
 			s.Warnf("  Error reading Stream metafile checksum %q: %v", metasum, err)
-			continue
+			return nil
 		}
 		hh.Write(buf)
-		checksum := hex.EncodeToString(hh.Sum(nil))
+		var hb [highwayhash.Size64]byte
+		checksum := hex.EncodeToString(hh.Sum(hb[:0]))
 		if checksum != string(sum) {
 			s.Warnf("  Stream metafile %q: checksums do not match %q vs %q", metafile, sum, checksum)
-			continue
+			return nil
 		}
 
 		// Track if we are converting ciphers.
@@ -1317,29 +1477,73 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			s.Debugf("  Stream metafile is encrypted, reading encrypted keyfile")
 			if len(keyBuf) < minMetaKeySize {
 				s.Warnf("  Bad stream encryption key length of %d", len(keyBuf))
-				continue
+				return nil
 			}
 			// Decode the buffer before proceeding.
 			var nbuf []byte
 			nbuf, convertingCiphers, err = s.decryptMeta(sc, keyBuf, buf, a.Name, fi.Name())
 			if err != nil {
 				s.Warnf("  Error decrypting our stream metafile: %v", err)
-				continue
+				return nil
 			}
 			buf = nbuf
 			plaintext = false
 		}
 
 		var cfg FileStreamInfo
-		if err := json.Unmarshal(buf, &cfg); err != nil {
-			s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, err)
-			continue
-		}
-
-		if cfg.Template != _EMPTY_ {
-			if err := jsa.addStreamNameToTemplate(cfg.Template, cfg.Name); err != nil {
-				s.Warnf("  Error adding stream %q to template %q: %v", cfg.Name, cfg.Template, err)
+		decoder := json.NewDecoder(bytes.NewReader(buf))
+		decoder.DisallowUnknownFields()
+		strictErr := decoder.Decode(&cfg)
+		if strictErr != nil {
+			cfg = FileStreamInfo{}
+			if err := json.Unmarshal(buf, &cfg); err != nil {
+				s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, err)
+				return nil
 			}
+		}
+		if supported := supportsRequiredApiLevel(cfg.Metadata); !supported || strictErr != nil {
+			var offlineReason string
+			if !supported {
+				apiLevel := getRequiredApiLevel(cfg.Metadata)
+				if strictErr != nil {
+					offlineReason = fmt.Sprintf("unsupported - config error: %s", strings.TrimPrefix(strictErr.Error(), "json: "))
+				} else {
+					offlineReason = fmt.Sprintf("unsupported - required API level: %s, current API level: %d", apiLevel, JSApiLevel)
+				}
+				s.Warnf("  Detected unsupported stream '%s > %s': %s", a.Name, cfg.StreamConfig.Name, offlineReason)
+			} else {
+				offlineReason = fmt.Sprintf("decoding error: %v", strictErr)
+				s.Warnf("  Error unmarshalling stream metafile %q: %v", metafile, strictErr)
+			}
+			singleServerMode := !s.JetStreamIsClustered() && s.standAloneMode()
+			if singleServerMode {
+				// Fake a stream, so we can respond to API requests as single-server.
+				mset := &stream{
+					acc:           a,
+					jsa:           jsa,
+					cfg:           cfg.StreamConfig,
+					js:            js,
+					srv:           s,
+					stype:         cfg.Storage,
+					consumers:     make(map[string]*consumer),
+					active:        false,
+					created:       time.Now().UTC(),
+					offlineReason: offlineReason,
+				}
+				if !cfg.Created.IsZero() {
+					mset.created = cfg.Created
+				}
+				mset.closed.Store(true)
+
+				jsa.mu.Lock()
+				jsa.streams[cfg.Name] = mset
+				jsa.mu.Unlock()
+
+				// Now do the consumers.
+				odir := filepath.Join(sdir, fi.Name(), consumerDir)
+				doConsumers(mset, odir)
+			}
+			return nil
 		}
 
 		// We had a bug that set a default de dupe window on mirror, despite that being not a valid config
@@ -1362,7 +1566,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 			}
 		}
 		if hadSubjErr {
-			continue
+			return nil
 		}
 
 		// The other possible bug is assigning subjects to mirrors, so check for that and patch as well.
@@ -1386,7 +1590,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 		}
 
 		// Add in the stream.
-		mset, err := a.addStream(&cfg.StreamConfig)
+		mset, err := a.recoverStream(&cfg.StreamConfig)
 		if err != nil {
 			s.Warnf("  Error recreating stream %q: %v", cfg.Name, err)
 			// If we removed a keyfile from above make sure to put it back.
@@ -1396,98 +1600,122 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits) erro
 					s.Warnf("  Error replacing meta keyfile for stream %q: %v", cfg.Name, err)
 				}
 			}
-			continue
+			return nil
 		}
 		if !cfg.Created.IsZero() {
 			mset.setCreatedTime(cfg.Created)
+		}
+
+		// Might need to recover from a partial batch write, but only if a single replica stream.
+		if cfg.AllowAtomicPublish && cfg.Replicas == 1 {
+			var (
+				ok            bool
+				smv           StoreMsg
+				batchId       string
+				batchSeq      uint64
+				commit        bool
+				commitEob     bool
+				batchStoreDir string
+				store         StreamStore
+				state         StreamState
+			)
+			// Check if the last message was part of a batch.
+			sm, err := mset.store.LoadLastMsg(fwcs, &smv)
+			if err != nil || sm == nil {
+				goto SKIP
+			}
+			batchId = getBatchId(sm.hdr)
+			batchSeq, ok = getBatchSequence(sm.hdr)
+			commit = len(sliceHeader(JSBatchCommit, sm.hdr)) != 0
+			if batchId == _EMPTY_ || !ok || commit {
+				goto SKIP
+			}
+			// We've observed a partial batch write. Write the remainder of the batch.
+			batchSeq++
+			_, batchStoreDir = getBatchStoreDir(jsa.storeDir, cfg.Name, batchId)
+			if _, err = os.Stat(batchStoreDir); err != nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+					mset.accName(), mset.name(), batchSeq, err)
+				goto SKIP
+			}
+			store, err = newBatchStore(mset, batchId, cfg.Replicas, cfg.Storage, jsa.storeDir, cfg.Name)
+			if err != nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+					mset.accName(), mset.name(), batchSeq, err)
+				goto SKIP
+			}
+			store.FastState(&state)
+			sm, err = store.LoadMsg(state.LastSeq, &smv)
+			if err != nil || sm == nil {
+				s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: last msg not found %d",
+					mset.accName(), mset.name(), batchSeq, state.LastSeq)
+				goto SKIP
+			}
+			commitEob = bytes.Equal(sliceHeader(JSBatchCommit, sm.hdr), []byte("eob"))
+			// If the commit ends with an "End Of Batch" message, we don't store this.
+			if commitEob {
+				state.LastSeq--
+			}
+			s.Noticef("  Restoring partial batch write for stream '%s > %s' (seq %d to %d)",
+				mset.accName(), mset.name(), batchSeq, state.LastSeq)
+			// Loop through items that weren't persisted yet.
+			for seq := batchSeq; seq <= state.LastSeq; seq++ {
+				sm, err = store.LoadMsg(seq, &smv)
+				if err != nil || sm == nil {
+					s.Errorf("  Failed restoring partial batch write for stream '%s > %s' at sequence %d: %v",
+						mset.accName(), mset.name(), seq, err)
+					break
+				}
+				hdr := sm.hdr
+				// If committed by EOB, the last message must get the normal commit header.
+				if commitEob && seq == state.LastSeq {
+					hdr = genHeader(hdr, JSBatchCommit, "1")
+				}
+				mset.processJetStreamMsg(sm.subj, _EMPTY_, hdr, sm.msg, 0, 0, nil, false, true)
+			}
+			store.Delete(true)
+		SKIP:
+			os.RemoveAll(filepath.Join(sdir, fi.Name(), batchesDir))
 		}
 
 		state := mset.state()
 		s.Noticef("  Restored %s messages for stream '%s > %s' in %v",
 			comma(int64(state.Msgs)), mset.accName(), mset.name(), time.Since(rt).Round(time.Millisecond))
 
+		// Now do the consumers.
+		odir := filepath.Join(sdir, fi.Name(), consumerDir)
+		doConsumers(mset, odir)
+
 		// Collect to check for dangling messages.
 		// TODO(dlc) - Can be removed eventually.
 		if cfg.StreamConfig.Retention == InterestPolicy {
-			ipstreams = append(ipstreams, mset)
+			mset.checkForOrphanMsgs()
+			mset.checkConsumerReplication()
 		}
 
-		// Now do the consumers.
-		odir := filepath.Join(sdir, fi.Name(), consumerDir)
-		consumers = append(consumers, &ce{mset, odir})
+		return nil
 	}
 
-	for _, e := range consumers {
-		ofis, _ := os.ReadDir(e.odir)
-		if len(ofis) > 0 {
-			s.Noticef("  Recovering %d consumers for stream - '%s > %s'", len(ofis), e.mset.accName(), e.mset.name())
+	if tq != nil {
+		// If a parallelTaskQueue was provided then use that for concurrency.
+		var wg sync.WaitGroup
+		wg.Add(len(fis))
+		for _, fi := range fis {
+			tq <- func() {
+				doStream(fi)
+				wg.Done()
+			}
 		}
-		for _, ofi := range ofis {
-			metafile := filepath.Join(e.odir, ofi.Name(), JetStreamMetaFile)
-			metasum := filepath.Join(e.odir, ofi.Name(), JetStreamMetaFileSum)
-			if _, err := os.Stat(metafile); os.IsNotExist(err) {
-				s.Warnf("    Missing consumer metafile %q", metafile)
-				continue
-			}
-			buf, err := os.ReadFile(metafile)
-			if err != nil {
-				s.Warnf("    Error reading consumer metafile %q: %v", metafile, err)
-				continue
-			}
-			if _, err := os.Stat(metasum); os.IsNotExist(err) {
-				s.Warnf("    Missing consumer checksum for %q", metasum)
-				continue
-			}
-
-			// Check if we are encrypted.
-			if key, err := os.ReadFile(filepath.Join(e.odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
-				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
-				// Decode the buffer before proceeding.
-				ctxName := e.mset.name() + tsep + ofi.Name()
-				nbuf, _, err := s.decryptMeta(sc, key, buf, a.Name, ctxName)
-				if err != nil {
-					s.Warnf("  Error decrypting our consumer metafile: %v", err)
-					continue
-				}
-				buf = nbuf
-			}
-
-			var cfg FileConsumerInfo
-			if err := json.Unmarshal(buf, &cfg); err != nil {
-				s.Warnf("    Error unmarshalling consumer metafile %q: %v", metafile, err)
-				continue
-			}
-			isEphemeral := !isDurableConsumer(&cfg.ConsumerConfig)
-			if isEphemeral {
-				// This is an ephermal consumer and this could fail on restart until
-				// the consumer can reconnect. We will create it as a durable and switch it.
-				cfg.ConsumerConfig.Durable = ofi.Name()
-			}
-			obs, err := e.mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
-			if err != nil {
-				s.Warnf("    Error adding consumer %q: %v", cfg.Name, err)
-				continue
-			}
-			if isEphemeral {
-				obs.switchToEphemeral()
-			}
-			if !cfg.Created.IsZero() {
-				obs.setCreatedTime(cfg.Created)
-			}
-			if err != nil {
-				s.Warnf("    Error restoring consumer %q state: %v", cfg.Name, err)
-			}
+		wg.Wait()
+	} else {
+		// No parallelTaskQueue provided, do inline as before.
+		for _, fi := range fis {
+			doStream(fi)
 		}
 	}
 
 	// Make sure to cleanup any old remaining snapshots.
 	os.RemoveAll(filepath.Join(jsa.storeDir, snapsDir))
-
-	// Check interest policy streams for auto cleanup.
-	for _, mset := range ipstreams {
-		mset.checkForOrphanMsgs()
-		mset.checkConsumerReplication()
-	}
 
 	s.Debugf("JetStream state for account %q recovered", a.Name)
 
@@ -1556,12 +1784,14 @@ func (a *Account) filteredStreams(filter string) []*stream {
 	var msets []*stream
 	for _, mset := range jsa.streams {
 		if filter != _EMPTY_ {
+			mset.cfgMu.RLock()
 			for _, subj := range mset.cfg.Subjects {
 				if SubjectsCollide(filter, subj) {
 					msets = append(msets, mset)
 					break
 				}
 			}
+			mset.cfgMu.RUnlock()
 		} else {
 			msets = append(msets, mset)
 		}
@@ -1653,29 +1883,31 @@ func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStr
 	return diff
 }
 
-// Return reserved bytes for memory and store for this account on this server.
+// Return reserved bytes for memory and file store streams for this account on this server.
 // Lock should be held.
 func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 	for _, mset := range jsa.streams {
-		cfg := &mset.cfg
-		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
-			switch cfg.Storage {
+		mset.cfgMu.RLock()
+		storage, replicas, maxBytes := mset.cfg.Storage, mset.cfg.Replicas, mset.cfg.MaxBytes
+		mset.cfgMu.RUnlock()
+		if (tier == _EMPTY_ || tier == tierName(replicas)) && maxBytes > 0 {
+			switch storage {
 			case FileStorage:
-				store += uint64(cfg.MaxBytes)
+				store += uint64(maxBytes)
 			case MemoryStorage:
-				mem += uint64(cfg.MaxBytes)
+				mem += uint64(maxBytes)
 			}
 		}
 	}
 	return mem, store
 }
 
-// Return reserved bytes for memory and store for this account in clustered mode.
+// Return reserved bytes for memory and file store streams for this account in clustered mode.
 // js lock should be held.
 func reservedStorage(sas map[string]*streamAssignment, tier string) (mem, store uint64) {
 	for _, sa := range sas {
 		cfg := sa.Config
-		if tier == _EMPTY_ || tier == tierName(cfg.Replicas) && cfg.MaxBytes > 0 {
+		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
 			switch cfg.Storage {
 			case FileStorage:
 				store += uint64(cfg.MaxBytes)
@@ -1875,12 +2107,28 @@ func (a *Account) JetStreamEnabled() bool {
 	return enabled
 }
 
+func (jsa *jsAccount) removeRemoteUsage(rnode string) {
+	jsa.usageMu.Lock()
+	defer jsa.usageMu.Unlock()
+
+	rUsage := jsa.rusage[rnode]
+	if rUsage == nil {
+		return
+	}
+	for tierName, usage := range rUsage.tiers {
+		if total := jsa.usage[tierName]; total != nil {
+			total.total.mem -= usage.mem
+			total.total.store -= usage.store
+		}
+	}
+	jsa.apiTotal -= rUsage.api
+	jsa.apiErrors -= rUsage.err
+	delete(jsa.rusage, rnode)
+}
+
 func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account, subject, _ string, msg []byte) {
 	// jsa.js.srv is immutable and guaranteed to no be nil, so no lock needed.
 	s := jsa.js.srv
-
-	jsa.usageMu.Lock()
-	defer jsa.usageMu.Unlock()
 
 	if len(msg) < minUsageUpdateLen {
 		s.Warnf("Ignoring remote usage update with size too short")
@@ -1894,8 +2142,29 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		s.Warnf("Received remote usage update with no remote node")
 		return
 	}
+
+	// Capture the meta group before the usage lock so we do not invert lock ordering.
+	meta := jsa.js.getMetaGroup()
+	jsa.usageMu.Lock()
+	defer jsa.usageMu.Unlock()
+
 	rUsage, ok := jsa.rusage[rnode]
 	if !ok {
+		// Once a server has been removed from the meta group, a usage update that
+		// was already in flight must not recreate its remote usage entry. Only do
+		// the membership check for new entries; steady-state updates avoid it.
+		if meta != nil {
+			var current bool
+			for _, peer := range meta.VotingPeerNames() {
+				if peer == rnode {
+					current = true
+					break
+				}
+			}
+			if !current {
+				return
+			}
+		}
 		if jsa.rusage == nil {
 			jsa.rusage = make(map[string]*remoteUsage)
 		}
@@ -1933,7 +2202,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 		excessRecordCnt = le.Uint32(msg[minUsageUpdateLen:])
 		length := le.Uint64(msg[minUsageUpdateLen+4:])
 		// Need to protect past this point in case this is wrong.
-		if uint64(len(msg)) < usageMultiTiersLen+length {
+		if length > uint64(len(msg))-usageMultiTiersLen {
 			s.Warnf("Received corrupt remote usage update")
 			return
 		}
@@ -1944,7 +2213,7 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 	for ; excessRecordCnt > 0 && len(msg) >= usageRecordLen; excessRecordCnt-- {
 		memUsed, storeUsed := int64(le.Uint64(msg[0:])), int64(le.Uint64(msg[8:]))
 		length := le.Uint64(msg[16:])
-		if uint64(len(msg)) < usageRecordLen+length {
+		if length > uint64(len(msg))-usageRecordLen {
 			s.Warnf("Received corrupt remote usage update on excess record")
 			return
 		}
@@ -2156,14 +2425,14 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 func (js *jetStream) wouldExceedLimits(storeType StorageType, sz int) bool {
 	var (
 		total *int64
-		max   int64
+		max   *int64
 	)
 	if storeType == MemoryStorage {
-		total, max = &js.memUsed, js.config.MaxMemory
+		total, max = &js.memUsed, &js.memMax
 	} else {
-		total, max = &js.storeUsed, js.config.MaxStore
+		total, max = &js.storeUsed, &js.storeMax
 	}
-	return (atomic.LoadInt64(total) + int64(sz)) > max
+	return (atomic.LoadInt64(total) + int64(sz)) > atomic.LoadInt64(max)
 }
 
 func (js *jetStream) limitsExceeded(storeType StorageType) bool {
@@ -2178,9 +2447,11 @@ func tierName(replicas int) string {
 	return fmt.Sprintf("R%d", replicas)
 }
 
-func isSameTier(cfgA, cfgB *StreamConfig) bool {
+func isSameTier(replicasA, replicasB int) bool {
+	a := max(1, replicasA)
+	b := max(1, replicasB)
 	// TODO (mh) this is where we could select based off a placement tag as well "qos:tier"
-	return cfgA.Replicas == cfgB.Replicas
+	return a == b
 }
 
 func (jsa *jsAccount) jetStreamAndClustered() (*jetStream, bool) {
@@ -2203,14 +2474,14 @@ func (jsa *jsAccount) selectLimits(replicas int) (JetStreamAccountLimits, string
 }
 
 // Lock should be held.
-func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) int {
-	streams := len(jsa.streams)
-	if tier != _EMPTY_ {
-		streams = 0
-		for _, sa := range jsa.streams {
-			if isSameTier(&sa.cfg, cfg) {
-				streams++
-			}
+func (jsa *jsAccount) countStreams(tier string, cfg *StreamConfig) (streams int) {
+	for _, mset := range jsa.streams {
+		mset.cfgMu.RLock()
+		name, replicas := mset.cfg.Name, mset.cfg.Replicas
+		mset.cfgMu.RUnlock()
+		// Don't count the stream toward the limit if it already exists.
+		if (tier == _EMPTY_ || isSameTier(replicas, cfg.Replicas)) && name != cfg.Name {
+			streams++
 		}
 	}
 	return streams
@@ -2258,17 +2529,11 @@ func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, 
 	// Since tiers are flat we need to scale limit up by replicas when checking.
 	if storeType == MemoryStorage {
 		totalMem := inUse.total.mem + (int64(memStoreMsgSize(subj, hdr, msg)) * r)
-		if selectedLimits.MemoryMaxStreamBytes > 0 && totalMem > selectedLimits.MemoryMaxStreamBytes*lr {
-			return true, nil
-		}
 		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*lr {
 			return true, nil
 		}
 	} else {
 		totalStore := inUse.total.store + (int64(fileStoreMsgSize(subj, hdr, msg)) * r)
-		if selectedLimits.StoreMaxStreamBytes > 0 && totalStore > selectedLimits.StoreMaxStreamBytes*lr {
-			return true, nil
-		}
 		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*lr {
 			return true, nil
 		}
@@ -2279,53 +2544,69 @@ func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, 
 
 // Check account limits.
 // Read Lock should be held
-func (js *jetStream) checkAccountLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes int64) error {
-	return js.checkLimits(selected, config, false, currentRes, 0)
+func (js *jetStream) checkAccountLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, currentRes int64) error {
+	return js.checkLimits(selected, tier, config, false, currentRes, 0)
 }
 
 // Check account and server limits.
 // Read Lock should be held
-func (js *jetStream) checkAllLimits(selected *JetStreamAccountLimits, config *StreamConfig, currentRes, maxBytesOffset int64) error {
-	return js.checkLimits(selected, config, true, currentRes, maxBytesOffset)
+func (js *jetStream) checkAllLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, currentRes, maxBytesOffset int64) error {
+	return js.checkLimits(selected, tier, config, true, currentRes, maxBytesOffset)
 }
 
 // Check if a new proposed msg set while exceed our account limits.
 // Lock should be held.
-func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, config *StreamConfig, checkServer bool, currentRes, maxBytesOffset int64) error {
+func (js *jetStream) checkLimits(selected *JetStreamAccountLimits, tier string, config *StreamConfig, checkServer bool, currentRes, maxBytesOffset int64) error {
 	// Check MaxConsumers
 	if config.MaxConsumers > 0 && selected.MaxConsumers > 0 && config.MaxConsumers > selected.MaxConsumers {
 		return NewJSMaximumConsumersLimitError()
 	}
 	// stream limit is checked separately on stream create only!
 	// Check storage, memory or disk.
-	return js.checkBytesLimits(selected, config.MaxBytes, config.Storage, checkServer, currentRes, maxBytesOffset)
+	return js.checkBytesLimits(selected, tier, config.MaxBytes, config.Replicas, config.Storage, checkServer, currentRes, maxBytesOffset)
+}
+
+// accountReservation returns how many bytes count against the account limit
+// for a stream with the given replica count. Un-tiered limits are flat, so R>1
+// is counted as Replicas*bytes; tiered limits already bake in replication.
+func accountReservation(tier string, replicas int, bytes int64) int64 {
+	if bytes <= 0 {
+		return 0
+	}
+	if tier == _EMPTY_ && replicas > 1 {
+		return mulSaturate(int64(replicas), bytes)
+	}
+	return bytes
 }
 
 // Check if additional bytes will exceed our account limits and optionally the server itself.
 // Read Lock should be held.
-func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, addBytes int64, storage StorageType, checkServer bool, currentRes, maxBytesOffset int64) error {
+func (js *jetStream) checkBytesLimits(selectedLimits *JetStreamAccountLimits, tier string, addBytes int64, replicas int, storage StorageType, checkServer bool, currentRes, maxBytesOffset int64) error {
 	if addBytes < 0 {
 		addBytes = 1
 	}
-	totalBytes := addBytes + maxBytesOffset
+	// The per-server footprint is a single replica's worth of bytes; the
+	// account footprint additionally accounts for replication in un-tiered setups.
+	serverBytes := addSaturate(addBytes, maxBytesOffset)
+	accountBytes := accountReservation(tier, replicas, serverBytes)
 
 	switch storage {
 	case MemoryStorage:
 		// Account limits defined.
-		if selectedLimits.MaxMemory >= 0 && currentRes+totalBytes > selectedLimits.MaxMemory {
+		if selectedLimits.MaxMemory >= 0 && (currentRes > selectedLimits.MaxMemory || accountBytes > selectedLimits.MaxMemory-currentRes) {
 			return NewJSMemoryResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.memReserved+addBytes > js.config.MaxMemory {
+		if checkServer && (js.memReserved > js.config.MaxMemory || serverBytes > js.config.MaxMemory-js.memReserved) {
 			return NewJSMemoryResourcesExceededError()
 		}
 	case FileStorage:
 		// Account limits defined.
-		if selectedLimits.MaxStore >= 0 && currentRes+totalBytes > selectedLimits.MaxStore {
+		if selectedLimits.MaxStore >= 0 && (currentRes > selectedLimits.MaxStore || accountBytes > selectedLimits.MaxStore-currentRes) {
 			return NewJSStorageResourcesExceededError()
 		}
 		// Check if this server can handle request.
-		if checkServer && js.storeReserved+addBytes > js.config.MaxStore {
+		if checkServer && (js.storeReserved > js.config.MaxStore || serverBytes > js.config.MaxStore-js.storeReserved) {
 			return NewJSStorageResourcesExceededError()
 		}
 	}
@@ -2340,7 +2621,6 @@ func (jsa *jsAccount) acc() *Account {
 // Delete the JetStream resources.
 func (jsa *jsAccount) delete() {
 	var streams []*stream
-	var ts []string
 
 	jsa.mu.Lock()
 	// The update timer and subs need to be protected by usageMu lock
@@ -2359,19 +2639,10 @@ func (jsa *jsAccount) delete() {
 	for _, ms := range jsa.streams {
 		streams = append(streams, ms)
 	}
-	acc := jsa.account
-	for _, t := range jsa.templates {
-		ts = append(ts, t.Name)
-	}
-	jsa.templates = nil
 	jsa.mu.Unlock()
 
 	for _, mset := range streams {
 		mset.stop(false, false)
-	}
-
-	for _, t := range ts {
-		acc.deleteStreamTemplate(t)
 	}
 }
 
@@ -2444,7 +2715,9 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	if js.memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if js.storeReserved+totalMaxStore > js.config.MaxStore {
+	// A dynamic limit is still provisional until recovery has run.
+	recovering := js.config.maxStorePending
+	if !recovering && js.storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2464,7 +2737,7 @@ func (js *jetStream) sufficientResources(limits map[string]JetStreamAccountLimit
 	if memReserved+totalMaxMemory > js.config.MaxMemory {
 		return NewJSMemoryResourcesExceededError()
 	}
-	if storeReserved+totalMaxStore > js.config.MaxStore {
+	if !recovering && storeReserved+totalMaxStore > js.config.MaxStore {
 		return NewJSStorageResourcesExceededError()
 	}
 
@@ -2539,19 +2812,20 @@ func (s *Server) dynJetStreamConfig(storeDir string, maxStore, maxMem int64) *Je
 	opts := s.getOpts()
 
 	// Strict mode.
-	jsc.Strict = opts.JetStreamStrict
+	jsc.Strict = !opts.NoJetStreamStrict
 
 	// Sync options.
 	jsc.SyncInterval = opts.SyncInterval
 	jsc.SyncAlways = opts.SyncAlways
 
-	if opts.maxStoreSet && maxStore >= 0 {
+	if maxStore > 0 || (opts.maxStoreSet && maxStore == 0) {
 		jsc.MaxStore = maxStore
 	} else {
 		jsc.MaxStore = diskAvailable(jsc.StoreDir)
+		jsc.maxStorePending = true
 	}
 
-	if opts.maxMemSet && maxMem >= 0 {
+	if maxMem > 0 || (opts.maxMemSet && maxMem == 0) {
 		jsc.MaxMemory = maxMem
 	} else {
 		// Estimate to 75% of total memory if we can determine system memory.
@@ -2584,311 +2858,6 @@ func (a *Account) checkForJetStream() (*Server, *jsAccount, error) {
 	return s, jsa, nil
 }
 
-// StreamTemplateConfig allows a configuration to auto-create streams based on this template when a message
-// is received that matches. Each new stream will use the config as the template config to create them.
-type StreamTemplateConfig struct {
-	Name       string        `json:"name"`
-	Config     *StreamConfig `json:"config"`
-	MaxStreams uint32        `json:"max_streams"`
-}
-
-// StreamTemplateInfo
-type StreamTemplateInfo struct {
-	Config  *StreamTemplateConfig `json:"config"`
-	Streams []string              `json:"streams"`
-}
-
-// streamTemplate
-type streamTemplate struct {
-	mu  sync.Mutex
-	tc  *client
-	jsa *jsAccount
-	*StreamTemplateConfig
-	streams []string
-}
-
-func (t *StreamTemplateConfig) deepCopy() *StreamTemplateConfig {
-	copy := *t
-	cfg := *t.Config
-	copy.Config = &cfg
-	return &copy
-}
-
-// addStreamTemplate will add a stream template to this account that allows auto-creation of streams.
-func (a *Account) addStreamTemplate(tc *StreamTemplateConfig) (*streamTemplate, error) {
-	s, jsa, err := a.checkForJetStream()
-	if err != nil {
-		return nil, err
-	}
-	if tc.Config.Name != "" {
-		return nil, fmt.Errorf("template config name should be empty")
-	}
-	if len(tc.Name) > JSMaxNameLen {
-		return nil, fmt.Errorf("template name is too long, maximum allowed is %d", JSMaxNameLen)
-	}
-
-	// FIXME(dlc) - Hacky
-	tcopy := tc.deepCopy()
-	tcopy.Config.Name = "_"
-	cfg, apiErr := s.checkStreamCfg(tcopy.Config, a, false)
-	if apiErr != nil {
-		return nil, apiErr
-	}
-	tcopy.Config = &cfg
-	t := &streamTemplate{
-		StreamTemplateConfig: tcopy,
-		tc:                   s.createInternalJetStreamClient(),
-		jsa:                  jsa,
-	}
-	t.tc.registerWithAccount(a)
-
-	jsa.mu.Lock()
-	if jsa.templates == nil {
-		jsa.templates = make(map[string]*streamTemplate)
-		// Create the appropriate store
-		if cfg.Storage == FileStorage {
-			jsa.store = newTemplateFileStore(jsa.storeDir)
-		} else {
-			jsa.store = newTemplateMemStore()
-		}
-	} else if _, ok := jsa.templates[tcopy.Name]; ok {
-		jsa.mu.Unlock()
-		return nil, fmt.Errorf("template with name %q already exists", tcopy.Name)
-	}
-	jsa.templates[tcopy.Name] = t
-	jsa.mu.Unlock()
-
-	// FIXME(dlc) - we can not overlap subjects between templates. Need to have test.
-
-	// Setup the internal subscriptions to trap the messages.
-	if err := t.createTemplateSubscriptions(); err != nil {
-		return nil, err
-	}
-	if err := jsa.store.Store(t); err != nil {
-		t.delete()
-		return nil, err
-	}
-	return t, nil
-}
-
-func (t *streamTemplate) createTemplateSubscriptions() error {
-	if t == nil {
-		return fmt.Errorf("no template")
-	}
-	if t.tc == nil {
-		return fmt.Errorf("template not enabled")
-	}
-	c := t.tc
-	if !c.srv.EventsEnabled() {
-		return ErrNoSysAccount
-	}
-	sid := 1
-	for _, subject := range t.Config.Subjects {
-		// Now create the subscription
-		if _, err := c.processSub([]byte(subject), nil, []byte(strconv.Itoa(sid)), t.processInboundTemplateMsg, false); err != nil {
-			c.acc.deleteStreamTemplate(t.Name)
-			return err
-		}
-		sid++
-	}
-	return nil
-}
-
-func (t *streamTemplate) processInboundTemplateMsg(_ *subscription, pc *client, acc *Account, subject, reply string, msg []byte) {
-	if t == nil || t.jsa == nil {
-		return
-	}
-	jsa := t.jsa
-	cn := canonicalName(subject)
-
-	jsa.mu.Lock()
-	// If we already are registered then we can just return here.
-	if _, ok := jsa.streams[cn]; ok {
-		jsa.mu.Unlock()
-		return
-	}
-	jsa.mu.Unlock()
-
-	// Check if we are at the maximum and grab some variables.
-	t.mu.Lock()
-	c := t.tc
-	cfg := *t.Config
-	cfg.Template = t.Name
-	atLimit := len(t.streams) >= int(t.MaxStreams)
-	if !atLimit {
-		t.streams = append(t.streams, cn)
-	}
-	t.mu.Unlock()
-
-	if atLimit {
-		c.RateLimitWarnf("JetStream could not create stream for account %q on subject %q, at limit", acc.Name, subject)
-		return
-	}
-
-	// We need to create the stream here.
-	// Change the config from the template and only use literal subject.
-	cfg.Name = cn
-	cfg.Subjects = []string{subject}
-	mset, err := acc.addStream(&cfg)
-	if err != nil {
-		acc.validateStreams(t)
-		c.RateLimitWarnf("JetStream could not create stream for account %q on subject %q: %v", acc.Name, subject, err)
-		return
-	}
-
-	// Process this message directly by invoking mset.
-	mset.processInboundJetStreamMsg(nil, pc, acc, subject, reply, msg)
-}
-
-// lookupStreamTemplate looks up the names stream template.
-func (a *Account) lookupStreamTemplate(name string) (*streamTemplate, error) {
-	_, jsa, err := a.checkForJetStream()
-	if err != nil {
-		return nil, err
-	}
-	jsa.mu.Lock()
-	defer jsa.mu.Unlock()
-	if jsa.templates == nil {
-		return nil, fmt.Errorf("template not found")
-	}
-	t, ok := jsa.templates[name]
-	if !ok {
-		return nil, fmt.Errorf("template not found")
-	}
-	return t, nil
-}
-
-// This function will check all named streams and make sure they are valid.
-func (a *Account) validateStreams(t *streamTemplate) {
-	t.mu.Lock()
-	var vstreams []string
-	for _, sname := range t.streams {
-		if _, err := a.lookupStream(sname); err == nil {
-			vstreams = append(vstreams, sname)
-		}
-	}
-	t.streams = vstreams
-	t.mu.Unlock()
-}
-
-func (t *streamTemplate) delete() error {
-	if t == nil {
-		return fmt.Errorf("nil stream template")
-	}
-
-	t.mu.Lock()
-	jsa := t.jsa
-	c := t.tc
-	t.tc = nil
-	defer func() {
-		if c != nil {
-			c.closeConnection(ClientClosed)
-		}
-	}()
-	t.mu.Unlock()
-
-	if jsa == nil {
-		return NewJSNotEnabledForAccountError()
-	}
-
-	jsa.mu.Lock()
-	if jsa.templates == nil {
-		jsa.mu.Unlock()
-		return fmt.Errorf("template not found")
-	}
-	if _, ok := jsa.templates[t.Name]; !ok {
-		jsa.mu.Unlock()
-		return fmt.Errorf("template not found")
-	}
-	delete(jsa.templates, t.Name)
-	acc := jsa.account
-	jsa.mu.Unlock()
-
-	// Remove streams associated with this template.
-	var streams []*stream
-	t.mu.Lock()
-	for _, name := range t.streams {
-		if mset, err := acc.lookupStream(name); err == nil {
-			streams = append(streams, mset)
-		}
-	}
-	t.mu.Unlock()
-
-	if jsa.store != nil {
-		if err := jsa.store.Delete(t); err != nil {
-			return fmt.Errorf("error deleting template from store: %v", err)
-		}
-	}
-
-	var lastErr error
-	for _, mset := range streams {
-		if err := mset.delete(); err != nil {
-			lastErr = err
-		}
-	}
-	return lastErr
-}
-
-func (a *Account) deleteStreamTemplate(name string) error {
-	t, err := a.lookupStreamTemplate(name)
-	if err != nil {
-		return NewJSStreamTemplateNotFoundError()
-	}
-	return t.delete()
-}
-
-func (a *Account) templates() []*streamTemplate {
-	var ts []*streamTemplate
-	_, jsa, err := a.checkForJetStream()
-	if err != nil {
-		return nil
-	}
-
-	jsa.mu.Lock()
-	for _, t := range jsa.templates {
-		// FIXME(dlc) - Copy?
-		ts = append(ts, t)
-	}
-	jsa.mu.Unlock()
-
-	return ts
-}
-
-// Will add a stream to a template, this is for recovery.
-func (jsa *jsAccount) addStreamNameToTemplate(tname, mname string) error {
-	if jsa.templates == nil {
-		return fmt.Errorf("template not found")
-	}
-	t, ok := jsa.templates[tname]
-	if !ok {
-		return fmt.Errorf("template not found")
-	}
-	// We found template.
-	t.mu.Lock()
-	t.streams = append(t.streams, mname)
-	t.mu.Unlock()
-	return nil
-}
-
-// This will check if a template owns this stream.
-// jsAccount lock should be held
-func (jsa *jsAccount) checkTemplateOwnership(tname, sname string) bool {
-	if jsa.templates == nil {
-		return false
-	}
-	t, ok := jsa.templates[tname]
-	if !ok {
-		return false
-	}
-	// We found template, make sure we are in streams.
-	for _, streamName := range t.streams {
-		if sname == streamName {
-			return true
-		}
-	}
-	return false
-}
-
 type Number interface {
 	int | int8 | int16 | int32 | int64 | uint | uint8 | uint16 | uint32 | uint64 | float32 | float64
 }
@@ -2914,29 +2883,30 @@ func isValidName(name string) bool {
 	return !strings.ContainsAny(name, " \t\r\n\f.*>")
 }
 
-// CanonicalName will replace all token separators '.' with '_'.
-// This can be used when naming streams or consumers with multi-token subjects.
-func canonicalName(name string) string {
-	return strings.ReplaceAll(name, ".", "_")
+func isValidAssetName(name string) bool {
+	if name == _EMPTY_ {
+		return false
+	}
+	return !strings.ContainsAny(name, " \t\r\n\f.*>\\/")
 }
 
 // To throttle the out of resources errors.
-func (s *Server) resourcesExceededError() {
+func (s *Server) resourcesExceededError(storeType StorageType) {
 	var didAlert bool
 
 	s.rerrMu.Lock()
 	if now := time.Now(); now.Sub(s.rerrLast) > 10*time.Second {
-		s.Errorf("JetStream resource limits exceeded for server")
+		s.Errorf("JetStream %s resource limits exceeded for server", strings.ToLower(storeType.String()))
 		s.rerrLast = now
 		didAlert = true
 	}
 	s.rerrMu.Unlock()
 
-	// If we are meta leader we should relinguish that here.
+	// If we are meta leader we should relinquish that here.
 	if didAlert {
 		if js := s.getJetStream(); js != nil {
 			js.mu.RLock()
-			if cc := js.cluster; cc != nil && cc.isLeader() {
+			if cc := js.cluster; cc != nil && cc.meta != nil {
 				cc.meta.StepDown()
 			}
 			js.mu.RUnlock()
@@ -3032,5 +3002,16 @@ func fixCfgMirrorWithDedupWindow(cfg *StreamConfig) {
 	}
 	if cfg.Duplicates != 0 {
 		cfg.Duplicates = 0
+	}
+}
+
+func (s *Server) handleWritePermissionError() {
+	//TODO Check if we should add s.jetStreamOOSPending in condition
+	if s.JetStreamEnabled() {
+		s.Errorf("File system permission denied while writing, disabling JetStream")
+
+		go s.ShutdownJetStream()
+
+		//TODO Send respective advisory if needed, same as in handleOutOfSpace
 	}
 }

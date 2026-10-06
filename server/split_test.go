@@ -1,4 +1,4 @@
-// Copyright 2012-2018 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -304,7 +304,8 @@ func TestSplitConnectArg(t *testing.T) {
 }
 
 func TestSplitDanglingArgBuf(t *testing.T) {
-	s := New(&defaultServerOptions)
+	opts := defaultServerOptions
+	s := New(&opts)
 	c := &client{srv: s, acc: s.gacc, msubs: -1, mpay: -1, mcl: 1024, subs: make(map[string]*subscription)}
 
 	// We test to make sure we do not dangle any argBufs after processing
@@ -364,7 +365,7 @@ func TestSplitDanglingArgBuf(t *testing.T) {
 	}
 
 	// MSG (the client has to be a ROUTE)
-	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}}
+	c = &client{msubs: -1, mpay: -1, subs: make(map[string]*subscription), kind: ROUTER, route: &route{}, mcl: MAX_CONTROL_LINE_SIZE}
 	msgop := []byte("RMSG $foo foo 5\r\nhello\r\n")
 	c.parse(msgop[:5])
 	c.parse(msgop[5:10])

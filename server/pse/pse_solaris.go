@@ -1,4 +1,4 @@
-// Copyright 2015-2018 The NATS Authors
+// Copyright 2015-2025 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -10,14 +10,36 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
+// Copied from pse_openbsd.go
+
+//go:build illumos || solaris
 
 package pse
 
-// This is a placeholder for now.
-func ProcUsage(pcpu *float64, rss, vss *int64) error {
-	*pcpu = 0.0
-	*rss = 0
-	*vss = 0
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+)
 
+// ProcUsage returns CPU usage
+func ProcUsage(pcpu *float64, rss, vss *int64) error {
+	pidStr := fmt.Sprintf("%d", os.Getpid())
+	out, err := exec.Command("ps", "-o", "pcpu,rss,vsz", "-p", pidStr).Output()
+	if err != nil {
+		*rss, *vss = -1, -1
+		return fmt.Errorf("ps call failed:%v", err)
+	}
+	lines := strings.Split(string(out), "\n")
+	if len(lines) < 2 {
+		*rss, *vss = -1, -1
+		return fmt.Errorf("no ps output")
+	}
+	output := lines[1]
+	fmt.Sscanf(output, "%f %d %d", pcpu, rss, vss)
+	*rss *= 1024 // 1k blocks, want bytes.
+	*vss *= 1024 // 1k blocks, want bytes.
 	return nil
 }

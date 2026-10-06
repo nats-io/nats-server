@@ -1,4 +1,4 @@
-// Copyright 2012-2019 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -260,17 +260,17 @@ func TestRemovePassFromTrace(t *testing.T) {
 		{
 			"invalid json",
 			"CONNECT {pass:s3cr3t ,   password =  s3cr3t}",
-			"CONNECT {pass:[REDACTED],   password =  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password =  [REDACTED]}",
 		},
 		{
 			"invalid json no whitespace after key",
 			"CONNECT {pass:s3cr3t ,   password=  s3cr3t}",
-			"CONNECT {pass:[REDACTED],   password=  s3cr3t}",
+			"CONNECT {pass:[REDACTED],   password=  [REDACTED]}",
 		},
 		{
 			"both pass and wrong password key",
 			`CONNECT {"pass":"s3cr3t4", "password": "s3cr3t4"}`,
-			`CONNECT {"pass":"[REDACTED]", "password": "s3cr3t4"}`,
+			`CONNECT {"pass":"[REDACTED]", "password": "[REDACTED]"}`,
 		},
 		{
 			"invalid json",
@@ -303,14 +303,14 @@ func TestRemovePassFromTrace(t *testing.T) {
 			"CONNECT {\"pass\":\"[REDACTED]\"}\r\n",
 		},
 		{
-			"duplicate keys only filtered once",
+			"duplicate keys all filtered",
 			"CONNECT {\"pass\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
-			"CONNECT {\"pass\":\"[REDACTED]\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {\"pass\":\"[REDACTED]\",\"pass\":\"[REDACTED]\",\"password\":\"[REDACTED]\"}\r\n",
 		},
 		{
-			"invalid json with multiple keys only one is filtered",
+			"invalid json with multiple keys all filtered",
 			"CONNECT {pass = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
-			"CONNECT {pass = \"[REDACTED]\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {pass = \"[REDACTED]\",pass= \"[REDACTED]\",password =\"[REDACTED]\"}\r\n",
 		},
 		{
 			"complete connect protocol",
@@ -341,7 +341,193 @@ func TestRemovePassFromTrace(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			output := removePassFromTrace([]byte(test.input))
+			output := removeSecretsFromTrace([]byte(test.input))
+			if !bytes.Equal(output, []byte(test.expected)) {
+				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
+			}
+		})
+	}
+}
+
+func TestRemoveAuthTokenFromTrace(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			"user and auth_token",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass extra space",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":  \"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":  \"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass is empty",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"\"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass is empty whitespace",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"               \"}\r\n",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"user and pass whitespace",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":    \"s3cr3t\"     }\r\n",
+			"CONNECT {\"user\":\"derek\",\"auth_token\":    \"[REDACTED]\"     }\r\n",
+		},
+		{
+			"only pass",
+			"CONNECT {\"auth_token\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"auth_token\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"invalid json",
+			"CONNECT {auth_token:s3cr3t ,   password =  s3cr3t}",
+			"CONNECT {auth_token:[REDACTED],   password =  [REDACTED]}",
+		},
+		{
+			"invalid json no whitespace after key",
+			"CONNECT {auth_token:s3cr3t ,   password=  s3cr3t}",
+			"CONNECT {auth_token:[REDACTED],   password=  [REDACTED]}",
+		},
+		{
+			"both pass and wrong password key",
+			`CONNECT {"auth_token":"s3cr3t4", "password": "s3cr3t4"}`,
+			`CONNECT {"auth_token":"[REDACTED]", "password": "[REDACTED]"}`,
+		},
+		{
+			"invalid json",
+			"CONNECT {user = hello, auth_token =  s3cr3t}",
+			"CONNECT {user = hello, auth_token =  [REDACTED]}",
+		},
+		{
+			"complete connect",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"auth_token\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"auth_token\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"invalid json with only pass key",
+			"CONNECT {auth_token:s3cr3t\r\n",
+			"CONNECT {auth_token:[REDACTED]\r\n",
+		},
+		{
+			"invalid password key also filtered",
+			"CONNECT {\"auth_token\":\"s3cr3t\",}\r\n",
+			"CONNECT {\"auth_token\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"single long password with whitespace",
+			"CONNECT {\"auth_token\":\"secret password which is very long\",}\r\n",
+			"CONNECT {\"auth_token\":\"[REDACTED]\",}\r\n",
+		},
+		{
+			"single long pass key is filtered",
+			"CONNECT {\"auth_token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}\r\n",
+			"CONNECT {\"auth_token\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"duplicate keys all filtered",
+			"CONNECT {\"auth_token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"auth_token\":\"BBB\",\"pass\":\"BBBBBBBBBBBBBBBBBBBB\",\"password\":\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {\"auth_token\":\"[REDACTED]\",\"auth_token\":\"[REDACTED]\",\"pass\":\"[REDACTED]\",\"password\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"invalid json with multiple keys all filtered",
+			"CONNECT {auth_token = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",pass= \"BBBBBBBBBBBBBBBBBBBB\",password =\"CCCCCCCCCCCCCCCC\"}\r\n",
+			"CONNECT {auth_token = \"[REDACTED]\",pass= \"[REDACTED]\",password =\"[REDACTED]\"}\r\n",
+		},
+		{
+			"complete connect protocol",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"auth_token\":\"s3cr3t\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"foo\",\"auth_token\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"APM7JU94z77YzP6WTBEiuw\"}\r\n",
+		},
+		{
+			"user and token are filterered",
+			"CONNECT {\"user\":\"s3cr3t\",\"auth_token\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"user\":\"s3cr3t\",\"auth_token\":\"[REDACTED]\"}\r\n",
+		},
+		{
+			"complete connect using token key with user and token being the same",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"s3cr3t\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"...\"}\r\n",
+		},
+		{
+			"complete connect with user, token and name all the same",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"s3cr3t\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+			"CONNECT {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"s3cr3t\"}\r\n",
+		},
+		{
+			"complete connect extra white space at the beginning",
+			"CONNECT 	 {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"s3cr3t\",\"tls_required\":false,\"name\":\"foo\"}\r\n",
+			"CONNECT 	 {\"echo\":true,\"verbose\":false,\"pedantic\":false,\"user\":\"s3cr3t\",\"auth_token\":\"[REDACTED]\",\"tls_required\":false,\"name\":\"foo\"}\r\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := removeSecretsFromTrace([]byte(test.input))
+			if !bytes.Equal(output, []byte(test.expected)) {
+				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
+			}
+		})
+	}
+}
+
+func TestRemoveAdditionalAuthFieldsFromTrace(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "sig",
+			input:    "CONNECT {\"sig\":\"signature\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"sig\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "nkey",
+			input:    "CONNECT {\"nkey\":\"nkey\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"nkey\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "proxy sig",
+			input:    "CONNECT {\"proxy_sig\":\"proxy-signature\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"proxy_sig\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "proxy sig followed by sig",
+			input:    "CONNECT {\"proxy_sig\":\"proxy-signature\",\"sig\":\"sig\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"proxy_sig\":\"[REDACTED]\",\"sig\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "sig followed by proxy sig",
+			input:    "CONNECT {\"sig\":\"sig\",\"proxy_sig\":\"proxy-signature\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"sig\":\"[REDACTED]\",\"proxy_sig\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "sig marker inside another string still redacts real sig",
+			input:    "CONNECT {\"name\":\"foo sig:bar\",\"sig\":\"REAL\",\"user\":\"foo\"}\r\n",
+			expected: "CONNECT {\"name\":\"foo sig:[REDACTED]\",\"sig\":\"[REDACTED]\",\"user\":\"foo\"}\r\n",
+		},
+		{
+			name:     "malformed sig without object delimiters",
+			input:    "CONNECT sig=abc\r\n",
+			expected: "CONNECT sig=[REDACTED]\r\n",
+		},
+		{
+			name:     "sig after malformed quoted field is redacted",
+			input:    "CONNECT {\"name\":\"unterminated,\"sig\":\"abc\"}\r\n",
+			expected: "CONNECT {\"name\":\"unterminated,\"sig\":\"[REDACTED]\"}\r\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := removeSecretsFromTrace([]byte(test.input))
 			if !bytes.Equal(output, []byte(test.expected)) {
 				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
 			}

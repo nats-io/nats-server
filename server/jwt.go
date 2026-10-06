@@ -1,4 +1,4 @@
-// Copyright 2018-2022 The NATS Authors
+// Copyright 2018-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -69,7 +69,24 @@ func wipeSlice(buf []byte) {
 // will expand the trusted keys in options.
 func validateTrustedOperators(o *Options) error {
 	if len(o.TrustedOperators) == 0 {
+		// if we have no operator, default sentinel shouldn't be set
+		if o.DefaultSentinel != _EMPTY_ {
+			return fmt.Errorf("default sentinel requires operators and accounts")
+		}
 		return nil
+	}
+	if o.DefaultSentinel != _EMPTY_ {
+		juc, err := jwt.DecodeUserClaims(o.DefaultSentinel)
+		if err != nil {
+			return fmt.Errorf("default sentinel JWT not valid")
+		}
+
+		if !juc.BearerToken && juc.IssuerAccount != "" && juc.HasEmptyPermissions() {
+			// we cannot resolve the account yet - but this looks like a scoped user
+			// it will be rejected at runtime if not valid
+		} else if !juc.BearerToken {
+			return fmt.Errorf("default sentinel must be a bearer token")
+		}
 	}
 	if o.AccountResolver == nil {
 		return fmt.Errorf("operators require an account resolver to be configured")
@@ -185,12 +202,15 @@ func validateSrc(claims *jwt.UserClaims, host string) bool {
 }
 
 func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
+	return validateTimesAt(claims, time.Now())
+}
+
+func validateTimesAt(claims *jwt.UserClaims, now time.Time) (bool, time.Duration) {
 	if claims == nil {
 		return false, time.Duration(0)
 	} else if len(claims.Times) == 0 {
 		return true, time.Duration(0)
 	}
-	now := time.Now()
 	loc := time.Local
 	if claims.Locale != "" {
 		var err error
@@ -199,10 +219,11 @@ func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
 		}
 		now = now.In(loc)
 	}
+
+	var ok bool
+	var validFor time.Duration
+
 	for _, timeRange := range claims.Times {
-		y, m, d := now.Date()
-		m = m - 1
-		d = d - 1
 		start, err := time.ParseInLocation("15:04:05", timeRange.Start, loc)
 		if err != nil {
 			return false, time.Duration(0) // parsing not expected to fail at this point
@@ -211,17 +232,43 @@ func validateTimes(claims *jwt.UserClaims) (bool, time.Duration) {
 		if err != nil {
 			return false, time.Duration(0) // parsing not expected to fail at this point
 		}
-		if start.After(end) {
-			start = start.AddDate(y, int(m), d)
-			d++ // the intent is to be the next day
-		} else {
-			start = start.AddDate(y, int(m), d)
+
+		y, m, d := now.Date()
+		start = time.Date(y, m, d, start.Hour(), start.Minute(), start.Second(), 0, loc)
+		end = time.Date(y, m, d, end.Hour(), end.Minute(), end.Second(), 0, loc)
+
+		inRange, expires := validateTimeRangeAt(start, end, now)
+		if inRange && (!ok || expires > validFor) {
+			ok = true
+			validFor = expires
 		}
-		if start.Before(now) {
-			end = end.AddDate(y, int(m), d)
-			if end.After(now) {
-				return true, end.Sub(now)
-			}
+	}
+	return ok, validFor
+}
+
+// Returns true if now is within `start` and `end`, and
+// how much time is left until `end`.
+// False if `now` is not within range.
+func validateTimeRangeAt(start, end, now time.Time) (bool, time.Duration) {
+	// Now falls within range.
+	// For example 11:00-22:00 at 13:00
+	if start.Before(now) && end.After(now) {
+		return true, end.Sub(now)
+	}
+
+	// Range crosses midnight.
+	if start.After(end) {
+		// Now is after midnight.
+		// For example 22:00-06:00 at 05:00.
+		if end.After(now) {
+			return true, end.Sub(now)
+		}
+
+		// Now is before midnight.
+		// For example 22:00-06:00 at 23:30.
+		end = end.AddDate(0, 0, 1)
+		if start.Before(now) && end.After(now) {
+			return true, end.Sub(now)
 		}
 	}
 	return false, time.Duration(0)

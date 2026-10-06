@@ -1,4 +1,4 @@
-// Copyright 2013-2020 The NATS Authors
+// Copyright 2013-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -16,7 +16,7 @@ package test
 import (
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"runtime"
 	"strings"
 	"testing"
@@ -662,7 +662,7 @@ func TestClusterNameDynamicNegotiation(t *testing.T) {
 	`))
 
 	// Create a random number of additional servers, up to 20.
-	numServers := rand.Intn(20) + 1
+	numServers := rand.IntN(20) + 1
 	servers := make([]*server.Server, 0, numServers+1)
 	servers = append(servers, seed)
 

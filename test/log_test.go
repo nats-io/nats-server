@@ -13,7 +13,8 @@ import (
 
 func RunServerWithLogging(opts *server.Options) *server.Server {
 	if opts == nil {
-		opts = &DefaultTestOptions
+		dto := DefaultTestOptions
+		opts = &dto
 	}
 	opts.NoLog = false
 	opts.Cluster.PoolSize = -1

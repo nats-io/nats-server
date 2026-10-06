@@ -1,4 +1,4 @@
-// Copyright 2024 The NATS Authors
+// Copyright 2024-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12,11 +12,11 @@
 // limitations under the License.
 
 //go:build !skip_msgtrace_tests
-// +build !skip_msgtrace_tests
 
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -79,6 +79,7 @@ func TestMsgTraceConnName(t *testing.T) {
 }
 
 func TestMsgTraceGenHeaderMap(t *testing.T) {
+	traceparentDifferentCase := "TrAcEpArEnT"
 	for _, test := range []struct {
 		name     string
 		header   []byte
@@ -90,11 +91,13 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 		{"trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + MsgTraceDest + ": some value\r\n"), nil, false},
 		{"trace header with some suffix", []byte(hdrLine + MsgTraceDest + "-Some-Suffix: some value\r\n"), nil, false},
 		{"trace header with space before colon", []byte(hdrLine + MsgTraceDest + " : some value\r\n"), nil, false},
-		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + " : bogus"), nil, false},
+		{"trace header with missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": bogus"), nil, false},
+		{"trace header with empty value", []byte(hdrLine + MsgTraceDest + ":      \r\n"), nil, false},
 		{"external trace header with some prefix", []byte(hdrLine + "Some-Prefix-" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external trace header with some suffix", []byte(hdrLine + traceParentHdr + "-Some-Suffix: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
 		{"external header with space before colon", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"), nil, false},
-		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + " : 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
+		{"external header with missing cr_lf for value", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"), nil, false},
+		{"external header with empty value", []byte(hdrLine + traceParentHdr + ":      \r\n"), nil, false},
 		{"trace header first", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
 		{"trace header last", []byte(hdrLine + "Some-Header: some value\r\n" + MsgTraceDest + ": some.dest\r\n"),
@@ -104,6 +107,8 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 		{"trace header and some empty key", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n: bogus\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}}, false},
 		{"trace header and some header missing cr_lf for value", []byte(hdrLine + MsgTraceDest + ": some.dest\r\nSome-Header: bogus"),
+			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
+		{"trace header and trims value", []byte(hdrLine + MsgTraceDest + ":    some.dest   \r\n"),
 			map[string][]string{MsgTraceDest: {"some.dest"}}, false},
 		{"trace header and external after", []byte(hdrLine + MsgTraceDest + ": some.dest\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, MsgTraceDest: {"some.dest"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, false},
@@ -118,8 +123,10 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
 		{"external sampling with not just 01", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27\r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-27"}}, true},
-		{"external with different case and sampling", []byte(hdrLine + "TrAcEpArEnT: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+		{"external trims value", []byte(hdrLine + traceParentHdr + ":     00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01   \r\nSome-Header: some value\r\n"),
 			map[string][]string{"Some-Header": {"some value"}, traceParentHdr: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
+		{"external with different case and sampling", []byte(hdrLine + traceparentDifferentCase + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\nSome-Header: some value\r\n"),
+			map[string][]string{"Some-Header": {"some value"}, traceparentDifferentCase: {"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}, true},
 		{"external first and not sampling", []byte(hdrLine + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value\r\n"), nil, false},
 		{"external middle and not sampling", []byte(hdrLine + "Some-Header: some value1\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\nSome-Header: some value2\r\n"), nil, false},
 		{"external last and not sampling", []byte(hdrLine + "Some-Header: some value\r\n" + traceParentHdr + ": 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00\r\n"), nil, false},
@@ -135,11 +142,16 @@ func TestMsgTraceGenHeaderMap(t *testing.T) {
 			}
 			// If external, we should find traceParentHdr
 			if test.external {
-				if _, ok := m[traceParentHdr]; !ok {
-					t.Fatalf("Expected traceparent header to be present, it was not: %+v", m)
+				headerName := traceParentHdr
+				if _, ok := m[headerName]; !ok {
+					// There is a test where we use different case, so check for that one too.
+					headerName = traceparentDifferentCase
+					if _, ok := m[headerName]; !ok {
+						t.Fatalf("Expected traceparent header to be present, it was not: %+v", m)
+					}
 				}
-				// Header should have been rewritten, so we should find it in original header.
-				if !bytes.Contains(test.header, []byte(traceParentHdr)) {
+				// We no longer rewrite the header, so take that into consideration.
+				if !bytes.Contains(test.header, []byte(headerName)) {
 					t.Fatalf("Header should have been rewritten to have the traceparent in lower case: %s", test.header)
 				}
 			}
@@ -322,6 +334,10 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 	natsSub(t, nc, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, nc)
 
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s, globalAccountName, "foo", time.Second)
+
 	for _, test := range []struct {
 		name       string
 		deliverMsg bool
@@ -348,11 +364,99 @@ func TestMsgTraceIngressMaxPayloadError(t *testing.T) {
 			var e MsgTraceEvent
 			json.Unmarshal(traceMsg.Data, &e)
 			require_Equal[string](t, e.Server.Name, s.Name())
-			require_True(t, e.Request.Header == nil)
+			require_True(t, e.Request.Header != nil)
 			require_True(t, e.Ingress() != nil)
 			require_Contains(t, e.Ingress().Error, ErrMaxPayload.Error())
 			require_True(t, e.Egresses() == nil)
 		})
+	}
+}
+
+func TestMsgTraceIngressMaxPayloadErrorDoesNotScanPayloadForTraceDest(t *testing.T) {
+	o := DefaultOptions()
+	o.MaxPayload = 1024
+	s := RunServer(o)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+
+	nc2, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer nc2.Close()
+
+	_, err = nc2.Write([]byte("CONNECT {\"protocol\":1,\"headers\":true,\"no_responders\":true}\r\n"))
+	require_NoError(t, err)
+
+	// Payload contains a valid header, but the server should
+	// not interpret it as such.
+	payload := fmt.Sprintf("AA\r\n%s:%s\r\n", MsgTraceDest, traceSub.Subject)
+
+	hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%s%s", len(hdrLine), hdrLine, payload)
+	_, err = nc2.Write([]byte(hPub))
+	require_NoError(t, err)
+
+	// If bug is present: we receive a trace msg, even though
+	// no trace header was set.
+	if traceMsg, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received trace message: %s", traceMsg.Data)
+	}
+}
+
+func TestMsgTraceIngressMaxPayloadErrorRequiresPublishPermissionForTraceDest(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		max_payload: 1024
+		accounts {
+			A {
+				users: [
+					{
+						user: tracer
+						password: pwd
+						permissions {
+							subscribe: ["my.trace.subj"]
+							publish: ["my.trace.subj"]
+						}
+					},
+					{
+						user: pub
+						password: pwd
+						permissions {
+							publish: ["foo"]
+						}
+					}
+				]
+			}
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nct := natsConnect(t, s.ClientURL(), nats.UserInfo("tracer", "pwd"))
+	defer nct.Close()
+	traceSub := natsSubSync(t, nct, "my.trace.subj")
+	natsFlush(t, nct)
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
+
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", o.Port))
+	require_NoError(t, err)
+	defer c.Close()
+
+	_, err = c.Write([]byte("CONNECT {\"user\":\"pub\",\"pass\":\"pwd\",\"protocol\":1,\"headers\":true,\"no_responders\":true}\r\n"))
+	require_NoError(t, err)
+
+	hdr := fmt.Sprintf("%s%s:%s\r\n\r\n", hdrLine, MsgTraceDest, traceSub.Subject)
+	hPub := fmt.Sprintf("HPUB foo %d 2048\r\n%sAAAAAAAAAAAAAAAAAA...", len(hdr), hdr)
+	_, err = c.Write([]byte(hPub))
+	require_NoError(t, err)
+
+	if traceMsg, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Should not have received trace message: %s", traceMsg.Data)
 	}
 }
 
@@ -368,7 +472,7 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 						permissions {
 							subscribe: ["my.trace.subj", "foo"]
 							publish {
-								allow: ["foo", "bar.>"]
+								allow: ["foo", "bar.>", "my.trace.subj"]
 								deny: ["bar.baz"]
 							}
 						}
@@ -386,6 +490,10 @@ func TestMsgTraceIngressErrors(t *testing.T) {
 	traceSub := natsSubSync(t, nc, "my.trace.subj")
 	natsSub(t, nc, "foo", func(_ *nats.Msg) {})
 	natsFlush(t, nc)
+
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
+	checkSubInterest(t, s, "A", "foo", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -444,7 +552,7 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 								deny: "bar.bat"
 							}
 							publish {
-								allow: ["foo", "bar.>"]
+								allow: ["foo", "bar.>", "my.trace.subj"]
 								deny: ["bar.baz"]
 							}
 						}
@@ -461,6 +569,9 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 
 	traceSub := natsSubSync(t, nc, "my.trace.subj")
 	natsFlush(t, nc)
+
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s, "A", "my.trace.subj", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -565,10 +676,8 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 				}
 				msg.Data = []byte("hello")
 				nc2.PublishMsg(msg)
-				time.Sleep(10 * time.Millisecond)
-				cid, err = nc2.GetClientID()
-				require_NoError(t, err)
-				c = s.GetClient(cid)
+				// This needs to be less than default stall time, which now is 2ms.
+				time.Sleep(1 * time.Millisecond)
 				c.mu.Lock()
 				c.flags.set(closeConnection)
 				c.mu.Unlock()
@@ -584,6 +693,208 @@ func TestMsgTraceEgressErrors(t *testing.T) {
 				c.flags.clear(closeConnection)
 				c.mu.Unlock()
 				nc2.Close()
+			}
+		})
+	}
+}
+
+func TestMsgTraceIngressRequiresPublishPermissionForTraceDest(t *testing.T) {
+	for _, hdr := range []struct {
+		name     string
+		external bool
+	}{
+		{"no external hdr", false},
+		{"external hdr", true},
+	} {
+		t.Run(hdr.name, func(t *testing.T) {
+			var accDest string
+			if hdr.external {
+				accDest = fmt.Sprintf("trace_dest: %q", "my.trace.subj")
+			}
+			conf := createConfFile(t, fmt.Appendf(nil, `
+				port: -1
+				accounts {
+					A {
+						users: [
+							{
+								user: tracer
+								password: pwd
+								permissions {
+									subscribe: ["my.trace.subj", "foo"]
+									publish: ["my.trace.subj"]
+								}
+							},
+							{
+								user: pub
+								password: pwd
+								permissions {
+									publish: ["foo"]
+								}
+							}
+						]
+						%s
+					}
+				}
+			`, accDest))
+			s, _ := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc := natsConnect(t, s.ClientURL(), nats.UserInfo("tracer", "pwd"))
+			defer nc.Close()
+
+			tsub := natsSubSync(t, nc, "my.trace.subj")
+			asub := natsSubSync(t, nc, "foo")
+			natsFlush(t, nc)
+
+			for _, test := range []struct {
+				name      string
+				traceOnly bool
+			}{
+				{"just trace", true},
+				{"deliver msg", false},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					msg := nats.NewMsg("foo")
+					if hdr.external {
+						msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+					} else {
+						msg.Header.Set(MsgTraceDest, tsub.Subject)
+					}
+					// This should be ignored with external header, but do it always
+					// to make sure that it still works as expected.
+					if test.traceOnly {
+						msg.Header.Set(MsgTraceOnly, "true")
+					}
+					msg.Data = []byte("hello")
+
+					// We create the connection in the inner loop to ensure
+					// that the last error we check is not carried over from
+					// one test to the other.
+					ncp, err := nats.Connect(
+						s.ClientURL(),
+						nats.UserInfo("pub", "pwd"),
+						nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, _ error) {}),
+					)
+					require_NoError(t, err)
+					defer ncp.Close()
+
+					require_NoError(t, ncp.PublishMsg(msg))
+					natsFlush(t, ncp)
+
+					err = ncp.LastError()
+					require_Error(t, err)
+					require_Contains(t, err.Error(), fmt.Sprintf("Permissions Violation for Publish to %q", tsub.Subject))
+
+					if m, err := asub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+						t.Fatalf("Did not expect application message, got %v / %v", m, err)
+					}
+					if tm, err := tsub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+						t.Fatalf("Did not expect trace message, got %v / %v", tm, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMsgTraceIngressRejectsReservedTraceDest(t *testing.T) {
+	for _, traceDest := range []string{gwReplyPrefix + "trace", "$NRG.trace"} {
+		t.Run(fmt.Sprintf("trace dest %s", traceDest), func(t *testing.T) {
+			for _, hdr := range []struct {
+				name     string
+				external bool
+			}{
+				{"no external hdr", false},
+				{"external hdr", true},
+			} {
+				t.Run(hdr.name, func(t *testing.T) {
+					var accDest string
+					if hdr.external {
+						accDest = fmt.Sprintf("trace_dest: %q", traceDest)
+					}
+					conf := createConfFile(t, fmt.Appendf(nil, `
+						port: -1
+						accounts {
+							A {
+								users: [
+									{
+										user: sub
+										password: pwd
+										permissions {
+											subscribe: ["foo"]
+										}
+									},
+									{
+										user: pub
+										password: pwd
+										permissions {
+											publish: [">"]
+										}
+									},
+									{
+										user: pub2
+										password: pwd
+									}
+								]
+								%s
+							}
+						}
+					`, accDest))
+					s, _ := RunServerWithConfig(conf)
+					defer s.Shutdown()
+
+					ncs := natsConnect(t, s.ClientURL(), nats.UserInfo("sub", "pwd"))
+					defer ncs.Close()
+					asub := natsSubSync(t, ncs, "foo")
+					natsFlush(t, ncs)
+
+					for _, user := range []string{"pub", "pub2"} {
+						for _, test := range []struct {
+							name      string
+							traceOnly bool
+						}{
+							{"just trace", true},
+							{"deliver msg", false},
+						} {
+							t.Run(test.name, func(t *testing.T) {
+								msg := nats.NewMsg("foo")
+								if hdr.external {
+									msg.Header.Set(traceParentHdr, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+								} else {
+									msg.Header.Set(MsgTraceDest, traceDest)
+								}
+								// This should be ignored with external header, but do it always
+								// to make sure that it still works as expected.
+								if test.traceOnly {
+									msg.Header.Set(MsgTraceOnly, "true")
+								}
+								msg.Data = []byte("hello")
+
+								// We create the connection in the inner loop to ensure
+								// that the last error we check is not carried over from
+								// one test to the other.
+								ncp, err := nats.Connect(
+									s.ClientURL(),
+									nats.UserInfo(user, "pwd"),
+									nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, _ error) {}),
+								)
+								require_NoError(t, err)
+								defer ncp.Close()
+
+								require_NoError(t, ncp.PublishMsg(msg))
+								natsFlush(t, ncp)
+
+								err = ncp.LastError()
+								require_Error(t, err)
+								require_Contains(t, err.Error(), fmt.Sprintf("Permissions Violation for Publish to %q", traceDest))
+
+								if m, err := asub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+									t.Fatalf("Did not expect application message, got %v / %v", m, err)
+								}
+							})
+						}
+					}
+				})
 			}
 		})
 	}
@@ -610,6 +921,10 @@ func TestMsgTraceWithQueueSub(t *testing.T) {
 	sub2 := natsQueueSubSync(t, nc3, "foo", "bar")
 	sub3 := natsQueueSubSync(t, nc3, "*", "baz")
 	natsFlush(t, nc3)
+
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s, globalAccountName, "foo", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -911,6 +1226,10 @@ func TestMsgTraceWithRouteToOldServer(t *testing.T) {
 	nct := natsConnect(t, s1.ClientURL(), nats.Name("tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
+
+	// Ensure the subscription is known by the server we're connected to.
+	checkSubInterest(t, s1, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, s2, globalAccountName, "my.trace.subj", time.Second)
 
 	for _, test := range []struct {
 		name       string
@@ -1480,17 +1799,33 @@ func TestMsgTraceWithGateways(t *testing.T) {
 	s1 := runGatewayServer(o1)
 	defer s1.Shutdown()
 
-	waitForOutboundGateways(t, s1, 1, time.Second)
-	waitForInboundGateways(t, s2, 1, time.Second)
-	waitForOutboundGateways(t, s2, 1, time.Second)
+	o3 := testGatewayOptionsFromToWithServers(t, "C", "B", s2)
+	o3.NoSystemAccount = false
+	s3 := runGatewayServer(o3)
+	defer s3.Shutdown()
+
+	waitForOutboundGateways(t, s1, 2, time.Second)
+	waitForInboundGateways(t, s1, 2, time.Second)
+	waitForInboundGateways(t, s2, 2, time.Second)
+	waitForOutboundGateways(t, s2, 2, time.Second)
+	waitForInboundGateways(t, s3, 2, time.Second)
+	waitForOutboundGateways(t, s3, 2, time.Second)
 
 	nc2 := natsConnect(t, s2.ClientURL(), nats.Name("sub2"))
 	defer nc2.Close()
-	sub2 := natsQueueSubSync(t, nc2, "foo.*", "my_queue")
+	sub2 := natsQueueSubSync(t, nc2, "foo.*", "my_queue_2")
 
-	nc3 := natsConnect(t, s2.ClientURL(), nats.Name("sub3"))
+	nc22 := natsConnect(t, s2.ClientURL(), nats.Name("sub22"))
+	defer nc22.Close()
+	sub22 := natsQueueSubSync(t, nc22, "*.*", "my_queue_22")
+
+	nc3 := natsConnect(t, s3.ClientURL(), nats.Name("sub3"))
 	defer nc3.Close()
-	sub3 := natsQueueSubSync(t, nc3, "*.*", "my_queue_2")
+	sub3 := natsQueueSubSync(t, nc3, "foo.*", "my_queue_3")
+
+	nc32 := natsConnect(t, s3.ClientURL(), nats.Name("sub32"))
+	defer nc32.Close()
+	sub32 := natsQueueSubSync(t, nc32, "*.*", "my_queue_32")
 
 	nc1 := natsConnect(t, s1.ClientURL(), nats.Name("sub1"))
 	defer nc1.Close()
@@ -1499,6 +1834,10 @@ func TestMsgTraceWithGateways(t *testing.T) {
 	nct := natsConnect(t, s1.ClientURL(), nats.Name("tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
+
+	// Ensure the subscription is known by the server we're connected to.
+	require_NoError(t, nct.Flush())
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
@@ -1520,17 +1859,18 @@ func TestMsgTraceWithGateways(t *testing.T) {
 			checkAppMsg := func(sub *nats.Subscription, expected bool) {
 				if expected {
 					appMsg := natsNexMsg(t, sub, time.Second)
-					require_Equal[string](t, string(appMsg.Data), "hello!")
+					require_Equal(t, string(appMsg.Data), "hello!")
 				}
 				// Check that no (more) messages are received.
 				if msg, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
 					t.Fatalf("Did not expect application message, got %s", msg.Data)
 				}
 			}
-			for _, sub := range []*nats.Subscription{sub1, sub2, sub3} {
+			for _, sub := range []*nats.Subscription{sub1, sub2, sub22, sub3, sub32} {
 				checkAppMsg(sub, test.deliverMsg)
 			}
 
+			var previousHop string
 			check := func() {
 				traceMsg := natsNexMsg(t, traceSub, time.Second)
 				var e MsgTraceEvent
@@ -1540,58 +1880,81 @@ func TestMsgTraceWithGateways(t *testing.T) {
 				require_True(t, ingress != nil)
 				switch ingress.Kind {
 				case CLIENT:
-					require_Equal[string](t, e.Server.Name, s1.Name())
-					require_Equal[string](t, ingress.Account, globalAccountName)
-					require_Equal[string](t, ingress.Subject, "foo.bar")
+					require_Equal(t, e.Server.Name, s1.Name())
+					require_Equal(t, ingress.Account, globalAccountName)
+					require_Equal(t, ingress.Subject, "foo.bar")
 					egress := e.Egresses()
-					require_Equal[int](t, len(egress), 2)
+					require_Equal(t, len(egress), 3)
 					for _, eg := range egress {
 						switch eg.Kind {
 						case CLIENT:
-							require_Equal[string](t, eg.Name, "sub1")
-							require_Equal[string](t, eg.Subscription, "*.bar")
-							require_Equal[string](t, eg.Queue, _EMPTY_)
+							require_Equal(t, eg.Name, "sub1")
+							require_Equal(t, eg.Subscription, "*.bar")
+							require_Equal(t, eg.Queue, _EMPTY_)
 						case GATEWAY:
-							require_Equal[string](t, eg.Name, s2.Name())
-							require_Equal[string](t, eg.Error, _EMPTY_)
-							require_Equal[string](t, eg.Subscription, _EMPTY_)
-							require_Equal[string](t, eg.Queue, _EMPTY_)
+							if eg.Name != s2.Name() && eg.Name != s3.Name() {
+								t.Fatalf("Expected name to be %q or %q, got %q", s2.Name(), s3.Name(), eg.Name)
+							}
+							require_Equal(t, eg.Error, _EMPTY_)
+							require_Equal(t, eg.Subscription, _EMPTY_)
+							require_Equal(t, eg.Queue, _EMPTY_)
 						default:
 							t.Fatalf("Unexpected egress: %+v", eg)
 						}
 					}
 				case GATEWAY:
-					require_Equal[string](t, e.Server.Name, s2.Name())
-					require_Equal[string](t, ingress.Account, globalAccountName)
-					require_Equal[string](t, ingress.Subject, "foo.bar")
+					require_True(t, e.Request.Header != nil)
+					require_Len(t, len(e.Request.Header[MsgTraceHop]), 1)
+					hop := e.Request.Header[MsgTraceHop][0]
+					require_True(t, hop == "1" || hop == "2")
+					if previousHop == _EMPTY_ {
+						previousHop = hop
+					} else if hop == previousHop {
+						t.Fatalf("Expected different hop value, got the same %q", hop)
+					}
+					var sub2Name, queue2Name, sub3Name, queue3Name string
+					switch e.Server.Name {
+					case s2.Name():
+						require_Equal(t, e.Server.Cluster, "B")
+						sub2Name, sub3Name = "sub2", "sub22"
+						queue2Name, queue3Name = "my_queue_2", "my_queue_22"
+					case s3.Name():
+						require_Equal(t, e.Server.Cluster, "C")
+						sub2Name, sub3Name = "sub3", "sub32"
+						queue2Name, queue3Name = "my_queue_3", "my_queue_32"
+					default:
+						t.Fatalf("Unexpected server name %q", e.Server.Name)
+					}
+					require_Equal(t, ingress.Account, globalAccountName)
+					require_Equal(t, ingress.Subject, "foo.bar")
 					egress := e.Egresses()
-					require_Equal[int](t, len(egress), 2)
+					require_Equal(t, len(egress), 2)
 					var gotSub2, gotSub3 int
 					for _, eg := range egress {
 						require_True(t, eg.Kind == CLIENT)
 						switch eg.Name {
-						case "sub2":
-							require_Equal[string](t, eg.Subscription, "foo.*")
-							require_Equal[string](t, eg.Queue, "my_queue")
+						case sub2Name:
+							require_Equal(t, eg.Subscription, "foo.*")
+							require_Equal(t, eg.Queue, queue2Name)
 							gotSub2++
-						case "sub3":
-							require_Equal[string](t, eg.Subscription, "*.*")
-							require_Equal[string](t, eg.Queue, "my_queue_2")
+						case sub3Name:
+							require_Equal(t, eg.Subscription, "*.*")
+							require_Equal(t, eg.Queue, queue3Name)
 							gotSub3++
 						default:
 							t.Fatalf("Unexpected egress name: %+v", eg)
 						}
 					}
-					require_Equal[int](t, gotSub2, 1)
-					require_Equal[int](t, gotSub3, 1)
-
+					require_Equal(t, gotSub2, 1)
+					require_Equal(t, gotSub3, 1)
 				default:
 					t.Fatalf("Unexpected ingress: %+v", ingress)
 				}
 			}
-			// We should get 2 events
-			check()
-			check()
+			// We should get 3 events
+			for range 3 {
+				check()
+			}
 			// Make sure we are not receiving more traces
 			if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
 				t.Fatalf("Should not have received trace message: %s", tm.Data)
@@ -1631,6 +1994,10 @@ func TestMsgTraceWithGatewayToOldServer(t *testing.T) {
 	nct := natsConnect(t, s1.ClientURL(), nats.Name("tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, "my.trace.subj")
+
+	// Ensure the subscription is known by the server we're connected to.
+	require_NoError(t, nct.Flush())
+	time.Sleep(100 * time.Millisecond)
 
 	for _, test := range []struct {
 		name       string
@@ -1800,7 +2167,7 @@ func TestMsgTraceServiceImport(t *testing.T) {
 						}
 					}
 					// Check that no (more) messages are received.
-					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 						t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 					}
 					if !test.deliverMsg {
@@ -1993,6 +2360,20 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 				accSubs = append(accSubs, natsSubSync(t, nc, user+".trace.subj"))
 			}
 
+			// Because of service import `_R_.xxx.>` subject propagation, we will "prep"
+			// this test by sending a trace message and disregard the content. The real
+			// test will be below.
+			msg := nats.NewMsg("prep")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			msg.Header.Set(MsgTraceOnly, "true")
+			err := nc.PublishMsg(msg)
+			require_NoError(t, err)
+			if _, err := traceSub.NextMsg(250 * time.Millisecond); err == nil && mainTest.allow {
+				if _, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+					traceSub.NextMsg(250 * time.Millisecond)
+				}
+			}
+
 			for _, test := range []struct {
 				name       string
 				deliverMsg bool
@@ -2025,42 +2406,22 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 						processSvc := func(sub *nats.Subscription) {
 							t.Helper()
 							appMsg := natsNexMsg(t, sub, time.Second)
+							if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
+								t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
+							}
 							// This test causes a message to be routed to the
 							// service responders. When not allowing, we need
 							// to make sure that the trace header has been
-							// disabled. Not receiving the trace event from
-							// the remote is not enough to verify since the
-							// trace would not reach the origin server because
-							// the origin account header will not be present.
+							// disabled.
+							var expected string
 							if mainTest.allow {
-								if hv := appMsg.Header.Get(MsgTraceDest); hv != traceSub.Subject {
-									t.Fatalf("Expecting header with %q, but got %q", traceSub.Subject, hv)
-								}
-								if hv := appMsg.Header.Get(traceParentHdr); hv != traceParentHdrVal {
-									t.Fatalf("Expecting header with %q, but got %q", traceParentHdrVal, hv)
-								}
+								expected = replyPrefix
 							} else {
-								if hv := appMsg.Header.Get(MsgTraceDest); hv != _EMPTY_ {
-									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
-								}
-								if hv := appMsg.Header.Get(traceParentHdr); hv != _EMPTY_ {
-									t.Fatalf("Expecting no header, but header was present with value: %q", hv)
-								}
-								// We don't really need to check that, but we
-								// should see the header with the first letter
-								// being an `X`.
-								hnb := []byte(MsgTraceDest)
-								hnb[0] = 'X'
-								hn := string(hnb)
-								if hv := appMsg.Header.Get(hn); hv != traceSub.Subject {
-									t.Fatalf("Expected header %q to be %q, got %q", hn, traceSub.Subject, hv)
-								}
-								hnb = []byte(traceParentHdr)
-								hnb[0] = 'X'
-								hn = string(hnb)
-								if hv := appMsg.Header.Get(hn); hv != traceParentHdrVal {
-									t.Fatalf("Expected header %q to be %q, got %q", hn, traceParentHdrVal, hv)
-								}
+								expected = MsgTraceDestDisabled
+							}
+							hv := appMsg.Header.Get(MsgTraceDest)
+							if !strings.HasPrefix(hv, expected) {
+								t.Fatalf("Expecting header with %q, but got %q", expected, hv)
 							}
 							appMsg.Respond(appMsg.Data)
 						}
@@ -2073,7 +2434,7 @@ func TestMsgTraceServiceImportWithSuperCluster(t *testing.T) {
 						}
 					}
 					// Check that no (more) messages are received.
-					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+					if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 						t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 					}
 					if !test.deliverMsg {
@@ -2524,7 +2885,7 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 				require_Equal[string](t, string(appMsg.Data), "request2")
 			}
 			// Check that no (more) messages are received.
-			if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || err != nats.ErrTimeout {
+			if msg, err := sub.NextMsg(100 * time.Millisecond); msg != nil || (err != nats.ErrTimeout && err != nats.ErrNoResponders) {
 				t.Fatalf("Did not expect application message, got msg=%v err=%v", msg, err)
 			}
 			if !test.deliverMsg {
@@ -2604,6 +2965,1154 @@ func TestMsgTraceServiceImportWithLeafNodeLeaf(t *testing.T) {
 			}
 			for _, acc := range []string{"A", "B"} {
 				checkResp(acc)
+			}
+		})
+	}
+}
+
+func TestMsgTraceResponsesServiceImport(t *testing.T) {
+	hubTmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "%s"
+		accounts {
+			A: {
+				users: [{user: "a", password: "pwd"}]
+				exports: [ { service: "a.>", allow_trace: true} ]
+			}
+			B: {
+				users: [{user: "b", password: "pwd"}]
+				imports: [ {service: { account: A, subject: "a.>" }, to: "b.>"} ]
+				exports: [ { service: "b.>", allow_trace: true} ]
+			}
+			C: {
+				users: [{user: "c", password: "pwd"}]
+				imports: [ {service: { account: B, subject: "b.>" }, to: "c.>"} ]
+			}
+			SYS: { users: [{user: "sys", password: "pwd"}] }
+		}
+		system_account: SYS
+		gateway {
+		    name: "local"
+			listen: "127.0.0.1:-1"
+		}
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	confa := createConfFile(t, fmt.Appendf(nil, hubTmpl, "A", _EMPTY_))
+	sa, sao := RunServerWithConfig(confa)
+	defer sa.Shutdown()
+
+	confb := createConfFile(t, fmt.Appendf(nil, hubTmpl, "B",
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, sao.Cluster.Port)))
+	sb, sbo := RunServerWithConfig(confb)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	nc := natsConnect(t, sa.ClientURL(), nats.UserInfo("c", "pwd"), nats.Name("Requestor"))
+	defer nc.Close()
+
+	p := newNetProxy(125*time.Millisecond, 1024, 1024,
+		fmt.Sprintf("nats://127.0.0.1:%d", sao.Gateway.Port))
+	defer p.stop()
+	p.start()
+
+	gwconf := createConfFile(t, fmt.Appendf(nil, `
+		listen: 127.0.0.1:-1
+		server_name: "GW"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+			SYS: { users: [{user: "sys", password: "pwd"}] }
+		}
+		system_account: SYS
+		gateway {
+		    name: "rgw"
+			listen: "127.0.0.1:-1"
+			gateways [
+				{ name: "local", url: "nats://127.0.0.1:%d" }
+			]
+		}
+	`, p.port))
+	gw, _ := RunServerWithConfig(gwconf)
+	defer gw.Shutdown()
+
+	waitForOutboundGateways(t, gw, 1, time.Second)
+	waitForInboundGateways(t, sa, 1, time.Second)
+
+	// This section below is to make sure system replies are properly setup
+	// in the context of gateways before proceeding with the normal test.
+	tmp := natsConnect(t, gw.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer tmp.Close()
+	natsSub(t, tmp, "a.>", func(m *nats.Msg) {
+		m.Respond(nil)
+	})
+	natsFlush(t, tmp)
+
+	var ok bool
+	for range 5 {
+		if _, err := nc.Request("c.test", []byte("test"), 500*time.Millisecond); err == nil {
+			ok = true
+			break
+		}
+	}
+	require_True(t, ok)
+	tmp.Close()
+	time.Sleep(250 * time.Millisecond)
+	// Resume with the normal test...
+
+	leafTmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+		}
+		leafnodes {
+			remotes [
+				{
+					url: "nats://a:pwd@127.0.0.1:%d"
+					account: A
+				}
+			]
+		}
+	`
+	confLeaf1 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "C", sbo.LeafNode.Port))
+	leaf1, _ := RunServerWithConfig(confLeaf1)
+	defer leaf1.Shutdown()
+
+	confLeaf2 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "D", sbo.LeafNode.Port))
+	leaf2, _ := RunServerWithConfig(confLeaf2)
+	defer leaf2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sb, 2)
+	checkLeafNodeConnectedCount(t, leaf1, 1)
+	checkLeafNodeConnectedCount(t, leaf2, 1)
+
+	ncSvc1 := natsConnect(t, leaf1.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service1"))
+	defer ncSvc1.Close()
+	var recv atomic.Int32
+	natsSub(t, ncSvc1, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc1, "leaf1")
+	natsFlush(t, ncSvc1)
+
+	ncSvc2 := natsConnect(t, leaf2.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service2"))
+	defer ncSvc2.Close()
+	natsSub(t, ncSvc2, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc2, "leaf2")
+	natsFlush(t, ncSvc2)
+
+	ncSvc3 := natsConnect(t, sb.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("Service3"))
+	defer ncSvc3.Close()
+	natsSub(t, ncSvc3, "b.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc3, "sb")
+	natsFlush(t, ncSvc3)
+
+	ncSvc4 := natsConnect(t, gw.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service4"))
+	defer ncSvc4.Close()
+	natsSub(t, ncSvc4, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc4, "gw")
+	natsFlush(t, ncSvc4)
+
+	checkSubInterest(t, sa, "A", "leaf1", time.Second)
+	checkSubInterest(t, sa, "A", "leaf2", time.Second)
+	checkGWInterestOnlyModeInterestOn(t, sa, "rgw", "A", "gw")
+	checkSubInterest(t, sa, "B", "sb", time.Second)
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+	checkSubInterest(t, sb, "C", traceSub.Subject, time.Second)
+
+	for _, test := range []struct {
+		name       string
+		deliverMsg bool
+	}{
+		{"just trace", false},
+		{"deliver msg", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := nats.NewMsg("c.1")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			if !test.deliverMsg {
+				msg.Header.Set(MsgTraceOnly, "true")
+			}
+			msg.Data = []byte("request")
+
+			err := nc.PublishMsg(msg)
+			require_NoError(t, err)
+
+			var expected int32
+			if test.deliverMsg {
+				expected = 4
+				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+					n := recv.Load()
+					if n == expected {
+						return nil
+					}
+					return fmt.Errorf("Expected %d msgs, got %v", expected, n)
+				})
+			}
+			// Give time to possibly incorrectly deliver a message when
+			// it should not before checking...
+			time.Sleep(100 * time.Millisecond)
+			// Check that no (more) messages are received.
+			if n := recv.Load(); n != expected {
+				t.Fatalf("Expected %d msgs, got %v", expected, n)
+			}
+
+			var (
+				clientEvt *MsgTraceEvent
+				route1Evt *MsgTraceEvent
+				route2Evt *MsgTraceEvent
+				leaf1Evt  *MsgTraceEvent
+				leaf2Evt  *MsgTraceEvent
+				gwEvt     *MsgTraceEvent
+			)
+			collect := func() {
+				traceMsg := natsNexMsg(t, traceSub, time.Second)
+				var e *MsgTraceEvent
+				err = json.Unmarshal(traceMsg.Data, &e)
+				require_NoError(t, err)
+
+				ingress := e.Ingress()
+				require_True(t, ingress != nil)
+
+				switch ingress.Kind {
+				case CLIENT:
+					if clientEvt != nil {
+						t.Fatalf("Expected single ingress client event, got %+v", e)
+					}
+					clientEvt = e
+				case ROUTER:
+					if route1Evt != nil && route2Evt != nil {
+						t.Fatalf("Expected two ingress router events, got %+v", e)
+					}
+					if route1Evt == nil {
+						route1Evt = e
+					} else {
+						route2Evt = e
+					}
+				case LEAF:
+					if leaf1Evt != nil && leaf2Evt != nil {
+						t.Fatalf("Expected two ingress leaf events, got %+v", e)
+					}
+					if leaf1Evt == nil {
+						leaf1Evt = e
+					} else {
+						leaf2Evt = e
+					}
+				case GATEWAY:
+					if gwEvt != nil {
+						t.Fatalf("Expected single ingress gateway event, got %+v", e)
+					}
+					gwEvt = e
+				default:
+					t.Fatalf("Unexpected ingress: %+v", e)
+				}
+			}
+			// We should receive 6 events.
+			for range 6 {
+				collect()
+			}
+			// Make sure we are not receiving more traces
+			if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+				t.Fatalf("Should not have received trace message: %s", tm.Data)
+			}
+			require_NotNil(t, clientEvt)
+			require_NotNil(t, route1Evt)
+			require_NotNil(t, route2Evt)
+			require_NotNil(t, leaf1Evt)
+			require_NotNil(t, leaf2Evt)
+			require_NotNil(t, gwEvt)
+
+			var (
+				route1Hop, route2Hop, gwHop string
+				cHop, dHop                  string
+			)
+			check := func(e *MsgTraceEvent) {
+				tda := e.Request.Header[MsgTraceDest]
+				require_Len(t, len(tda), 1)
+				td := tda[0]
+
+				ingress := e.Ingress()
+				require_True(t, ingress != nil)
+
+				switch ingress.Kind {
+				case CLIENT:
+					require_Equal(t, e.Server.Name, "A")
+					require_Equal(t, e.Hops, 3)
+					require_Equal(t, ingress.Name, "Requestor")
+					require_Equal(t, ingress.Account, "C")
+					require_Equal(t, ingress.Subject, "c.1")
+					require_Equal(t, td, traceSub.Subject)
+
+					simps := e.ServiceImports()
+					require_True(t, simps != nil)
+					require_Equal(t, len(simps), 2)
+
+					si := simps[0]
+					require_Equal(t, si.Account, "B")
+					require_Equal(t, si.From, "c.1")
+					require_Equal(t, si.To, "b.1")
+
+					si = simps[1]
+					require_Equal(t, si.Account, "A")
+					require_Equal(t, si.From, "b.1")
+					require_Equal(t, si.To, "a.1")
+
+					egress := e.Egresses()
+					require_Equal(t, len(egress), 3)
+					for _, eg := range egress {
+						if eg.Kind == ROUTER {
+							require_Equal(t, eg.Name, "B")
+							if route1Hop == _EMPTY_ {
+								route1Hop = eg.Hop
+							} else {
+								route2Hop = eg.Hop
+							}
+						} else if eg.Kind == GATEWAY {
+							require_Equal(t, eg.Name, "GW")
+							gwHop = eg.Hop
+						} else {
+							t.Fatalf("Unexpeted egress kind: %+v", eg)
+						}
+					}
+				case ROUTER:
+					require_Equal(t, e.Server.Name, "B")
+					require_True(t, strings.HasPrefix(td, replyPrefix))
+					require_Equal(t, ingress.Name, "A")
+
+					hopa := e.Request.Header[MsgTraceHop]
+					require_Len(t, len(hopa), 1)
+					hop := hopa[0]
+
+					if e == route1Evt {
+						require_Equal(t, ingress.Account, "A")
+						require_Equal(t, ingress.Subject, "a.1")
+						require_Equal(t, hop, route1Hop)
+						require_Equal(t, e.Hops, 2)
+						egress := e.Egresses()
+						require_Len(t, len(egress), 2)
+						for _, eg := range egress {
+							require_Equal(t, eg.Kind, LEAF)
+							if eg.Name != "C" && eg.Name != "D" {
+								t.Fatalf("Expected egress name to be 'C' or 'D', got %q", eg.Name)
+							}
+							if eg.Name == "C" {
+								if cHop != _EMPTY_ {
+									t.Fatalf("Already got 'Hop' for 'C' server: %+v", eg)
+								}
+								cHop = eg.Hop
+							} else {
+								if dHop != _EMPTY_ {
+									t.Fatalf("Already got 'Hop' for 'D' server: %+v", eg)
+								}
+								dHop = eg.Hop
+							}
+						}
+					} else {
+						require_Equal(t, ingress.Account, "B")
+						require_Equal(t, ingress.Subject, "b.1")
+						require_Equal(t, hop, route2Hop)
+						require_Equal(t, e.Hops, 0)
+						egress := e.Egresses()
+						require_Len(t, len(egress), 1)
+						eg := egress[0]
+						require_Equal(t, eg.Kind, CLIENT)
+						require_Equal(t, eg.Name, "Service3")
+						require_Equal(t, eg.Subscription, "b.>")
+					}
+				case LEAF:
+					if e.Server.Name != "C" && e.Server.Name != "D" {
+						t.Fatalf("Expected server name to be 'C' or 'D', got %q", e.Server.Name)
+					}
+					require_True(t, strings.HasPrefix(td, replyPrefix))
+					require_Equal(t, ingress.Name, "B")
+					require_Equal(t, ingress.Account, "A")
+					require_Equal(t, ingress.Subject, "a.1")
+
+					hopa := e.Request.Header[MsgTraceHop]
+					require_Len(t, len(hopa), 1)
+					hop := hopa[0]
+
+					egress := e.Egresses()
+					require_Len(t, len(egress), 1)
+					eg := egress[0]
+
+					if e.Server.Name == "C" {
+						require_Equal(t, hop, cHop)
+						require_Equal(t, eg.Name, "Service1")
+					} else {
+						require_Equal(t, hop, dHop)
+						require_Equal(t, eg.Name, "Service2")
+					}
+					require_Equal(t, eg.Subscription, "a.>")
+				case GATEWAY:
+					require_Equal(t, e.Server.Name, "GW")
+					require_True(t, strings.HasPrefix(td, replyPrefix))
+					require_Equal(t, ingress.Name, "A")
+					require_Equal(t, ingress.Account, "A")
+					require_Equal(t, ingress.Subject, "a.1")
+
+					hopa := e.Request.Header[MsgTraceHop]
+					require_Len(t, len(hopa), 1)
+					hop := hopa[0]
+
+					egress := e.Egresses()
+					require_Len(t, len(egress), 1)
+					eg := egress[0]
+					require_Equal(t, hop, gwHop)
+					require_Equal(t, eg.Name, "Service4")
+					require_Equal(t, eg.Subscription, "a.>")
+				default:
+					t.Fatalf("Unexpected ingress: %+v", ingress)
+				}
+			}
+			check(clientEvt)
+			check(route1Evt)
+			check(route2Evt)
+			check(leaf1Evt)
+			check(leaf2Evt)
+			check(gwEvt)
+
+			// Make sure we properly remove the responses.
+			checkResp := func(s *Server, an string) {
+				t.Helper()
+				acc, err := s.lookupAccount(an)
+				require_NoError(t, err)
+				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+					if n := acc.NumPendingAllResponses(); n != 0 {
+						return fmt.Errorf("Still %d responses for account %q pending on %s", n, an, s)
+					}
+					return nil
+				})
+			}
+			for _, s := range []*Server{sa, sb} {
+				for _, acc := range []string{"A", "B", "C"} {
+					checkResp(s, acc)
+				}
+			}
+			for _, s := range []*Server{leaf1, leaf2} {
+				checkResp(s, "A")
+			}
+			checkResp(gw, "A")
+		})
+	}
+}
+
+func TestMsgTraceResponsesServiceImportDifferentOrder(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		server_name: "A"
+		accounts {
+			A: {
+				users: [{user: "a", password: "pwd"}]
+				exports: [ { service: "a.>", allow_trace: true} ]
+			}
+			B: {
+				users: [{user: "b", password: "pwd"}]
+				imports: [ {service: { account: A, subject: "a.>" }, to: "b.>"} ]
+			}
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`))
+	sa, sao := RunServerWithConfig(conf)
+	defer sa.Shutdown()
+
+	leafTmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "%s"
+		accounts {
+			A { users: [{user: a, password: pwd}] }
+		}
+		leafnodes {
+			listen: 127.0.0.1:-1
+			remotes [
+				{
+					url: "nats://a:pwd@127.0.0.1:%d"
+					account: A
+				}
+			]
+		}
+	`
+	confLeaf1 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "C_1", sao.LeafNode.Port))
+	leaf1, leaf1o := RunServerWithConfig(confLeaf1)
+	defer leaf1.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sa, 1)
+	checkLeafNodeConnectedCount(t, leaf1, 1)
+
+	confLeaf11 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "C_1_1", leaf1o.LeafNode.Port))
+	leaf11, leaf11o := RunServerWithConfig(confLeaf11)
+	defer leaf11.Shutdown()
+
+	checkLeafNodeConnectedCount(t, leaf1, 2)
+	checkLeafNodeConnectedCount(t, leaf11, 1)
+
+	confLeaf111 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "C_1_1_1", leaf11o.LeafNode.Port))
+	leaf111, _ := RunServerWithConfig(confLeaf111)
+	defer leaf111.Shutdown()
+
+	checkLeafNodeConnectedCount(t, leaf11, 2)
+	checkLeafNodeConnectedCount(t, leaf111, 1)
+
+	confLeaf112 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "C_1_1_2", leaf11o.LeafNode.Port))
+	leaf112, _ := RunServerWithConfig(confLeaf112)
+	defer leaf112.Shutdown()
+
+	checkLeafNodeConnectedCount(t, leaf11, 3)
+	checkLeafNodeConnectedCount(t, leaf111, 1)
+	checkLeafNodeConnectedCount(t, leaf112, 1)
+
+	p := newNetProxy(125*time.Millisecond, 1024, 1024,
+		fmt.Sprintf("nats://127.0.0.1:%d", sao.LeafNode.Port))
+	defer p.stop()
+	p.start()
+
+	confLeaf2 := createConfFile(t, fmt.Appendf(nil, leafTmpl, "D", p.port))
+	leaf2, _ := RunServerWithConfig(confLeaf2)
+	defer leaf2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sa, 2)
+	checkLeafNodeConnectedCount(t, leaf2, 1)
+
+	nc := natsConnect(t, sa.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("Requestor"))
+	defer nc.Close()
+
+	ncSvc1 := natsConnect(t, leaf11.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service1"))
+	defer ncSvc1.Close()
+	var recv atomic.Int32
+	natsSub(t, ncSvc1, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	// This is to make sure that the interest propagation can be verified.
+	natsSubSync(t, ncSvc1, "leaf11")
+	natsFlush(t, ncSvc1)
+
+	ncSvc2 := natsConnect(t, leaf111.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service2"))
+	defer ncSvc2.Close()
+	natsSub(t, ncSvc2, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	// For interest propagation check.
+	natsSubSync(t, ncSvc2, "leaf111")
+	natsFlush(t, ncSvc2)
+
+	ncSvc3 := natsConnect(t, leaf112.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service3"))
+	defer ncSvc3.Close()
+	natsSub(t, ncSvc3, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc3, "leaf112")
+	natsFlush(t, ncSvc3)
+
+	ncSvc4 := natsConnect(t, leaf2.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service4"))
+	defer ncSvc4.Close()
+	natsSub(t, ncSvc4, "a.>", func(m *nats.Msg) {
+		recv.Add(1)
+	})
+	natsSubSync(t, ncSvc4, "leaf2")
+	natsFlush(t, ncSvc4)
+
+	checkSubInterest(t, sa, "A", "leaf11", time.Second)
+	checkSubInterest(t, sa, "A", "leaf111", time.Second)
+	checkSubInterest(t, sa, "A", "leaf112", time.Second)
+	checkSubInterest(t, sa, "A", "leaf2", time.Second)
+
+	traceSub := natsSubSync(t, nc, "my.trace.subj")
+	natsFlush(t, nc)
+
+	for _, test := range []struct {
+		name       string
+		deliverMsg bool
+	}{
+		{"just trace", false},
+		{"deliver msg", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			msg := nats.NewMsg("b.1")
+			msg.Header.Set(MsgTraceDest, traceSub.Subject)
+			if !test.deliverMsg {
+				msg.Header.Set(MsgTraceOnly, "true")
+			}
+			msg.Data = []byte("request")
+
+			err := nc.PublishMsg(msg)
+			require_NoError(t, err)
+
+			var expected int32
+			if test.deliverMsg {
+				expected = 4
+				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+					n := recv.Load()
+					if n == expected {
+						return nil
+					}
+					return fmt.Errorf("Expected %d msgs, got %v", expected, n)
+				})
+			}
+			// Give time to possibly incorrectly deliver a message when
+			// it should not before checking...
+			time.Sleep(100 * time.Millisecond)
+			// Check that no (more) messages are received.
+			if n := recv.Load(); n != expected {
+				t.Fatalf("Expected %d msgs, got %v", expected, n)
+			}
+
+			var (
+				clientEvt  *MsgTraceEvent
+				leaf1Evt   *MsgTraceEvent
+				leaf11Evt  *MsgTraceEvent
+				leaf111Evt *MsgTraceEvent
+				leaf112Evt *MsgTraceEvent
+				leaf2Evt   *MsgTraceEvent
+			)
+			collect := func() {
+				traceMsg := natsNexMsg(t, traceSub, time.Second)
+				var e *MsgTraceEvent
+				err = json.Unmarshal(traceMsg.Data, &e)
+				require_NoError(t, err)
+
+				ingress := e.Ingress()
+				require_True(t, ingress != nil)
+
+				switch ingress.Kind {
+				case CLIENT:
+					if clientEvt != nil {
+						t.Fatalf("Expected single ingress client event, got %+v", e)
+					}
+					clientEvt = e
+				case LEAF:
+					if leaf1Evt != nil && leaf11Evt != nil && leaf111Evt != nil && leaf112Evt != nil && leaf2Evt != nil {
+						t.Fatalf("Expected 5 ingress leaf events, got %+v", e)
+					}
+					switch e.Server.Name {
+					case "C_1":
+						leaf1Evt = e
+					case "C_1_1":
+						leaf11Evt = e
+					case "C_1_1_1":
+						leaf111Evt = e
+					case "C_1_1_2":
+						leaf112Evt = e
+					case "D":
+						leaf2Evt = e
+					default:
+						t.Fatalf("Unexpected event: %+v", e)
+					}
+				default:
+					t.Fatalf("Unexpected ingress: %+v", e)
+				}
+			}
+			// We should receive 6 events.
+			for range 6 {
+				collect()
+			}
+			// Make sure we are not receiving more traces
+			if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+				t.Fatalf("Should not have received trace message: %s", tm.Data)
+			}
+			require_NotNil(t, clientEvt)
+			require_NotNil(t, leaf1Evt)
+			require_NotNil(t, leaf11Evt)
+			require_NotNil(t, leaf111Evt)
+			require_NotNil(t, leaf112Evt)
+			require_NotNil(t, leaf2Evt)
+
+			var cHop, c111Hop, c112Hop, dHop string
+			check := func(e *MsgTraceEvent) {
+				tda := e.Request.Header[MsgTraceDest]
+				require_Len(t, len(tda), 1)
+				td := tda[0]
+
+				ingress := e.Ingress()
+				require_True(t, ingress != nil)
+
+				switch ingress.Kind {
+				case CLIENT:
+					require_Equal(t, e.Server.Name, "A")
+					require_Equal(t, e.Hops, 2)
+					require_Equal(t, ingress.Name, "Requestor")
+					require_Equal(t, ingress.Account, "B")
+					require_Equal(t, ingress.Subject, "b.1")
+					require_Equal(t, td, traceSub.Subject)
+
+					simps := e.ServiceImports()
+					require_True(t, simps != nil)
+					require_Equal(t, len(simps), 1)
+
+					si := simps[0]
+					require_Equal(t, si.Account, "A")
+					require_Equal(t, si.From, "b.1")
+					require_Equal(t, si.To, "a.1")
+
+					egress := e.Egresses()
+					require_Equal(t, len(egress), 2)
+					for _, eg := range egress {
+						if eg.Kind == LEAF {
+							switch eg.Name {
+							case "C_1":
+								cHop = eg.Hop
+							case "D":
+								dHop = eg.Hop
+							default:
+								t.Fatalf("Unexpected egress name: %+v", eg)
+							}
+						} else {
+							t.Fatalf("Unexpeted egress kind: %+v", eg)
+						}
+					}
+				case LEAF:
+					switch e.Server.Name {
+					case "C_1", "C_1_1", "C_1_1_1", "C_1_1_2", "D":
+					// ok
+					default:
+						t.Fatalf("Unexpected leaf server name: %q", e.Server.Name)
+					}
+					require_True(t, strings.HasPrefix(td, replyPrefix))
+					switch e {
+					case leaf1Evt, leaf2Evt:
+						require_Equal(t, ingress.Name, "A")
+					case leaf11Evt:
+						require_Equal(t, ingress.Name, "C_1")
+					case leaf111Evt, leaf112Evt:
+						require_Equal(t, ingress.Name, "C_1_1")
+					default:
+						t.Fatalf("Unexpected leaf event: %+v", e)
+					}
+					require_Equal(t, ingress.Subject, "a.1")
+
+					hopa := e.Request.Header[MsgTraceHop]
+					require_Len(t, len(hopa), 1)
+					hop := hopa[0]
+
+					egress := e.Egresses()
+					if e.Server.Name == "C_1_1" {
+						require_Len(t, len(egress), 3)
+					} else {
+						require_Len(t, len(egress), 1)
+					}
+					eg := egress[0]
+
+					switch e.Server.Name {
+					case "C_1":
+						require_Equal(t, hop, cHop)
+						require_Equal(t, eg.Name, "C_1_1")
+					case "C_1_1":
+						require_Equal(t, hop, cHop+".1")
+						require_Equal(t, e.Hops, 2)
+						for _, eg := range egress {
+							switch eg.Kind {
+							case LEAF:
+								switch eg.Name {
+								case "C_1_1_1":
+									c111Hop = eg.Hop
+								case "C_1_1_2":
+									c112Hop = eg.Hop
+								default:
+									t.Fatalf("Unexpected egress: %+v", eg)
+								}
+							case CLIENT:
+								require_Equal(t, eg.Name, "Service1")
+								require_Equal(t, eg.Subscription, "a.>")
+							default:
+								t.Fatalf("Unexpected egress: %+v", eg)
+							}
+						}
+					case "C_1_1_1":
+						require_Equal(t, hop, c111Hop)
+						require_Equal(t, e.Hops, 0)
+						require_Equal(t, eg.Name, "Service2")
+						require_Equal(t, eg.Subscription, "a.>")
+					case "C_1_1_2":
+						require_Equal(t, hop, c112Hop)
+						require_Equal(t, e.Hops, 0)
+						require_Equal(t, eg.Name, "Service3")
+						require_Equal(t, eg.Subscription, "a.>")
+					case "D":
+						require_Equal(t, hop, dHop)
+						require_Equal(t, e.Hops, 0)
+						require_Equal(t, eg.Name, "Service4")
+						require_Equal(t, eg.Subscription, "a.>")
+					default:
+						t.Fatalf("Unexpected egress: %+v", eg)
+					}
+				default:
+					t.Fatalf("Unexpected ingress: %+v", ingress)
+				}
+			}
+			check(clientEvt)
+			check(leaf1Evt)
+			check(leaf11Evt)
+			check(leaf111Evt)
+			check(leaf112Evt)
+			check(leaf2Evt)
+
+			// Make sure we properly remove the responses.
+			checkResp := func(s *Server, an string) {
+				t.Helper()
+				acc, err := s.lookupAccount(an)
+				require_NoError(t, err)
+				checkFor(t, time.Second, 15*time.Millisecond, func() error {
+					if n := acc.NumPendingAllResponses(); n != 0 {
+						return fmt.Errorf("Still %d responses for account %q pending on %s", n, an, s)
+					}
+					return nil
+				})
+			}
+			for _, acc := range []string{"A", "B"} {
+				checkResp(sa, acc)
+			}
+			for _, s := range []*Server{leaf1, leaf11, leaf111, leaf112, leaf2} {
+				checkResp(s, "A")
+			}
+		})
+	}
+}
+
+func TestMsgTraceResponsesServiceImportPermissions(t *testing.T) {
+	tmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "%s"
+		accounts {
+			A: {
+				users: [
+					{
+						user: "a",
+						password: "pwd",
+						permissions: {publish: ["a.>"], allow_responses=true}
+					}
+				]
+				exports: [ { service: "a.>", allow_trace: true} ]
+			}
+			B: {
+				users: [
+					{
+						user: "b",
+						password: "pwd",
+						permissions: {publish: ["b.>", "my.trace"]}
+					}
+				]
+				imports: [ {service: { account: A, subject: "a.>" }, to: "b.>"} ]
+			}
+		}
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			permissions {
+				publish: ["interest", "a.>", "b.>", "my.trace"%s]
+			}
+			%s
+		}
+	`
+	confa := createConfFile(t, fmt.Appendf(nil, tmpl, "A", `, "_R_.>"`, _EMPTY_))
+	sa, sao := RunServerWithConfig(confa)
+	defer sa.Shutdown()
+
+	routes := fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, sao.Cluster.Port)
+	confb := createConfFile(t, fmt.Appendf(nil, tmpl, "B", `, "_R_.>"`, routes))
+	sb, _ := RunServerWithConfig(confb)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	ncSvc := natsConnect(t, sb.ClientURL(), nats.UserInfo("a", "pwd"), nats.Name("Service"))
+	defer ncSvc.Close()
+	sub := natsSubSync(t, ncSvc, "a.>")
+	// Just to check interest propagation
+	natsSubSync(t, ncSvc, "interest")
+	natsFlush(t, ncSvc)
+
+	checkSubInterest(t, sa, "A", "interest", time.Second)
+
+	nc := natsConnect(t, sa.ClientURL(), nats.UserInfo("b", "pwd"), nats.Name("Requestor"))
+	defer nc.Close()
+
+	tsub := natsSubSync(t, nc, "my.trace")
+	rsub := natsSubSync(t, nc, "reply")
+	// Just to check interest propagation
+	natsSubSync(t, nc, "interest")
+	natsFlush(t, nc)
+
+	checkSubInterest(t, sb, "B", "interest", time.Second)
+
+	msg := nats.NewMsg("b.1")
+	msg.Header.Set(MsgTraceDest, tsub.Subject)
+	msg.Data = []byte("request")
+	msg.Reply = rsub.Subject
+
+	err := nc.PublishMsg(msg)
+	require_NoError(t, err)
+
+	smsg := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "request", string(smsg.Data))
+	err = smsg.Respond([]byte("reply"))
+	require_NoError(t, err)
+
+	rmsg := natsNexMsg(t, rsub, time.Second)
+	require_Equal(t, "reply", string(rmsg.Data))
+
+	for range 2 {
+		tmsg := natsNexMsg(t, tsub, time.Second)
+		var e *MsgTraceEvent
+		err = json.Unmarshal(tmsg.Data, &e)
+		require_NoError(t, err)
+
+		ingress := e.Ingress()
+		require_True(t, ingress != nil)
+
+		switch ingress.Kind {
+		case CLIENT:
+			require_Equal(t, e.Server.Name, "A")
+			require_Equal(t, ingress.Name, "Requestor")
+
+			sis := e.ServiceImports()
+			require_Len(t, len(sis), 1)
+			si := sis[0]
+			require_Equal(t, si.Account, "A")
+			require_Equal(t, si.From, "b.1")
+			require_Equal(t, si.To, "a.1")
+
+			egs := e.Egresses()
+			require_Len(t, len(egs), 1)
+			eg := egs[0]
+			require_Equal(t, eg.Kind, ROUTER)
+			require_Equal(t, eg.Name, "B")
+			require_Equal(t, eg.Hop, "1")
+		case ROUTER:
+			require_Equal(t, e.Server.Name, "B")
+			require_Equal(t, ingress.Name, "A")
+			require_Equal(t, ingress.Account, "A")
+			require_Equal(t, ingress.Subject, "a.1")
+
+			hdrs := e.Request.Header[MsgTraceDest]
+			require_Len(t, len(hdrs), 1)
+			td := hdrs[0]
+			require_True(t, td != _EMPTY_)
+			require_NotEqual(t, td, tsub.Subject)
+
+			hdrs = e.Request.Header[MsgTraceHop]
+			require_Len(t, len(hdrs), 1)
+			hop := hdrs[0]
+			require_Equal(t, hop, "1")
+
+			egs := e.Egresses()
+			require_Len(t, len(egs), 1)
+			eg := egs[0]
+			require_Equal(t, eg.Kind, CLIENT)
+			require_Equal(t, eg.Name, "Service")
+			require_Equal(t, eg.Subscription, "a.>")
+		default:
+			t.Fatalf("Unexpected ingress: %+v", e)
+		}
+	}
+
+	if tmsg, err := tsub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if err == nil {
+			t.Fatalf("Unexpected message=%s", tmsg.Data)
+		} else {
+			t.Fatalf("Unexpected error=%v", err)
+		}
+	}
+
+	reloadUpdateConfig(t, sa, confa, fmt.Sprintf(tmpl, "A", _EMPTY_, _EMPTY_))
+	reloadUpdateConfig(t, sb, confb, fmt.Sprintf(tmpl, "B", _EMPTY_, routes))
+
+	l := &captureErrorLogger{errCh: make(chan string, 10)}
+	sb.SetLogger(l, false, false)
+
+	err = nc.PublishMsg(msg)
+	require_NoError(t, err)
+
+	if smsg, err := sub.NextMsg(100 * time.Millisecond); err != nats.ErrTimeout {
+		if err == nil {
+			t.Fatalf("Unexpected message=%s", smsg.Data)
+		} else {
+			t.Fatalf("Unexpected error=%v", err)
+		}
+	}
+
+	tm := time.NewTimer(time.Second)
+	defer tm.Stop()
+	for {
+		select {
+		case errStr := <-l.errCh:
+			if strings.Contains(errStr, "Publish Violation") {
+				// OK!
+				return
+			}
+		case <-tm.C:
+			t.Fatal("Timeout waiting for error in log")
+		}
+	}
+}
+
+func TestMsgTraceRejectsOriginAccountHeader(t *testing.T) {
+	hubTmpl := `
+		listen: 127.0.0.1:-1
+		server_name: "%s"
+		accounts {
+			A {
+				users:[{user: "a", password: "pwd"}]
+				trace_dest: "my.trace.subj"
+			}
+			B { users:[{user: "b", password: "pwd"}] }
+		}
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	aConf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "A", _EMPTY_))
+	sa, sao := RunServerWithConfig(aConf)
+	defer sa.Shutdown()
+
+	bConf := createConfFile(t, fmt.Appendf(nil, hubTmpl, "B",
+		fmt.Sprintf(`routes: ["nats://127.0.0.1:%d"]`, sao.Cluster.Port)))
+	sb, _ := RunServerWithConfig(bConf)
+	defer sb.Shutdown()
+
+	checkClusterFormed(t, sa, sb)
+
+	ncSAa := natsConnect(t, sa.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer ncSAa.Close()
+	subSAa := natsSubSync(t, ncSAa, "foo.>")
+	tsubSAa := natsSubSync(t, ncSAa, "my.trace.subj")
+	natsSubSync(t, ncSAa, "sa.a")
+	natsFlush(t, ncSAa)
+
+	ncSAb := natsConnect(t, sa.ClientURL(), nats.UserInfo("b", "pwd"))
+	defer ncSAb.Close()
+	subSAb := natsSubSync(t, ncSAb, "foo.>")
+	tsubSAb := natsSubSync(t, ncSAb, "my.trace.subj")
+	natsSubSync(t, ncSAb, "sa.b")
+	natsFlush(t, ncSAb)
+
+	ncSBa := natsConnect(t, sb.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer ncSBa.Close()
+	subSBa := natsSubSync(t, ncSBa, "foo.>")
+	natsSubSync(t, ncSBa, "sb.a")
+	natsFlush(t, ncSBa)
+
+	ncSBb := natsConnect(t, sb.ClientURL(), nats.UserInfo("b", "pwd"))
+	defer ncSBb.Close()
+	subSBb := natsSubSync(t, ncSBb, "foo.>")
+	natsSubSync(t, ncSBb, "sb.b")
+	natsFlush(t, ncSBb)
+
+	checkSubInterest(t, sa, "A", "sb.a", time.Second)
+	checkSubInterest(t, sa, "B", "sb.b", time.Second)
+	checkSubInterest(t, sb, "A", "sa.a", time.Second)
+	checkSubInterest(t, sb, "B", "sa.b", time.Second)
+
+	lConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: "LEAF"
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			remotes: [{url:"nats://a:pwd@127.0.0.1:%d"}]
+		}
+	`, sao.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(lConf)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnected(t, leaf)
+	checkSubInterest(t, leaf, globalAccountName, "sa.a", time.Second)
+	checkSubInterest(t, leaf, globalAccountName, "sb.a", time.Second)
+	checkSubInterest(t, leaf, globalAccountName, "my.trace.subj", time.Second)
+	checkSubInterest(t, leaf, globalAccountName, "foo.bar", time.Second)
+
+	for _, testSrv := range []*Server{sa, sb, leaf} {
+		t.Run(fmt.Sprintf("Server %s", testSrv), func(t *testing.T) {
+			l := &captureErrorLogger{errCh: make(chan string, 10)}
+			testSrv.SetLogger(l, false, false)
+
+			for _, test := range []struct {
+				name      string
+				external  bool
+				traceOnly bool
+			}{
+				{"not external trace only", false, true},
+				{"not external deliver msg", false, false},
+				{"external trace only", true, true},
+				{"external deliver msg", true, false},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					ncp := natsConnect(t, testSrv.ClientURL(), nats.UserInfo("a", "pwd"))
+					defer ncp.Close()
+
+					const tpVal = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+					msg := nats.NewMsg("foo.bar")
+					msg.Header.Set(MsgTraceOriginAccount, "B")
+					if test.external {
+						msg.Header.Set(traceParentHdr, tpVal)
+					} else {
+						msg.Header.Set(MsgTraceDest, "my.trace.subj")
+					}
+					if test.traceOnly {
+						msg.Header.Set(MsgTraceOnly, "true")
+					}
+					msg.Data = []byte("hello")
+
+					err := ncp.PublishMsg(msg)
+					require_NoError(t, err)
+					natsFlush(t, ncp)
+
+					// These subs should never receive any message.
+					noMsgSubs := []*nats.Subscription{subSAb, subSBb, tsubSAa, tsubSAb}
+					// When "traceOnly" is true, add the "A" account subs, unless it is external
+					// since "traceOnly" does not apply then.
+					if test.traceOnly && !test.external {
+						noMsgSubs = append(noMsgSubs, subSAa, subSAb)
+					}
+					for _, sub := range noMsgSubs {
+						_, err = sub.NextMsg(100 * time.Millisecond)
+						require_Error(t, err, nats.ErrTimeout)
+					}
+
+					// For message delivery, we should have msg only on "A" account.
+					if test.external || !test.traceOnly {
+						for _, sub := range []*nats.Subscription{subSAa, subSBa} {
+							msg, err = sub.NextMsg(100 * time.Millisecond)
+							require_NoError(t, err)
+							val := msg.Header.Get(MsgTraceDest)
+							require_Equal(t, val, MsgTraceDestDisabled)
+							val = msg.Header.Get(traceParentHdr)
+							if test.external {
+								require_Equal(t, val, tpVal)
+							} else {
+								require_Equal(t, val, _EMPTY_)
+							}
+							val = msg.Header.Get(MsgTraceOriginAccount)
+							require_Equal(t, val, "B")
+						}
+					}
+
+					// Also check that we get error in server's log.
+					select {
+					case err := <-l.errCh:
+						require_Contains(t, err, MsgTraceOriginAccount)
+					case <-time.After(250 * time.Millisecond):
+						t.Fatal("Did not get expected error")
+					}
+				})
 			}
 		})
 	}
@@ -3532,6 +5041,57 @@ func TestMsgTraceJetStream(t *testing.T) {
 	require_Equal[string](t, ejs.Subject, "baz")
 	require_True(t, ejs.NoInterest)
 	require_Equal[string](t, ejs.Error, _EMPTY_)
+
+	// Create a new stream to just check that when consumer a JS message,
+	// the trace header has been disabled.
+	cfg = &nats.StreamConfig{
+		Name:      "TEST_TRACE_DISABLED",
+		Subjects:  []string{"disabled"},
+		Retention: nats.LimitsPolicy,
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe("disabled", "dur")
+	require_NoError(t, err)
+
+	msg = nats.NewMsg("disabled")
+	msg.Header.Set(MsgTraceDest, traceSub.Subject)
+	msg.Data = []byte("hello")
+	err = nct.PublishMsg(msg)
+	require_NoError(t, err)
+
+	// Check trace msg is still OK
+	traceMsg = natsNexMsg(t, traceSub, time.Second)
+	e = MsgTraceEvent{}
+	json.Unmarshal(traceMsg.Data, &e)
+	require_Equal[string](t, e.Server.Name, s.Name())
+	ingress = e.Ingress()
+	require_True(t, ingress != nil)
+	require_True(t, ingress.Kind == CLIENT)
+	require_Equal[string](t, ingress.Name, "Tracer")
+	require_Equal[int](t, len(e.Egresses()), 0)
+	ejs = e.JetStream()
+	require_True(t, js != nil)
+	require_Equal[string](t, ejs.Stream, "TEST_TRACE_DISABLED")
+	require_Equal[string](t, ejs.Subject, "disabled")
+	require_False(t, ejs.NoInterest)
+	require_Equal[string](t, ejs.Error, _EMPTY_)
+
+	// Now consume the message.
+	jmsgs, err := sub.Fetch(1)
+	require_NoError(t, err)
+	require_Len(t, len(jmsgs), 1)
+	jmsg := jmsgs[0]
+	require_True(t, len(jmsg.Header) > 0)
+	require_Equal(t, string(jmsg.Data), "hello")
+	// When consuming, the message tracing should have been disabled,
+	// so we should have the MsgTraceDest header set to MsgTraceDestDisabled
+	require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
+
+	// Verify that no trace message was generated.
+	_, err = traceSub.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
 }
 
 func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
@@ -3562,7 +5122,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	checkStream := func(t *testing.T, stream string, expected int) {
 		t.Helper()
-		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		checkFor(t, 5*time.Second, 15*time.Millisecond, func() error {
 			si, err := js.StreamInfo(stream)
 			if err != nil {
 				return err
@@ -3573,6 +5133,8 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 			return nil
 		})
 	}
+
+	payload := make([]byte, 50)
 
 	for mainIter, mainTest := range []struct {
 		name   string
@@ -3596,7 +5158,6 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 			slSrv := c1.streamLeader(globalAccountName, mainTest.stream)
 
 			// Store some messages
-			payload := make([]byte, 50)
 			for i := 0; i < 5; i++ {
 				_, err = js.Publish(mainTest.stream, payload)
 				require_NoError(t, err)
@@ -3620,6 +5181,12 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 			traceSub := natsSubSync(t, nct, traceDest)
 			natsFlush(t, nct)
+			if mainIter == 2 {
+				// The account is in interest-only mode, wait for c1 to know about the trace sub in c2.
+				for _, cs := range c1.servers {
+					checkGWInterestOnlyModeInterestOn(t, cs, c2.name, globalAccountName, traceDest)
+				}
+			}
 
 			for _, test := range []struct {
 				name       string
@@ -3794,11 +5361,11 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 					case 1:
 						// Update stream to prevent rollups, and set a max size.
 						cfg.AllowRollup = false
-						cfg.MaxMsgSize = 100
+						cfg.MaxMsgSize = 256
 						_, err = js.UpdateStream(cfg)
 						require_NoError(t, err)
 					case 2:
-						msg.Data = make([]byte, 200)
+						msg.Data = make([]byte, 512)
 					case 3:
 						pa, err := jst.Publish(mainTest.stream, []byte("hello"))
 						require_NoError(t, err)
@@ -3904,8 +5471,7 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	s := c1.randomNonStreamLeader(globalAccountName, "TEST1")
 	// Try to get a message that will come from a route and make sure that
-	// this does not trigger a trace message, that is, that headers have
-	// been properly removed so that they don't trigger it.
+	// this does not trigger a trace message.
 	nct := natsConnect(t, s.ClientURL(), nats.Name("Tracer"))
 	defer nct.Close()
 	traceSub := natsSubSync(t, nct, traceDest)
@@ -3916,10 +5482,24 @@ func TestMsgTraceJetStreamWithSuperCluster(t *testing.T) {
 
 	sub, err := jct.SubscribeSync("TEST1")
 	require_NoError(t, err)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		jmsg, err := sub.NextMsg(time.Second)
 		require_NoError(t, err)
-		require_Equal[string](t, jmsg.Header.Get(MsgTraceDest), _EMPTY_)
+		if i < 5 {
+			require_Len(t, len(jmsg.Header), 0)
+			require_True(t, bytes.Equal(jmsg.Data, payload))
+			continue
+		}
+		if i == 5 {
+			require_True(t, jmsg.Header != nil)
+			require_Equal(t, jmsg.Header.Get(JSMsgId), "MyId")
+			require_Equal(t, jmsg.Header.Get(traceParentHdr), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+			require_Equal(t, jmsg.Header.Get(MsgTraceDest), MsgTraceDestDisabled)
+			require_True(t, bytes.Equal(jmsg.Data, payload))
+			continue
+		}
+		require_Len(t, len(jmsg.Header), 0)
+		require_Equal(t, string(jmsg.Data), "hello")
 	}
 
 	msg, err := traceSub.NextMsg(250 * time.Millisecond)
@@ -5136,6 +6716,91 @@ func TestMsgTraceAccDestWithSamplingJWTUpdate(t *testing.T) {
 				// Otherwise, we should have no more (but let's be conservative)
 				// than the sampling number.
 				require_LessThan[int](t, n, int(float64(test.sampling*total/100)*1.35))
+			}
+		})
+	}
+}
+
+func TestMsgTraceLeafNodeRequiresPublishPermissionForTraceDest(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		port: -1
+		server_name: "HUB"
+		accounts {
+			A {
+				users: [
+					{ user: "a", password: "pwd" }
+					{
+						user: "leaf"
+						password: "pwd"
+						permissions: { publish: ["pub.ok", "trace.ok"], subscribe: [">"] }
+					}
+				]
+			}
+		}
+		leafnodes { port: -1 }
+	`))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	hlog := &captureErrorLogger{errCh: make(chan string, 16)}
+	hub.SetLogger(hlog, false, false)
+
+	// Inject over a raw leaf connection so the trace headers are evaluated on
+	// the hub's inbound leaf path directly (a client on a leaf server would be
+	// filtered there first, never reaching the hub-side leaf check we test).
+	leafConn, err := net.DialTimeout("tcp", net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)), 2*time.Second)
+	require_NoError(t, err)
+	defer leafConn.Close()
+	br := bufio.NewReader(leafConn)
+	_, err = br.ReadString('\n') // INFO
+	require_NoError(t, err)
+	// headers:true so the hub accepts our HMSG.
+	_, err = fmt.Fprintf(leafConn, "CONNECT {\"user\":\"leaf\",\"pass\":\"pwd\",\"headers\":true}\r\nPING\r\n")
+	require_NoError(t, err)
+	checkLeafNodeConnected(t, hub)
+
+	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "pwd"))
+	defer ncHub.Close()
+
+	// Leaf publishes (allowed) to "pub.ok" but points the trace at "dest".
+	sendTraced := func(dest string) {
+		t.Helper()
+		hdr := "NATS/1.0\r\nNats-Trace-Dest: " + dest + "\r\nNats-Trace-Only: true\r\n\r\n"
+		full := hdr + "hello"
+		_, err := fmt.Fprintf(leafConn, "HMSG pub.ok %d %d\r\n%s\r\n", len(hdr), len(full), full)
+		require_NoError(t, err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		dest    string
+		allowed bool
+	}{
+		{"unauthorized trace dest is rejected", "secret.trace", false},
+		{"authorized trace dest is allowed", "trace.ok", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			traceSub := natsSubSync(t, ncHub, tc.dest)
+			natsFlush(t, ncHub)
+			sendTraced(tc.dest)
+
+			if tc.allowed {
+				// Same framing reaches an authorized dest, so the check is
+				// not blanket-blocking and the regression below is meaningful.
+				natsNexMsg(t, traceSub, 2*time.Second)
+				return
+			}
+			// The trace event must NOT leak to the unauthorized dest...
+			if tm, err := traceSub.NextMsg(250 * time.Millisecond); err == nil {
+				t.Fatalf("Trace event leaked to unauthorized dest: %q", tm.Data)
+			}
+			// ...and the rejection must be reported (not a silent suppression).
+			select {
+			case errMsg := <-hlog.errCh:
+				require_Contains(t, errMsg, "Publish Violation")
+				require_Contains(t, errMsg, tc.dest)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Did not get expected publish violation log for the trace dest")
 			}
 		})
 	}

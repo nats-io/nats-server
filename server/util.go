@@ -1,4 +1,4 @@
-// Copyright 2012-2024 The NATS Authors
+// Copyright 2012-2026 The NATS Authors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -20,9 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"net"
 	"net/url"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -122,6 +124,26 @@ func parseInt64(d []byte) (n int64) {
 	return n
 }
 
+// parseUint64 expects decimal positive numbers. Returns the value and true on success,
+// or 0 and false on invalid input or overflow.
+func parseUint64(d []byte) (uint64, bool) {
+	if len(d) == 0 {
+		return 0, false
+	}
+	var n uint64
+	for _, dec := range d {
+		if dec < asciiZero || dec > asciiNine {
+			return 0, false
+		}
+		digit := uint64(dec) - asciiZero
+		if n > math.MaxUint64/10 || (n == math.MaxUint64/10 && digit > math.MaxUint64%10) {
+			return 0, false
+		}
+		n = n*10 + digit
+	}
+	return n, true
+}
+
 // Helper to move from float seconds to time.Duration
 func secondsToDuration(seconds float64) time.Duration {
 	ttl := seconds * float64(time.Second)
@@ -164,7 +186,7 @@ func urlsAreEqual(u1, u2 *url.URL) bool {
 // e.g. comma(834142) -> 834,142
 //
 // This function was copied from the github.com/dustin/go-humanize
-// package and is Copyright Dustin Sallings <dustin@spy.net>
+// package (MIT License) and is Copyright Dustin Sallings <dustin@spy.net>
 func comma(v int64) string {
 	sign := ""
 
@@ -312,7 +334,7 @@ func getURLsAsString(urls []*url.URL) []string {
 	return a
 }
 
-// copyBytes make a new slice of the same size than `src` and copy its content.
+// copyBytes make a new slice of the same size as `src` and copy its content.
 // If `src` is nil or its length is 0, then this returns `nil`
 func copyBytes(src []byte) []byte {
 	if len(src) == 0 {
@@ -339,4 +361,48 @@ func generateInfoJSON(info *Info) []byte {
 	b, _ := json.Marshal(info)
 	pcs := [][]byte{[]byte("INFO"), b, []byte(CR_LF)}
 	return bytes.Join(pcs, []byte(" "))
+}
+
+// parallelTaskQueue starts a number of goroutines and returns a channel
+// which functions can be sent to for queued parallel execution. The
+// goroutines will stop running when the returned channel is closed and
+// all queued tasks have completed. The passed in mp limits concurrency,
+// or a value <= 0 will default to GOMAXPROCS.
+func parallelTaskQueue(mp int) chan<- func() {
+	if rmp := runtime.GOMAXPROCS(-1); mp <= 0 {
+		mp = rmp
+	} else {
+		mp = max(rmp, mp)
+	}
+	tq := make(chan func(), mp)
+	for range mp {
+		go func() {
+			for fn := range tq {
+				fn()
+			}
+		}()
+	}
+	return tq
+}
+
+// addSaturate returns a + b, saturating at the maximum value of T.
+// Signed inputs must be non-negative.
+func addSaturate[T ~int64 | ~uint64](a, b T) T {
+	if c := a + b; c >= a {
+		return c
+	}
+	if ^T(0) < 0 {
+		return T(^uint64(0) >> 1)
+	}
+	return ^T(0)
+}
+
+// mulSaturate returns a * b, saturating at math.MaxInt64.
+// Both a and b must be non-negative.
+func mulSaturate(a, b int64) int64 {
+	hi, lo := bits.Mul64(uint64(a), uint64(b))
+	if hi != 0 || lo > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(lo)
 }
