@@ -1642,13 +1642,18 @@ func (o *consumer) checkQueueInterest() {
 	}
 }
 
-// clears our node if we have one. When we scale down to 1.
-func (o *consumer) clearNode() {
+// deleteNode deletes our node and stops monitoring, when we scale down to 1 or our group is remapped.
+// The node stays set until replaced, so updates don't turn local meanwhile.
+// If our leadership is void, we step down and the next election starts us again.
+func (o *consumer) deleteNode(stepDown bool) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.node != nil {
-		o.node.Delete()
-		o.node, o.local = nil, false
+	if n := o.node; n != nil && !n.IsDeleted() {
+		n.Delete()
+	}
+	o.mu.Unlock()
+	o.stopMonitoring()
+	if stepDown {
+		o.setLeader(false, 0)
 	}
 }
 

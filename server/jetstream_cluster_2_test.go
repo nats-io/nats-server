@@ -10341,6 +10341,63 @@ func TestJetStreamClusterSwitchConsumerToLocalWaitsForUnappliedAcks(t *testing.T
 	require_Equal(t, state.AckFloor.Stream, 10)
 }
 
+func TestJetStreamClusterSwitchConsumerToLocalDoesNotApplyQueuedUpdatesOnNodeChange(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, m := range msgs[:5] {
+		require_NoError(t, m.AckSync())
+	}
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	n := o.raftNode()
+	sjs := cl.getJetStream()
+
+	// Keep the next ack queued, like a switch does.
+	o.mu.Lock()
+	o.switching = true
+	o.mu.Unlock()
+	require_NoError(t, msgs[5].Ack())
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if o.phead == nil {
+			return errors.New("ack not queued yet")
+		}
+		return nil
+	})
+
+	// The node is deleted before the switch, the queued ack was never replicated.
+	n.Delete()
+	err = sjs.switchConsumerToLocal(o, n, func() error { return nil })
+	require_Error(t, err, errNodeChanged)
+	o.mu.RLock()
+	queued := o.phead != nil
+	o.mu.RUnlock()
+	require_True(t, queued)
+	state, err := o.store.State()
+	require_NoError(t, err)
+	require_Equal(t, state.AckFloor.Stream, 5)
+}
+
 func TestJetStreamClusterScaleDownAndUpUnderLoad(t *testing.T) {
 	scfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
 	ccfg := &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy}
@@ -10954,6 +11011,37 @@ func TestJetStreamClusterStreamRemapWithDesiredKeepsWritesReplicated(t *testing.
 	})
 }
 
+func TestJetStreamClusterStreamRemapDoesNotWriteLocally(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Simulate processClusterUpdateStream remapping the replicated stream, before the new group's node is linked.
+	mset.deleteNode(true)
+
+	// A write that was still queued is neither stored locally nor acked.
+	sub := queueInboundMsg(t, mset, nil)
+	if msg, err := sub.NextMsg(500 * time.Millisecond); err == nil {
+		var resp JSPubAckResponse
+		require_NoError(t, json.Unmarshal(msg.Data, &resp))
+		require_NotNil(t, resp.Error)
+	}
+	var state StreamState
+	mset.store.FastState(&state)
+	require_Equal(t, state.Msgs, 1)
+}
+
 func TestJetStreamClusterSwitchToLocalSnapshotsAndSyncsStore(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -11208,6 +11296,152 @@ func TestJetStreamClusterSwitchToLocalAbortReleasesWrites(t *testing.T) {
 			}
 			return nil
 		})
+	})
+}
+
+func TestJetStreamClusterConsumerRemapWithDesiredKeepsUpdatesReplicated(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// Remap the consumer into a new group while desired state is in progress.
+	ml := c.leader()
+	mljs, cc := ml.getJetStreamCluster()
+	mljs.mu.Lock()
+	ca := mljs.consumerAssignment(globalAccountName, "TEST", "C")
+	if ca == nil {
+		mljs.mu.Unlock()
+		t.Fatal("consumer assignment not found")
+	}
+	cca := ca.copyGroup()
+	target := cca.Group.copyGroup()
+	target.Name = groupNameForConsumer(target.Peers, target.Storage)
+	cca.Group = ca.Group.withDesired(target)
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(cca))
+	mljs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Every replica proposes its updates through the new group's log.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				return fmt.Errorf("server %s has no consumer", s.Name())
+			}
+			if n := o.raftNode(); n == nil || n.Group() != target.Name {
+				return fmt.Errorf("server %s not on the remapped group yet", s.Name())
+			}
+			if !o.IsClustered() {
+				return fmt.Errorf("server %s updates locally after the remap", s.Name())
+			}
+		}
+		return nil
+	})
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	// Acks after the remap reach every replica.
+	sub, err := js.PullSubscribe("foo", "C", nats.Bind("TEST", "C"))
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(10, nats.MaxWait(5*time.Second))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 10)
+	for _, msg := range msgs {
+		require_NoError(t, msg.AckSync())
+	}
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				return fmt.Errorf("server %s has no consumer", s.Name())
+			}
+			if state, err := o.store.State(); err != nil {
+				return err
+			} else if state.AckFloor.Stream != 10 {
+				return fmt.Errorf("server %s has ack floor %d, expected 10", s.Name(), state.AckFloor.Stream)
+			}
+		}
+		return nil
+	})
+}
+
+func TestJetStreamClusterConsumerLegacyRemapReplicatesLocalUpdates(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// The leader switched to local updates, like at the end of a desired scale down.
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	o.mu.Lock()
+	o.local = true
+	o.mu.Unlock()
+
+	// Remap the consumer into a new group without desired state.
+	ml := c.leader()
+	mljs, cc := ml.getJetStreamCluster()
+	mljs.mu.Lock()
+	ca := mljs.consumerAssignment(globalAccountName, "TEST", "C")
+	if ca == nil {
+		mljs.mu.Unlock()
+		t.Fatal("consumer assignment not found")
+	}
+	cca := ca.copyGroup()
+	cca.Group.Name = groupNameForConsumer(cca.Group.Peers, cca.Group.Storage)
+	err = cc.meta.Propose(cc.meta.Term(), encodeAddConsumerAssignment(cca))
+	mljs.mu.Unlock()
+	require_NoError(t, err)
+
+	// Every replica proposes its updates through the new group's log, also the former local leader.
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				return fmt.Errorf("server %s has no consumer", s.Name())
+			}
+			if n := o.raftNode(); n == nil || n.Group() != cca.Group.Name {
+				return fmt.Errorf("server %s not on the remapped group yet", s.Name())
+			}
+			if !o.IsClustered() {
+				return fmt.Errorf("server %s updates locally after the remap", s.Name())
+			}
+		}
+		return nil
 	})
 }
 

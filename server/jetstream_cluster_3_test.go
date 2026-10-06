@@ -15444,11 +15444,11 @@ func TestJetStreamClusterNoResetClusteredStateAfterStreamRemap(t *testing.T) {
 	require_NotNil(t, n)
 
 	t.Run("NodeRemoved", func(t *testing.T) {
-		// Simulate processClusterUpdateStream detecting a stream remap: the node is removed
+		// Simulate processClusterUpdateStream detecting a stream remap: the node is deleted
 		// and the monitor is torn down, both while the monitor is parked in catchup.
-		mset.removeNode()
-		mset.stopMonitoring()
-		require_True(t, mset.raftNode() == nil)
+		mset.deleteNode(true)
+		require_True(t, mset.raftNode() == n)
+		require_True(t, n.IsDeleted())
 
 		// This is what the parked monitor does once its catchup finally aborts.
 		require_True(t, mset.resetClusteredState(n, errCatchupAbortedNoLeader))

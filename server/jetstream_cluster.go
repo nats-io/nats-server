@@ -306,6 +306,20 @@ func (rg *raftGroup) isR1ScaleUpSource(ourID string, peers []*Peer) bool {
 	return len(peers) == 1 && peers[0].ID == ourID && slices.ContainsFunc(rg.Desired.Peers, func(p string) bool { return p != ourID })
 }
 
+// isR1Switch returns whether moving from group rg to ng switches between a single replica and a desired peer set.
+// The leader keeps running across such a switch. Any other remap voids its leadership.
+func (rg *raftGroup) isR1Switch(ng *raftGroup) bool {
+	if rg == nil || ng == nil {
+		return false
+	}
+	// Starts a desired scale up from a single replica.
+	if len(rg.Peers) == 1 && rg.Desired == nil && ng.Desired != nil {
+		return true
+	}
+	// Finishes a desired scale down to a single replica.
+	return rg.Desired != nil && ng.Desired == nil && len(ng.Peers) == 1
+}
+
 // moveInFlight returns whether a move is still converging, including one that was
 // started before the upgrade to desired state.
 func (sa *streamAssignment) moveInFlight() bool {
@@ -4143,13 +4157,18 @@ func (mset *stream) raftNode() RaftNode {
 	return mset.node
 }
 
-func (mset *stream) removeNode() {
+// deleteNode deletes our node and stops monitoring, when we scale down to 1 or our group is remapped.
+// The node stays set until replaced, so writes don't turn local meanwhile.
+// If our leadership is void, we step down and the next election starts us again.
+func (mset *stream) deleteNode(stepDown bool) {
 	mset.mu.Lock()
-	defer mset.mu.Unlock()
-	if n := mset.node; n != nil {
+	if n := mset.node; n != nil && !n.IsDeleted() {
 		n.Delete()
-		mset.node = nil
-		mset.setLocalLocked(false)
+	}
+	mset.mu.Unlock()
+	mset.stopMonitoring()
+	if stepDown {
+		mset.setLeader(false, 0)
 	}
 }
 
@@ -5445,8 +5464,8 @@ func (js *jetStream) switchStreamToLocal(mset *stream, n RaftNode, apply func() 
 		return err
 	}
 	mset.mu.Lock()
-	// Our node was removed or replaced by an assignment update meanwhile.
-	if mset.node != n {
+	// Our node was deleted or replaced by an assignment update meanwhile.
+	if mset.node != n || n.IsDeleted() {
 		mset.mu.Unlock()
 		return errNodeChanged
 	}
@@ -5470,8 +5489,8 @@ func (js *jetStream) switchStreamToReplicated(mset *stream, n RaftNode, term uin
 		return err
 	}
 	mset.mu.Lock()
-	// Our node was removed or replaced by an assignment update meanwhile.
-	if mset.node != n {
+	// Our node was deleted or replaced by an assignment update meanwhile.
+	if mset.node != n || n.IsDeleted() {
 		mset.mu.Unlock()
 		return errNodeChanged
 	}
@@ -6903,8 +6922,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 		if osa.Group.Name != sa.Group.Name {
 			s.Warnf("JetStream cluster detected stream remapping for '%s > %s' from %q to %q",
 				acc, cfg.Name, osa.Group.Name, sa.Group.Name)
-			mset.removeNode()
-			mset.stopMonitoring()
+			mset.deleteNode(!osa.Group.isR1Switch(sa.Group))
 			alreadyRunning, needsNode = false, true
 			// Make sure to clear from original, and from the new assignment that copied it.
 			// Otherwise, the removed node is re-attached, and writes are proposed to it.
@@ -6915,12 +6933,11 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 
 		if !alreadyRunning && (numReplicas > 1 || desired != nil) {
 			if needsNode {
-				// Must run before startClusterSubs reads mset.sa.Sync.
-				mset.setStreamAssignment(sa)
-
 				// Since we are scaling up we want to make sure our sync subject
 				// is registered before we start our raft node.
 				mset.mu.Lock()
+				// Only the assignment, a deleted node stays set until the new one is linked below.
+				mset.sa = sa
 				mset.startClusterSubs()
 				mset.mu.Unlock()
 
@@ -6955,8 +6972,7 @@ func (js *jetStream) processClusterUpdateStream(acc *Account, osa, sa *streamAss
 			}
 		} else if numReplicas == 1 && desired == nil && wasRunning {
 			// We downgraded to R1. Make sure we cleanup the raft node and the stream monitor.
-			mset.removeNode()
-			mset.stopMonitoring()
+			mset.deleteNode(!osa.Group.isR1Switch(sa.Group))
 			// In case we need to shutdown the cluster specific subs, etc.
 			mset.mu.Lock()
 			// Stop responding to sync requests.
@@ -7773,12 +7789,13 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 	o := mset.lookupConsumer(consumer)
 	// Updates that are local stay local until the migration switches them to the log, also on a group remap.
 	wasLocal := o != nil && !o.IsClustered()
+	// A legacy scale up sends our state if we were the leader, also if the remap steps us down.
+	wasLeader := o != nil && o.IsLeader()
 
 	if o != nil && oca != nil && oca.Group.Name != ca.Group.Name {
 		s.Warnf("JetStream cluster detected consumer remapping for '%s > %s' from %q to %q",
 			acc, ca.Name, oca.Group.Name, ca.Group.Name)
-		o.clearNode()
-		o.stopMonitoring()
+		o.deleteNode(!oca.Group.isR1Switch(ca.Group))
 		alreadyRunning = false
 		// Make sure to clear from original, and from the new assignment that copied it.
 		// Otherwise, finalizing a R1 re-attaches the removed node, and updates are proposed to it.
@@ -7857,7 +7874,7 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 				needsLocalResponse = true
 			}
 			// If we look like we are scaling up (legacy), let's send our current state to the group.
-			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && ca.Group.Desired == nil && o.IsLeader() && n != nil
+			sendState = len(ca.Group.Peers) > len(oca.Group.Peers) && ca.Group.Desired == nil && wasLeader && n != nil
 			// Signal that this is an update
 			if ca.Reply != _EMPTY_ && ca.Reply != oreply {
 				isConfigUpdate = true
@@ -7871,10 +7888,10 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 			}
 		}
 
-		// Updates stay local until the migration switches them to the log.
-		if wasLocal && ca.Group.Desired != nil {
+		// Updates on a new node stay local until the migration switches them to the log.
+		if !alreadyRunning && n != nil {
 			o.mu.Lock()
-			o.local = true
+			o.local = wasLocal && ca.Group.Desired != nil
 			o.mu.Unlock()
 		}
 		// Set CA for our consumer.
@@ -7959,13 +7976,16 @@ func (js *jetStream) processClusterCreateConsumer(oca, ca *consumerAssignment, s
 		} else {
 			// Check for scale down to 1..
 			if node != nil && len(rg.Peers) == 1 && rg.Desired == nil {
-				o.clearNode()
-				o.stopMonitoring()
+				o.deleteNode(oca == nil || !oca.Group.isR1Switch(rg))
 				// Need to clear from rg too.
 				js.mu.Lock()
 				rg.node = nil
 				client, subject, reply := ca.Client, ca.Subject, ca.Reply
 				js.mu.Unlock()
+				// No new node replaces the deleted one, updates are local from now on.
+				o.mu.Lock()
+				o.node, o.local = nil, false
+				o.mu.Unlock()
 				// Perform the leader change in a goroutine, otherwise we could block meta operations.
 				if o.shouldStartMonitor() {
 					started := s.startGoRoutine(
@@ -8942,7 +8962,16 @@ func (js *jetStream) switchConsumerToLocal(o *consumer, n RaftNode, apply func()
 		}
 		o.mu.Lock()
 	}
-	for o.phead != nil {
+	for {
+		// Our node was deleted or replaced by an assignment update meanwhile.
+		// Queued updates were never replicated, so they must not be applied locally.
+		if o.node != n || n.IsDeleted() {
+			o.mu.Unlock()
+			return errNodeChanged
+		}
+		if o.phead == nil {
+			break
+		}
 		var entries []*Entry
 		for p := o.phead; p != nil; p = p.next {
 			entries = append(entries, newEntry(EntryNormal, p.data))
@@ -8958,11 +8987,6 @@ func (js *jetStream) switchConsumerToLocal(o *consumer, n RaftNode, apply func()
 		}
 		o.mu.Lock()
 	}
-	// Our node was removed or replaced by an assignment update meanwhile.
-	if o.node != n {
-		o.mu.Unlock()
-		return errNodeChanged
-	}
 	o.local, o.switching = true, false
 	ca := o.ca
 	o.mu.Unlock()
@@ -8976,8 +9000,8 @@ func (js *jetStream) switchConsumerToReplicated(o *consumer, n RaftNode, term ui
 	o.mu.Lock()
 	wasReplicated := o.isClustered()
 	var err error
-	if o.node != n {
-		// Our node was removed or replaced by an assignment update meanwhile.
+	if o.node != n || n.IsDeleted() {
+		// Our node was deleted or replaced by an assignment update meanwhile.
 		err = errNodeChanged
 	} else if snap, serr := o.store.EncodedState(); serr != nil {
 		err = serr
