@@ -5224,65 +5224,67 @@ func TestProcessMsgResultsLazySubjectScratch(t *testing.T) {
 	}
 }
 
-// With a deliver subject, processMsgResults swaps the delivery subject and
-// the mapped subject after each mapped subscription, so subj then refers to
-// the mapping buffer that the next mapped subscription writes. The first
-// recipient gets the deliver subject. Each later recipient must get its own
-// mapped subject, whether the subjects fit in the initial 128-byte buffer or
-// make append grow it.
-func TestProcessMsgResultsMappedSubjectScratchDeliver(t *testing.T) {
-	for _, size := range []int{16, 128, 129, 300} {
-		for _, queueMode := range []bool{false, true} {
-			name := fmt.Sprintf("len=%d/psubs", size)
-			if queueMode {
-				name = fmt.Sprintf("len=%d/qsubs", size)
-			}
-			t.Run(name, func(t *testing.T) {
-				opts := defaultServerOptions
-				s := New(&opts)
-				defer s.Shutdown()
-				acc := NewAccount("A")
-				sender := newProcessMsgResultsTestClient(s, acc, nil)
-				const payload = "payload"
-				const deliver = "deliver.ORDERS"
-				var targets []string
-				for _, c := range "abc" {
-					targets = append(targets, "mapped."+strings.Repeat(string(c), size-len("mapped.")))
-				}
-				conns := make([]*testConnWritePartial, len(targets))
-				subs := make([]*subscription, len(targets))
-				for i := range subs {
-					conns[i] = &testConnWritePartial{}
-					receiver := newProcessMsgResultsTestClient(s, NewAccount("B"), conns[i])
-					subs[i] = &subscription{
-						client: receiver,
-						sid:    []byte(fmt.Sprint(i + 1)),
-						queue:  []byte(fmt.Sprintf("workers-%d", i+1)),
-						im:     &streamImport{to: targets[i]},
+// Each recipient must get the subject it would get if it were the only
+// match. With a deliver subject, every recipient gets the deliver subject.
+// Without one, a mapped recipient gets its own mapped subject and an unmapped
+// recipient gets the published subject. Earlier mapped recipients, and
+// mapped subjects that grow the mapping buffer, must not change that.
+func TestProcessMsgResultsMappedSubjects(t *testing.T) {
+	for _, sizes := range [][]int{{16, 16, 16}, {128, 128, 128}, {129, 129, 129}, {100, 200, 400}, {400, 200, 100}} {
+		for _, deliver := range []string{"", "deliver.ORDERS"} {
+			for _, queueMode := range []bool{false, true} {
+				name := fmt.Sprintf("len=%v/deliver=%t/queue=%t", sizes, deliver != "", queueMode)
+				t.Run(name, func(t *testing.T) {
+					opts := defaultServerOptions
+					s := New(&opts)
+					defer s.Shutdown()
+					acc := NewAccount("A")
+					sender := newProcessMsgResultsTestClient(s, acc, nil)
+					const payload = "payload"
+					const published = "orders.new"
+					// Three mapped recipients, then one unmapped recipient.
+					var want []string
+					for i, c := range "abc" {
+						want = append(want, "mapped."+strings.Repeat(string(c), sizes[i]-len("mapped.")))
 					}
-				}
-				r := &SublistResult{}
-				if queueMode {
-					for _, sub := range subs {
-						r.qsubs = append(r.qsubs, []*subscription{sub})
+					want = append(want, published)
+					conns := make([]*testConnWritePartial, len(want))
+					subs := make([]*subscription, len(want))
+					for i := range subs {
+						conns[i] = &testConnWritePartial{}
+						receiver := newProcessMsgResultsTestClient(s, NewAccount("B"), conns[i])
+						subs[i] = &subscription{
+							client: receiver,
+							sid:    []byte(fmt.Sprint(i + 1)),
+							queue:  []byte(fmt.Sprintf("workers-%d", i+1)),
+						}
+						if i < 3 {
+							subs[i].im = &streamImport{to: want[i]}
+						}
 					}
-				} else {
-					r.psubs = subs
-				}
-				sender.pa = pubArg{size: len(payload), szb: []byte(fmt.Sprint(len(payload)))}
-				sender.processMsgResults(acc, r, []byte(payload+CR_LF), []byte(deliver), []byte("orders.new"), nil, pmrNoFlag)
+					r := &SublistResult{}
+					if queueMode {
+						for _, sub := range subs {
+							r.qsubs = append(r.qsubs, []*subscription{sub})
+						}
+					} else {
+						r.psubs = subs
+					}
+					sender.pa = pubArg{size: len(payload), szb: []byte(fmt.Sprint(len(payload)))}
+					sender.processMsgResults(acc, r, []byte(payload+CR_LF), []byte(deliver), []byte(published), nil, pmrNoFlag)
 
-				for i, sub := range subs {
-					subject := targets[i]
-					if i == 0 {
-						subject = deliver
+					for i, sub := range subs {
+						subject := want[i]
+						if deliver != "" {
+							subject = deliver
+						}
+						want := fmt.Sprintf("MSG %s %s %d\r\n%s\r\n", subject, sub.sid, len(payload), payload)
+						if got := string(flushProcessMsgResultsTestClient(t, sub.client, conns[i])); got != want {
+							t.Errorf("Recipient %d: got %q, want %q", i+1, got, want)
+						}
 					}
-					want := fmt.Sprintf("MSG %s %s %d\r\n%s\r\n", subject, sub.sid, len(payload), payload)
-					if got := string(flushProcessMsgResultsTestClient(t, sub.client, conns[i])); got != want {
-						t.Errorf("Recipient %d: got %q, want %q", i+1, got, want)
-					}
-				}
-			})
+				})
+			}
 		}
 	}
 }
