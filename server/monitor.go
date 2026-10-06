@@ -2452,6 +2452,7 @@ type LeafInfo struct {
 	NumSubs     uint32     `json:"subscriptions"`
 	Subs        []string   `json:"subscriptions_list,omitempty"`
 	Compression string     `json:"compression,omitempty"`
+	Websocket   bool       `json:"websocket,omitempty"`
 	Proxy       *ProxyInfo `json:"proxy,omitempty"`
 }
 
@@ -2496,6 +2497,7 @@ func (s *Server) Leafz(opts *LeafzOptions) (*Leafz, error) {
 				OutBytes:    ln.outBytes,
 				NumSubs:     uint32(len(ln.subs)),
 				Compression: ln.leaf.compression,
+				Websocket:   ln.isWebsocket(),
 				Proxy:       createProxyInfo(ln),
 			}
 			if opts != nil && opts.Subscriptions {

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"math/rand/v2"
@@ -9419,4 +9420,163 @@ func TestJetStreamClusterPlacementPrefersCaughtUpPeers(t *testing.T) {
 	si, err = js.AddStream(&nats.StreamConfig{Name: "R3", Subjects: []string{"r3"}, Replicas: 3})
 	require_NoError(t, err)
 	require_True(t, isMember(si.Cluster))
+}
+
+func TestJetStreamClusterStreamDeleteAfterRestoreStall(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	l := &captureWarnLogger{warn: make(chan string, 16)}
+	for _, s := range c.servers {
+		s.SetLogger(l, false, false)
+	}
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	r, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "TEST"),
+		[]byte(`{"config":{"name":"TEST","num_replicas":3,"storage":"file"}}`), 5*time.Second)
+	require_NoError(t, err)
+	var resp JSApiStreamRestoreResponse
+	require_NoError(t, json.Unmarshal(r.Data, &resp))
+	require_Equal(t, resp.Type, JSApiStreamRestoreResponseType)
+	require_True(t, resp.Error == nil && resp.DeliverSubject != _EMPTY_)
+
+	// Send no chunks. Wait for the watchdog to fail the restore and stop its leader.
+	deadline := time.After(10 * time.Second)
+waitForStall:
+	for {
+		select {
+		case warning := <-l.warn:
+			if strings.Contains(warning, "Stream restore failed for") && strings.Contains(warning, "is stalled") {
+				break waitForStall
+			}
+		case <-deadline:
+			t.Fatal("restore did not stall")
+		}
+	}
+
+	// Deleting the failed assignment must reply even though its leader has stopped.
+	require_NoError(t, js.DeleteStream("TEST", nats.MaxWait(time.Second)))
+}
+
+// Non-preferred restore members must wait for the preferred receiver to start.
+// After it starts, a real snapshot must restore and all replicas must catch up.
+func TestJetStreamClusterRestoreWaitsForPreferredReceiver(t *testing.T) {
+	const streamName = "TEST-STREAM"
+
+	// Create a stream snapshot
+	source := RunBasicJetStreamServer(t)
+	defer source.Shutdown()
+	sourceNC, sourceJS := jsClientConnect(t, source)
+	defer sourceNC.Close()
+	_, err := sourceJS.AddStream(&nats.StreamConfig{Name: streamName})
+	require_NoError(t, err)
+	_, err = sourceJS.Publish(streamName, []byte("restored message"))
+	require_NoError(t, err)
+	mset, err := source.GlobalAccount().lookupStream(streamName)
+	require_NoError(t, err)
+	sr, err := mset.snapshot(5*time.Second, false, true)
+	require_NoError(t, err)
+	defer sr.Reader.Close()
+	snapshot, err := io.ReadAll(sr.Reader)
+	require_NoError(t, err)
+
+	// Restore it in a 3 node cluster
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+	nc, client := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	inbox := nats.NewInbox()
+	replies, err := nc.SubscribeSync(inbox)
+	require_NoError(t, err)
+	defer replies.Unsubscribe()
+	require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiStreamRestoreT, streamName), inbox,
+		fmt.Appendf(nil, `{"config":{"name":%q,"num_replicas":3,"storage":"file"}}`, streamName)))
+
+	// Lock the preferred the node that is expected to become the leader
+	var locked *raft
+	var group string
+	deadline := time.Now().Add(2 * time.Second)
+	for locked == nil && time.Now().Before(deadline) {
+		for _, s := range c.servers {
+			js, cc := s.getJetStreamCluster()
+			if !js.mu.TryRLock() {
+				continue
+			}
+			var preferred bool
+			if sa := cc.streams[globalAccountName][streamName]; sa != nil {
+				group = sa.Group.Name
+				preferred = sa.Group.Preferred == cc.meta.ID()
+			}
+			js.mu.RUnlock()
+			if !preferred {
+				continue
+			}
+			if node := s.lookupRaftNode(group); node != nil {
+				n := node.(*raft)
+				if n.TryLock() {
+					if n.State() != Closed && !n.Leader() {
+						locked = n
+						break
+					}
+					n.Unlock()
+				}
+			}
+		}
+		if locked == nil {
+			time.Sleep(100 * time.Microsecond)
+		}
+	}
+
+	require_NotNil(t, locked)
+	// No replica should answer until the preferred receiver is released.
+	_, err = replies.NextMsg(maxElectionTimeout + time.Second)
+
+	// Release the preferred node and make sure we can restore
+	locked.Unlock()
+	require_Error(t, err, nats.ErrTimeout)
+	r, err := replies.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	var response JSApiStreamRestoreResponse
+	require_NoError(t, json.Unmarshal(r.Data, &response))
+	require_Equal(t, response.Type, JSApiStreamRestoreResponseType)
+	require_True(t, response.Error == nil && response.DeliverSubject != "")
+	chunk, err := nc.Request(response.DeliverSubject, snapshot, time.Second)
+	require_NoError(t, err)
+	require_Equal(t, len(chunk.Data), 0)
+	final, err := nc.Request(response.DeliverSubject, nil, 5*time.Second)
+	require_NoError(t, err)
+	var restored JSApiStreamCreateResponse
+	require_NoError(t, json.Unmarshal(final.Data, &restored))
+	require_True(t, restored.Error == nil)
+	for _, s := range c.servers {
+		c.waitOnStreamCurrent(s, globalAccountName, streamName)
+		require_False(t, s.lookupRaftNode(group).IsObserver())
+	}
+	message, err := client.GetMsg(streamName, 1)
+	require_NoError(t, err)
+	require_Equal(t, string(message.Data), "restored message")
+}
+
+func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.JetStream = true
+	o.StoreDir = t.TempDir()
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	// Set up the meta group after a Shutdown has stopped new goroutines from
+	// starting, so the meta monitor is never started. No cluster block is
+	// needed since setupMetaGroup is called directly.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+	require_NoError(t, s.getJetStream().setupMetaGroup())
+
+	// Must not wait for a monitor that is not running.
+	start := time.Now()
+	s.shutdownJetStream()
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("shutdownJetStream took %v", elapsed)
+	}
 }

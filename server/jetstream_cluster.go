@@ -215,6 +215,10 @@ type desiredRaftGroup struct {
 	// can't reach quorum may only evict what's recorded here.
 	Removed []string `json:"removed,omitempty"`
 
+	// Members are the Raft members known to hold the group's data, as reported by the group leader.
+	// It only grows, a peer leaves it together with the assignment. A peer not in it observes until added.
+	Members []string `json:"members,omitempty"`
+
 	Origin *desiredRaftGroupOrigin `json:"origin,omitempty"`
 }
 
@@ -226,7 +230,8 @@ type desiredRaftGroupOrigin struct {
 	Cluster   string     `json:"cluster,omitempty"`
 	Replicas  int        `json:"replicas"`
 	Placement *Placement `json:"placement,omitempty"`
-	// When changing between retention policies, this retention remains active until unset.
+	// When changing between retention policies, this is the origin retention.
+	// While recorded the stream acts under Limits retention until converged.
 	Retention *RetentionPolicy `json:"retention,omitempty"`
 }
 
@@ -248,11 +253,14 @@ func (cfg *StreamConfig) atDesiredOrigin(rg *raftGroup) *StreamConfig {
 		return cfg
 	}
 	newCfg := cfg.clone()
-	if rg.Desired.Origin.Placement != nil {
-		newCfg.Placement = rg.Desired.Origin.Placement.clone()
-	}
+	// The origin always records the placement it started from, nil included, so an
+	// unconstrained origin must be restored just the same.
+	newCfg.Placement = rg.Desired.Origin.Placement.clone()
 	if rg.Desired.Origin.Retention != nil {
-		newCfg.Retention = *rg.Desired.Origin.Retention
+		// Any retention change means the stream acts under Limits until converged.
+		// Either we're moving from Limits to Interest, and we only apply Interest at the end.
+		// Or, we're moving from Interest to Limits, and must release the Interest restrictions prior to converging.
+		newCfg.Retention = LimitsPolicy
 	}
 	return newCfg
 }
@@ -798,45 +806,23 @@ func (cc *jetStreamCluster) isLeader() bool {
 	return cc.meta != nil && cc.meta.Leader()
 }
 
-// isStreamCurrent will determine if the stream is up to date.
-// For R1 it will make sure the stream is present on this server.
+// streamGroupNode returns the stream's group node and whether the group should have one.
 // Read lock should be held.
-func (cc *jetStreamCluster) isStreamCurrent(account, stream string) bool {
-	if cc == nil {
-		// Non-clustered mode
-		return true
-	}
+func (cc *jetStreamCluster) streamGroupNode(account, stream string) (RaftNode, bool, bool) {
 	as := cc.streams[account]
 	if as == nil {
-		return false
+		return nil, false, false
 	}
 	sa := as[stream]
 	if sa == nil {
-		return false
+		return nil, false, false
 	}
 	rg := sa.Group
 	if rg == nil {
-		return false
+		return nil, false, false
 	}
-
-	if rg.node == nil || rg.node.Current() {
-		// Check if we are processing a snapshot and are catching up.
-		acc, err := cc.s.LookupAccount(account)
-		if err != nil {
-			return false
-		}
-		mset, err := acc.lookupStream(stream)
-		if err != nil {
-			return false
-		}
-		if mset.isCatchingUp() {
-			return false
-		}
-		// Success.
-		return true
-	}
-
-	return false
+	// Mirrors createRaftGroup, a single peer group only keeps a node while a desired state is pending.
+	return rg.node, rg.Desired != nil || len(rg.Peers) > 1, true
 }
 
 // isStreamHealthy will determine if the stream is up to date or very close.
@@ -1090,9 +1076,34 @@ func (s *Server) JetStreamIsStreamCurrent(account, stream string) bool {
 	if js == nil {
 		return false
 	}
+	if cc == nil {
+		// Non-clustered mode
+		return true
+	}
 	js.mu.RLock()
-	defer js.mu.RUnlock()
-	return cc.isStreamCurrent(account, stream)
+	node, needsNode, ok := cc.streamGroupNode(account, stream)
+	js.mu.RUnlock()
+	if !ok || (needsNode && node == nil) {
+		return false
+	}
+	if node != nil && !node.Current() {
+		return false
+	}
+
+	acc, err := s.LookupAccount(account)
+	if err != nil {
+		return false
+	}
+	mset, err := acc.lookupStream(stream)
+	if err != nil {
+		return false
+	}
+	// The stream only uses the group node once it's been assigned.
+	if mset.raftNode() != node {
+		return false
+	}
+	// Check if we are processing a snapshot and are catching up.
+	return !mset.isCatchingUp()
 }
 
 func (a *Account) JetStreamIsConsumerLeader(stream, consumer string) bool {
@@ -1248,6 +1259,7 @@ func (js *jetStream) setupMetaGroup() error {
 	}
 
 	c := s.createInternalJetStreamClient()
+	qch, stopped := make(chan struct{}), make(chan struct{})
 
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -1256,21 +1268,26 @@ func (js *jetStream) setupMetaGroup() error {
 		streams: make(map[string]map[string]*streamAssignment),
 		s:       s,
 		c:       c,
-		qch:     make(chan struct{}),
-		stopped: make(chan struct{}),
+		qch:     qch,
+		stopped: stopped,
 	}
 	atomic.StoreInt32(&js.clustered, 1)
 	c.registerWithAccount(sysAcc)
 
 	// Set to true before we start.
 	js.metaRecovering = true
-	js.srv.startGoRoutine(
-		js.monitorCluster,
+	// Pass the node and channels to the monitor, shutdownJetStream can clear
+	// them from js.cluster before the monitor goroutine first runs.
+	if !js.srv.startGoRoutine(
+		func() { js.monitorCluster(n, qch, stopped) },
 		pprofLabels{
 			"type":    "metaleader",
 			"account": sysAcc.Name,
 		},
-	)
+	) {
+		// Shutting down, shutdownJetStream must not wait for a monitor that never ran.
+		close(stopped)
+	}
 	return nil
 }
 
@@ -1571,16 +1588,6 @@ func (js *jetStream) clusterQuitC() chan struct{} {
 	return nil
 }
 
-// Return the cluster stopped chan.
-func (js *jetStream) clusterStoppedC() chan struct{} {
-	js.mu.RLock()
-	defer js.mu.RUnlock()
-	if js.cluster != nil {
-		return js.cluster.stopped
-	}
-	return nil
-}
-
 // Mark that the meta layer is recovering.
 func (js *jetStream) setMetaRecovering() {
 	js.mu.Lock()
@@ -1741,9 +1748,9 @@ func (js *jetStream) getOrphans() (streams []*stream, consumers []*consumer) {
 	return streams, consumers
 }
 
-func (js *jetStream) monitorCluster() {
-	s, n := js.server(), js.getMetaGroup()
-	qch, stopped, rqch, lch, aq := js.clusterQuitC(), js.clusterStoppedC(), n.QuitC(), n.LeadChangeC(), n.ApplyQ()
+func (js *jetStream) monitorCluster(n RaftNode, qch, stopped chan struct{}) {
+	s := js.server()
+	rqch, lch, aq := n.QuitC(), n.LeadChangeC(), n.ApplyQ()
 
 	defer s.grWG.Done()
 	defer close(stopped)
@@ -5659,6 +5666,10 @@ func (js *jetStream) processClusterCreateStream(acc *Account, sa *streamAssignme
 			osa := mset.streamAssignment()
 			// If we already have a stream assignment and they are the same exact config, short circuit here.
 			if osa != nil {
+				// Set the index name on both to ensure the DeepEqual works.
+				js.mu.Lock()
+				matchSourceIndexNames(sa.Config, osa.Config)
+				js.mu.Unlock()
 				if reflect.DeepEqual(osa.Config, sa.Config) {
 					if sa.Group.Name == osa.Group.Name && reflect.DeepEqual(sa.Group.Peers, osa.Group.Peers) &&
 						reflect.DeepEqual(sa.Group.Desired, osa.Group.Desired) {
@@ -5930,6 +5941,11 @@ func (js *jetStream) processStreamRemoval(sa *streamAssignment) {
 	needDelete := accStreams != nil && accStreams[stream] != nil
 	if needDelete {
 		osa := accStreams[stream]
+		if osa.Group != nil && osa.Group.node != nil {
+			// Check if we were leader of a node that was already deleted
+			n := osa.Group.node
+			wasLeader = wasLeader || (n.IsDeleted() && n.GroupLeader() == n.ID())
+		}
 		if osa.unsupported != nil {
 			osa.unsupported.closeInfoSub(js.srv)
 			// Remember we used to be unsupported, just so we can send a successful delete response.
@@ -8552,16 +8568,7 @@ func (s *Server) jsClusteredStreamRequest(ci *ClientInfo, acc *Account, subject,
 	if osa := js.streamAssignmentOrInflight(acc.Name, cfg.Name); osa != nil {
 		copyStreamMetadata(cfg, osa.Config)
 		// Set the index name on both to ensure the DeepEqual works
-		currentIName := make(map[string]struct{})
-		for _, s := range osa.Config.Sources {
-			currentIName[s.iname] = struct{}{}
-		}
-		for _, s := range cfg.Sources {
-			s.setIndexName()
-			if _, ok := currentIName[s.iname]; !ok {
-				s.iname = _EMPTY_
-			}
-		}
+		matchSourceIndexNames(cfg, osa.Config)
 		if !reflect.DeepEqual(osa.Config, cfg) {
 			resp.Error = NewJSStreamNameExistError()
 			s.sendAPIErrResponse(ci, acc, subject, reply, string(rmsg), s.jsonResponse(&resp))
@@ -9219,6 +9226,10 @@ func (s *Server) jsClusteredStreamRestoreRequest(
 	sa := &streamAssignment{Group: rg, Sync: syncSubjForStream(), Config: &cfg, Subject: subject, Reply: reply, Client: ci, Created: time.Now().UTC()}
 	// Now add in our restore state and pre-select a peer to handle the actual receipt of the snapshot.
 	sa.Restore = &req.State
+	// Set ScaleUp to prevent other members from winning the initial election.
+	// The preferred node clears its ScaleUp state through CampaignImmediately
+	// in createRaftGroup.
+	rg.ScaleUp = true
 	if err := cc.meta.Propose(cc.term, encodeAddStreamAssignment(sa)); err != nil {
 		return
 	}

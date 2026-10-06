@@ -442,6 +442,46 @@ func TestConfigReloadRotateTLS(t *testing.T) {
 	}
 }
 
+func TestConfigReloadTLSPinnedCertsDisconnectsClient(t *testing.T) {
+	const config = `
+		host: localhost
+		port: -1
+		tls {
+			ca_file: "../test/configs/certs/ca.pem"
+			cert_file: "../test/configs/certs/server-cert.pem"
+			key_file: "../test/configs/certs/server-key.pem"
+			verify: true
+			pinned_certs: ["%s"]
+		}
+	`
+	const (
+		clientCertPin = "bf6f821f09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+		otherCertPin  = "aaaaaaaa09fde09451411ba3b42c0f74727d61a974c69fd3cf5257f39c75f0e9"
+	)
+
+	conf := createConfFile(t, fmt.Appendf(nil, config, clientCertPin))
+	srv, _ := RunServerWithConfig(conf)
+	defer srv.Shutdown()
+
+	nc, err := nats.Connect(srv.ClientURL(),
+		nats.RootCAs("../test/configs/certs/ca.pem"),
+		nats.ClientCert("../test/configs/certs/client-cert.pem", "../test/configs/certs/client-key.pem"),
+		nats.NoReconnect(),
+	)
+	require_NoError(t, err)
+	defer nc.Close()
+
+	require_NoError(t, os.WriteFile(conf, fmt.Appendf(nil, config, otherCertPin), 0660))
+	require_NoError(t, srv.Reload())
+
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if !nc.IsClosed() {
+			return fmt.Errorf("client with removed certificate pin is still connected")
+		}
+		return nil
+	})
+}
+
 // Ensure Reload supports enabling TLS. Test this by starting a server without
 // TLS enabled, connect to it to verify, reload config with TLS enabled, ensure
 // reconnect fails, then ensure reconnect succeeds when using secure.
@@ -7765,4 +7805,93 @@ func TestConfigReloadKeepsJetStreamAPIImportLinkedToSystemExport(t *testing.T) {
 	// leaves behind a response service import that never expires.
 	fetch()
 	require_Equal(t, numResponses(), before)
+}
+
+func TestConfigReloadNoRaceWithServiceImports(t *testing.T) {
+	kp, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	pub, _ := kp.PublicKey()
+
+	storeDir := t.TempDir()
+	mkOpts := func() *Options {
+		return &Options{
+			Host:      "127.0.0.1",
+			Port:      -1,
+			JetStream: true,
+			StoreDir:  storeDir,
+			NoSigs:    true,
+			NoLog:     true,
+			Nkeys:     []*NkeyUser{{Nkey: pub}},
+		}
+	}
+	srv := RunServer(mkOpts())
+	defer srv.Shutdown()
+
+	sign := func(nonce []byte) ([]byte, error) { return kp.Sign(nonce) }
+	nc, js := jsClientConnect(t, srv, nats.Nkey(pub, sign), nats.Timeout(5*time.Second))
+	defer nc.Close()
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"js.>"}})
+	require_NoError(t, err)
+	pull, err := js.PullSubscribe("js.>", "dur")
+	require_NoError(t, err)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ { // concurrent JetStream publishers ($JS.API service imports)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_, _ = js.Publish("js.x", []byte("x"), nats.AckWait(500*time.Millisecond))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { // consumer fetch loop: delivery is the read side
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			msgs, _ := pull.Fetch(20, nats.MaxWait(200*time.Millisecond))
+			for _, m := range msgs {
+				_ = m.Ack()
+			}
+		}
+	}()
+	wg.Add(1)
+	errCh := make(chan error, 1)
+	go func() { // ReloadOptions loop: the write side
+		defer wg.Done()
+		tk := time.NewTicker(5 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				if err := srv.ReloadOptions(mkOpts()); err != nil {
+					errCh <- fmt.Errorf("reload error: %v", err)
+					return
+				}
+			}
+		}
+	}()
+
+	time.Sleep(3 * time.Second)
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
 }

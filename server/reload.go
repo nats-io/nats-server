@@ -992,7 +992,17 @@ forLoop:
 				"TLS",
 				"TLSHandshakeFirst",
 				"TLSConfig",
+				"Proxy",
 			})
+			if err == nil {
+				// Proxy TLS is always applied, everything else in the proxy must be unchanged.
+				oldProxy, newProxy := lrc.Proxy, rlo.Proxy
+				oldProxy.TLSConfig, oldProxy.TLSTimeout = nil, 0
+				newProxy.TLSConfig, newProxy.TLSTimeout = nil, 0
+				if oldProxy != newProxy {
+					err = fmt.Errorf("field %q: only the proxy TLS configuration can be changed", "Proxy")
+				}
+			}
 			if err != nil {
 				lrc.RUnlock()
 				s.mu.RUnlock()
@@ -1139,6 +1149,8 @@ func (l *leafNodeOption) Apply(s *Server) {
 		lrc.Lock()
 		// TLSConfig is always applied.
 		lrc.TLSConfig = rlo.opts.TLSConfig.Clone()
+		lrc.Proxy.TLSConfig = rlo.opts.Proxy.TLSConfig.Clone()
+		lrc.Proxy.TLSTimeout = rlo.opts.Proxy.TLSTimeout
 		// Now update what has been detected has changed.
 		if rlo.tlsFirstChanged {
 			lrc.TLSHandshakeFirst = rlo.opts.TLSHandshakeFirst
@@ -1303,13 +1315,13 @@ func (s *Server) recheckPinnedCerts(curOpts *Options, newOpts *Options) {
 	disconnectClients := []*client{}
 	protoToPinned := map[int]PinnedCertSet{}
 	if !reflect.DeepEqual(newOpts.TLSPinnedCerts, curOpts.TLSPinnedCerts) {
-		protoToPinned[NATS] = curOpts.TLSPinnedCerts
+		protoToPinned[NATS] = newOpts.TLSPinnedCerts
 	}
 	if !reflect.DeepEqual(newOpts.MQTT.TLSPinnedCerts, curOpts.MQTT.TLSPinnedCerts) {
-		protoToPinned[MQTT] = curOpts.MQTT.TLSPinnedCerts
+		protoToPinned[MQTT] = newOpts.MQTT.TLSPinnedCerts
 	}
 	if !reflect.DeepEqual(newOpts.Websocket.TLSPinnedCerts, curOpts.Websocket.TLSPinnedCerts) {
-		protoToPinned[WS] = curOpts.Websocket.TLSPinnedCerts
+		protoToPinned[WS] = newOpts.Websocket.TLSPinnedCerts
 	}
 	for _, c := range s.clients {
 		if c.kind != CLIENT {
