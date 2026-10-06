@@ -2758,6 +2758,202 @@ func TestJetStreamAckAllClientTermAcksBelow(t *testing.T) {
 	}
 }
 
+func TestJetStreamAckAllTermDeletedPendingViaStoreRemoveDoesNotAckBelow(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &StreamConfig{Name: "TERMRM", Subjects: []string{"n.>"}, Storage: MemoryStorage}},
+		{"FileStore", &StreamConfig{Name: "TERMRM", Subjects: []string{"n.>"}, Storage: FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			require_NoError(t, err)
+			defer mset.delete()
+
+			ackWait := 100 * time.Millisecond
+			o, err := mset.addConsumer(&ConsumerConfig{Durable: "C", AckPolicy: AckAll, AckWait: ackWait})
+			require_NoError(t, err)
+			defer o.delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			getMsg := func() *nats.Msg {
+				t.Helper()
+				m, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
+				require_NoError(t, err)
+				return m
+			}
+
+			// First message is acked so the ack floor moves off zero.
+			sendStreamMsg(t, nc, "n.a", "m1")
+			getMsg().Respond(nil)
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if o.asflr != 1 {
+					return fmt.Errorf("expected ack floor 1, got %d", o.asflr)
+				}
+				return nil
+			})
+
+			sendStreamMsg(t, nc, "n.a", "m2") // sseq 2
+			sendStreamMsg(t, nc, "n.a", "m3") // sseq 3
+			sendStreamMsg(t, nc, "n.a", "m4") // sseq 4
+			sendStreamMsg(t, nc, "n.a", "m5") // sseq 5
+
+			// Fetch all four but do not ack them.
+			for i := 0; i < 4; i++ {
+				getMsg()
+			}
+
+			// Deleting pending message 4 terminates its delivery through
+			// decStreamPending. This must not drop messages 2 and 3, which sit
+			// below it and were never acked.
+			deleted, err := mset.deleteMsg(4)
+			require_NoError(t, err)
+			require_True(t, deleted)
+
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if len(o.pending) != 3 {
+					return fmt.Errorf("expected 3 pending, got %d", len(o.pending))
+				}
+				return nil
+			})
+			o.mu.RLock()
+			_, ok2 := o.pending[2]
+			_, ok3 := o.pending[3]
+			_, ok5 := o.pending[5]
+			adflr, asflr := o.adflr, o.asflr
+			o.mu.RUnlock()
+			if !ok2 || !ok3 || !ok5 {
+				t.Fatalf("expected pending messages 2, 3 and 5, got 2=%v 3=%v 5=%v", ok2, ok3, ok5)
+			}
+			if adflr != 1 || asflr != 1 {
+				t.Fatalf("termination of deleted pending message moved ack floor to %d/%d, expected 1/1", adflr, asflr)
+			}
+
+			// Once ackWait lapses the survivors must be redelivered.
+			for _, want := range []uint64{2, 3, 5} {
+				m := getMsg()
+				if sseq, _, _, _, _ := ackReplyInfo(m.Reply); sseq != want {
+					t.Fatalf("expected redelivery of message %d, got %d", want, sseq)
+				}
+			}
+		})
+	}
+}
+
+func TestJetStreamAckAllRedeliveryOfDeletedMsgDoesNotAckBelow(t *testing.T) {
+	cases := []struct {
+		name    string
+		mconfig *StreamConfig
+	}{
+		{"MemoryStore", &StreamConfig{Name: "TERMREDL", Subjects: []string{"n.>"}, Storage: MemoryStorage}},
+		{"FileStore", &StreamConfig{Name: "TERMREDL", Subjects: []string{"n.>"}, Storage: FileStorage}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			mset, err := s.GlobalAccount().addStream(c.mconfig)
+			require_NoError(t, err)
+			defer mset.delete()
+
+			ackWait := 100 * time.Millisecond
+			o, err := mset.addConsumer(&ConsumerConfig{Durable: "C", AckPolicy: AckAll, AckWait: ackWait})
+			require_NoError(t, err)
+			defer o.delete()
+
+			nc := clientConnectToServer(t, s)
+			defer nc.Close()
+
+			getMsg := func() *nats.Msg {
+				t.Helper()
+				m, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
+				require_NoError(t, err)
+				return m
+			}
+
+			// First message is acked so the ack floor moves off zero.
+			sendStreamMsg(t, nc, "n.a", "m1")
+			getMsg().Respond(nil)
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if o.asflr != 1 {
+					return fmt.Errorf("expected ack floor 1, got %d", o.asflr)
+				}
+				return nil
+			})
+
+			sendStreamMsg(t, nc, "n.a", "m2") // sseq 2
+			sendStreamMsg(t, nc, "n.a", "m3") // sseq 3
+			sendStreamMsg(t, nc, "n.a", "m4") // sseq 4
+
+			// Fetch all three but do not ack them.
+			for i := 0; i < 3; i++ {
+				getMsg()
+			}
+
+			// Wait for all three to be queued for redelivery.
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if len(o.rdq) != 3 {
+					return fmt.Errorf("expected 3 queued for redelivery, got %d", len(o.rdq))
+				}
+				return nil
+			})
+
+			// Remove message 3 while it is still pending and queued for
+			// redelivery, simulating a missed decStreamPending signal (e.g. a
+			// leader change). The next pull redelivers 2, then hits the gap at
+			// 3 in getNextMsg and must terminate only that sequence.
+			mset.store.RegisterStorageUpdates(nil)
+			_, err = mset.store.RemoveMsg(3)
+			require_NoError(t, err)
+			mset.store.RegisterStorageUpdates(mset.storeUpdates)
+
+			// 2 redelivers, the same pull then walks past the gap and returns 4.
+			if m := getMsg(); m == nil {
+				t.Fatalf("expected redelivery of message 2")
+			} else if sseq, _, _, _, _ := ackReplyInfo(m.Reply); sseq != 2 {
+				t.Fatalf("expected redelivery of message 2, got %d", sseq)
+			}
+			if m := getMsg(); m == nil {
+				t.Fatalf("expected redelivery of message 4")
+			} else if sseq, _, _, _, _ := ackReplyInfo(m.Reply); sseq != 4 {
+				t.Fatalf("expected redelivery of message 4, got %d", sseq)
+			}
+
+			o.mu.RLock()
+			_, ok2 := o.pending[2]
+			_, ok3 := o.pending[3]
+			_, ok4 := o.pending[4]
+			adflr, asflr := o.adflr, o.asflr
+			o.mu.RUnlock()
+			if ok3 {
+				t.Fatalf("expected message 3 to be terminated and removed from pending")
+			}
+			if !ok2 || !ok4 {
+				t.Fatalf("expected pending messages 2 and 4, got 2=%v 4=%v", ok2, ok4)
+			}
+			if adflr != 1 || asflr != 1 {
+				t.Fatalf("termination of deleted pending message moved ack floor to %d/%d, expected 1/1", adflr, asflr)
+			}
+		})
+	}
+}
+
 func TestJetStreamAckNext(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
