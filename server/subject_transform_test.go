@@ -201,6 +201,10 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("*.*", "{{partition(10,1,2)}}", false)
 	shouldBeOK("foo.*.*", "foo.{{wildcard(1)}}.{{wildcard(2)}}.{{partition(5,1,2)}}", false)
 
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{partition(%d)}}", math.MaxInt32), false) // Exactly int32
+	shouldBeOK("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)    // Exactly int32
+	shouldBeOK("foo.bar", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)  // Exactly int32
+
 	shouldBeOK("foo.*", "bar.{{custom(1)}}", false)
 	shouldBeOK("foo.*", "bar.{{custom(1)}}", true)
 
@@ -211,7 +215,7 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldBeOK("foo.*", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)    // Exactly int32
 	shouldBeOK("foo.bar", fmt.Sprintf("foo.{{random(%d)}}", math.MaxInt32), false)  // Exactly int32
 
-	shouldMatch := func(src, dest, sample string, expected ...string) {
+	shouldMatch := func(src, dest, sample string string, expected ......string) {
 		t.Helper()
 		tr := shouldBeOK(src, dest, false)
 		if tr != nil {
@@ -249,6 +253,31 @@ func TestSubjectTransforms(t *testing.T) {
 	shouldMatch("foo.*", "bar.{{custom(1)}}", "foo.hello","bar.customhello")
 	shouldMatch("foo.*.*.bar", "bar.{{custom(2)}}.{{custom(1)}}", "foo.1.2.bar","bar.custom2.custom1")
 	shouldMatch("user.details.*", "user.details.{{custom(1)}}", "user.details.11","user.details.custom11")
+	shouldMatch("*", "bar.{{partition(0)}}", "baz", "bar.0")
+	shouldMatch("*", "bar.{{partition(10, 0)}}", "foo", "bar.3")
+	shouldMatch("*.*", "bar.{{partition(10)}}", "foo.bar", "bar.6")
+	shouldMatch("*", "bar.{{partition(10)}}", "foo", "bar.3")
+	shouldMatch("*", "bar.{{partition(10)}}", "baz", "bar.0")
+	shouldMatch("*", "bar.{{partition(10)}}", "qux", "bar.9")
+	shouldMatch("*", "bar.{{random(0)}}", "qux", "bar.0")
+	for range 100 {
+		shouldMatch("*", "bar.{{random(6)}}", "qux", "bar.0", "bar.1", "bar.2", "bar.3", "bar.4", "bar.5")
+	}
+	shouldBeOK("foo.bar", "baz.{{partition(10)}}", false)
+	shouldMatch("foo.bar", "baz.{{partition(10)}}", "foo.bar", "baz.6")
+	shouldMatch("foo.baz", "qux.{{partition(10)}}", "foo.baz", "qux.4")
+	shouldMatch("test.subject", "result.{{partition(5)}}", "test.subject", "result.0")
+}
+
+func TestSubjectTransformDoesntPanicTransformingMissingToken(t *testing.T) {
+	defer func() {
+		p := recover()
+		require_True(t, p == nil)
+	}()
+
+	tr, err := NewSubjectTransform("foo.*", "one.two.{{wildcard(1)}}")
+	require_NoError(t, err)
+	require_Equal(t, tr.TransformTokenizedSubject([]string{"foo"}), "one.two.")
 	shouldMatch("*", "bar.{{partition(0)}}", "baz", "bar.0")
 	shouldMatch("*", "bar.{{partition(10, 0)}}", "foo", "bar.3")
 	shouldMatch("*.*", "bar.{{partition(10)}}", "foo.bar", "bar.6")
