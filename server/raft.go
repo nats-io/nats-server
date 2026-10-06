@@ -718,7 +718,12 @@ func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabe
 
 	// Start the run goroutine for the Raft state machine.
 	n.wg.Add(1)
-	s.startGoRoutine(n.run, labels)
+	if !s.startGoRoutine(n.run, labels) {
+		// Shutting down, the run goroutine will not release the node.
+		n.shutdown()
+		n.releaseResources()
+		n.wg.Done()
+	}
 
 	return n, nil
 }
@@ -894,13 +899,19 @@ func (s *Server) reloadDebugRaftNodes(debug bool) {
 		return
 	}
 	s.rnMu.RLock()
+	nodes := make([]*raft, 0, len(s.raftNodes))
 	for _, ni := range s.raftNodes {
-		n := ni.(*raft)
+		nodes = append(nodes, ni.(*raft))
+	}
+	s.rnMu.RUnlock()
+
+	// Don't hold rnMu while taking a node's lock, a node exiting its run
+	// goroutine holds its lock while it unregisters itself.
+	for _, n := range nodes {
 		n.Lock()
 		n.dflag = debug
 		n.Unlock()
 	}
-	s.rnMu.RUnlock()
 }
 
 // Requests that all Raft nodes on this server step down and place them into
@@ -2813,6 +2824,11 @@ func (n *raft) run() {
 		if !ready {
 			select {
 			case <-s.quitCh:
+				n.shutdown()
+				n.releaseResources()
+				return
+			case <-n.quit:
+				n.releaseResources()
 				return
 			case <-time.After(100 * time.Millisecond):
 				s.RateLimitWarnf("Waiting for routing to be established...")
@@ -2845,6 +2861,13 @@ runner:
 
 	// If we've reached this point then we're shutting down, either because
 	// the server is stopping or because the Raft group is closing/closed.
+	n.releaseResources()
+}
+
+// releaseResources is called when the run goroutine exits, either because
+// the server is stopping or because the Raft group is closing/closed, or
+// instead of it when the run goroutine could not be started.
+func (n *raft) releaseResources() {
 	n.Lock()
 	defer n.Unlock()
 
