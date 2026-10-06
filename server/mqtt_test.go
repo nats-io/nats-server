@@ -1328,6 +1328,65 @@ func TestMQTTBasicAuth(t *testing.T) {
 	}
 }
 
+// Test MQTT over websocket authentication. MQTT uses its own override,
+// or global authentication, regardless of whether it uses WebSocket.
+// WebSocket authorization does not apply to MQTT clients.
+func TestMQTTWebsocketAuth(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		globalAuth   bool
+		mqttOverride bool
+		user         string
+		pass         string
+		rc           byte
+	}{
+		{"websocket only, no credentials", false, false, "", "", mqttConnAckRCConnectionAccepted},
+		{"websocket only, wrong credentials", false, false, "ws", "wrong", mqttConnAckRCConnectionAccepted},
+		{"websocket only, websocket credentials", false, false, "ws", "pwd", mqttConnAckRCConnectionAccepted},
+		{"global auth, no credentials", true, false, "", "", mqttConnAckRCNotAuthorized},
+		{"global auth, wrong password", true, false, "global", "wrong", mqttConnAckRCNotAuthorized},
+		{"global auth, global credentials", true, false, "global", "pwd", mqttConnAckRCConnectionAccepted},
+		{"global auth, websocket credentials", true, false, "ws", "pwd", mqttConnAckRCNotAuthorized},
+		{"mqtt override, no credentials", false, true, "", "", mqttConnAckRCNotAuthorized},
+		{"mqtt override, wrong password", false, true, "mqtt", "wrong", mqttConnAckRCNotAuthorized},
+		{"mqtt override, mqtt credentials", false, true, "mqtt", "pwd", mqttConnAckRCConnectionAccepted},
+		{"mqtt override, websocket credentials", false, true, "ws", "pwd", mqttConnAckRCNotAuthorized},
+		{"global and mqtt auth, no credentials", true, true, "", "", mqttConnAckRCNotAuthorized},
+		{"global and mqtt auth, wrong password", true, true, "mqtt", "wrong", mqttConnAckRCNotAuthorized},
+		{"global and mqtt auth, global credentials", true, true, "global", "pwd", mqttConnAckRCNotAuthorized},
+		{"global and mqtt auth, mqtt credentials", true, true, "mqtt", "pwd", mqttConnAckRCConnectionAccepted},
+		{"global and mqtt auth, websocket credentials", true, true, "ws", "pwd", mqttConnAckRCNotAuthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o := testMQTTDefaultOptions()
+			o.Websocket = WebsocketOpts{
+				Host: "127.0.0.1", Port: -1, NoTLS: true,
+				Username: "ws", Password: "pwd",
+			}
+			if test.globalAuth {
+				o.Username, o.Password = "global", "pwd"
+			}
+			if test.mqttOverride {
+				o.MQTT.Username, o.MQTT.Password = "mqtt", "pwd"
+			}
+			s := testMQTTRunServer(t, o)
+			defer testMQTTShutdownServer(s)
+
+			for _, ws := range []bool{false, true} {
+				t.Logf("MQTT websocket=%v", ws)
+				host, port := o.MQTT.Host, o.MQTT.Port
+				if ws {
+					host, port = o.Websocket.Host, o.Websocket.Port
+				}
+				ci := &mqttConnInfo{cleanSess: true, ws: ws, user: test.user, pass: test.pass}
+				c, r := testMQTTConnect(t, ci, host, port)
+				testMQTTCheckConnAck(t, r, test.rc, false)
+				c.Close()
+			}
+		})
+	}
+}
+
 func TestMQTTAuthTimeout(t *testing.T) {
 	for _, test := range []struct {
 		name string
