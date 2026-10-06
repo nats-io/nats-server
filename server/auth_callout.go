@@ -42,7 +42,7 @@ func titleCase(m string) string {
 
 // Process a callout on this client's behalf.
 func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequired, trustedProxy bool, ujwt string) (authorized bool, errStr string) {
-	isOperatorMode := len(opts.TrustedKeys) > 0
+	isOperatorMode := s.trustedKeys != nil
 
 	// this is the account the user connected in, or the one running the callout
 	var acc *Account
@@ -132,22 +132,28 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 			return nil, errors.New("auth callout violation: auth callout response is not for server")
 		}
 
+		// if response is encrypted none of this is needed
+		if !encrypted {
+			if isOperatorMode {
+				// The asserted issuer account, if any, must be the callout account.
+				if cr.IssuerAccount != _EMPTY_ && cr.IssuerAccount != account {
+					return nil, fmt.Errorf("auth callout response issuer account %q is not the callout account", cr.IssuerAccount)
+				}
+				// The actual signer must be the callout account or one of its signing keys.
+				if cr.Issuer != account {
+					if _, ok := acc.hasIssuer(cr.Issuer); !ok {
+						return nil, errors.New("auth callout signing key is unknown")
+					}
+				}
+			} else if opts.AuthCallout == nil || cr.Issuer != opts.AuthCallout.Issuer {
+				// The signer must be the configured issuer.
+				return nil, errors.New("auth callout signing key is unknown")
+			}
+		}
+
 		// check if had an error message from the auth account
 		if cr.Error != _EMPTY_ {
 			return nil, fmt.Errorf("auth callout service returned an error: %v", cr.Error)
-		}
-
-		// if response is encrypted none of this is needed
-		if isOperatorMode && !encrypted {
-			pkStr := cr.Issuer
-			if cr.IssuerAccount != _EMPTY_ {
-				pkStr = cr.IssuerAccount
-			}
-			if pkStr != account {
-				if _, ok := acc.hasIssuer(pkStr); !ok {
-					return nil, errors.New("auth callout signing key is unknown")
-				}
-			}
 		}
 
 		return jwt.DecodeUserClaims(cr.Jwt)
