@@ -3424,21 +3424,14 @@ func (a *Account) hasExternalAuth() bool {
 	return a.extAuth != nil
 }
 
-// Deterimine if this is an external auth user.
+// Determine if this is an external auth user.
 func (a *Account) isExternalAuthUser(userID string) bool {
 	if a == nil {
 		return false
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.extAuth != nil {
-		for _, u := range a.extAuth.AuthUsers {
-			if userID == u {
-				return true
-			}
-		}
-	}
-	return false
+	return a.extAuth != nil && slices.Contains(a.extAuth.AuthUsers, userID)
 }
 
 // Return the external authorization xkey if external authorization is enabled and the xkey is set.
