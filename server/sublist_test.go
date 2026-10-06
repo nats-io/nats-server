@@ -1129,6 +1129,43 @@ func TestSublistAll(t *testing.T) {
 	}
 }
 
+func TestSublistFilter(t *testing.T) {
+	s := NewSublistNoCache()
+	subs := []*subscription{
+		newSub("foo.bar.baz"),
+		newSub("foo.bar"),
+		newQSub("baz", "q1"),
+		newQSub("foo.bar", "q2"),
+	}
+	for _, sub := range subs {
+		s.Insert(sub)
+	}
+
+	check := func(expected int) {
+		t.Helper()
+		var buf [32]*subscription
+		output := buf[:0]
+		s.Filter(&output, func(sub *subscription) bool {
+			return string(sub.subject) != "foo.bar"
+		})
+		if len(output) != expected {
+			t.Fatalf("Expected %d for Filter, got %d", expected, len(output))
+		}
+		for _, sub := range output {
+			if string(sub.subject) == "foo.bar" {
+				t.Fatalf("The sub with subject `foo.bar` should not have been returned")
+			}
+		}
+	}
+	check(2)
+
+	// Add more subscriptions to get n.plist populated.
+	for range plistMin + 10 {
+		s.Insert(newSub("foo.baz"))
+	}
+	check(plistMin + 10 + 2)
+}
+
 func TestIsSubsetMatch(t *testing.T) {
 	for _, test := range []struct {
 		subject string

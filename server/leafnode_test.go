@@ -11604,6 +11604,73 @@ func TestLeafNodeIsolatedLeafSubjectPropagationGlobal(t *testing.T) {
 	}
 }
 
+func TestLeafNodeIsolatedCheckBeforeSubPermCheck(t *testing.T) {
+	confH := createConfFile(t, []byte(`
+		port: -1
+		server_name: "HUB"
+		accounts {
+			HA { users: [{user: HA, password: pwd, permissions: {pub: ["$SYS.>", "$LDS.>", "foo"]} }] }
+		}
+		leafnodes {
+			port: -1
+			isolate_leafnode_interest: true
+		}
+	`))
+	sh, oh := RunServerWithConfig(confH)
+	defer sh.Shutdown()
+
+	l := &captureDebugLogger{dbgCh: make(chan string, 100)}
+	sh.SetLogger(l, true, false)
+
+	spokeTmpl := `
+		port: -1
+		server_name: "%s"
+		leafnodes {
+			remotes [{url: "nats://HA:pwd@127.0.0.1:%d"}]
+		}
+	`
+	confSP1 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP1", oh.LeafNode.Port)))
+	sp1, _ := RunServerWithConfig(confSP1)
+	defer sp1.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sh, 1)
+	checkLeafNodeConnectedCount(t, sp1, 1)
+
+	nc := natsConnect(t, sp1.ClientURL())
+	defer nc.Close()
+
+	natsSubSync(t, nc, "bar")
+	natsFlush(t, nc)
+
+	// This should be visible to the hub.
+	checkSubInterest(t, sh, "HA", "bar", time.Second)
+
+	confSP2 := createConfFile(t, []byte(fmt.Sprintf(spokeTmpl, "SP2", oh.LeafNode.Port)))
+	sp2, _ := RunServerWithConfig(confSP2)
+	defer sp2.Shutdown()
+
+	checkLeafNodeConnectedCount(t, sh, 2)
+	checkLeafNodeConnectedCount(t, sp1, 1)
+	checkLeafNodeConnectedCount(t, sp2, 1)
+
+	// This subscription should not be visible to sp2.
+	checkSubNoInterest(t, sp2, globalAccountName, "bar", time.Second)
+
+	// Make sure that there was no debug statement about not being permitted to subscribe
+	// to bar on behalf of HA.
+	for {
+		select {
+		case dbg := <-l.dbgCh:
+			if strings.Contains(dbg, "Not permitted") {
+				t.Fatalf("Should not have had the permission check done: %s", dbg)
+			}
+		default:
+			// No debug, we are done!
+			return
+		}
+	}
+}
+
 func TestLeafNodeIsolatedLeafSubjectPropagationRequestIsolation(t *testing.T) {
 	for tname, isolated := range map[string]bool{
 		"Isolated": true,
