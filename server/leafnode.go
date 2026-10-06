@@ -2565,7 +2565,14 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 	if c.isSpokeLeafNode() {
 		acc.sl.localSubs(&subs, true)
 	} else {
-		acc.sl.All(&subs)
+		// Don't advertise interest from leafnodes to other isolated leafnodes.
+		if c.isIsolatedLeafNode() {
+			acc.sl.Filter(&subs, func(sub *subscription) bool {
+				return !sub.leaf && sub.client.kind != LEAF
+			})
+		} else {
+			acc.sl.All(&subs)
+		}
 	}
 
 	// Check if we have an existing service import reply.
@@ -2636,10 +2643,6 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 		// Check perms regardless of role.
 		if c.perms != nil && !c.canSubscribe(string(sub.subject)) {
 			c.Debugf("Not permitted to subscribe to %q on behalf of %s%s", sub.subject, accName, accNTag)
-			continue
-		}
-		// Don't advertise interest from leafnodes to other isolated leafnodes.
-		if (sub.client.kind == LEAF || sub.leaf) && c.isIsolatedLeafNode() {
 			continue
 		}
 		// We ignore ourselves here.
