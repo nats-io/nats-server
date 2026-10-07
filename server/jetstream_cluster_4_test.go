@@ -2375,7 +2375,10 @@ func TestJetStreamClusterKeyValueLastSeqMismatch(t *testing.T) {
 			// Now say we want to update baz but iff last was revision 1.
 			_, err = kv.Update("baz", []byte("3"), uint64(1))
 			require_Error(t, err)
-			require_Equal(t, err.Error(), `nats: wrong last sequence: 0`)
+			require_True(t, errors.Is(err, nats.ErrKeyRevisionMismatch))
+			var apiErr *nats.APIError
+			require_True(t, errors.As(err, &apiErr))
+			require_Equal(t, apiErr.Description, "wrong last sequence: 0")
 		})
 	}
 }
