@@ -13388,3 +13388,563 @@ func TestLeafNodeWSLeafzReportsWebsocket(t *testing.T) {
 	check(t, s2, false)
 	check(t, ln2, false)
 }
+
+// A leaf with solicited remotes and no cluster block takes its cluster name from server_name, and the hub tags
+// subscriptions from its links with that origin. The shadow subscription for an import must not keep it, or the hub
+// never sends the derived interest down the leaf's other links, which share the cluster name.
+func TestLeafNodeImportedInterestOnSameNamedLeaf(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes { port: -1 }
+		accounts: {
+			TEN: {
+				users: [{user: ten, password: ten}]
+				exports: [{stream: "ten.>", accounts: [SS]}]
+			}
+			SS: {
+				users: [{user: ss, password: ss}]
+				imports: [{stream: {account: TEN, subject: "ten.>"}}]
+			}
+		}
+	`))
+	hub := RunServer(LoadConfig(hubConf))
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: leaf
+		port: -1
+		leafnodes {
+			remotes: [
+				{url: "nats-leaf://ten:ten@127.0.0.1:%[1]d", account: TEN}
+				{url: "nats-leaf://ss:ss@127.0.0.1:%[1]d", account: SS}
+			]
+		}
+		accounts: {
+			TEN: {users: [{user: ten, password: ten}]}
+			SS: {users: [{user: ss, password: ss}]}
+		}
+	`, hub.getOpts().LeafNode.Port)))
+	leaf := RunServer(LoadConfig(leafConf))
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+
+	// An SS subscriber on the same leaf, for a subject TEN exports to SS.
+	nc := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ss", "ss"))
+	defer nc.Close()
+	if _, err := nc.SubscribeSync("ten.event"); err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	natsFlush(t, nc)
+
+	// The leaf's TEN account needs the interest the hub derives from that subscription.
+	acc, err := leaf.LookupAccount("TEN")
+	if err != nil {
+		t.Fatalf("Error looking up TEN on the leaf: %v", err)
+	}
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if acc.Interest("ten.event") == 0 {
+			return fmt.Errorf("leaf account TEN has no interest for %q", "ten.event")
+		}
+		return nil
+	})
+}
+
+// Control for the test above: with the subscriber on a leaf that has a different cluster name, the derived interest does
+// reach the other leaf's TEN link.
+func TestLeafNodeImportedInterestOnOtherNamedLeaf(t *testing.T) {
+	hubConf := createConfFile(t, []byte(`
+		port: -1
+		leafnodes { port: -1 }
+		accounts: {
+			TEN: {
+				users: [{user: ten, password: ten}]
+				exports: [{stream: "ten.>", accounts: [SS]}]
+			}
+			SS: {
+				users: [{user: ss, password: ss}]
+				imports: [{stream: {account: TEN, subject: "ten.>"}}]
+			}
+		}
+	`))
+	hub := RunServer(LoadConfig(hubConf))
+	defer hub.Shutdown()
+
+	runLeaf := func(name string) *Server {
+		t.Helper()
+		conf := createConfFile(t, []byte(fmt.Sprintf(`
+			server_name: %s
+			port: -1
+			leafnodes {
+				remotes: [
+					{url: "nats-leaf://ten:ten@127.0.0.1:%[2]d", account: TEN}
+					{url: "nats-leaf://ss:ss@127.0.0.1:%[2]d", account: SS}
+				]
+			}
+			accounts: {
+				TEN: {users: [{user: ten, password: ten}]}
+				SS: {users: [{user: ss, password: ss}]}
+			}
+		`, name, hub.getOpts().LeafNode.Port)))
+		return RunServer(LoadConfig(conf))
+	}
+	leafA, leafB := runLeaf("leafa"), runLeaf("leafb")
+	defer leafA.Shutdown()
+	defer leafB.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 4)
+
+	nc := natsConnect(t, leafA.ClientURL(), nats.UserInfo("ss", "ss"))
+	defer nc.Close()
+	if _, err := nc.SubscribeSync("ten.event"); err != nil {
+		t.Fatalf("Error subscribing: %v", err)
+	}
+	natsFlush(t, nc)
+
+	acc, err := leafB.LookupAccount("TEN")
+	if err != nil {
+		t.Fatalf("Error looking up TEN on the other leaf: %v", err)
+	}
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		if acc.Interest("ten.event") == 0 {
+			return fmt.Errorf("other leaf account TEN has no interest for %q", "ten.event")
+		}
+		return nil
+	})
+}
+
+// Request and reply across an account import with the responder on the same named leaf as the requester. The request
+// reaches the responder through a stream import and the reply comes back through a service import, and both must be
+// delivered although the leaf links of both accounts belong to the same leaf cluster.
+func TestLeafNodeImportedRequestReplyOnSameNamedLeaf(t *testing.T) {
+	for _, queue := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queue=%v", queue), func(t *testing.T) {
+			hubConf := createConfFile(t, []byte(`
+				port: -1
+				leafnodes { port: -1 }
+				accounts: {
+					TEN: {
+						users: [{user: ten, password: ten}]
+						exports: [
+							{stream: "ten.>", accounts: [SS]}
+							{service: "REPLY.ten.>", accounts: [SS]}
+						]
+					}
+					SS: {
+						users: [{user: ss, password: ss}]
+						imports: [
+							{stream: {account: TEN, subject: "ten.>"}}
+							{service: {account: TEN, subject: "REPLY.ten.>"}}
+						]
+					}
+				}
+			`))
+			hub := RunServer(LoadConfig(hubConf))
+			defer hub.Shutdown()
+
+			leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+				server_name: leaf
+				port: -1
+				leafnodes {
+					remotes: [
+						{url: "nats-leaf://ten:ten@127.0.0.1:%[1]d", account: TEN}
+						{url: "nats-leaf://ss:ss@127.0.0.1:%[1]d", account: SS}
+					]
+				}
+				accounts: {
+					TEN: {users: [{user: ten, password: ten}]}
+					SS: {users: [{user: ss, password: ss}]}
+				}
+			`, hub.getOpts().LeafNode.Port)))
+			leaf := RunServer(LoadConfig(leafConf))
+			defer leaf.Shutdown()
+
+			checkLeafNodeConnectedCount(t, hub, 2)
+
+			responder := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ss", "ss"))
+			defer responder.Close()
+			respond := func(m *nats.Msg) { m.Respond([]byte("pong")) }
+			var err error
+			if queue {
+				_, err = responder.QueueSubscribe("ten.event", "workers", respond)
+			} else {
+				_, err = responder.Subscribe("ten.event", respond)
+			}
+			if err != nil {
+				t.Fatalf("Error subscribing: %v", err)
+			}
+			natsFlush(t, responder)
+
+			acc, err := leaf.LookupAccount("TEN")
+			if err != nil {
+				t.Fatalf("Error looking up TEN on the leaf: %v", err)
+			}
+			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+				if acc.Interest("ten.event") == 0 {
+					return fmt.Errorf("leaf account TEN has no interest for %q", "ten.event")
+				}
+				return nil
+			})
+
+			requester := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ten", "ten"), nats.CustomInboxPrefix("REPLY.ten"))
+			defer requester.Close()
+			resp, err := requester.Request("ten.event", []byte("ping"), 2*time.Second)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			if string(resp.Data) != "pong" {
+				t.Fatalf("Unexpected response %q", resp.Data)
+			}
+		})
+	}
+}
+
+// leafImportCycleAccounts defines TEN and SS, where one shares subject with the other as a stream or service.
+func leafImportCycleAccounts(kind, subject string, tenExports bool) string {
+	export := func(to string) string {
+		return fmt.Sprintf("exports: [{%s: %q, accounts: [%s]}]", kind, subject, to)
+	}
+	imprt := func(from string) string {
+		return fmt.Sprintf("imports: [{%s: {account: %s, subject: %q}}]", kind, from, subject)
+	}
+	ten, ss := export("SS"), imprt("TEN")
+	if !tenExports {
+		ten, ss = imprt("SS"), export("TEN")
+	}
+	return fmt.Sprintf(`
+		accounts: {
+			TEN: {
+				users: [{user: ten, password: ten}]
+				%s
+			}
+			SS: {
+				users: [{user: ss, password: ss}]
+				%s
+			}
+		}
+	`, ten, ss)
+}
+
+// runLeafImportCycleLeaf starts a leaf whose SS->TEN import reverses the hub's TEN->SS import.
+func runLeafImportCycleLeaf(t *testing.T, kind, subject string, tenPort, ssPort int) *Server {
+	t.Helper()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: leaf
+		port: -1
+		leafnodes {
+			remotes: [
+				{url: "nats-leaf://ten:ten@127.0.0.1:%d", account: TEN}
+				{url: "nats-leaf://ss:ss@127.0.0.1:%d", account: SS}
+			]
+		}
+		%s
+	`, tenPort, ssPort, leafImportCycleAccounts(kind, subject, false))))
+	return RunServer(LoadConfig(conf))
+}
+
+func checkAccountLeafInterest(t *testing.T, s *Server, accName, subject string) {
+	t.Helper()
+	acc, err := s.LookupAccount(accName)
+	if err != nil {
+		t.Fatalf("Error looking up %s on %s: %v", accName, s.Name(), err)
+	}
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for _, sub := range acc.sl.Match(subject).psubs {
+			if sub.client.kind == LEAF {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s account %s has no leafnode interest for %q", s.Name(), accName, subject)
+	})
+}
+
+func checkLeafImportCycleDoesNotLoop(t *testing.T, leaf *Server, accName, subject string) {
+	t.Helper()
+	nc := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ss", "ss"))
+	defer nc.Close()
+	sub := natsSubSync(t, nc, subject)
+	natsFlush(t, nc)
+
+	checkAccountLeafInterest(t, leaf, accName, subject)
+
+	natsPub(t, nc, subject, []byte("hello"))
+	natsFlush(t, nc)
+
+	// The first copy is local; the second has been through the hub's import, which proves the hub forwarded it.
+	natsNexMsg(t, sub, time.Second)
+	if _, err := sub.NextMsg(time.Second); err != nil {
+		t.Fatalf("Message on %q did not come back through the hub: %v", subject, err)
+	}
+	for n := 2; ; n++ {
+		if _, err := sub.NextMsg(250 * time.Millisecond); err != nil {
+			return
+		}
+		if n == 10 {
+			t.Fatalf("Message on %q is looping between the hub and the leaf", subject)
+		}
+	}
+}
+
+// Each server accepts its own imports, but together the hub's TEN->SS and the leaf's SS->TEN imports form a cycle.
+func TestLeafNodeImportCycleAcrossHubAndLeafDoesNotLoop(t *testing.T) {
+	hub := RunServer(LoadConfig(createConfFile(t, []byte(`
+		port: -1
+		leafnodes { port: -1 }
+	`+leafImportCycleAccounts("stream", "ten.>", true)))))
+	defer hub.Shutdown()
+
+	port := hub.getOpts().LeafNode.Port
+	leaf := runLeafImportCycleLeaf(t, "stream", "ten.>", port, port)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+
+	checkLeafImportCycleDoesNotLoop(t, leaf, "TEN", "ten.event")
+}
+
+func TestLeafNodeServiceImportCycleAcrossHubAndLeafDoesNotLoop(t *testing.T) {
+	hub := RunServer(LoadConfig(createConfFile(t, []byte(`
+		port: -1
+		leafnodes { port: -1 }
+	`+leafImportCycleAccounts("service", "svc.>", true)))))
+	defer hub.Shutdown()
+
+	port := hub.getOpts().LeafNode.Port
+	leaf := runLeafImportCycleLeaf(t, "service", "svc.>", port, port)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub, 2)
+
+	checkLeafImportCycleDoesNotLoop(t, leaf, "SS", "svc.x")
+}
+
+// The leaf's links reach different servers of a named hub cluster, so only the cluster name identifies the hub.
+func TestLeafNodeImportCycleAcrossHubClusterAndLeafDoesNotLoop(t *testing.T) {
+	hubTmpl := `
+		server_name: %s
+		listen: 127.0.0.1:-1
+		leafnodes { listen: 127.0.0.1:-1 }
+		cluster {
+			name: hub
+			listen: 127.0.0.1:-1
+			%s
+		}
+	` + leafImportCycleAccounts("stream", "ten.>", true)
+	hub1 := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub1", _EMPTY_)))))
+	defer hub1.Shutdown()
+	routes := fmt.Sprintf("routes: [nats://127.0.0.1:%d]", hub1.ClusterAddr().Port)
+	hub2 := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub2", routes)))))
+	defer hub2.Shutdown()
+	checkClusterFormed(t, hub1, hub2)
+
+	leaf := runLeafImportCycleLeaf(t, "stream", "ten.>", hub1.getOpts().LeafNode.Port, hub2.getOpts().LeafNode.Port)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub1, 1)
+	checkLeafNodeConnectedCount(t, hub2, 1)
+
+	checkLeafImportCycleDoesNotLoop(t, leaf, "TEN", "ten.event")
+}
+
+// Unnamed hub servers advertise no cluster name to leafs, even once clustered, so only the empty-name rule
+// identifies the hub.
+func TestLeafNodeImportCycleAcrossDynamicHubClusterAndLeafDoesNotLoop(t *testing.T) {
+	hubTmpl := `
+		server_name: %s
+		listen: 127.0.0.1:-1
+		leafnodes { listen: 127.0.0.1:-1 }
+		cluster {
+			listen: 127.0.0.1:-1
+			%s
+		}
+	` + leafImportCycleAccounts("stream", "ten.>", true)
+	hub1 := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub1", _EMPTY_)))))
+	defer hub1.Shutdown()
+	hub2Conf := createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub2", _EMPTY_)))
+	hub2 := RunServer(LoadConfig(hub2Conf))
+	defer hub2.Shutdown()
+
+	leaf := runLeafImportCycleLeaf(t, "stream", "ten.>", hub1.getOpts().LeafNode.Port, hub2.getOpts().LeafNode.Port)
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hub1, 1)
+	checkLeafNodeConnectedCount(t, hub2, 1)
+
+	routes := fmt.Sprintf("routes: [nats://127.0.0.1:%d]", hub1.ClusterAddr().Port)
+	reloadUpdateConfig(t, hub2, hub2Conf, fmt.Sprintf(hubTmpl, "hub2", routes))
+	checkClusterFormed(t, hub1, hub2)
+
+	leaf.mu.Lock()
+	for _, l := range leaf.leafs {
+		l.mu.Lock()
+		rc, rs := l.leaf.remoteCluster, l.leaf.remoteServer
+		l.mu.Unlock()
+		if rc != _EMPTY_ {
+			leaf.mu.Unlock()
+			t.Fatalf("Expected the link to %s to have no hub cluster name, got %q", rs, rc)
+		}
+	}
+	leaf.mu.Unlock()
+
+	checkLeafImportCycleDoesNotLoop(t, leaf, "TEN", "ten.event")
+}
+
+// The leaf's links reach two different named hubs, so a local import may still bridge them.
+func TestLeafNodeServiceImportBridgesDistinctHubs(t *testing.T) {
+	hubTmpl := `
+		server_name: %[1]s
+		listen: 127.0.0.1:-1
+		leafnodes { listen: 127.0.0.1:-1 }
+		cluster {
+			name: %[1]s
+			listen: 127.0.0.1:-1
+		}
+		accounts: {
+			%[2]s: { users: [{user: %[3]s, password: %[3]s}] }
+		}
+	`
+	hubA := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hubA", "TEN", "ten")))))
+	defer hubA.Shutdown()
+	hubB := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hubB", "SS", "ss")))))
+	defer hubB.Shutdown()
+
+	leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+		server_name: leaf
+		port: -1
+		leafnodes {
+			remotes: [
+				{url: "nats-leaf://ten:ten@127.0.0.1:%d", account: TEN}
+				{url: "nats-leaf://ss:ss@127.0.0.1:%d", account: SS}
+			]
+		}
+		accounts: {
+			TEN: {
+				users: [{user: ten, password: ten}]
+				imports: [{service: {account: SS, subject: "svc.>"}}]
+			}
+			SS: {
+				users: [{user: ss, password: ss}]
+				exports: [{service: "svc.>", accounts: [TEN]}]
+			}
+		}
+	`, hubA.getOpts().LeafNode.Port, hubB.getOpts().LeafNode.Port)))
+	leaf := RunServer(LoadConfig(leafConf))
+	defer leaf.Shutdown()
+
+	checkLeafNodeConnectedCount(t, hubA, 1)
+	checkLeafNodeConnectedCount(t, hubB, 1)
+
+	nc := natsConnect(t, hubB.ClientURL(), nats.UserInfo("ss", "ss"))
+	defer nc.Close()
+	natsSub(t, nc, "svc.x", func(m *nats.Msg) { m.Respond([]byte("ok")) })
+	natsFlush(t, nc)
+
+	checkAccountLeafInterest(t, hubA, "TEN", "svc.x")
+	checkAccountLeafInterest(t, leaf, "SS", "svc.x")
+
+	ncA := natsConnect(t, hubA.ClientURL(), nats.UserInfo("ten", "ten"))
+	defer ncA.Close()
+	resp, err := ncA.Request("svc.x", []byte("hello"), 2*time.Second)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	if string(resp.Data) != "ok" {
+		t.Fatalf("Unexpected response %q", resp.Data)
+	}
+}
+
+// The leaf's TEN and SS links land on different servers of the hub cluster, so interest and messages for the imports
+// cross the hub's route.
+func TestLeafNodeImportedRequestReplyAcrossHubCluster(t *testing.T) {
+	for _, queue := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queue=%v", queue), func(t *testing.T) {
+			hubTmpl := `
+				server_name: %s
+				listen: 127.0.0.1:-1
+				leafnodes { listen: 127.0.0.1:-1 }
+				cluster {
+					name: hub
+					listen: 127.0.0.1:%d
+					%s
+				}
+				accounts: {
+					TEN: {
+						users: [{user: ten, password: ten}]
+						exports: [
+							{stream: "ten.>", accounts: [SS]}
+							{service: "REPLY.ten.>", accounts: [SS]}
+						]
+					}
+					SS: {
+						users: [{user: ss, password: ss}]
+						imports: [
+							{stream: {account: TEN, subject: "ten.>"}}
+							{service: {account: TEN, subject: "REPLY.ten.>"}}
+						]
+					}
+				}
+			`
+			hub1 := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub1", -1, _EMPTY_)))))
+			defer hub1.Shutdown()
+			routes := fmt.Sprintf("routes: [nats://127.0.0.1:%d]", hub1.ClusterAddr().Port)
+			hub2 := RunServer(LoadConfig(createConfFile(t, []byte(fmt.Sprintf(hubTmpl, "hub2", -1, routes)))))
+			defer hub2.Shutdown()
+			checkClusterFormed(t, hub1, hub2)
+
+			leafConf := createConfFile(t, []byte(fmt.Sprintf(`
+				server_name: leaf
+				port: -1
+				leafnodes {
+					remotes: [
+						{url: "nats-leaf://ten:ten@127.0.0.1:%d", account: TEN}
+						{url: "nats-leaf://ss:ss@127.0.0.1:%d", account: SS}
+					]
+				}
+				accounts: {
+					TEN: {users: [{user: ten, password: ten}]}
+					SS: {users: [{user: ss, password: ss}]}
+				}
+			`, hub1.getOpts().LeafNode.Port, hub2.getOpts().LeafNode.Port)))
+			leaf := RunServer(LoadConfig(leafConf))
+			defer leaf.Shutdown()
+
+			checkLeafNodeConnectedCount(t, hub1, 1)
+			checkLeafNodeConnectedCount(t, hub2, 1)
+
+			responder := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ss", "ss"))
+			defer responder.Close()
+			respond := func(m *nats.Msg) { m.Respond([]byte("pong")) }
+			var err error
+			if queue {
+				_, err = responder.QueueSubscribe("ten.event", "workers", respond)
+			} else {
+				_, err = responder.Subscribe("ten.event", respond)
+			}
+			if err != nil {
+				t.Fatalf("Error subscribing: %v", err)
+			}
+			natsFlush(t, responder)
+
+			acc, err := leaf.LookupAccount("TEN")
+			if err != nil {
+				t.Fatalf("Error looking up TEN on the leaf: %v", err)
+			}
+			checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+				if acc.Interest("ten.event") == 0 {
+					return fmt.Errorf("leaf account TEN has no interest for %q", "ten.event")
+				}
+				return nil
+			})
+
+			requester := natsConnect(t, leaf.ClientURL(), nats.UserInfo("ten", "ten"), nats.CustomInboxPrefix("REPLY.ten"))
+			defer requester.Close()
+			resp, err := requester.Request("ten.event", []byte("ping"), 2*time.Second)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			if string(resp.Data) != "pong" {
+				t.Fatalf("Unexpected response %q", resp.Data)
+			}
+		})
+	}
+}
