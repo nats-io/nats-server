@@ -6991,6 +6991,12 @@ func (o *consumer) switchToEphemeral() {
 	// Setup dthresh.
 	o.updateInactiveThreshold(&o.cfg)
 	o.updatePauseState(&o.cfg)
+	// Pull consumers always run the delete timer, push consumers are
+	// handled by updateDeliveryInterest below.
+	if o.isLeader() && o.dthresh > 0 && o.isPullMode() {
+		stopAndClearTimer(&o.dtmr)
+		o.dtmr = time.AfterFunc(o.dthresh, o.deleteNotActive)
+	}
 	cfg := o.cfg
 	o.mu.Unlock()
 
