@@ -12143,3 +12143,87 @@ func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
 		t.Fatalf("shutdownJetStream took %v", elapsed)
 	}
 }
+
+func TestJetStreamClusterCreateRaftGroupStopsWALOnFailure(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	defer s.Shutdown()
+	js := s.getJetStream()
+
+	// A file where the snapshots directory should be fails the node's start.
+	storeDir := filepath.Join(s.StoreDir(), s.SystemAccount().Name, defaultStoreDirName, "TEST")
+	require_NoError(t, os.MkdirAll(storeDir, defaultDirPerms))
+	snapDir := filepath.Join(storeDir, snapshotsDir)
+	require_NoError(t, os.WriteFile(snapDir, nil, defaultFilePerms))
+	_, rerr := os.ReadDir(snapDir)
+	require_Error(t, rerr)
+
+	flushLoops := fileStoreFlushLoops()
+	rg := &raftGroup{Name: "TEST", Peers: []string{js.getMetaGroup().ID(), "ABCDEFGH"}}
+	_, err := js.createRaftGroup(globalAccountName, rg, false, FileStorage, pprofLabels{})
+	require_Error(t, err, rerr)
+	requireFileStoresStopped(t, flushLoops)
+}
+
+func TestJetStreamClusterMetaGroupStopsWALOnSetupFailure(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, sd string)
+		check func(t *testing.T, sd string, err error)
+	}{
+		{
+			// A file where the snapshots directory should be fails the meta node's start.
+			name: "StartRaftNode",
+			setup: func(t *testing.T, sd string) {
+				snapDir := filepath.Join(sd, snapshotsDir)
+				require_NoError(t, os.RemoveAll(snapDir))
+				require_NoError(t, os.WriteFile(snapDir, nil, defaultFilePerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				_, rerr := os.ReadDir(filepath.Join(sd, snapshotsDir))
+				require_Error(t, rerr)
+				require_Error(t, err, rerr)
+			},
+		},
+		{
+			// No peer state to recover, so the meta group bootstraps, but can't write it.
+			name: "Bootstrap",
+			setup: func(t *testing.T, sd string) {
+				psf := filepath.Join(sd, peerStateFile)
+				require_NoError(t, os.Remove(psf))
+				require_NoError(t, os.Mkdir(psf, defaultDirPerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				var lerr *os.LinkError
+				require_True(t, errors.As(err, &lerr))
+				require_Equal(t, lerr.New, filepath.Join(sd, peerStateFile))
+			},
+		},
+		{
+			// The peer state is recovered, but can't be written back.
+			name: "WritePeerState",
+			setup: func(t *testing.T, sd string) {
+				require_NoError(t, os.Mkdir(filepath.Join(sd, peerStateFile)+".tmp", defaultDirPerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				var perr *os.PathError
+				require_True(t, errors.As(err, &perr))
+				require_Equal(t, perr.Path, filepath.Join(sd, peerStateFile)+".tmp")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := runServerWaitingForRouting(t)
+			defer s.Shutdown()
+			sd := s.getJetStream().getMetaGroup().(*raft).sd
+			// Stops the meta node and waits for it to release its WAL.
+			require_NoError(t, s.ShutdownJetStream())
+			test.setup(t, sd)
+
+			flushLoops := fileStoreFlushLoops()
+			err := s.EnableJetStream(&JetStreamConfig{StoreDir: s.getOpts().StoreDir})
+			require_Error(t, err)
+			test.check(t, sd, err)
+			requireFileStoresStopped(t, flushLoops)
+		})
+	}
+}

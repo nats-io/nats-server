@@ -10649,7 +10649,7 @@ func TestNRGReloadDebugDoesNotDeadlockWithUnregister(t *testing.T) {
 
 	unregistered := make(chan struct{})
 	go func() {
-		s.unregisterRaftNode(n.group)
+		s.unregisterRaftNode(n.group, n)
 		close(unregistered)
 	}()
 	select {
@@ -10709,7 +10709,7 @@ func TestNRGReleasesWALOnServerQuitBeforeRouting(t *testing.T) {
 
 	// A node Shutdown does not stop, for instance one registered after it
 	// stopped the others, only sees the server quit.
-	s.unregisterRaftNode(n.group)
+	s.unregisterRaftNode(n.group, n)
 	// Shutdown waits for the run goroutine to return.
 	s.Shutdown()
 	requireRaftNodeReleased(t, s, n)
@@ -10746,4 +10746,120 @@ func TestNRGReleasesWALWhenRunNotStarted(t *testing.T) {
 		t.Fatal("WaitForStop hung for a run goroutine that was never started")
 	}
 	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesNodeOnInitSubscribeError(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	// Fail the append entry subscription, the last one, after three real ones.
+	var tr *failSubscribeTransport
+	cfg.NewTransport = func(s *Server, n RaftNode) raftTransport {
+		tr = &failSubscribeTransport{
+			defaultTransport: defaultRaftTransport(s, n).(*defaultTransport),
+			fail:             fmt.Sprintf(raftAppendSubj, cfg.Name),
+		}
+		return tr
+	}
+
+	err = requireRaftNodeInitFails(t, s, cfg)
+	require_Error(t, err, errSubscribeFailed)
+	// The subscriptions found released above had been made.
+	n := tr.n.(*raft)
+	n.RLock()
+	defer n.RUnlock()
+	require_Len(t, len(tr.subscribed), 3)
+	for _, subject := range []string{n.vreply, n.vsubj, n.areply} {
+		require_True(t, slices.Contains(tr.subscribed, subject))
+	}
+}
+
+func TestNRGReleasesNodeOnInitCorruptSnapshot(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	snapDir := filepath.Join(storeDir, snapshotsDir)
+	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
+	require_NoError(t, os.WriteFile(filepath.Join(snapDir, fmt.Sprintf(snapFileT, 1, 1)), []byte("corrupt"), defaultFilePerms))
+
+	err = requireRaftNodeInitFails(t, s, cfg)
+	require_Error(t, err, errSnapshotCorrupt)
+}
+
+func TestNRGReleasesNodeOnInitNoPeerState(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	// Not bootstrapped, so there's no peer state file.
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+
+	err = requireRaftNodeInitFails(t, s, cfg)
+	require_True(t, os.IsNotExist(err))
+}
+
+func TestNRGReleasesNodeOnInitSnapshotsDirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	// A dangling symlink reads as no snapshots, but can't be created as a directory.
+	require_NoError(t, os.Symlink(filepath.Join(storeDir, "missing"), filepath.Join(storeDir, snapshotsDir)))
+
+	err = requireRaftNodeInitFails(t, s, cfg)
+	require_Contains(t, err.Error(), "could not create snapshots directory")
+}
+
+func TestNRGReleasesNodeOnInitCommitFileError(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs, PersistCommit: true}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	// A directory can't be opened as the commit file.
+	cfPath := filepath.Join(storeDir, commitFile)
+	require_NoError(t, os.Mkdir(cfPath, defaultDirPerms))
+
+	err = requireRaftNodeInitFails(t, s, cfg)
+	var perr *os.PathError
+	require_True(t, errors.As(err, &perr))
+	require_Equal(t, perr.Path, cfPath)
+}
+
+func TestNRGReleasesWALOnInitNoSystemAccount(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.NoSystemAccount = true
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir(), srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: fs}
+
+	_, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_Error(t, err, ErrNoSysAccount)
+	require_True(t, fs.isClosed())
 }

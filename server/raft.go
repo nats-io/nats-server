@@ -344,10 +344,13 @@ var (
 type RaftConfig struct {
 	Name     string
 	Store    string
-	Log      WAL
 	Track    bool
 	Managed  bool
 	Observer bool
+
+	// Log is the node's WAL. startRaftNode takes ownership of it and stops it
+	// if the node fails to start.
+	Log WAL
 
 	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
 	// first seen after a catchup from another server. If a server recovers with an empty log,
@@ -467,7 +470,8 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
-func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
+// It takes ownership of cfg.Log: on error everything set up is released and cfg.Log is stopped.
+func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, err error) {
 	restorePeerState := func(n *raft) error {
 		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
 		if err != nil {
@@ -487,6 +491,7 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	s.mu.RLock()
 	if s.sys == nil {
 		s.mu.RUnlock()
+		cfg.Log.Stop()
 		return nil, ErrNoSysAccount
 	}
 	hash := s.sys.shash
@@ -527,11 +532,18 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		n.t = defaultRaftTransport(s, n)
 	}
 
+	// If we error before completion, release what we set up and stop the WAL.
+	defer func() {
+		if err != nil {
+			n.shutdown()
+			n.releaseResources()
+		}
+	}()
+
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
 	// continue setting up or the Raft node may be partially/totally isolated.
 	if err := n.RecreateInternalSubs(); err != nil {
-		n.shutdown()
 		return nil, err
 	}
 
@@ -560,7 +572,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		// If we failed to recover from the snapshot, then we should surface
 		// the error upwards, otherwise we can complete recovery but have only
 		// a partial view of the world.
-		n.shutdown()
 		return nil, err
 	}
 
@@ -575,7 +586,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	// Make sure that the snapshots directory exists.
 	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
-		n.shutdown()
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
@@ -583,7 +593,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	if _, ok := n.wal.(*memStore); !ok && cfg.PersistCommit {
 		n.csync = cfg.SyncCommit
 		if err := n.openCommitFile(); err != nil {
-			n.shutdown()
 			return nil, err
 		}
 	}
@@ -709,7 +718,8 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	return n, nil
 }
 
-// startRaftNode will start the raft node.
+// startRaftNode will start the raft node. It takes ownership of cfg.Log,
+// which is stopped if the node fails to start.
 func (s *Server) startRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (RaftNode, error) {
 	n, err := s.initRaftNode(accName, cfg, labels)
 	if err != nil {
@@ -864,11 +874,12 @@ func (s *Server) registerRaftNode(group string, n RaftNode) {
 	s.raftNodes[group] = n
 }
 
-// Unregisters the Raft node from the server, i.e. at shutdown.
-func (s *Server) unregisterRaftNode(group string) {
+// Unregisters the Raft node from the server, i.e. at shutdown. A different
+// node registered for the same group is left in place.
+func (s *Server) unregisterRaftNode(group string, n RaftNode) {
 	s.rnMu.Lock()
 	defer s.rnMu.Unlock()
-	if s.raftNodes != nil {
+	if s.raftNodes[group] == n {
 		delete(s.raftNodes, group)
 	}
 }
@@ -2866,7 +2877,8 @@ runner:
 
 // releaseResources is called when the run goroutine exits, either because
 // the server is stopping or because the Raft group is closing/closed, or
-// instead of it when the run goroutine could not be started.
+// instead of it when the run goroutine could not be started or the node
+// failed to initialize.
 func (n *raft) releaseResources() {
 	n.Lock()
 	defer n.Unlock()
@@ -2884,7 +2896,7 @@ func (n *raft) releaseResources() {
 		q.unregister()
 	}
 
-	n.s.unregisterRaftNode(n.group)
+	n.s.unregisterRaftNode(n.group, n)
 
 	if wal := n.wal; wal != nil {
 		wal.Stop()

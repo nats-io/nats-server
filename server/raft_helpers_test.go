@@ -500,17 +500,129 @@ func runServerWaitingForRouting(t *testing.T) *Server {
 	return RunServer(&o)
 }
 
-// requireRaftNodeReleased checks that a stopped node closed its WAL and its
-// commit file, if it had one, and is no longer registered with the server.
+// requireRaftNodeReleased checks that a stopped node closed its transport, WAL
+// and commit file, if it had one, and is no longer registered with the server,
+// nor are its queues.
 func requireRaftNodeReleased(t *testing.T, s *Server, n *raft) {
 	t.Helper()
 	n.RLock()
-	fs, cf := n.wal.(*fileStore), n.cf
+	open, acc, terr := raftTransportOpen(n.t)
+	wal, cf := n.wal, n.cf
+	subjects := []string{n.vsubj, n.vreply, n.asubj, n.areply}
+	queues := []string{n.reqs.name, n.votes.name, n.prop.name, n.entry.name, n.resp.name, n.apply.name}
 	n.RUnlock()
-	require_True(t, fs.isClosed())
+	require_NoError(t, terr)
+	require_False(t, open)
+	// Subscriptions are only removed while the server isn't shutting down.
+	if acc != nil && !s.isShuttingDown() {
+		for _, subject := range subjects {
+			require_Len(t, len(acc.sl.Match(subject).psubs), 0)
+		}
+	}
+	for _, name := range queues {
+		_, ok := s.ipQueues.Load(name)
+		require_False(t, ok)
+	}
+	closed, ok := wal.(interface{ isClosed() bool })
+	if !ok {
+		t.Fatalf("unexpected WAL %T", wal)
+	}
+	require_True(t, closed.isClosed())
 	if cf != nil {
 		_, err := cf.Stat()
 		require_Error(t, err, os.ErrClosed)
 	}
-	require_True(t, s.lookupRaftNode(n.group) == nil)
+	// Another node of the same group may be registered since.
+	require_NotEqual(t, s.lookupRaftNode(n.group), RaftNode(n))
+}
+
+// raftTransportOpen reports whether a transport still holds what it set up,
+// and the account it subscribes in, if those subscriptions live there.
+// Lock of the node should be held.
+func raftTransportOpen(tr raftTransport) (open bool, acc *Account, err error) {
+	switch tr := tr.(type) {
+	case *defaultTransport:
+		return tr.c != nil, tr.acc, nil
+	case *failSubscribeTransport:
+		return raftTransportOpen(tr.defaultTransport)
+	case *mockTransport:
+		return tr.sub != nil, nil, nil
+	}
+	return false, nil, fmt.Errorf("unexpected transport %T", tr)
+}
+
+var errSubscribeFailed = errors.New("subscribe failed")
+
+// failSubscribeTransport is the default transport, except that subscribing to
+// the fail subject fails. It records the subjects it did subscribe to.
+type failSubscribeTransport struct {
+	*defaultTransport
+	fail       string
+	subscribed []string
+}
+
+func (t *failSubscribeTransport) Subscribe(subject string, cb msgHandler) (*subscription, error) {
+	if subject == t.fail {
+		return nil, errSubscribeFailed
+	}
+	sub, err := t.defaultTransport.Subscribe(subject, cb)
+	if err == nil {
+		t.subscribed = append(t.subscribed, subject)
+	}
+	return sub, err
+}
+
+// initOtherRaftNode initializes, without running it, a node for group, with a
+// memory WAL and a transport outside the server's accounts. It's registered in
+// place of any node of the same group.
+func initOtherRaftNode(t *testing.T, s *Server, group string) *raft {
+	t.Helper()
+	ms, err := newMemStore(&StreamConfig{Name: group, Storage: MemoryStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: group, Store: t.TempDir(), Log: ms, NewTransport: newRaftTransportHub().newTransport}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	return n
+}
+
+// stopInitRaftNode stops and releases a node from initRaftNode, as
+// startRaftNode does when the run goroutine isn't started.
+func stopInitRaftNode(t *testing.T, s *Server, n *raft) {
+	t.Helper()
+	n.Stop()
+	n.releaseResources()
+	requireRaftNodeReleased(t, s, n)
+}
+
+// requireRaftNodeInitFails checks that initRaftNode fails for cfg, and that it
+// released what it set up and stopped the WAL, while leaving the node already
+// registered for the same group in place.
+func requireRaftNodeInitFails(t *testing.T, s *Server, cfg *RaftConfig) error {
+	t.Helper()
+	other := initOtherRaftNode(t, s, cfg.Name)
+
+	// The node isn't returned, get it from its transport.
+	var n *raft
+	newTransport := cfg.NewTransport
+	if newTransport == nil {
+		newTransport = defaultRaftTransport
+	}
+	cfg.NewTransport = func(s *Server, rn RaftNode) raftTransport {
+		n = rn.(*raft)
+		return newTransport(s, rn)
+	}
+
+	rn, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_Error(t, err)
+	require_True(t, rn == nil)
+	require_NotNil(t, n)
+	require_Equal(t, n.State(), Closed)
+	require_Equal(t, s.lookupRaftNode(cfg.Name), RaftNode(other))
+	// Checked before other is released: both nodes' queues have the same names,
+	// so releasing other would also remove a queue the failed node left behind.
+	requireRaftNodeReleased(t, s, n)
+
+	stopInitRaftNode(t, s, other)
+	return err
 }
