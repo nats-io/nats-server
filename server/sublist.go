@@ -61,6 +61,10 @@ type SublistResult struct {
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
 }
 
+// SublistFilter is a function that is used to decide if a subscription should
+// be returned by the Filter() call.
+type SublistFilter func(sub *subscription) bool
+
 // A Sublist stores and efficiently retrieves subscriptions.
 type Sublist struct {
 	sync.RWMutex
@@ -1620,39 +1624,59 @@ func (s *Sublist) localSubs(subs *[]*subscription, includeLeafHubs bool) {
 // All is used to collect all subscriptions.
 func (s *Sublist) All(subs *[]*subscription) {
 	s.RLock()
-	s.collectAllSubs(s.root, subs)
+	s.collectAllSubs(s.root, subs, nil)
 	s.RUnlock()
 }
 
-func (s *Sublist) addAllNodeToSubs(n *node, subs *[]*subscription) {
+func (s *Sublist) Filter(subs *[]*subscription, filter SublistFilter) {
+	s.RLock()
+	s.collectAllSubs(s.root, subs, filter)
+	s.RUnlock()
+}
+
+func (s *Sublist) addAllNodeToSubs(n *node, subs *[]*subscription, filter SublistFilter) {
 	// Normal subscriptions
 	if n.plist != nil {
-		*subs = append(*subs, n.plist...)
+		if filter == nil {
+			*subs = append(*subs, n.plist...)
+		} else {
+			for _, sub := range n.plist {
+				if filter(sub) {
+					*subs = append(*subs, sub)
+				}
+			}
+		}
 	} else {
 		for sub := range n.psubs {
+			if filter != nil && !filter(sub) {
+				continue
+			}
 			*subs = append(*subs, sub)
 		}
 	}
 	// Queue subscriptions
 	for _, qr := range n.qsubs {
 		for sub := range qr {
+			if filter != nil && !filter(sub) {
+				continue
+			}
 			*subs = append(*subs, sub)
 		}
 	}
 }
 
-func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription) {
+func (s *Sublist) collectAllSubs(l *level, subs *[]*subscription, filter SublistFilter) {
 	for _, n := range l.nodes {
-		s.addAllNodeToSubs(n, subs)
-		s.collectAllSubs(n.next, subs)
+		s.addAllNodeToSubs(n, subs, filter)
+		s.collectAllSubs(n.next, subs, filter)
 	}
 	if l.pwc != nil {
-		s.addAllNodeToSubs(l.pwc, subs)
-		s.collectAllSubs(l.pwc.next, subs)
+		s.addAllNodeToSubs(l.pwc, subs, filter)
+		s.collectAllSubs(l.pwc.next, subs, filter)
 	}
 	if l.fwc != nil {
-		s.addAllNodeToSubs(l.fwc, subs)
-		s.collectAllSubs(l.fwc.next, subs)
+		s.addAllNodeToSubs(l.fwc, subs, filter)
+		s.collectAllSubs(l.fwc.next, subs, filter)
 	}
 }
 
