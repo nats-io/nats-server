@@ -10832,3 +10832,79 @@ func TestNRGPreferredCandidateResendsVoteRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestNRGPreferredCandidateRetriesOnInsufficientInterest(t *testing.T) {
+	// A long election timeout ensures a quick retry can't come from the election timer.
+	omin, omax := minElectionTimeout, maxElectionTimeout
+	minElectionTimeout, maxElectionTimeout = time.Minute, 2*time.Minute
+	defer func() { minElectionTimeout, maxElectionTimeout = omin, omax }()
+
+	for _, preferred := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Preferred=%v", preferred), func(t *testing.T) {
+			c := createClusterWithoutJetStream(t)
+			defer c.shutdown()
+
+			// Only the first peer has created its node, so there's no interest from the others.
+			peers := serverPeerNames(c.servers)
+			cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: c.createWAL("TEST", MemoryStorage)}
+			n := c.createStateMachine(c.servers[0], cfg, peers, newStateAdder).node().(*raft)
+
+			if preferred {
+				require_NoError(t, n.CampaignImmediately())
+			} else {
+				require_NoError(t, n.Campaign())
+			}
+			n.RLock()
+			campaignReset := n.etlr
+			n.RUnlock()
+
+			// Wait for the campaign to be rejected for insufficient interest.
+			var rejected time.Time
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				n.RLock()
+				rejected = n.etlr
+				n.RUnlock()
+				if !rejected.After(campaignReset) {
+					return errors.New("campaign not handled yet")
+				}
+				return nil
+			})
+			require_Equal(t, n.State(), Follower)
+			require_Equal(t, n.Term(), 0)
+
+			// Listen for vote requests in place of the other peers.
+			nc, err := nats.Connect(c.servers[1].ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer nc.Close()
+			sub, err := nc.SubscribeSync(n.vsubj)
+			require_NoError(t, err)
+			require_NoError(t, nc.Flush())
+
+			if !preferred {
+				// A regular node waits for its election timer before retrying.
+				_, err = sub.NextMsg(time.Second)
+				require_Error(t, err, nats.ErrTimeout)
+				require_Equal(t, n.State(), Follower)
+				require_Equal(t, n.Term(), 0)
+				return
+			}
+
+			// The preferred peer retries quickly, and campaigns once the other peers have interest.
+			msg, err := sub.NextMsg(2 * time.Second)
+			require_NoError(t, err)
+			vr := decodeVoteRequest(msg.Data, msg.Reply)
+			require_NotNil(t, vr)
+			require_Equal(t, vr.candidate, n.ID())
+			require_Equal(t, vr.term, 1)
+
+			vresp := &voteResponse{term: vr.term, peer: peers[1], granted: true}
+			require_NoError(t, msg.Respond(vresp.encode()))
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				if n.State() != Leader {
+					return errors.New("not leader yet")
+				}
+				return nil
+			})
+		})
+	}
+}

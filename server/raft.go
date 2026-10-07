@@ -6290,7 +6290,12 @@ func (n *raft) switchToCandidate() {
 		} else {
 			n.updateLeader(noLeader)
 		}
-		n.resetElect(minElectionTimeout)
+		// The preferred peer of a new group retries quickly, as peers may not have created their node yet.
+		if n.maybeLeader {
+			n.resetElect(minCampaignTimeout)
+		} else {
+			n.resetElect(minElectionTimeout)
+		}
 		return
 	}
 
