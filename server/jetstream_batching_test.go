@@ -3568,7 +3568,7 @@ func TestJetStreamAtomicBatchPublishRejectPartialBatchOnLeaderChange(t *testing.
 			}
 			rn := mset2.raftNode().(*raft)
 			rn.RLock()
-			prop, pindex, processed := rn.prop.len(), rn.pindex, rn.processed
+			prop, pindex, processed := rn.prop.len()+int(rn.prop.inProgress()), rn.pindex, rn.processed
 			rn.RUnlock()
 			if prop > 0 {
 				return fmt.Errorf("still has inflight proposals")

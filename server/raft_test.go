@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -799,6 +800,12 @@ func TestNRGUnsuccessfulVoteRequestCampaignEarly(t *testing.T) {
 	require_Equal(t, n.vote, noVote)
 	require_NotEqual(t, n.etlr, time.Time{}) // Resets election timer as it starts campaigning.
 	n.etlr = time.Time{}
+
+	// We are follower and deny a re-sent vote for outdated candidate. Don't postpone campaigning.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	require_Equal(t, n.term, 2)
+	require_Equal(t, n.vote, noVote)
+	require_Equal(t, n.etlr, time.Time{})
 
 	// Switch to candidate.
 	n.pterm, n.pindex = 2, 200
@@ -10522,6 +10529,214 @@ func TestNRGScaleUpPeerObserverUntilAdded(t *testing.T) {
 				n.processAppendEntry(encode(t, &appendEntry{leader: leader, term: 1, commit: 1, pterm: 1, pindex: 1, entries: test.entries}), n.aesub)
 			}
 			require_Equal(t, n.IsObserver(), !test.joins)
+		})
+	}
+}
+
+func TestNRGReloadDebugDoesNotDeadlockWithUnregister(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+	s := n.s
+
+	// A node exiting its run goroutine holds its lock while it unregisters itself.
+	n.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			n.Unlock()
+		}
+	}()
+	reloaded := make(chan struct{})
+	go func() {
+		s.reloadDebugRaftNodes(true)
+		close(reloaded)
+	}()
+
+	// Give the reload the chance to take rnMu and wait for the node's lock.
+	for start := time.Now(); time.Since(start) < 250*time.Millisecond; {
+		if !s.rnMu.TryLock() {
+			break
+		}
+		s.rnMu.Unlock()
+		runtime.Gosched()
+	}
+
+	unregistered := make(chan struct{})
+	go func() {
+		s.unregisterRaftNode(n.group)
+		close(unregistered)
+	}()
+	select {
+	case <-unregistered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unregisterRaftNode deadlocked with reloadDebugRaftNodes")
+	}
+
+	n.Unlock()
+	locked = false
+	<-reloaded
+}
+
+func TestNRGReleasesWALOnShutdownBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	n := s.getJetStream().getMetaGroup().(*raft)
+	n.RLock()
+	require_NotNil(t, n.cf)
+	n.RUnlock()
+
+	s.Shutdown()
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALOnStopBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	defer s.Shutdown()
+	n := s.getJetStream().getMetaGroup().(*raft)
+	n.RLock()
+	require_NotNil(t, n.cf)
+	n.RUnlock()
+
+	done := make(chan struct{})
+	go func() {
+		n.Stop()
+		n.WaitForStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForStop hung while the node was waiting for routing")
+	}
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALOnServerQuitBeforeRouting(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	rn, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	n := rn.(*raft)
+
+	// A node Shutdown does not stop, for instance one registered after it
+	// stopped the others, only sees the server quit.
+	s.unregisterRaftNode(n.group)
+	// Shutdown waits for the run goroutine to return.
+	s.Shutdown()
+	requireRaftNodeReleased(t, s, n)
+}
+
+func TestNRGReleasesWALWhenRunNotStarted(t *testing.T) {
+	s := runRaftTestServer(t)
+	defer s.Shutdown()
+
+	storeDir := t.TempDir()
+	fs, err := newFileStore(FileStoreConfig{StoreDir: storeDir, srv: s}, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+
+	// Simulate server shutdown: goroutines are no longer started.
+	s.grMu.Lock()
+	s.grRunning = false
+	s.grMu.Unlock()
+
+	rn, err := s.startRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	n := rn.(*raft)
+
+	done := make(chan struct{})
+	go func() {
+		n.Stop()
+		n.WaitForStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForStop hung for a run goroutine that was never started")
+	}
+	requireRaftNodeReleased(t, s, n)
+}
+
+// createClusterWithoutJetStream creates a routed cluster without a meta group, which would be slow to elect under long election timeouts.
+func createClusterWithoutJetStream(t *testing.T) *cluster {
+	modify := func(_, _, _, conf string) string { return strings.Replace(conf, "jetstream:", "#jetstream:", 1) }
+	return createJetStreamClusterAndModHook(t, jsClusterTempl, "R3S", _EMPTY_, 3, 14_622, false, modify)
+}
+
+func TestNRGPreferredCandidateResendsVoteRequest(t *testing.T) {
+	// A long election timeout ensures any retries happen within a single term.
+	omin, omax := minElectionTimeout, maxElectionTimeout
+	minElectionTimeout, maxElectionTimeout = time.Minute, 2*time.Minute
+	defer func() { minElectionTimeout, maxElectionTimeout = omin, omax }()
+
+	for _, preferred := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Preferred=%v", preferred), func(t *testing.T) {
+			c := createClusterWithoutJetStream(t)
+			defer c.shutdown()
+
+			// Only the first peer has created its node, the others have not yet.
+			peers := serverPeerNames(c.servers)
+			cfg := &RaftConfig{Name: "TEST", Store: t.TempDir(), Log: c.createWAL("TEST", MemoryStorage)}
+			n := c.createStateMachine(c.servers[0], cfg, peers, newStateAdder).node().(*raft)
+
+			// Listen for vote requests in place of the other peers.
+			nc, err := nats.Connect(c.servers[1].ClientURL(), nats.UserInfo("admin", "s3cr3t!"))
+			require_NoError(t, err)
+			defer nc.Close()
+			sub, err := nc.SubscribeSync(n.vsubj)
+			require_NoError(t, err)
+			require_NoError(t, nc.Flush())
+			sacc := c.servers[0].SystemAccount()
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				if np, _ := sacc.sl.NumInterest(n.vsubj); np < 2 {
+					return errors.New("vote subject interest not propagated yet")
+				}
+				return nil
+			})
+
+			if preferred {
+				require_NoError(t, n.CampaignImmediately())
+			} else {
+				require_NoError(t, n.Campaign())
+			}
+			msg, err := sub.NextMsg(2 * time.Second)
+			require_NoError(t, err)
+			vr := decodeVoteRequest(msg.Data, msg.Reply)
+			require_NotNil(t, vr)
+			require_Equal(t, vr.candidate, n.ID())
+
+			if !preferred {
+				// A regular candidate relies on its election timer to retry.
+				_, err = sub.NextMsg(time.Second)
+				require_Error(t, err, nats.ErrTimeout)
+				require_Equal(t, n.State(), Candidate)
+				return
+			}
+
+			// The preferred candidate re-sends the same vote request, without bumping its term.
+			for range 2 {
+				msg, err = sub.NextMsg(2 * time.Second)
+				require_NoError(t, err)
+				rvr := decodeVoteRequest(msg.Data, msg.Reply)
+				require_NotNil(t, rvr)
+				require_Equal(t, *rvr, *vr)
+			}
+
+			// A peer that came up late grants the re-sent vote request.
+			vresp := &voteResponse{term: vr.term, peer: peers[1], granted: true}
+			require_NoError(t, msg.Respond(vresp.encode()))
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				if n.State() != Leader {
+					return errors.New("not leader yet")
+				}
+				return nil
+			})
+			require_Equal(t, n.Term(), vr.term)
 		})
 	}
 }

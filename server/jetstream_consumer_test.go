@@ -13878,3 +13878,39 @@ func TestJetStreamConsumerR1CreateAndDeleteAppliedTogetherBothRespond(t *testing
 		require_True(t, resp.Error == nil)
 	}
 }
+
+func TestJetStreamConsumerEphemeralPullDefaultInactiveThresholdAfterRestart(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+
+	// Ephemeral pull consumer without an explicit InactiveThreshold.
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Name: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	nc.Close()
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	require_Equal(t, o.config().InactiveThreshold, JsDeleteWaitTimeDefault)
+
+	// Shorten the threshold, this only re-arms the delete timer if it was already running.
+	require_NoError(t, o.setInActiveDeleteThreshold(10*time.Millisecond))
+	checkFor(t, time.Second, 50*time.Millisecond, func() error {
+		if mset.lookupConsumer("CONSUMER") != nil {
+			return errors.New("consumer still exists")
+		}
+		return nil
+	})
+}
