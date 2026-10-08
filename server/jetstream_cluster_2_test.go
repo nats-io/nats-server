@@ -5433,11 +5433,19 @@ func TestJetStreamClusterDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T)
 	sl := c.streamLeader("$G", "TEST")
 	mset, err := sl.GlobalAccount().lookupStream("TEST")
 	require_NoError(t, err)
-	if node := mset.raftNode(); node == nil {
+	node := mset.raftNode()
+	if node == nil {
 		t.Fatalf("Could not get stream group name")
-	} else if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
-		t.Fatalf("Error installing snapshot: %v", err)
 	}
+	// The stream monitor can be snapshotting itself, retry until it's done.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if err := node.InstallSnapshot(mset.stateSnapshot(), false); err == errSnapInProgress {
+			return err
+		} else if err != nil {
+			t.Fatalf("Error installing snapshot: %v", err)
+		}
+		return nil
+	})
 
 	// Now restart
 	sr = c.restartServer(sr)
