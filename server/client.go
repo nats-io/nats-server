@@ -3346,6 +3346,9 @@ func (c *client) addShadowSub(sub *subscription, ime *ime) (*subscription, error
 
 	im := ime.im
 	nsub.im = im
+	// A leafnode subscription's origin cluster only applies to its own account. The shadow is interest in another
+	// account, which that cluster's leaf links never saw, so it must not carry the origin to leafnodes or routes.
+	nsub.origin = nil
 
 	if !im.usePub && ime.dyn && im.tr != nil {
 		if im.rtr == nil {
@@ -3648,7 +3651,7 @@ func (s *subscription) importTargetSubject(subj []byte) []byte {
 }
 
 // Create a message header for routes or leafnodes. Header and origin cluster aware.
-func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account) []byte {
+func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, acc *Account, noOrigin bool) []byte {
 	hasHeader := c.pa.hdr > 0
 	subclient := rt.sub.client
 	canReceiveHeader := subclient.headers
@@ -3661,7 +3664,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 		// If we are coming from a leaf with an origin cluster we need to handle differently
 		// if we can. We will send a route based LMSG which has origin cluster and headers
 		// by default.
-		if c.kind == LEAF && c.remoteCluster() != _EMPTY_ {
+		if c.kind == LEAF && !noOrigin && c.remoteCluster() != _EMPTY_ {
 			subclient.mu.Lock()
 			lnoc = subclient.route.lnoc
 			subclient.mu.Unlock()
@@ -5222,6 +5225,26 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	return didDeliver
 }
 
+// isLeafEcho reports whether delivering to sub would send a message back where it came from.
+func (c *client) isLeafEcho(sub *subscription, leafOrigin string, importedFromService bool) bool {
+	return (leafOrigin != _EMPTY_ || importedFromService || sub.im != nil) && c.checkLeafEcho(sub, leafOrigin, importedFromService)
+}
+
+// Imported messages may go back to their origin leafnode cluster, which never saw them in this account.
+func (c *client) checkLeafEcho(sub *subscription, leafOrigin string, importedFromService bool) bool {
+	dc := sub.client
+	if sub.im == nil && !importedFromService {
+		return leafOrigin != _EMPTY_ && leafOrigin == dc.remoteCluster()
+	}
+	// Returning it to the hub it came from lets imports on both sides loop it.
+	if !c.isSpokeLeafNode() || !dc.isSpokeLeafNode() {
+		return false
+	}
+	// Unnamed hubs advertise an empty cluster name even when clustered, so treat that as possibly the same hub.
+	rc, drc := c.remoteCluster(), dc.remoteCluster()
+	return rc == _EMPTY_ || drc == _EMPTY_ || rc == drc
+}
+
 func (c *client) addSubToRouteTargets(sub *subscription) {
 	if c.in.rts == nil {
 		c.in.rts = make([]routeTarget, 0, routeTargetInit)
@@ -5403,6 +5426,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	}
 
 	mt, traceOnly := c.isMsgTraceEnabled()
+	importedFromService := flags&pmrMsgImportedFromService != 0
 
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
@@ -5440,7 +5464,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		// Check for stream import mapped subs (shadow subs). These apply to local subs only.
 		if sub.im != nil {
 			// If this message was a service import do not re-export to an exported stream.
-			if flags&pmrMsgImportedFromService != 0 {
+			if importedFromService {
 				continue
 			}
 			if sub.im.tr != nil {
@@ -5527,6 +5551,10 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	case LEAF:
 		leafOrigin = c.remoteCluster()
 	}
+	// The leafnode cluster never published a service-imported message in this account.
+	if importedFromService {
+		leafOrigin = _EMPTY_
+	}
 
 	// For all routes/leaf/gateway connections, we may still want to send messages to
 	// leaf nodes or routes even if there are no queue filters since we collect
@@ -5570,7 +5598,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 					// If the destination is a LEAF, we first need to make sure
 					// that we would not pick one that was the origin of this
 					// message.
-					if dst == LEAF && leafOrigin != _EMPTY_ && leafOrigin == sub.client.remoteCluster() {
+					if dst == LEAF && c.isLeafEcho(sub, leafOrigin, importedFromService) {
 						continue
 					}
 					// If we have assigned a ROUTER rsub already, replace if
@@ -5623,7 +5651,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				if (src == LEAF || src == CLIENT) && dst == LEAF {
 					// If we come from a LEAF and are about to pick a LEAF connection,
 					// make sure this is not the same leaf cluster.
-					if src == LEAF && leafOrigin != _EMPTY_ && leafOrigin == sub.client.remoteCluster() {
+					if src == LEAF && c.isLeafEcho(sub, leafOrigin, importedFromService) {
 						continue
 					}
 					// Remember that leaf in case we don't find any other candidate.
@@ -5667,7 +5695,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			// Check for stream import mapped subs. These apply to local subs only.
 			if sub.im != nil {
 				// If this message was a service import do not re-export to an exported stream.
-				if flags&pmrMsgImportedFromService != 0 {
+				if importedFromService {
 					continue
 				}
 				if sub.im.tr != nil {
@@ -5783,10 +5811,8 @@ sendToRoutesOrLeafs:
 		// If so make sure we do not send it back to the same cluster for a different
 		// leafnode. Cluster wide no echo.
 		if dc.kind == LEAF {
-			// Check two scenarios. One is inbound from a route (c.pa.origin),
-			// and the other is leaf to leaf. In both case, leafOrigin is the one
-			// to use for the comparison.
-			if leafOrigin != _EMPTY_ && leafOrigin == dc.remoteCluster() {
+			// leafOrigin covers both inbound from a route (c.pa.origin) and leaf to leaf.
+			if c.isLeafEcho(rt.sub, leafOrigin, importedFromService) {
 				continue
 			}
 
@@ -5806,7 +5832,7 @@ sendToRoutesOrLeafs:
 			hset = true
 		}
 
-		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc)
+		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc, importedFromService)
 		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
 			if flags&pmrCollectQueueNames != 0 {
 				for _, qsub := range rt.qsubs {

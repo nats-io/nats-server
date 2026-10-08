@@ -3935,6 +3935,8 @@ func (n *raft) runAsCandidate() {
 	n.Lock()
 	// Drain old responses.
 	n.votes.drain()
+	// An empty log only wins on quorum while initializing or as the preferred peer, see processVoteRequest.
+	maybeLeader := n.maybeLeader
 	n.Unlock()
 
 	// Send out our request for votes.
@@ -3946,9 +3948,21 @@ func (n *raft) runAsCandidate() {
 	votes := map[string]struct{}{}
 	emptyVotes := map[string]struct{}{}
 
+	// The preferred peer of a new group re-sends its vote request, as peers may not have created their node yet.
+	var resendC <-chan time.Time
+	resendDelay := minCampaignTimeout
+	if maybeLeader {
+		resendC = time.After(resendDelay)
+	}
+
 	for n.State() == Candidate {
 		elect := n.electTimer()
 		select {
+		case <-resendC:
+			n.resendVoteRequest()
+			// Back off linearly, so a slow vote response triggers few duplicate requests.
+			resendDelay = min(resendDelay+minCampaignTimeout, maxCampaignTimeout)
+			resendC = time.After(resendDelay)
 		case <-n.entry.ch:
 			n.processAppendEntries()
 		case <-n.resp.ch:
@@ -5373,7 +5387,8 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 	}
 
 	// If this is a higher term go ahead and stepdown.
-	if vr.term > n.term {
+	newTerm := vr.term > n.term
+	if newTerm {
 		if n.State() != Follower {
 			n.debug("Stepping down from %s, detected higher term: %d vs %d",
 				strings.ToLower(n.State().String()), vr.term, n.term)
@@ -5409,9 +5424,10 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			vresp.granted = true
 			n.resetElectionTimeout()
 		}
-	} else if n.vote == noVote && n.State() != Candidate {
+	} else if newTerm && n.vote == noVote && n.State() != Candidate {
 		// We have a more up-to-date log, and haven't voted yet.
 		// Start campaigning earlier, but only if not candidate already, as that would short-circuit us.
+		// Only on a new term, as re-sent vote requests would otherwise keep postponing our campaign.
 		n.resetElect(randCampaignTimeout())
 	}
 
@@ -5456,6 +5472,21 @@ func (n *raft) requestVote() {
 	n.debug("Sending out voteRequest %+v", vr)
 
 	// Now send it out.
+	n.sendRPC(subj, reply, vr.encode())
+}
+
+// resendVoteRequest re-sends the vote request for the current term, our self-vote is already persisted.
+func (n *raft) resendVoteRequest() {
+	n.RLock()
+	if n.State() != Candidate || n.vote != n.id {
+		n.RUnlock()
+		return
+	}
+	vr := voteRequest{n.term, n.pterm, n.pindex, n.id, _EMPTY_}
+	subj, reply := n.vsubj, n.vreply
+	n.RUnlock()
+
+	n.debug("Re-sending voteRequest %+v", vr)
 	n.sendRPC(subj, reply, vr.encode())
 }
 
