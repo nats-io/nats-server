@@ -52,6 +52,7 @@ type RaftNode interface {
 	State() RaftState
 	Size() (entries, bytes uint64)
 	Progress() (index, commit, applied uint64)
+	LogDrained() bool
 	Leader() bool
 	LeaderSince() *time.Time
 	Quorum() bool
@@ -1795,7 +1796,13 @@ func (n *raft) createSnapshotCheckpointLocked(force bool) (*checkpoint, error) {
 	if ae, _ := n.loadEntry(n.applied); ae != nil {
 		term = ae.term
 		ae.returnToPool()
-	} else {
+	} else if force && len(n.peers) == 1 {
+		// As the only member we can replace our last snapshot, our state can hold local writes the log doesn't.
+		if t, i, err := termAndIndexFromSnapFile(n.snapfile); err == nil && i == n.applied {
+			term = t
+		}
+	}
+	if term == 0 {
 		n.debug("Not snapshotting as entry %d is not available", n.applied)
 		return nil, errNoSnapAvailable
 	}
@@ -2497,6 +2504,19 @@ func (n *raft) Progress() (index, commit, applied uint64) {
 	n.RLock()
 	defer n.RUnlock()
 	return n.pindex, n.commit, n.applied
+}
+
+// LogDrained returns whether everything committed was processed, and as leader, everything proposed was committed.
+func (n *raft) LogDrained() bool {
+	n.RLock()
+	defer n.RUnlock()
+	if n.processed < n.commit {
+		return false
+	} else if n.State() != Leader {
+		return true
+	}
+	// Popping moves proposals to in progress under the queue's lock, so check the queue first.
+	return n.prop.len() == 0 && n.prop.inProgress() == 0 && n.commit >= n.pindex
 }
 
 // Size returns number of entries and total bytes for our WAL.

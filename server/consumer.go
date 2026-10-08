@@ -542,9 +542,12 @@ type consumer struct {
 	inMonitor bool
 
 	// R>1 proposals
-	pch   chan struct{}
-	phead *proposal
-	ptail *proposal
+	pch        chan struct{}
+	phead      *proposal
+	ptail      *proposal
+	local      bool // Updates go to the store directly, even though we have a node.
+	switching  bool // Proposals stay queued while switching to a local R1, the switch applies them.
+	forwarding int  // Number of forwarders that took proposals from the queue and are proposing them.
 
 	// Ack queue
 	ackMsgs *ipQueue[*jsAckMsg]
@@ -1576,6 +1579,10 @@ func (o *consumer) setConsumerAssignment(ca *consumerAssignment) {
 	}
 	// Set our node.
 	o.node = ca.Group.node
+	// Without a node, updates are always local.
+	if o.node == nil {
+		o.local = false
+	}
 
 	// Trigger update chan.
 	select {
@@ -1641,7 +1648,7 @@ func (o *consumer) clearNode() {
 	defer o.mu.Unlock()
 	if o.node != nil {
 		o.node.Delete()
-		o.node = nil
+		o.node, o.local = nil, false
 	}
 }
 
@@ -3019,9 +3026,29 @@ func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}
 			o.mu.Unlock()
 			return errors.New("no longer leader")
 		}
+		// Only the forwarder for the current node and channel may take proposals.
+		// A stale one would propose them to a replaced node or term.
+		if node != o.node || pch != o.pch {
+			o.mu.Unlock()
+			return errors.New("replaced forwarder")
+		}
+		if o.switching {
+			o.mu.Unlock()
+			return nil
+		}
 		proposal := o.phead
+		if proposal == nil {
+			o.mu.Unlock()
+			return nil
+		}
 		o.phead, o.ptail = nil, nil
+		o.forwarding++
 		o.mu.Unlock()
+		defer func() {
+			o.mu.Lock()
+			o.forwarding--
+			o.mu.Unlock()
+		}()
 		// 256k max for now per batch.
 		const maxBatch = 256 * 1024
 		var entries []*Entry
@@ -3042,7 +3069,9 @@ func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}
 	}
 
 	// In case we have anything pending on entry.
-	forwardProposals()
+	if err := forwardProposals(); err != nil {
+		return
+	}
 
 	for {
 		select {
@@ -5876,7 +5905,7 @@ func (o *consumer) IsClustered() bool {
 
 // Lock should be held.
 func (o *consumer) isClustered() bool {
-	return o.node != nil
+	return o.node != nil && !o.local
 }
 
 func (o *consumer) needFlowControl(sz int) bool {
