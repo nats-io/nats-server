@@ -1670,7 +1670,7 @@ func (mset *stream) rebuildDedupe() {
 // Raft log for replaying the tail of stream during
 // recovery.
 func (mset *stream) shouldReplayFromWAL() bool {
-	if mset == nil || mset.raftNode() == nil || mset.store.Type() != FileStorage {
+	if mset == nil || !mset.IsClustered() || mset.store.Type() != FileStorage {
 		return false
 	}
 	fs, ok := mset.store.(*fileStore)
@@ -3606,11 +3606,11 @@ func (mset *stream) processInboundMirrorMsg(m *inMsg) bool {
 	}
 
 	s, js, stype := mset.srv, mset.js, mset.cfg.Storage
-	node, term := mset.node, mset.term
+	isClustered, node, term := mset.isClustered(), mset.node, mset.term
 	mset.mu.Unlock()
 
 	var err error
-	if node != nil {
+	if isClustered {
 		if stype == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(m.subj, m.hdr, m.msg)) {
 			err = ErrMsgTooLarge
 		} else if js.limitsExceeded(stype) {
@@ -3685,17 +3685,16 @@ func (mset *stream) retryMirrorConsumer() error {
 
 // Lock should be held.
 func (mset *stream) skipMsgs(start, end uint64) error {
-	node, store := mset.node, mset.store
 	// If we are not clustered we can short circuit now with store.SkipMsgs
-	if node == nil {
-		if err := store.SkipMsgs(start, end-start+1); err != nil {
+	if !mset.isClustered() {
+		if err := mset.store.SkipMsgs(start, end-start+1); err != nil {
 			return err
 		}
 		mset.lseq = end
 		return nil
 	}
 	// Send a single deleteRangeOp for the full range.
-	return node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
+	return mset.node.Propose(mset.term, encodeDeleteRange(&DeleteRange{First: start, Num: end - start + 1}))
 }
 
 const (
@@ -4919,7 +4918,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 	}
 	// Receiving messages means we are not stalled on flow control.
 	mset.clearStalledFlowControl(si)
-	node, ident := mset.node, si.ident
+	isClustered, ident := mset.isClustered(), si.ident
 	mset.mu.Unlock()
 
 	hdr, msg := m.hdr, m.msg
@@ -4952,7 +4951,7 @@ func (mset *stream) processInboundSourceMsg(si *sourceInfo, m *inMsg) bool {
 
 	var err error
 	// If we are clustered we need to propose this message to the underlying raft group.
-	if node != nil {
+	if isClustered {
 		err = mset.processClusteredInboundMsg(m.subj, _EMPTY_, hdr, msg, nil, true)
 	} else {
 		err = mset.processJetStreamMsg(m.subj, _EMPTY_, hdr, msg, 0, 0, nil, true, true)
