@@ -1598,7 +1598,7 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	}
 	accConnzSubj := fmt.Sprintf(accDirectReqSubj, "*", "CONNZ")
 	// prioritize not automatically added exports
-	if !sacc.hasServiceExportMatching(accConnzSubj) {
+	if !sacc.hasServiceExportExact(accConnzSubj) {
 		// pick export type that clamps importing account id into subject
 		if err := sacc.addServiceExportWithResponseAndAccountPos(accConnzSubj, Streamed, nil, 4); err != nil {
 			//if err := sacc.AddServiceExportWithResponse(accConnzSubj, Streamed, nil); err != nil {
@@ -1607,7 +1607,7 @@ func (s *Server) addSystemAccountExports(sacc *Account) {
 	}
 	// prioritize not automatically added exports
 	accStatzSubj := fmt.Sprintf(accDirectReqSubj, "*", "STATZ")
-	if !sacc.hasServiceExportMatching(accStatzSubj) {
+	if !sacc.hasServiceExportExact(accStatzSubj) {
 		// pick export type that clamps importing account id into subject
 		if err := sacc.addServiceExportWithResponseAndAccountPos(accStatzSubj, Streamed, nil, 4); err != nil {
 			s.Errorf("Error adding system service export for %q: %v", accStatzSubj, err)
