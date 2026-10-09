@@ -2624,6 +2624,20 @@ func (s *Server) Shutdown() {
 	// that pending pull requests are invalid.
 	s.signalPullConsumers()
 
+	s.mu.Lock()
+	clients := make([]*client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.mu.Unlock()
+
+	// Client cleanup can publish MQTT Wills, so keep JetStream, eventing,
+	// and inter-server connections available until it has finished.
+	for _, c := range clients {
+		c.closeConnection(ServerShutdown)
+	}
+	s.mqtt.readLoopWG.Wait()
+
 	// Transfer off any raft nodes that we are a leader by stepping them down.
 	s.stepdownRaftNodes()
 
@@ -3399,7 +3413,7 @@ func (s *Server) createClientEx(conn net.Conn, inProcess bool) *client {
 	// list of connections to close. It won't contain this one, so we need
 	// to bail out now otherwise the readLoop started down there would not
 	// be interrupted. Skip also if in lame duck mode.
-	if !s.isRunning() || s.ldm {
+	if !s.isRunning() || s.isShuttingDown() || s.ldm {
 		// There are some tests that create a server but don't start it,
 		// and use "async" clients and perform the parsing manually. Such
 		// clients would branch here (since server is not running). However,
@@ -4511,12 +4525,6 @@ func (s *Server) lameDuckMode() {
 			return
 		}
 	}
-
-	// Now check and shutdown jetstream.
-	s.shutdownJetStream()
-
-	// Now shutdown the nodes
-	s.shutdownRaftNodes()
 
 	// Wait for accept loops to be done to make sure that no new
 	// client can connect
