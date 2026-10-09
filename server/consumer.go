@@ -1485,7 +1485,10 @@ func (mset *stream) addConsumerWithAssignmentAndMode(config *ConsumerConfig, ona
 	mset.mu.Unlock()
 
 	if config.Sourcing && standalone {
-		o.resetStartingSeq(0, _EMPTY_, false, false)
+		if _, _, err := o.resetStartingSeq(0, _EMPTY_, false, false); err != nil {
+			_ = o.stop()
+			return nil, NewJSConsumerStoreFailedError(err)
+		}
 	}
 	if config.Direct || standalone {
 		o.setLeader(true, 0)
@@ -2735,7 +2738,9 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	o.cfg = *cfg
 
 	if cfg.Sourcing && (!o.srv.JetStreamIsClustered() && o.srv.standAloneMode()) {
-		o.resetStartingSeqLocked(0, _EMPTY_, false, false)
+		if _, _, err := o.resetStartingSeqLocked(0, _EMPTY_, false, false); err != nil {
+			return err
+		}
 	}
 	if updatedFilters {
 		// Cleanup messages that lost interest.
@@ -2968,9 +2973,13 @@ VALID:
 		}
 		return seq, false, nil
 	}
+	if o.store != nil {
+		if err := o.store.Reset(seq - 1); err != nil {
+			return seq, false, err
+		}
+	}
 	recalcPending := o.resetLocalStartingSeq(seq)
 	if o.store != nil {
-		o.store.Reset(seq - 1)
 		// Cleanup messages that lost interest.
 		if o.retention == InterestPolicy {
 			if mset := o.mset; mset != nil {

@@ -8851,10 +8851,13 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					return err
 				}
 				o.mu.Lock()
-				recalcPending := o.resetLocalStartingSeq(sseq)
 				if o.store != nil {
-					o.store.Reset(sseq - 1)
+					if err := o.store.Reset(sseq - 1); err != nil {
+						o.mu.Unlock()
+						return err
+					}
 				}
+				recalcPending := o.resetLocalStartingSeq(sseq)
 				// Cleanup messages that lost interest.
 				if o.retention == InterestPolicy {
 					if mset := o.mset; mset != nil {
