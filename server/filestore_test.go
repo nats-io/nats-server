@@ -1021,6 +1021,69 @@ func TestFileStoreCompactMsgCountBug(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompactEmptyLastBlockAfterSubjectPurge(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("foo.a", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo.b", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Purge by subject leaves seq 2 as an interior delete.
+		n, err := fs.PurgeEx("foo.b", 0, 0)
+		require_NoError(t, err)
+		require_Equal(t, n, 1)
+
+		// Compacting up to seq 2 empties the last block.
+		n, err = fs.Compact(2)
+		require_NoError(t, err)
+		require_Equal(t, n, 1)
+
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		empty, dmapSize := lmb.isEmpty(), lmb.dmap.Size()
+		lmb.mu.RUnlock()
+		require_True(t, empty)
+		require_Equal(t, dmapSize, 0)
+
+		_, _, err = fs.StoreMsg("foo.c", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo.d", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Nothing is below seq 3 anymore, so this must not purge anything.
+		n, err = fs.Compact(3)
+		require_NoError(t, err)
+		require_Equal(t, n, 0)
+
+		checkState := func() {
+			t.Helper()
+			state := fs.State()
+			require_Equal(t, state.Msgs, 2)
+			require_Equal(t, state.FirstSeq, 3)
+			require_Equal(t, state.LastSeq, 4)
+			total, _, err := fs.NumPending(3, "foo.*", true)
+			require_NoError(t, err)
+			require_Equal(t, total, 2)
+		}
+		checkState()
+
+		// Also after a restart.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		checkState()
+	})
+}
+
 func TestFileStoreCompactPerf(t *testing.T) {
 	t.SkipNow()
 

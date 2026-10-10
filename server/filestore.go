@@ -11077,6 +11077,11 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			}
 			deleted++
 		} else {
+			// Mark the block itself as empty, otherwise a subsequent compact would
+			// start from a stale first sequence and double count removed messages.
+			atomic.StoreUint64(&smb.first.seq, atomic.LoadUint64(&smb.last.seq)+1)
+			smb.first.ts = 0
+			smb.dmap.Empty()
 			// Make sure to sync changes.
 			smb.needSync = true
 		}
