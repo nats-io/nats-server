@@ -28,7 +28,9 @@ package conf
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -405,15 +407,24 @@ func (p *parser) processItem(it item, fp string) error {
 		} else {
 			p.setValue(value)
 		}
-	case itemInclude:
+	case itemInclude, itemIncludeOptional:
 		var (
 			m   map[string]any
 			err error
 		)
+		path := filepath.Join(p.fp, it.val)
+		if it.typ == itemIncludeOptional {
+			// An optional include is skipped only when the file itself does
+			// not exist. Any other error, including a missing file that it
+			// includes in turn, is reported as it is for include.
+			if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+				break
+			}
+		}
 		if p.pedantic {
-			m, err = ParseFileWithChecks(filepath.Join(p.fp, it.val))
+			m, err = ParseFileWithChecks(path)
 		} else {
-			m, err = ParseFile(filepath.Join(p.fp, it.val))
+			m, err = ParseFile(path)
 		}
 		if err != nil {
 			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
