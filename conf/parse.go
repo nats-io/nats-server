@@ -408,28 +408,27 @@ func (p *parser) processItem(it item, fp string) error {
 			p.setValue(value)
 		}
 	case itemInclude, itemIncludeOptional:
-		var (
-			m   map[string]any
-			err error
-		)
 		path := filepath.Join(p.fp, it.val)
-		if it.typ == itemIncludeOptional {
+		// The file is read once, so whether an optional include is missing is
+		// decided by the same read that provides its contents.
+		data, err := os.ReadFile(path)
+		if err != nil {
 			// An optional include is skipped only when the file itself does
 			// not exist. Any other error, including a missing file that it
 			// includes in turn, is reported as it is for include.
-			if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			if it.typ == itemIncludeOptional && errors.Is(err, fs.ErrNotExist) {
 				break
 			}
+			if !p.pedantic {
+				err = fmt.Errorf("error opening config file: %v", err)
+			}
+			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
 		}
-		if p.pedantic {
-			m, err = ParseFileWithChecks(path)
-		} else {
-			m, err = ParseFile(path)
-		}
+		ip, err := parse(string(data), path, p.pedantic)
 		if err != nil {
 			return fmt.Errorf("error parsing include file '%s', %v", it.val, err)
 		}
-		for k, v := range m {
+		for k, v := range ip.mapping {
 			p.pushKey(k)
 
 			if p.pedantic {
