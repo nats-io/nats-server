@@ -2295,9 +2295,24 @@ func (s *Server) addRoute(c *client, didSolicit, sendDelayedInfo bool, gossipMod
 		if !didSolicit {
 			idx = info.RoutePoolIdx
 			if remote = conns[idx]; remote != nil {
-				handleDuplicateRoute(remote, c, false)
-				s.mu.Unlock()
-				return false
+				if remote.routeConnWriteDead(time.Now(), deadRouteHorizon(opts)) {
+					// The registered connection is dead (its close has not
+					// been processed yet, or its write path is gone): evict
+					// it and register this live connection in its slot
+					// instead of rejecting the dial as a duplicate of a
+					// corpse that would keep blackholling the account(s)
+					// mapped to this slot. removeRoute, triggered by the
+					// close, identity-checks the slot and so leaves this
+					// new registration untouched.
+					s.startGoRoutine(func() {
+						defer s.grWG.Done()
+						s.reconcileDeadRouteConn(remote)
+					})
+				} else {
+					handleDuplicateRoute(remote, c, false)
+					s.mu.Unlock()
+					return false
+				}
 			}
 			// Look if there is a solicited route in the pool. If there is one,
 			// they should all be, so stop at the first.
@@ -2540,6 +2555,71 @@ func handleDuplicateRoute(remote, c *client, setNoReconnect bool) {
 	remote.mu.Unlock()
 }
 
+// deadRouteHorizon returns how long a route connection may be silent before
+// it is treated as dead by the pool slot trust checks: one ping interval
+// more than processPingTimer tolerates before closing an unresponsive
+// connection. Mirroring the ping timer's own configuration keeps the two
+// consistent across Cluster.PingInterval overrides and interval capping.
+func deadRouteHorizon(opts *Options) time.Duration {
+	pingInterval := opts.PingInterval
+	if opts.Cluster.PingInterval > 0 {
+		pingInterval = opts.Cluster.PingInterval
+	}
+	if pingInterval <= 0 {
+		pingInterval = DEFAULT_PING_INTERVAL
+	}
+	pingInterval = adjustPingInterval(ROUTER, pingInterval)
+	maxPings := opts.MaxPingsOut
+	if opts.Cluster.MaxPingsOut > 0 {
+		maxPings = opts.Cluster.MaxPingsOut
+	}
+	if maxPings <= 0 {
+		maxPings = DEFAULT_PING_MAX_OUT
+	}
+	return time.Duration(maxPings+1) * pingInterval
+}
+
+// routeConnWriteDead reports whether a route connection that is still
+// registered (that is, present in s.routes or s.accRoutes) can no longer
+// deliver what is enqueued to it: closed locally, or silent for longer
+// than the ping-reap horizon. A healthy peer sends PINGs every
+// PingInterval and processPingTimer closes the connection after
+// MaxPingsOut unanswered ones, so silence beyond that horizon means the
+// far side is gone - a machine stop, blackholed writes - while the
+// registration is still occupying its pool slot.
+func (c *client) routeConnWriteDead(now time.Time, horizon time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.isClosed() {
+		return true
+	}
+	last := c.lastIn
+	if last.IsZero() {
+		// No inbound protocol yet (young connection): judge by age instead,
+		// so that freshly registered connections are not torn down.
+		last = c.start
+	}
+	return now.Sub(last) > horizon
+}
+
+// reconcileDeadRouteConn tears down a route connection whose registration
+// turned out to be dead at use time (see routeConnWriteDead). Closing it
+// runs the standard teardown: removeRoute frees the pool slot - it
+// identity-checks the slot, so a concurrently registered replacement is
+// left alone - and a solicited connection's reconnect re-dials, after
+// which addRoute's subscription dump re-syncs the interest that the dead
+// registration swallowed. A connection that is already being torn down
+// (fields cleared, close in flight) is left to that teardown.
+func (s *Server) reconcileDeadRouteConn(r *client) {
+	r.mu.Lock()
+	alreadyClosing := r.route == nil || r.srv == nil || r.nc == nil || r.isClosed()
+	r.mu.Unlock()
+	if alreadyClosing {
+		return
+	}
+	r.closeConnection(StaleConnection)
+}
+
 // Import filter check.
 func (c *client) importFilter(sub *subscription) bool {
 	if c.perms == nil {
@@ -2641,6 +2721,19 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	var _routes [32]*client
 	routes := _routes[:0]
 
+	// A registration in a route pool slot can be dead while still present:
+	// the far side may have stopped without a FIN (machine stop) and the
+	// ping timer has not reaped it yet, or the connection's write path may
+	// be dead. Sending interest to such a connection is silently swallowed
+	// (enqueueProto accepts and the bytes vanish), so gather only live
+	// connections here and queue the dead ones for teardown below. A dead
+	// registration in a pool slot otherwise blackholes every account mapped
+	// to that slot - see TestRoutePoolInterestDeadSlotInjection.
+	now := time.Now()
+	deadHorizon := deadRouteHorizon(s.getOpts())
+	var _dead [8]*client
+	deadConns := _dead[:0]
+
 	s.mu.RLock()
 	// The account's routePoolIdx field is set/updated under the server lock
 	// (but also the account's lock). So we don't need to acquire the account's
@@ -2648,6 +2741,10 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	if poolIdx := acc.routePoolIdx; poolIdx < 0 {
 		if conns, ok := s.accRoutes[acc.Name]; ok {
 			for _, r := range conns {
+				if r.routeConnWriteDead(now, deadHorizon) {
+					deadConns = append(deadConns, r)
+					continue
+				}
 				routes = append(routes, r)
 			}
 		}
@@ -2667,6 +2764,10 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		// "no pool" route ONLY if we don't find a route at the given `poolIdx`.
 		for _, conns := range s.routes {
 			if r := conns[poolIdx]; r != nil {
+				if r.routeConnWriteDead(now, deadHorizon) {
+					deadConns = append(deadConns, r)
+					continue
+				}
 				routes = append(routes, r)
 			} else if s.routesNoPool > 0 {
 				// Check if we have a "no pool" route at index 0, and if so, it
@@ -2685,6 +2786,16 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	trace := atomic.LoadInt32(&s.logging.trace) == 1
 	s.mu.RUnlock()
 
+	// Tear down the dead registrations we encountered so their pool slots
+	// are freed and refilled: closeConnection runs removeRoute (which
+	// identity-checks the slot, so a concurrently registered replacement is
+	// untouched) and a solicited connection's reconnect re-dials, after
+	// which addRoute's subscription dump re-syncs interest swallowed by the
+	// dead registration.
+	for _, r := range deadConns {
+		s.reconcileDeadRouteConn(r)
+	}
+
 	// We need to make sure our updates are serialized from potential multiple connections. We want
 	// to make sure that the order above is preserved here but not necessarily all updates need to
 	// be sent. We need to block and recheck the n count with the lock held through sending here.
@@ -2700,11 +2811,15 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 		sub.qw = n
 	}
 	// Check the last sent value here. If same, then someone beat us to it and
-	// we can just return here. Otherwise update.
+	// we can just return here. Otherwise update. Only record the write when
+	// there is a live route to receive it: recording otherwise would suppress
+	// a re-send the peer never got, turning a transient loss (for instance
+	// while a dead pool-slot registration above is being torn down) into a
+	// permanent one.
 	if ls, ok := lws[key]; ok && ls == n {
 		acc.mu.Unlock()
 		return
-	} else if n > 0 {
+	} else if n > 0 && len(routes) > 0 {
 		lws[key] = n
 	}
 	acc.mu.Unlock()

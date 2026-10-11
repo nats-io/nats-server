@@ -782,10 +782,20 @@ func (wc *wedgeCluster) globalPoolIdx(name string) int {
 // re-flows the lost interest. x's live connection previously at that slot is
 // moved to a free slot - the crossed registration left behind by the churn.
 func injectDeadSlot(t *testing.T, x, y *Server, slot int, wc *wedgeCluster) {
-	r := &route{remoteID: y.ID(), poolIdx: slot}
-	dead := &client{srv: x, nc: wc.blackholeConn(), opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, route: r, start: time.Now()}
+	// The dead registration models the un-reaped dead generation production
+	// peers keep after a machine stop: it is old (so the slot-trust checks
+	// silence horizon flags it), its writes vanish into a blackhole, and it
+	// carries the displaced connection's dial identity so that tearing it
+	// down re-runs the standard reconnect-and-dump refill, exactly like a
+	// reaped solicited route connection.
+	// Old enough to exceed the slot-trust silence horizon for this test's
+	// ping config (ping_interval 500ms, ping_max 2 -> horizon 1.5s), so the
+	// dead registration is detected at the next interest gather.
+	age := 7 * time.Second
+	dead := &client{srv: x, nc: wc.blackholeConn(), opts: ClientOpts{}, kind: ROUTER, msubs: -1, mpay: -1, start: time.Now().Add(-age)}
 	dead.mu.Lock()
 	dead.initClient()
+	dead.route = &route{remoteID: y.ID(), poolIdx: slot, didSolicit: true, routeType: Explicit}
 	dead.mu.Unlock()
 
 	x.mu.Lock()
@@ -807,13 +817,37 @@ func injectDeadSlot(t *testing.T, x, y *Server, slot int, wc *wedgeCluster) {
 		conns[free] = live
 	}
 	x.mu.Unlock()
-	// Mutate the moved live conn's slot without holding the server lock:
-	// closeConnection takes client lock -> server lock, so the inverse
-	// ordering here would deadlock.
-	if live != nil && free >= 0 {
+	// Copy the dial identity from the displaced live connection and evict
+	// it, so the slot holds exactly one registration (the dead one). Do
+	// not hold the server lock while taking client locks: closeConnection
+	// takes client lock -> server lock, so the inverse ordering here would
+	// deadlock.
+	if live != nil {
 		live.mu.Lock()
-		live.route.poolIdx = free
+		dead.mu.Lock()
+		dead.route.url = live.route.url
+		if dead.route.url == nil {
+			// Fall back to any configured route URL pointing at the peer.
+			for _, u := range x.getOpts().Routes {
+				dead.route.url = u
+			}
+		}
+		dead.route.routeType = live.route.routeType
+		dead.route.didSolicit = live.route.didSolicit || dead.route.didSolicit
+		dead.lastIn = time.Now().Add(-age)
 		live.mu.Unlock()
+		dead.mu.Unlock()
+		if free >= 0 {
+			live.mu.Lock()
+			live.route.poolIdx = free
+			live.mu.Unlock()
+		} else {
+			// No free slot: drop the live registration so the slice holds
+			// the dead connection at `slot` only. Its connection object
+			// stays alive (mirroring the crossed leftover connection in
+			// production); closeRoutesBetween skips injected entries, and
+			// the test's servers are torn down at the end.
+		}
 	}
 	wc.injected[dead] = true
 	t.Logf("injected dead route conn at slot %d on %s for remote %s (live conn moved to slot %d)",
