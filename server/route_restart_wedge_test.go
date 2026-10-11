@@ -13,10 +13,12 @@
 
 package server
 
-// Reproduction test for a production wedge observed on a live 3-node
-// JetStream cluster (nats-server 2.14.7 / 2.15.0 / 2.15.1):
+// Reproduction test for a wedge observed on a live 3-node JetStream
+// cluster (nats-server 2.14.7 / 2.15.0 / 2.15.1). The tests below are the
+// verification; the production details here are context for how it
+// surfaced, not evidence a reader needs to reproduce:
 //
-//   * After ANY member restarts (fly.io machine stop: peers get no clean
+//   * After ANY member restarts (cloud machine stop: peers get no clean
 //     FIN/RST, so they keep the dead member's route connections registered
 //     until the route ping timer reaps them), exactly ONE unordered node
 //     pair stops exchanging subscription interest in BOTH directions while
@@ -24,13 +26,12 @@ package server
 //     published on A for a plain subject subscribed only on B never
 //     arrives; the wedge persists for many minutes and only heals when
 //     another node is restarted.
-//   * Decisive live measurement on a wedged pair (A=286 / B=683): B created
-//     a NEW unique subscription; A's /routez?subs=1 entry for B kept
-//     `subscriptions` frozen at the stale pre-wedge value (~107) while
-//     `in_msgs` on the same connection kept growing. Both directions behave
-//     identically (symmetric wedge), and each side also holds a second,
-//     fully idle connection to the other (subs=0, in/out=0) - the dedicated
-//     $SYS route that a default pooled config creates.
+//   * How it surfaced (operator observation via the /routez monitoring
+//     endpoint): the peer's NEW unique subscription never incremented the
+//     connection's frozen subscription count while its message counters
+//     kept growing. Both directions behaved identically (symmetric wedge),
+//     and each side also held a second, fully idle connection to the other
+//     (the dedicated $SYS route a default pooled config creates).
 //
 // Route pooling is ON by default (DEFAULT_ROUTE_POOL_SIZE = 3, applied when
 // a config file sets no pool_size; see opts.go setClusterDefaults). For the
@@ -645,12 +646,12 @@ func TestRoutePoolInterestAfterMemberRestart(t *testing.T) {
 //     delivers over the live crossed connection, new interest dies at slot h.
 //
 // Production mapping: Z is the dead-generation connection the peers kept
-// registered after the machine stop (their /routez showed a second, fully
-// idle connection with subs=0 and in/out=0 - this blackholed registration);
-// the frozen ~107 subscriptions on the traffic connection are the pre-wedge
-// RS+ entries on the live (crossed) connection, which no new RS+ reach;
-// in_msgs keeps growing because PING/PONG and old-subject RMSGs still flow
-// over the live connections.
+// registered after the machine stop (the second, fully idle connection
+// routez showed - this blackholed registration); the frozen subscriptions
+// on the traffic connection are the pre-wedge RS+ entries on the live
+// (crossed) connection, which no new RS+ reach; in_msgs keeps growing
+// because PING/PONG and old-subject RMSGs still flow over the live
+// connections.
 func TestRoutePoolInterestDeadSlotInjection(t *testing.T) {
 	wc := newWedgeCluster(t)
 	wc.order = []string{"A", "B", "C"}
@@ -905,14 +906,14 @@ func newWedgeCluster(t *testing.T) *wedgeCluster {
 	return &wedgeCluster{t: t, confs: map[string]string{}, servers: map[string]*Server{}, injected: map[*client]bool{}}
 }
 
-// TestRoutePoolInterestEmptySlotRefill reproduces the live wedge observed on
-// the patched fleet: the pair's pool is only partially filled - the slot
-// that the global account hashes to stayed EMPTY at both ends after the
-// restart - while the two existing connections are live (one carries all
-// routed traffic, the other is protocol-idle; routez message counters do not
-// show control protos, so both look plausible). The pool refill chain
-// (route.startNewRoute, consumed in processPong) stops permanently when the
-// dial it triggers is rejected as a duplicate/pool-full
+// TestRoutePoolInterestEmptySlotRefill reproduces the wedge state observed
+// on a live 3-node cluster: the pair's pool is only partially filled - the
+// slot that the global account hashes to stayed EMPTY at both ends after
+// the restart - while the two existing connections are live (one carries
+// all routed traffic, the other is protocol-idle; routez message counters
+// do not show control protos, so both look plausible). The pool refill
+// chain (route.startNewRoute, consumed in processPong) stops permanently
+// when the dial it triggers is rejected as a duplicate/pool-full
 // (handleDuplicateRoute(nil, c, true) sets noReconnect, so closeConnection
 // does not retry), so nothing ever fills the slot again.
 //
