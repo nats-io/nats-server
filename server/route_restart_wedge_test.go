@@ -109,6 +109,7 @@ type wedgeCluster struct {
 	order    []string // A, B, C - restart victim rotates through this
 	replaced []net.Conn
 	bhEnds   []net.Conn
+	stashed  []*client        // deregistered-but-alive route clients; kept live on purpose
 	injected map[*client]bool // dead-slot route clients; never torn down
 }
 
@@ -902,4 +903,145 @@ func (wc *wedgeCluster) routesBetweenAtLeast(a, b string, n int) error {
 
 func newWedgeCluster(t *testing.T) *wedgeCluster {
 	return &wedgeCluster{t: t, confs: map[string]string{}, servers: map[string]*Server{}, injected: map[*client]bool{}}
+}
+
+// TestRoutePoolInterestEmptySlotRefill reproduces the live wedge observed on
+// the patched fleet: the pair's pool is only partially filled - the slot
+// that the global account hashes to stayed EMPTY at both ends after the
+// restart - while the two existing connections are live (one carries all
+// routed traffic, the other is protocol-idle; routez message counters do not
+// show control protos, so both look plausible). The pool refill chain
+// (route.startNewRoute, consumed in processPong) stops permanently when the
+// dial it triggers is rejected as a duplicate/pool-full
+// (handleDuplicateRoute(nil, c, true) sets noReconnect, so closeConnection
+// does not retry), so nothing ever fills the slot again.
+//
+// In that state updateRouteSubscriptionMap's gather finds
+// conns[routePoolIdx] == nil, sends nothing and involves no connection -
+// which is why the dead-connection repair does not fire and the connection
+// identities stay stable. Old interest keeps delivering (it lives in the
+// account sublist with live client connections); only fresh interest for
+// accounts mapped to the empty slot freezes, in both directions.
+func TestRoutePoolInterestEmptySlotRefill(t *testing.T) {
+	wc := newWedgeCluster(t)
+	wc.order = []string{"A", "B", "C"}
+	clusterPorts := map[string]string{}
+	for i, n := range wc.order {
+		clusterPorts[n] = fmt.Sprintf("%d", 22551+i)
+	}
+	for _, n := range wc.order {
+		var peers []string
+		for _, m := range wc.order {
+			if m != n {
+				peers = append(peers, clusterPorts[m])
+			}
+		}
+		wc.confs[n] = wedgeClusterConf(t, n, clusterPorts[n], peers)
+	}
+	for _, n := range wc.order {
+		s, _ := RunServerWithConfig(wc.confs[n])
+		wc.servers[n] = s
+		defer func(s *Server) { go s.Shutdown() }(s)
+	}
+	checkFor(t, 30*time.Second, 50*time.Millisecond, wc.meshFormed)
+
+	const pubName, subName = "A", "B"
+
+	// Pre-wedge baseline interest on the pair; must keep flowing.
+	ncBaseSub := natsConnect(t, wc.servers[subName].ClientURL())
+	defer ncBaseSub.Close()
+	baseCh := make(chan *nats.Msg, 64)
+	if _, err := ncBaseSub.ChanSubscribe("_es.baseline", baseCh); err != nil {
+		t.Fatalf("baseline subscribe on %s: %v", subName, err)
+	}
+	ncBasePub := natsConnect(t, wc.servers[pubName].ClientURL())
+	defer ncBasePub.Close()
+	natsFlush(t, ncBaseSub)
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		acc, err := wc.servers[pubName].LookupAccount(globalAccountName)
+		if err != nil {
+			return err
+		}
+		if acc.SubscriptionInterest("_es.baseline") {
+			return nil
+		}
+		return fmt.Errorf("%s has no baseline interest yet", pubName)
+	})
+
+	// Surgically empty the global account's pool slot for the pair at both
+	// ends, keeping the connection objects (and their sockets and read
+	// loops) alive - exactly the production state, where the missing slot
+	// and the protocol-idle sibling persist indefinitely.
+	h := wc.globalPoolIdx(subName)
+	var stashed []*client
+	empty := func(x, y *Server) {
+		x.mu.Lock()
+		conns, ok := x.routes[y.ID()]
+		if !ok || h >= len(conns) {
+			x.mu.Unlock()
+			t.Fatalf("%s has no pool slice/slot for %s", x, y)
+		}
+		if conns[h] == nil {
+			x.mu.Unlock()
+			t.Fatalf("slot %d for %s -> %s already empty", h, x, y)
+		}
+		stashed = append(stashed, conns[h])
+		conns[h] = nil
+		x.mu.Unlock()
+	}
+	empty(wc.servers[pubName], wc.servers[subName])
+	empty(wc.servers[subName], wc.servers[pubName])
+	wc.stashed = append(wc.stashed, stashed...)
+	t.Logf("emptied pool slot %d for the pair at both ends (connections left alive)", h)
+
+	// Pre-existing interest keeps delivering.
+	natsPub(t, ncBasePub, "_es.baseline", []byte("old"))
+	select {
+	case m := <-baseCh:
+		if string(m.Data) != "old" {
+			t.Fatalf("unexpected baseline payload %q", m.Data)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("pre-existing baseline delivery broke after emptying the slot")
+	}
+
+	// Fresh interest in BOTH directions must propagate. On unpatched code
+	// (and with only the dead-connection repair) the gather finds an empty
+	// slot, sends nothing, and nothing ever refills it: both probes wedge.
+	var failures []string
+	for _, dir := range [][2]string{{pubName, subName}, {subName, pubName}} {
+		subject := fmt.Sprintf("_es.fresh.%s.to.%s.%d", dir[0], dir[1], time.Now().UnixNano())
+		if err := wc.interestProbe(dir[0], dir[1], subject, 8*time.Second); err != nil {
+			failures = append(failures, err.Error())
+		}
+	}
+	if len(failures) > 0 {
+		wc.dumpRoutes("fresh interest with empty pool slot")
+		t.Fatalf("empty pool slot %d wedged fresh interest for the pair:\n%s", h, strings.Join(failures, "\n"))
+	}
+
+	// The refill must not overfill: each pair ends with exactly the pool
+	// plus the $SYS route, and stays there quietly.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		for _, n := range wc.order {
+			s := wc.servers[n]
+			perRemote := make(map[string]int)
+			s.mu.RLock()
+			s.forEachRoute(func(r *client) {
+				r.mu.Lock()
+				perRemote[r.route.remoteID]++
+				r.mu.Unlock()
+			})
+			s.mu.RUnlock()
+			for _, other := range wc.order {
+				if other == n {
+					continue
+				}
+				if c := perRemote[wc.servers[other].ID()]; c != 4 {
+					return fmt.Errorf("%s has %d routes to %s, want 4 (3 pool + $SYS)", n, c, other)
+				}
+			}
+		}
+		return nil
+	})
 }

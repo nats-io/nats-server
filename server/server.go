@@ -208,6 +208,7 @@ type Server struct {
 	accRouteByHash      sync.Map                      // Key is account name, value is nil or a pool index
 	accAddedCh          chan struct{}
 	accAddedReqID       string
+	routeSlotRefillAt   map[string]time.Time // Throttle for pool-slot refill dials, key remoteID/slot
 	leafs               map[uint64]*client
 	users               map[string]*User
 	nkeys               map[string]*NkeyUser

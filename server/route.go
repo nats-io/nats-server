@@ -2620,6 +2620,62 @@ func (s *Server) reconcileDeadRouteConn(r *client) {
 	r.closeConnection(StaleConnection)
 }
 
+// routeSlotRefill identifies a remote's pool slot that the gather found
+// unfilled while the remote itself is reachable through a live sibling
+// connection.
+type routeSlotRefill struct {
+	rid  string
+	slot int
+}
+
+// kickRouteSlotRefill dials a remote to refill an unfilled pool slot. The
+// dial URL and type are taken from a live sibling connection. Kicks are
+// throttled per remote/slot so a burst of subscription updates triggers at
+// most one dial per routeConnectDelay. Once the new connection registers,
+// addRoute sends the subscription dump for the accounts mapped to that
+// slot, re-syncing what the empty slot silently dropped.
+func (s *Server) kickRouteSlotRefill(rid string, slot int) {
+	key := rid + "/" + strconv.Itoa(slot)
+	now := time.Now()
+	deadHorizon := deadRouteHorizon(s.getOpts())
+	s.mu.Lock()
+	if s.routeSlotRefillAt == nil {
+		s.routeSlotRefillAt = make(map[string]time.Time)
+	}
+	if last, ok := s.routeSlotRefillAt[key]; ok && now.Sub(last) < routeConnectDelay {
+		s.mu.Unlock()
+		return
+	}
+	conns := s.routes[rid]
+	if conns == nil || slot >= len(conns) || conns[slot] != nil {
+		// Remote gone or slot refilled meanwhile.
+		s.mu.Unlock()
+		return
+	}
+	var rurl *url.URL
+	var rtype RouteType
+	for _, r := range conns {
+		if r == nil || r.routeConnWriteDead(now, deadHorizon) {
+			continue
+		}
+		r.mu.Lock()
+		if r.route.url != nil {
+			rurl, rtype = r.route.url, r.route.routeType
+		}
+		r.mu.Unlock()
+		if rurl != nil {
+			break
+		}
+	}
+	if rurl == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.routeSlotRefillAt[key] = now
+	s.mu.Unlock()
+	s.startGoRoutine(func() { s.connectToRoute(rurl, rtype, true, gossipDefault, _EMPTY_) })
+}
+
 // Import filter check.
 func (c *client) importFilter(sub *subscription) bool {
 	if c.perms == nil {
@@ -2733,6 +2789,8 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	deadHorizon := deadRouteHorizon(s.getOpts())
 	var _dead [8]*client
 	deadConns := _dead[:0]
+	var _refill [8]routeSlotRefill
+	slotRefills := _refill[:0]
 
 	s.mu.RLock()
 	// The account's routePoolIdx field is set/updated under the server lock
@@ -2762,14 +2820,17 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	} else {
 		// We can't use s.forEachRouteIdx here since we want to check/get the
 		// "no pool" route ONLY if we don't find a route at the given `poolIdx`.
-		for _, conns := range s.routes {
-			if r := conns[poolIdx]; r != nil {
+		for rid, conns := range s.routes {
+			r := conns[poolIdx]
+			if r != nil {
 				if r.routeConnWriteDead(now, deadHorizon) {
 					deadConns = append(deadConns, r)
 					continue
 				}
 				routes = append(routes, r)
-			} else if s.routesNoPool > 0 {
+				continue
+			}
+			if s.routesNoPool > 0 {
 				// Check if we have a "no pool" route at index 0, and if so, it
 				// means that for this remote, we have a single connection because
 				// that server does not have pooling.
@@ -2779,6 +2840,20 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 						routes = append(routes, r)
 					}
 					r.mu.Unlock()
+				}
+			}
+			// The remote is reachable (it has at least one live registered
+			// connection) but this account's slot is unfilled. The pool refill
+			// chain (route.startNewRoute, consumed on the first PONG) stops
+			// permanently when the dial it triggers is rejected as a
+			// duplicate, so nothing would ever carry this account's interest
+			// again - the gather would keep coming up empty, with no
+			// connection involved to signal anything wrong. Kick a refill;
+			// addRoute's subscription dump re-syncs once the slot registers.
+			for _, sibling := range conns {
+				if sibling != nil && !sibling.routeConnWriteDead(now, deadHorizon) {
+					slotRefills = append(slotRefills, routeSlotRefill{rid: rid, slot: poolIdx})
+					break
 				}
 			}
 		}
@@ -2794,6 +2869,9 @@ func (s *Server) updateRouteSubscriptionMap(acc *Account, sub *subscription, del
 	// dead registration.
 	for _, r := range deadConns {
 		s.reconcileDeadRouteConn(r)
+	}
+	for _, rf := range slotRefills {
+		s.kickRouteSlotRefill(rf.rid, rf.slot)
 	}
 
 	// We need to make sure our updates are serialized from potential multiple connections. We want
