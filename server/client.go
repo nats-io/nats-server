@@ -2299,11 +2299,11 @@ func (c *client) processErr(errStr string) {
 }
 
 // Matcher for pass/password and auth_token fields.
-var prefixAuthPat = regexp.MustCompile(`"?\s*(?:auth_token\S*?|pass\S*?)"?\s*[:=]\s*"?([^",\r\n}]*)`)
+var prefixAuthPat = regexp.MustCompile(`(?i)"?\s*(?:auth_token\S*?|pass\S*?)"?\s*[:=]\s*"?([^",\r\n}]*)`)
 
 // Bearer JWTs must not be exposed when tracing CONNECT.
 // Overlapping field "sig" does not match inside "proxy_sig".
-var exactAuthPat = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])"?\s*(?:proxy_sig|nkey|sig|jwt)"?\s*[:=]\s*"?([^",\r\n}]*)`)
+var exactAuthPat = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])"?\s*(?:proxy_sig|nkey|sig|jwt)"?\s*[:=]\s*"?([^",\r\n}]*)`)
 
 // removeSecretsFromTrace removes any notion of passwords/tokens from trace
 // messages for logging.
