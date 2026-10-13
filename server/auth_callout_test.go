@@ -736,7 +736,7 @@ func TestAuthCalloutClientTLSCerts(t *testing.T) {
 	require_True(t, userInfo.Account == "FOO")
 }
 
-func TestAuthCalloutClientTLSCertsIfGiven(t *testing.T) {
+func TestAuthCalloutClientTLSCertsOptional(t *testing.T) {
 	conf := `
 		listen: "localhost:-1"
 		server_name: T
@@ -745,7 +745,7 @@ func TestAuthCalloutClientTLSCertsIfGiven(t *testing.T) {
 			cert_file = "../test/configs/certs/tlsauth/server.pem"
 			key_file = "../test/configs/certs/tlsauth/server-key.pem"
 			ca_file = "../test/configs/certs/tlsauth/ca.pem"
-			verify_client_cert_if_given = true
+			verify = optional
 		}
 
 		accounts {

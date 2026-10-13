@@ -4745,14 +4745,14 @@ func TestClientMsgsMetric(t *testing.T) {
 	}
 }
 
-func TestTLSClientVerifyClientCertIfGiven(t *testing.T) {
+func TestTLSClientVerifyOptional(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: "localhost:-1"
 		tls {
 			cert_file: "../test/configs/certs/tlsauth/server.pem"
 			key_file: "../test/configs/certs/tlsauth/server-key.pem"
 			ca_file: "../test/configs/certs/tlsauth/ca.pem"
-			verify_client_cert_if_given: true
+			verify: optional
 		}
 	`))
 	s, opts := RunServerWithConfig(conf)

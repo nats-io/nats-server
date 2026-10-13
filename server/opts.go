@@ -1664,7 +1664,7 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 			return
 		}
 		if tc.VerifyClientCertIfGiven {
-			*errors = append(*errors, &configErr{tk, "verify_client_cert_if_given not supported in this context"})
+			*errors = append(*errors, &configErr{tk, "verify: optional not supported in this context"})
 			return
 		}
 		tlsConfig, err := GenTLSConfig(tc)
@@ -3115,7 +3115,7 @@ func parseRemoteLeafNodes(v any, errors *[]error, warnings *[]error) ([]*RemoteL
 					continue
 				}
 				if tc.VerifyClientCertIfGiven {
-					*errors = append(*errors, &configErr{tk, "verify_client_cert_if_given not supported in this context"})
+					*errors = append(*errors, &configErr{tk, "verify: optional not supported in this context"})
 					continue
 				}
 				if remote.TLSConfig, err = GenTLSConfig(tc); err != nil {
@@ -3263,7 +3263,7 @@ func getTLSConfig(tk token) (*tls.Config, *TLSConfigOpts, error) {
 		return nil, nil, err
 	}
 	if tc.VerifyClientCertIfGiven {
-		return nil, nil, &configErr{tk, "verify_client_cert_if_given not supported in this context, cluster and gateway connections always require verification"}
+		return nil, nil, &configErr{tk, "verify: optional not supported in this context, cluster and gateway connections always require verification"}
 	}
 	config, err := GenTLSConfig(tc)
 	if err != nil {
@@ -5101,17 +5101,19 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 			}
 			tc.Insecure = insecure
 		case "verify":
-			verify, ok := mv.(bool)
-			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean"}
+			switch verify := mv.(type) {
+			case bool:
+				tc.Verify = verify
+			case string:
+				// With 'optional', a client certificate is requested and
+				// verified if presented, but not required.
+				if !strings.EqualFold(verify, "optional") {
+					return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, expected 'verify' to be a boolean or 'optional', got %q", verify)}
+				}
+				tc.VerifyClientCertIfGiven = true
+			default:
+				return nil, &configErr{tk, "error parsing tls config, expected 'verify' to be a boolean or 'optional'"}
 			}
-			tc.Verify = verify
-		case "verify_client_cert_if_given":
-			verifyClientCertIfGiven, ok := mv.(bool)
-			if !ok {
-				return nil, &configErr{tk, "error parsing tls config, expected 'verify_client_cert_if_given' to be a boolean"}
-			}
-			tc.VerifyClientCertIfGiven = verifyClientCertIfGiven
 		case "verify_and_map":
 			verify, ok := mv.(bool)
 			if !ok {
@@ -5362,16 +5364,14 @@ func parseTLS(v any, isClientCtx bool) (t *TLSConfigOpts, retErr error) {
 		return nil, &configErr{tk, "error parsing tls config, cannot combine 'cert_file' option with 'certs' option"}
 	}
 
-	if tc.Verify && tc.VerifyClientCertIfGiven {
-		// Name the option the user actually set, since both
-		// 'verify_and_map' and 'verify_cert_and_check_known_urls' imply 'verify'.
-		verifyOpt := "verify"
+	// Both 'verify_and_map' and 'verify_cert_and_check_known_urls' require
+	// a client certificate, which conflicts with 'verify: optional'.
+	if tc.VerifyClientCertIfGiven && (tc.Verify || tc.Map || tc.TLSCheckKnownURLs) {
+		verifyOpt := "verify_and_map"
 		if tc.TLSCheckKnownURLs {
 			verifyOpt = "verify_cert_and_check_known_urls"
-		} else if tc.Map {
-			verifyOpt = "verify_and_map"
 		}
-		return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, cannot combine '%s' option with 'verify_client_cert_if_given' option", verifyOpt)}
+		return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, cannot combine 'verify: optional' with '%s' option", verifyOpt)}
 	}
 
 	// If cipher suites were not specified then use the defaults
@@ -5831,7 +5831,7 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 	// and verified if presented, but connections without one are accepted,
 	// which allows certificate-based auth to be optional (e.g. auth callout).
 	if tc.Verify && tc.VerifyClientCertIfGiven {
-		return nil, fmt.Errorf("cannot combine 'verify' option with 'verify_client_cert_if_given' option")
+		return nil, errors.New("cannot combine 'verify: true' with 'verify: optional'")
 	}
 
 	if tc.Verify {

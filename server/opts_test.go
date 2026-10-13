@@ -967,43 +967,34 @@ func TestTlsPinnedCertificates(t *testing.T) {
 	check(opts.Websocket.TLSPinnedCerts)
 }
 
-// Test the TLS config option verify_client_cert_if_given sets the TLSConfig.ClientAuth to the correct option
-func TestTlsVerifyClientCertsIfGiven(t *testing.T) {
-	confFileName := createConfFile(t, []byte(`
-	tls {
-		cert_file: "./configs/certs/server.pem"
-		key_file: "./configs/certs/key.pem"
-		verify_client_cert_if_given: true
-	}
-	`))
-	opts, err := ProcessConfigFile(confFileName)
-	if err != nil {
-		t.Fatalf("Received an error reading config file: %v", err)
-	}
-	if opts.TLSConfig == nil {
-		t.Fatal("Expected TLSConfig to be set")
-	}
-	if opts.TLSConfig.ClientAuth != tls.VerifyClientCertIfGiven {
-		t.Fatalf("Expected ClientAuth to be VerifyClientCertIfGiven, got %v", opts.TLSConfig.ClientAuth)
+func TestTlsVerifyOptional(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  tls.ClientAuthType
+	}{
+		{"false", tls.NoClientCert},
+		{"true", tls.RequireAndVerifyClientCert},
+		{"optional", tls.VerifyClientCertIfGiven},
+		{"\"optional\"", tls.VerifyClientCertIfGiven},
+		{"Optional", tls.VerifyClientCertIfGiven},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			conf := createConfFile(t, []byte(fmt.Sprintf(`
+			tls {
+				cert_file: "./configs/certs/server.pem"
+				key_file: "./configs/certs/key.pem"
+				verify: %s
+			}
+			`, test.value)))
+			opts, err := ProcessConfigFile(conf)
+			require_NoError(t, err)
+			require_NotNil(t, opts.TLSConfig)
+			require_Equal(t, opts.TLSConfig.ClientAuth, test.want)
+		})
 	}
 }
 
-// Test that the TLS config option verify_client_cert_if_given, and verify can't be set at the same time.
-func TestTlsVerifyClientCertsIfGivenAndVerify(t *testing.T) {
-	confFileName := createConfFile(t, []byte(`
-	tls {
-		cert_file: "./configs/certs/server.pem"
-		key_file: "./configs/certs/key.pem"
-		verify: true
-		verify_client_cert_if_given: true
-	}
-	`))
-	_, err := ProcessConfigFile(confFileName)
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "cannot combine 'verify' option with 'verify_client_cert_if_given' option")
-}
-
-func TestTlsVerifyClientCertIfGivenConfigErrors(t *testing.T) {
+func TestTlsVerifyOptionalConfigErrors(t *testing.T) {
 	const tlsBlock = `tls {
 			cert_file: "./configs/certs/server.pem"
 			key_file: "./configs/certs/key.pem"
@@ -1014,16 +1005,20 @@ func TestTlsVerifyClientCertIfGivenConfigErrors(t *testing.T) {
 		conf string
 		err  string
 	}{
-		{"verify_and_map", fmt.Sprintf(tlsBlock, "verify_and_map: true\n verify_client_cert_if_given: true"),
-			"cannot combine 'verify_and_map' option with 'verify_client_cert_if_given' option"},
-		{"cluster", fmt.Sprintf("cluster { listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify_client_cert_if_given: true"),
-			"verify_client_cert_if_given not supported in this context"},
-		{"gateway", fmt.Sprintf("gateway { name: A\n listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify_client_cert_if_given: true"),
-			"verify_client_cert_if_given not supported in this context"},
-		{"leafnode remote", fmt.Sprintf("leafnodes { remotes [ { url: \"tls://127.0.0.1:7422\"\n "+tlsBlock+" } ] }", "verify_client_cert_if_given: true"),
-			"verify_client_cert_if_given not supported in this context"},
-		{"resolver_tls", fmt.Sprintf(strings.Replace(tlsBlock, "tls {", "resolver_tls {", 1), "verify_client_cert_if_given: true"),
-			"verify_client_cert_if_given not supported in this context"},
+		{"invalid value", fmt.Sprintf(tlsBlock, "verify: maybe"),
+			"expected 'verify' to be a boolean or 'optional'"},
+		{"verify_and_map", fmt.Sprintf(tlsBlock, "verify_and_map: true\n verify: optional"),
+			"cannot combine 'verify: optional' with 'verify_and_map' option"},
+		{"verify_cert_and_check_known_urls", fmt.Sprintf("cluster { listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify_cert_and_check_known_urls: true\n verify: optional"),
+			"cannot combine 'verify: optional' with 'verify_cert_and_check_known_urls' option"},
+		{"cluster", fmt.Sprintf("cluster { listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify: optional"),
+			"verify: optional not supported in this context"},
+		{"gateway", fmt.Sprintf("gateway { name: A\n listen: 127.0.0.1:-1\n "+tlsBlock+" }", "verify: optional"),
+			"verify: optional not supported in this context"},
+		{"leafnode remote", fmt.Sprintf("leafnodes { remotes [ { url: \"tls://127.0.0.1:7422\"\n "+tlsBlock+" } ] }", "verify: optional"),
+			"verify: optional not supported in this context"},
+		{"resolver_tls", fmt.Sprintf(strings.Replace(tlsBlock, "tls {", "resolver_tls {", 1), "verify: optional"),
+			"verify: optional not supported in this context"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conf := createConfFile(t, []byte(test.conf))
@@ -1034,7 +1029,7 @@ func TestTlsVerifyClientCertIfGivenConfigErrors(t *testing.T) {
 	}
 }
 
-func TestTlsVerifyClientCertIfGivenGenTLSConfig(t *testing.T) {
+func TestTlsVerifyOptionalGenTLSConfig(t *testing.T) {
 	_, err := GenTLSConfig(&TLSConfigOpts{
 		CertFile:                "./configs/certs/server.pem",
 		KeyFile:                 "./configs/certs/key.pem",
@@ -1042,6 +1037,7 @@ func TestTlsVerifyClientCertIfGivenGenTLSConfig(t *testing.T) {
 		VerifyClientCertIfGiven: true,
 	})
 	require_Error(t, err)
+	require_Contains(t, err.Error(), "cannot combine 'verify: true' with 'verify: optional'")
 }
 
 func TestNkeyUsersDefaultPermissionsConfig(t *testing.T) {
