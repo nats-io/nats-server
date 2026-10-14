@@ -4286,6 +4286,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		filter = fwcs
 	}
 	wc := subjectHasWildcard(filter)
+	if !wc && strings.ContainsAny(filter, pwcs+fwcs) {
+		// Partial wildcard, e.g. "a*": matched by the subject tree but not an
+		// exact subject, so the fast paths below must not treat it as one.
+		wc = true
+	}
 
 	// Resolve exact filters once, including those with no retained messages.
 	var info *psi

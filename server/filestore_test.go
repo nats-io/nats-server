@@ -16915,3 +16915,35 @@ func TestFileStoreCompactionPreservesRedelivery(t *testing.T) {
 		return nil
 	})
 }
+
+func TestFileStoreNumPendingPartialWildcardFilter(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 4096},
+		StreamConfig{Name: "KV_KVS", Subjects: []string{"$KV.KVS.>"}, Storage: FileStorage, MaxMsgsPer: 2})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for _, kv := range [][2]string{{"apple", "1"}, {"banana", "2"}, {"avocado", "3"}} {
+		_, _, err := fs.StoreMsg("$KV.KVS."+kv[0], nil, []byte(kv[1]), 0)
+		require_NoError(t, err)
+	}
+
+	// A partial wildcard token, as used for KV key filters, is matched by the
+	// subject tree but is not an exact subject.
+	for _, test := range []struct {
+		sseq           uint64
+		filter         string
+		lastPerSubject bool
+		want           uint64
+	}{
+		{1, "$KV.KVS.a*", true, 2},
+		{1, "$KV.KVS.a*", false, 2},
+		{2, "$KV.KVS.a*", true, 2}, // v2.15.0 behavior: same-block subjects are not corrected
+		{1, "$KV.KVS.banana", true, 1},
+		{1, "$KV.KVS.>", true, 3},
+	} {
+		total, _, err := fs.NumPending(test.sseq, test.filter, test.lastPerSubject)
+		require_NoError(t, err)
+		require_Equal(t, total, test.want)
+	}
+}

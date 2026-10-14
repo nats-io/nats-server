@@ -12042,6 +12042,46 @@ func TestJetStreamDeliverLastPerSubjectNumPending(t *testing.T) {
 	}
 }
 
+// A partial wildcard token in a filter subject, e.g. the key filters used by
+// KeyValue ("$KV.<bucket>.a*"), must count as a wildcard filter and not as an
+// exact subject, otherwise num pending is wrongly reported as 0.
+func TestJetStreamConsumerNumPendingPartialWildcardFilter(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	// Client for API requests.
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:              "KV",
+		Subjects:          []string{"KV.>"},
+		MaxMsgsPerSubject: 5,
+		Replicas:          1,
+	}); err != nil {
+		t.Fatalf("Error adding stream: %v", err)
+	}
+
+	for _, key := range []string{"apple", "banana", "avocado"} {
+		if _, err := js.Publish("KV."+key, []byte("v")); err != nil {
+			t.Fatalf("Error publishing: %v", err)
+		}
+	}
+
+	ci, err := js.AddConsumer("KV", &nats.ConsumerConfig{
+		DeliverSubject: nats.NewInbox(),
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverPolicy:  nats.DeliverLastPerSubjectPolicy,
+		FilterSubject:  "KV.a*",
+	})
+	if err != nil {
+		t.Fatalf("Error adding consumer: %v", err)
+	}
+	if ci.NumPending != 2 {
+		t.Fatalf("Expected 2 pending msgs, got %v", ci.NumPending)
+	}
+}
+
 // Issue #2392
 func TestJetStreamPurgeEffectsConsumerDelivery(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
