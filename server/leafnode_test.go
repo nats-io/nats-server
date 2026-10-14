@@ -14168,3 +14168,128 @@ func TestLeafNodeInterestLeakOnConcurrentClose(t *testing.T) {
 		t.Fatalf("Leafnode has stale interest on %d subjects the hub no longer has, e.g. %v", len(leaked), leaked[:n])
 	}
 }
+
+// Same as TestLeafNodeInterestLeakOnConcurrentClose, but for interest learned
+// over a route. The route's readloop propagates the +1 for an RS+, while closing
+// the route from another goroutine propagates the -1 in removeRemoteSubs.
+func TestLeafNodeInterestLeakOnConcurrentRouteClose(t *testing.T) {
+	const (
+		workers    = 4
+		iterations = 250
+		subsPerCon = 64
+	)
+
+	oa := DefaultOptions()
+	oa.ServerName = "A"
+	oa.Cluster.Name = "HUB"
+	oa.Cluster.Host = "127.0.0.1"
+	oa.Cluster.Port = -1
+	oa.LeafNode.Host = "127.0.0.1"
+	oa.LeafNode.Port = -1
+	a := RunServer(oa)
+	defer a.Shutdown()
+
+	ob := DefaultOptions()
+	ob.ServerName = "B"
+	ob.Cluster.Name = "HUB"
+	ob.Cluster.Host = "127.0.0.1"
+	ob.Cluster.Port = -1
+	ob.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", a.ClusterAddr().Port))
+	b := RunServer(ob)
+	defer b.Shutdown()
+	checkClusterFormed(t, a, b)
+
+	ln, _ := runSolicitLeafServer(oa)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, a)
+	checkLeafNodeConnected(t, ln)
+
+	// A leafnode reconnect rebuilds the smap and would hide a leak, so pin the connection.
+	lz, err := ln.Leafz(nil)
+	require_NoError(t, err)
+	require_Equal(t, lz.NumLeafs, 1)
+	leafID := lz.Leafs[0].ID
+
+	// Keep closing the routes on "A" from this goroutine, while their readloops process RS+.
+	// "B" solicits these routes, so it reconnects them.
+	done := make(chan struct{})
+	kicked := make(chan struct{})
+	go func() {
+		defer close(kicked)
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(25 * time.Millisecond):
+			}
+			var routes []*client
+			a.mu.RLock()
+			a.forEachRoute(func(r *client) { routes = append(routes, r) })
+			a.mu.RUnlock()
+			for _, r := range routes {
+				r.closeConnection(ClientClosed)
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := range iterations {
+				nc, err := nats.Connect(b.ClientURL())
+				if err != nil {
+					t.Errorf("Error connecting: %v", err)
+					return
+				}
+				for s := range subsPerCon {
+					if _, err := nc.Subscribe(fmt.Sprintf("foo.%d.%d.%d", w, i, s), func(*nats.Msg) {}); err != nil {
+						t.Errorf("Error subscribing: %v", err)
+						nc.Close()
+						return
+					}
+				}
+				nc.Close()
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(done)
+	<-kicked
+
+	// All subscriptions are gone from both servers.
+	for _, s := range []*Server{b, a} {
+		checkFor(t, 5*time.Second, 25*time.Millisecond, func() error {
+			var subs []*subscription
+			s.GlobalAccount().sl.All(&subs)
+			for _, sub := range subs {
+				if strings.HasPrefix(string(sub.subject), "foo.") {
+					return fmt.Errorf("Server %q still has interest on %q", s, sub.subject)
+				}
+			}
+			return nil
+		})
+	}
+
+	// So the leafnode must be told about that as well.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		lz, err := ln.Leafz(&LeafzOptions{Subscriptions: true})
+		if err != nil {
+			return err
+		}
+		if lz.NumLeafs != 1 || lz.Leafs[0].ID != leafID {
+			return fmt.Errorf("Leafnode connection changed")
+		}
+		var leaked []string
+		for _, subj := range lz.Leafs[0].Subs {
+			if strings.HasPrefix(subj, "foo.") {
+				leaked = append(leaked, subj)
+			}
+		}
+		if len(leaked) > 0 {
+			return fmt.Errorf("Leafnode has stale interest on %d subjects, e.g. %v", len(leaked), leaked[:min(len(leaked), 10)])
+		}
+		return nil
+	})
+}

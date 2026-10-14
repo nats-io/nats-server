@@ -1307,14 +1307,38 @@ func (c *client) getRoutedSubKeyInfo() (bool, string, bool) {
 }
 
 // removeRemoteSubs will walk the subs and remove them from the appropriate account.
+// May be called with subMu held; in that case the cleanup is deferred.
 func (c *client) removeRemoteSubs() {
+	c.mu.Lock()
+	subs := c.subs
+	c.subs = nil
+	c.mu.Unlock()
+	cleanup := func() {
+		c.removeRemoteSubsFromAccounts(subs)
+		c.subMu.Unlock()
+	}
+	if len(subs) > 0 {
+		if c.subMu.TryLock() {
+			cleanup()
+		} else {
+			// Close may be called by the goroutine registering a subscription.
+			// Let it finish propagating interest before retracting this snapshot.
+			go func() {
+				c.subMu.Lock()
+				cleanup()
+			}()
+		}
+	}
+}
+
+// removeRemoteSubsFromAccounts retracts a snapshot of the route's subscriptions.
+// The caller holds subMu.
+func (c *client) removeRemoteSubsFromAccounts(subs map[string]*subscription) {
 	// We need to gather these on a per account basis.
 	// FIXME(dlc) - We should be smarter about this..
 	as := map[string]*asubs{}
 	c.mu.Lock()
 	srv := c.srv
-	subs := c.subs
-	c.subs = nil
 	pa, accountName, hasSubType := c.getRoutedSubKeyInfo()
 	c.mu.Unlock()
 
@@ -1413,6 +1437,9 @@ func (c *client) parseUnsubProto(arg []byte, accInProto, hasOrigin bool) ([]byte
 
 // Indicates no more interest in the given account/subject for the remote side.
 func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	srv := c.srv
 	if srv == nil {
 		return nil
@@ -1500,6 +1527,9 @@ func (c *client) processRemoteUnsub(arg []byte, leafUnsub bool) (err error) {
 }
 
 func (c *client) processRemoteSub(argo []byte, leafSub, hasOrigin bool) (err error) {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	// Indicate activity.
 	c.in.subs++
 

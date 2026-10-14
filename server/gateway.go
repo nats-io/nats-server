@@ -1819,13 +1819,26 @@ func (s *Server) removeRemoteGatewayConnection(c *client) {
 		atomic.AddInt64(&c.srv.gateway.totalQSubs, -qSubsRemoved)
 
 		// Undo the leafnode updates that processGatewayRSub did for each RS+.
-		// Skip this on shutdown, the leafnodes are going away too.
-		if !s.isShuttingDown() {
+		cleanup := func() {
 			for key, sub := range subs {
 				// The key is "<account> <subject>[ <queue>]".
 				if accName, _, ok := strings.Cut(key, " "); ok {
 					s.updateInterestForAccountOnGateway(accName, sub, -1)
 				}
+			}
+			c.subMu.Unlock()
+		}
+		// Skip this on shutdown, the leafnodes are going away too.
+		if len(subs) > 0 && !s.isShuttingDown() {
+			if c.subMu.TryLock() {
+				cleanup()
+			} else {
+				// Close may be called by the goroutine registering a subscription.
+				// Let it finish propagating interest before retracting this snapshot.
+				go func() {
+					c.subMu.Lock()
+					cleanup()
+				}()
 			}
 		}
 	} else {
@@ -1920,6 +1933,9 @@ func (c *client) processGatewayAccountSub(accName string) error {
 // the sublist if present.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRUnsub(arg []byte) error {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	_, accName, subject, queue, err := c.parseUnsubProto(arg, true, false)
 	if err != nil {
 		return fmt.Errorf("processGatewaySubjectUnsub %s", err.Error())
@@ -2015,6 +2031,9 @@ func (c *client) processGatewayRUnsub(arg []byte) error {
 // from remote gateway.
 // <Invoked from outbound connection's readLoop>
 func (c *client) processGatewayRSub(arg []byte) error {
+	c.subMu.Lock()
+	defer c.subMu.Unlock()
+
 	// Indicate activity.
 	c.in.subs++
 
