@@ -1852,6 +1852,12 @@ func (s *Server) GatewayAddr() *net.TCPAddr {
 func (c *client) processGatewayAccountUnsub(accName string) {
 	// Just to indicate activity around "subscriptions" events.
 	c.in.subs++
+	// Receiving an A- on an inbound connection is a protocol violation.
+	if !c.gw.outbound {
+		c.Errorf("Received A- from gateway on inbound connection")
+		c.closeConnection(ProtocolViolation)
+		return
+	}
 	// This account may have an entry because of queue subs.
 	// If that's the case, we can reset the no-interest map,
 	// but not set the entry to nil.
@@ -1881,6 +1887,12 @@ func (c *client) processGatewayAccountUnsub(accName string) {
 func (c *client) processGatewayAccountSub(accName string) error {
 	// Just to indicate activity around "subscriptions" events.
 	c.in.subs++
+	// Receiving an A+ on an inbound connection is a protocol violation.
+	if !c.gw.outbound {
+		c.Errorf("Received A+ from gateway on inbound connection")
+		c.closeConnection(ProtocolViolation)
+		return nil
+	}
 	// If this account has an entry because of queue subs, we
 	// can't delete the entry.
 	remove := true
@@ -3052,6 +3064,14 @@ func (c *client) processInboundGatewayMsg(msg []byte) {
 
 	// Mostly under testing scenarios.
 	if c.srv == nil {
+		return
+	}
+
+	// Messages are only expected on inbound connections. Receiving an RMSG
+	// on an outbound connection is a protocol violation.
+	if c.gw.outbound {
+		c.Errorf("Received RMSG from gateway on outbound connection")
+		c.closeConnection(ProtocolViolation)
 		return
 	}
 
