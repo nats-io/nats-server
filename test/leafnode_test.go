@@ -4522,3 +4522,36 @@ func TestLeafNodeConnectInfo(t *testing.T) {
 		})
 	}
 }
+
+// A route can get the same RS+ twice, from its initial sync and a concurrent
+// update. The duplicate must not add interest on the leafnode, otherwise the
+// single RS- that follows leaves it there.
+func TestLeafNodeRouteDuplicateRSubNoInterestLeak(t *testing.T) {
+	opts := testDefaultOptionsForLeafNodes()
+	opts.Cluster.Name = "xyz"
+	opts.Cluster.Host = opts.Host
+	opts.Cluster.Port = -1
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	lc := createLeafConn(t, opts.LeafNode.Host, opts.LeafNode.Port)
+	defer lc.Close()
+	_, leafExpect := setupLeaf(t, lc, 1)
+
+	rc := createRouteConn(t, opts.Cluster.Host, opts.Cluster.Port)
+	defer rc.Close()
+	checkInfoMsg(t, rc)
+	routeSend, routeExpect := setupRouteEx(t, rc, opts, "RC")
+
+	routeSend("RS+ $G foo\r\nRS+ $G foo\r\nPING\r\n")
+	routeExpect(pongRe)
+	if buf := leafExpect(lsubRe); !bytes.Contains(buf, []byte("LS+ foo\r\n")) {
+		t.Fatalf("Expected LS+ for foo, got %q", buf)
+	}
+
+	routeSend("RS- $G foo\r\nPING\r\n")
+	routeExpect(pongRe)
+	if buf := leafExpect(lunsubRe); !bytes.Contains(buf, []byte("LS- foo\r\n")) {
+		t.Fatalf("Expected LS- for foo, got %q", buf)
+	}
+}
