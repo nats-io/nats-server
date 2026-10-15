@@ -4952,6 +4952,7 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	isMsgTraceResp := isResponse && si.mt != nil
 	siSe := si.se
 	siLat := si.latency
+	siImplicit, siFrom := si.implicit, si.from
 	acc.mu.RUnlock()
 
 	// We have a special case where JetStream pulls in all service imports through one export.
@@ -4959,6 +4960,9 @@ func (c *client) processServiceImport(si *serviceImport, acc *Account, msg []byt
 	// response service imports and rrMap entries which all will need to simply expire.
 	// TODO(dlc) - Come up with something better.
 	if shouldReturn {
+		return false
+	}
+	if !siImplicit && subjectHasWildcard(siFrom) && acc.hasImplicitServiceImportForSubject(siAcc, string(c.pa.subject)) {
 		return false
 	}
 	if checkJS && siSe != nil {
