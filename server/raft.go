@@ -2407,19 +2407,30 @@ func (n *raft) StepDown(preferred ...string) error {
 		}
 	}
 
-	// If we do not have a preferred at this point pick the first healthy one.
+	// If we do not have a preferred at this point pick a healthy one.
 	// Make sure not ourselves.
 	if maybeLeader == noLeader {
+		var fallback string
 		for peer, ps := range n.peers {
 			if peer == n.id {
 				continue
 			}
 			si, ok := n.s.nodeToInfo.Load(peer)
 			isHealthy := ok && !si.(nodeInfo).offline && withinLiveWindow(ps.ts)
-			if isHealthy {
+			if !isHealthy {
+				continue
+			}
+			// Prefer a caught up peer. One we're still catching up is slower to take over.
+			if n.isFollowerCaughtUpLocked(peer) {
 				maybeLeader = peer
 				break
 			}
+			if fallback == noLeader {
+				fallback = peer
+			}
+		}
+		if maybeLeader == noLeader {
+			maybeLeader = fallback
 		}
 	}
 	n.Unlock()
@@ -4322,6 +4333,11 @@ func (n *raft) progressLocked(peer string) *lps {
 func (n *raft) IsFollowerCaughtUp(peer string) bool {
 	n.RLock()
 	defer n.RUnlock()
+	return n.isFollowerCaughtUpLocked(peer)
+}
+
+// Lock should be held.
+func (n *raft) isFollowerCaughtUpLocked(peer string) bool {
 	if peer == n.id {
 		return true
 	}
@@ -4852,6 +4868,7 @@ func (n *raft) processAppendEntry(ae *appendEntry, sub *subscription) {
 
 	if isNew && n.leader != ae.leader && n.State() == Follower {
 		n.debug("AppendEntry updating leader to %q", ae.leader)
+		n.lxfer = false
 		n.updateLeader(ae.leader)
 		n.writeTermVote()
 		n.resetElectionTimeout()
@@ -5132,6 +5149,10 @@ CONTINUE:
 						// Here we can become a leader but need to wait for resume of the apply queue.
 						n.lxfer = true
 					}
+				} else if !n.observer {
+					// Campaign early in case the successor is slow to take over.
+					// Randomized so followers don't split the vote.
+					n.resetElect(minElectionTimeout/4 + randCampaignTimeout())
 				}
 			}
 		case EntryPeerState:
@@ -6032,9 +6053,9 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			n.stepdownLocked(noLeader)
 		}
 		n.cancelCatchup()
+		// Persisted below, with our vote if granted.
 		n.term = vr.term
 		n.vote = noVote
-		n.writeTermVote()
 		// Clear current Leader since it belonged to an old term.
 		n.updateLeader(noLeader)
 	}
@@ -6063,11 +6084,15 @@ func (n *raft) processVoteRequest(vr *voteRequest) error {
 			vresp.granted = true
 			n.resetElectionTimeout()
 		}
-	} else if newTerm && n.vote == noVote && n.State() != Candidate {
-		// We have a more up-to-date log, and haven't voted yet.
-		// Start campaigning earlier, but only if not candidate already, as that would short-circuit us.
-		// Only on a new term, as re-sent vote requests would otherwise keep postponing our campaign.
-		n.resetElect(randCampaignTimeout())
+	} else if newTerm {
+		// Persist the new term before responding.
+		n.writeTermVote()
+		if n.vote == noVote && n.State() != Candidate {
+			// We have a more up-to-date log, and haven't voted yet.
+			// Start campaigning earlier, but only if not candidate already, as that would short-circuit us.
+			// Only on a new term, as re-sent vote requests would otherwise keep postponing our campaign.
+			n.resetElect(randCampaignTimeout())
+		}
 	}
 
 	// Term might have changed, make sure response has the most current
@@ -6264,7 +6289,12 @@ func (n *raft) switchToCandidate() {
 	// If we are catching up or are in observer mode we can not switch.
 	// Avoid petitioning to become leader if we're behind on applies.
 	if n.observer || n.scaleUp || n.paused || n.processed < n.commit {
-		n.resetElect(minElectionTimeout / 4)
+		if n.lxfer {
+			// A transfer target retries quickly, before the other followers campaign.
+			n.resetElect(minCampaignTimeout)
+		} else {
+			n.resetElect(minElectionTimeout / 4)
+		}
 		return
 	}
 
