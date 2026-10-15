@@ -3567,8 +3567,10 @@ func TestJetStreamSuperClusterTagInducedMoveCancel(t *testing.T) {
 	require_True(t, cancelResp.Error == nil)
 
 	checkFor(t, 10*time.Second, 250*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
-		require_NoError(t, err)
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
+		if err != nil {
+			return err
+		}
 		if !reflect.DeepEqual(si.Config.Placement, &nats.Placement{Tags: []string{"C1"}}) {
 			return fmt.Errorf("expected placement to be back to initial state got: %+v", si.Config.Placement)
 		}
@@ -3962,7 +3964,7 @@ func moveTestStreamGroup(t *testing.T, s *Server, account, stream string) (peers
 	}
 	js.mu.RLock()
 	defer js.mu.RUnlock()
-	sa := js.streamAssignment(account, stream)
+	sa := js.streamAssignmentOrInflight(account, stream)
 	if sa == nil || sa.Group == nil || sa.Config == nil {
 		return nil, _EMPTY_, 0
 	}
@@ -3978,11 +3980,7 @@ func moveTestConsumerGroup(t *testing.T, s *Server, account, stream, consumer st
 	}
 	js.mu.RLock()
 	defer js.mu.RUnlock()
-	sa := js.streamAssignment(account, stream)
-	if sa == nil {
-		return nil
-	}
-	ca := sa.consumers[consumer]
+	ca := js.consumerAssignmentOrInflight(account, stream, consumer)
 	if ca == nil || ca.Group == nil {
 		return nil
 	}
@@ -4017,6 +4015,16 @@ func moveTestInjectLegacyMove(t *testing.T, ml *Server, account, stream string, 
 	t.Helper()
 	mjs := ml.getJetStream()
 	require_NotNil(t, mjs)
+
+	// The stream leader responds to a create, wait for the meta leader to have applied it.
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		if mjs.streamAssignment(account, stream) == nil {
+			return fmt.Errorf("stream assignment for %q not applied yet", stream)
+		}
+		return nil
+	})
 
 	mjs.mu.Lock()
 	osa := mjs.streamAssignment(account, stream)
@@ -4153,7 +4161,7 @@ func TestJetStreamSuperClusterMoveThenScaleThenCancel(t *testing.T) {
 		if !moveTestSamePeers(peers, originPeers) {
 			return fmt.Errorf("expected peers %+v, got %+v", originPeers, peers)
 		}
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4261,7 +4269,7 @@ func TestJetStreamSuperClusterStreamCancelMoveAPI(t *testing.T) {
 		if !moveTestSamePeers(peers, originPeers) {
 			return fmt.Errorf("expected peers %+v, got %+v", originPeers, peers)
 		}
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4327,7 +4335,7 @@ func TestJetStreamSuperClusterLegacyMoveCompletes(t *testing.T) {
 		}
 
 		// No data lost, and the consumer moved along with the stream.
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4337,7 +4345,7 @@ func TestJetStreamSuperClusterLegacyMoveCompletes(t *testing.T) {
 		if si.Cluster == nil || si.Cluster.Name != "C2" {
 			return fmt.Errorf("expected stream in C2, got %+v", si.Cluster)
 		}
-		ci, err := js.ConsumerInfo("TEST", "DUR")
+		ci, err := js.ConsumerInfo("TEST", "DUR", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4397,7 +4405,7 @@ func TestJetStreamSuperClusterLegacyMoveCancel(t *testing.T) {
 		if cluster != "C1" {
 			return fmt.Errorf("expected cluster %q, got %q", "C1", cluster)
 		}
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4615,7 +4623,7 @@ func TestJetStreamSuperClusterLegacyMoveCancelWithoutReconcile(t *testing.T) {
 		if d := desiredState(); d != nil {
 			return fmt.Errorf("desired state not cleared: %+v", d)
 		}
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -4825,7 +4833,7 @@ func TestJetStreamSuperClusterServerMoveRequestUpdatesGroupCluster(t *testing.T)
 					return fmt.Errorf("peer %q is not in C2, peers %+v", peer, peers)
 				}
 			}
-			si, err := js.StreamInfo("TEST")
+			si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 			if err != nil {
 				return err
 			}
@@ -4996,7 +5004,7 @@ func TestJetStreamSuperClusterCyclingMovesBoundGroupSize(t *testing.T) {
 		if len(cpeers) != replicas {
 			return fmt.Errorf("consumer not settled: %d peers", len(cpeers))
 		}
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}
@@ -6275,7 +6283,7 @@ func TestJetStreamClusterMoveCancelWithStalledCatchup(t *testing.T) {
 	// reverting to, and those are caught up already.
 	moveTestCancelMove(t, ncsys, globalAccountName, "TEST")
 	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-		si, err := js.StreamInfo("TEST")
+		si, err := js.StreamInfo("TEST", nats.MaxWait(time.Second))
 		if err != nil {
 			return err
 		}

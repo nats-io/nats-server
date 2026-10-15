@@ -4594,6 +4594,122 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 		batch.clearBatchState()
 	}()
 
+	// applyQueued applies committed entries. It returns false if the monitor must exit.
+	applyQueued := func() bool {
+		var ne, nb uint64
+		// If we bump clfs we will want to write out snapshot if within our time window.
+		pclfs := mset.getCLFS()
+
+		ces := aq.pop()
+		for _, ce := range ces {
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				if !isRecovering {
+					continue
+				}
+				isRecovering = false
+				// If we are interest based make sure to check consumers if interest retention policy.
+				// This is to make sure we process any outstanding acks from all consumers.
+				if mset != nil && mset.isInterestRetention() {
+					fire := time.Duration(rand.IntN(5)+5) * time.Second
+					time.AfterFunc(fire, mset.checkInterestState)
+				}
+				// If we became leader during this time and we need to send a snapshot to our
+				// followers, i.e. as a result of a scale-up from R1, do it now.
+				if sendSnapshot && isLeader && mset != nil && n != nil {
+					n.SendSnapshot(mset.stateSnapshot())
+					sendSnapshot = false
+				}
+				continue
+			} else if len(ce.Entries) == 0 {
+				// If we have a partial batch, it needs to be rejected to ensure CLFS is correct.
+				if mset != nil && batch != nil && batch.id != _EMPTY_ {
+					batch.rejectBatchState(mset)
+				}
+
+				// Entry could be empty on a restore when mset is nil.
+				ne, nb = n.Applied(ce.Index)
+				ce.ReturnToPool()
+				continue
+			}
+
+			// While migrating, react quickly to peer add/remove entries.
+			if mmt != nil {
+				for _, e := range ce.Entries {
+					if e.Type == EntryAddPeer || e.Type == EntryRemovePeer {
+						startMigrationMonitoring()
+						break
+					}
+				}
+			}
+
+			// Apply our entries.
+			if maxApplied, err := js.applyStreamEntries(mset, n, ce, isRecovering, batch); err == nil {
+				// Update our applied.
+				if maxApplied > 0 {
+					// Indicate we've processed (but not applied) everything up to this point.
+					ne, nb = n.Processed(ce.Index, min(maxApplied, ce.Index))
+					// Don't return entry to the pool, this is handled by the in-progress batch.
+				} else {
+					ne, nb = n.Applied(ce.Index)
+					ce.ReturnToPool()
+				}
+			} else {
+				// Make sure to clean up.
+				ce.ReturnToPool()
+				// Our stream was closed out from underneath of us, simply return here.
+				if err == errStreamClosed || err == errCatchupStreamStopped || err == ErrServerNotRunning {
+					aq.recycle(&ces)
+					return false
+				}
+				s.Errorf("Error applying stream entries to '%s > %s': %v", accName, sa.Config.Name, err)
+				if isClusterResetErr(err) {
+					if mset.isMirror() && mset.IsLeader() {
+						mset.retryMirrorConsumer()
+						continue
+					}
+					// If the error signals we timed out of a snapshot, we should try to replay the snapshot
+					// instead of fully resetting the state. Resetting the clustered state may result in
+					// race conditions and should only be used as a last effort attempt.
+					if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries || err == errAlreadyLeader {
+						if n.DrainAndReplaySnapshot() {
+							break
+						} else if n.IsDeleted() {
+							// The only reason we can't replay is our node being deleted, which
+							// means the meta layer is deliberately tearing this monitor down.
+							// Don't fall through to a reset, that would resurrect this group.
+							s.Warnf("Will not reset stream '%s > %s', raft group %q was removed",
+								accName, sa.Config.Name, n.Group())
+							aq.recycle(&ces)
+							return false
+						}
+					}
+					// We will attempt to reset our cluster state.
+					if mset.resetClusteredState(n, err) {
+						aq.recycle(&ces)
+						return false
+					}
+				} else if isOutOfSpaceErr(err) {
+					// If applicable this will tear all of this down, but don't assume so and return.
+					s.handleOutOfSpace(mset)
+				} else {
+					// Encountered an unexpected error, can't continue.
+					mset.setWriteErr(err)
+					aq.recycle(&ces)
+					return false
+				}
+			}
+		}
+		aq.recycle(&ces)
+
+		// Check about snapshotting
+		// If we have at least min entries to compact, go ahead and try to snapshot/compact.
+		if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
+			doSnapshot(false)
+		}
+		return true
+	}
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -4612,116 +4728,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment, sendSnaps
 			// Raft node is closed, no use in trying to snapshot.
 			return
 		case <-aq.ch:
-			var ne, nb uint64
-			// If we bump clfs we will want to write out snapshot if within our time window.
-			pclfs := mset.getCLFS()
-
-			ces := aq.pop()
-			for _, ce := range ces {
-				// No special processing needed for when we are caught up on restart.
-				if ce == nil {
-					if !isRecovering {
-						continue
-					}
-					isRecovering = false
-					// If we are interest based make sure to check consumers if interest retention policy.
-					// This is to make sure we process any outstanding acks from all consumers.
-					if mset != nil && mset.isInterestRetention() {
-						fire := time.Duration(rand.IntN(5)+5) * time.Second
-						time.AfterFunc(fire, mset.checkInterestState)
-					}
-					// If we became leader during this time and we need to send a snapshot to our
-					// followers, i.e. as a result of a scale-up from R1, do it now.
-					if sendSnapshot && isLeader && mset != nil && n != nil {
-						n.SendSnapshot(mset.stateSnapshot())
-						sendSnapshot = false
-					}
-					continue
-				} else if len(ce.Entries) == 0 {
-					// If we have a partial batch, it needs to be rejected to ensure CLFS is correct.
-					if mset != nil && batch != nil && batch.id != _EMPTY_ {
-						batch.rejectBatchState(mset)
-					}
-
-					// Entry could be empty on a restore when mset is nil.
-					ne, nb = n.Applied(ce.Index)
-					ce.ReturnToPool()
-					continue
-				}
-
-				// While migrating, react quickly to peer add/remove entries.
-				if mmt != nil {
-					for _, e := range ce.Entries {
-						if e.Type == EntryAddPeer || e.Type == EntryRemovePeer {
-							startMigrationMonitoring()
-							break
-						}
-					}
-				}
-
-				// Apply our entries.
-				if maxApplied, err := js.applyStreamEntries(mset, n, ce, isRecovering, batch); err == nil {
-					// Update our applied.
-					if maxApplied > 0 {
-						// Indicate we've processed (but not applied) everything up to this point.
-						ne, nb = n.Processed(ce.Index, min(maxApplied, ce.Index))
-						// Don't return entry to the pool, this is handled by the in-progress batch.
-					} else {
-						ne, nb = n.Applied(ce.Index)
-						ce.ReturnToPool()
-					}
-				} else {
-					// Make sure to clean up.
-					ce.ReturnToPool()
-					// Our stream was closed out from underneath of us, simply return here.
-					if err == errStreamClosed || err == errCatchupStreamStopped || err == ErrServerNotRunning {
-						aq.recycle(&ces)
-						return
-					}
-					s.Errorf("Error applying stream entries to '%s > %s': %v", accName, sa.Config.Name, err)
-					if isClusterResetErr(err) {
-						if mset.isMirror() && mset.IsLeader() {
-							mset.retryMirrorConsumer()
-							continue
-						}
-						// If the error signals we timed out of a snapshot, we should try to replay the snapshot
-						// instead of fully resetting the state. Resetting the clustered state may result in
-						// race conditions and should only be used as a last effort attempt.
-						if errors.Is(err, errCatchupAbortedNoLeader) || err == errCatchupTooManyRetries || err == errAlreadyLeader {
-							if n.DrainAndReplaySnapshot() {
-								break
-							} else if n.IsDeleted() {
-								// The only reason we can't replay is our node being deleted, which
-								// means the meta layer is deliberately tearing this monitor down.
-								// Don't fall through to a reset, that would resurrect this group.
-								s.Warnf("Will not reset stream '%s > %s', raft group %q was removed",
-									accName, sa.Config.Name, n.Group())
-								aq.recycle(&ces)
-								return
-							}
-						}
-						// We will attempt to reset our cluster state.
-						if mset.resetClusteredState(n, err) {
-							aq.recycle(&ces)
-							return
-						}
-					} else if isOutOfSpaceErr(err) {
-						// If applicable this will tear all of this down, but don't assume so and return.
-						s.handleOutOfSpace(mset)
-					} else {
-						// Encountered an unexpected error, can't continue.
-						mset.setWriteErr(err)
-						aq.recycle(&ces)
-						return
-					}
-				}
-			}
-			aq.recycle(&ces)
-
-			// Check about snapshotting
-			// If we have at least min entries to compact, go ahead and try to snapshot/compact.
-			if ne >= compactNumMin || nb > compactSizeMin || mset.getCLFS() > pclfs {
-				doSnapshot(false)
+			if !applyQueued() {
+				return
 			}
 
 		case lc := <-lch:
@@ -8341,6 +8349,54 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 	var isLeader bool
 	var leaderTerm uint64
 
+	// applyQueued applies committed entries. It returns false if the monitor must exit.
+	applyQueued := func() bool {
+		ces := aq.pop()
+		for _, ce := range ces {
+			// No special processing needed for when we are caught up on restart.
+			if ce == nil {
+				if !recovering {
+					continue
+				}
+				recovering = false
+				if n.NeedSnapshot() {
+					doSnapshot(true)
+				}
+				continue
+			}
+			// While migrating, react quickly to peer add/remove entries.
+			if mmt != nil {
+				for _, e := range ce.Entries {
+					if e.Type == EntryAddPeer || e.Type == EntryRemovePeer {
+						startMigrationMonitoring()
+						break
+					}
+				}
+			}
+			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+				var ne, nb uint64
+				// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
+				if !js.isShuttingDown() {
+					ne, nb = n.Applied(ce.Index)
+				}
+				// If we have at least min entries to compact, go ahead and snapshot/compact.
+				if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
+					doSnapshot(false)
+				}
+			} else if err != errConsumerClosed {
+				s.Errorf("Error applying consumer entries to '%s > %s': %v", ca.Client.serviceAccount(), ca.Name, err)
+				// Encountered an unexpected error, can't continue.
+				o.setWriteErr(err)
+				ce.ReturnToPool()
+				aq.recycle(&ces)
+				return false
+			}
+			ce.ReturnToPool()
+		}
+		aq.recycle(&ces)
+		return true
+	}
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -8359,49 +8415,9 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 			// Raft node is closed, no use in trying to snapshot.
 			return
 		case <-aq.ch:
-			ces := aq.pop()
-			for _, ce := range ces {
-				// No special processing needed for when we are caught up on restart.
-				if ce == nil {
-					if !recovering {
-						continue
-					}
-					recovering = false
-					if n.NeedSnapshot() {
-						doSnapshot(true)
-					}
-					continue
-				}
-				// While migrating, react quickly to peer add/remove entries.
-				if mmt != nil {
-					for _, e := range ce.Entries {
-						if e.Type == EntryAddPeer || e.Type == EntryRemovePeer {
-							startMigrationMonitoring()
-							break
-						}
-					}
-				}
-				if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
-					var ne, nb uint64
-					// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
-					if !js.isShuttingDown() {
-						ne, nb = n.Applied(ce.Index)
-					}
-					// If we have at least min entries to compact, go ahead and snapshot/compact.
-					if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
-						doSnapshot(false)
-					}
-				} else if err != errConsumerClosed {
-					s.Errorf("Error applying consumer entries to '%s > %s': %v", ca.Client.serviceAccount(), ca.Name, err)
-					// Encountered an unexpected error, can't continue.
-					o.setWriteErr(err)
-					ce.ReturnToPool()
-					aq.recycle(&ces)
-					return
-				}
-				ce.ReturnToPool()
+			if !applyQueued() {
+				return
 			}
-			aq.recycle(&ces)
 
 		case lc := <-lch:
 			// Not a change in leadership, just a nudge about a newly observed peer.
@@ -8778,154 +8794,159 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 			}
 		} else if e.Type == EntryAddPeer {
 			// Ignore for now.
-		} else {
-			buf := e.Data
-			if len(buf) == 0 {
-				return errBadEntryOp
+		} else if err := js.applyConsumerMsgOp(o, e.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyConsumerMsgOp applies an update proposed by the consumer.
+func (js *jetStream) applyConsumerMsgOp(o *consumer, buf []byte) error {
+	if len(buf) == 0 {
+		return errBadEntryOp
+	}
+	switch entryOp(buf[0]) {
+	case updateDeliveredOp:
+		dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
+		if err != nil {
+			if mset, node := o.streamAndNode(); mset != nil && node != nil {
+				s := js.srv
+				s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
+					mset.account(), mset.name(), o, node.Group())
 			}
-			switch entryOp(buf[0]) {
-			case updateDeliveredOp:
-				dseq, sseq, dc, ts, err := decodeDeliveredUpdate(buf[1:])
-				if err != nil {
-					if mset, node := o.streamAndNode(); mset != nil && node != nil {
-						s := js.srv
-						s.Errorf("JetStream cluster could not decode consumer delivered update for '%s > %s > %s' [%s]",
-							mset.account(), mset.name(), o, node.Group())
-					}
-					return err
-				}
-				// Make sure to update delivered under the lock.
-				o.mu.Lock()
-				err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
-				o.ldt = time.Now()
-				// Need to send message to the client, since we have quorum to do so now.
-				if pmsg, ok := o.pendingDeliveries[sseq]; ok {
-					// Copy delivery subject and sequence first, as the send returns it to the pool and clears it.
-					dsubj, seq := pmsg.dsubj, pmsg.seq
-					o.outq.send(pmsg)
-					delete(o.pendingDeliveries, sseq)
+			return err
+		}
+		// Make sure to update delivered under the lock.
+		o.mu.Lock()
+		err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
+		o.ldt = time.Now()
+		// Need to send message to the client, since we have quorum to do so now.
+		if pmsg, ok := o.pendingDeliveries[sseq]; ok {
+			// Copy delivery subject and sequence first, as the send returns it to the pool and clears it.
+			dsubj, seq := pmsg.dsubj, pmsg.seq
+			o.outq.send(pmsg)
+			delete(o.pendingDeliveries, sseq)
 
-					// Might need to send a request timeout after sending the last replicated delivery.
-					if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
-						if wd.pn > 0 || wd.pb > 0 {
-							hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
-							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-						}
-						wd.recycle()
-						delete(o.waitingDeliveries, dsubj)
-					}
+			// Might need to send a request timeout after sending the last replicated delivery.
+			if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
+				if wd.pn > 0 || wd.pb > 0 {
+					hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
+					o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 				}
-				o.mu.Unlock()
-				if err != nil {
-					return err
-				}
-			case updateAcksOp:
-				dseq, sseq, err := decodeAckUpdate(buf[1:])
-				if err != nil {
-					if mset, node := o.streamAndNode(); mset != nil && node != nil {
-						s := js.srv
-						s.Errorf("JetStream cluster could not decode consumer ack update for '%s > %s > %s' [%s]",
-							mset.account(), mset.name(), o, node.Group())
-					}
-					return err
-				}
-				if err := o.processReplicatedAck(dseq, sseq); err == errConsumerClosed {
-					return err
-				}
-			case updateSkipOp:
-				sseq, err := decodeSkipUpdate(buf[1:])
-				if err != nil {
-					return err
-				}
-				o.mu.Lock()
-				if !o.isLeader() && sseq > o.sseq {
-					o.sseq = sseq
-				}
-				if o.dseq == 0 {
-					o.dseq = 1
-				}
-				if o.store != nil {
-					o.store.UpdateStarting(sseq - 1)
-				}
-				o.mu.Unlock()
-			case resetSeqOp:
-				sseq, reply, err := decodeResetUpdate(buf[1:])
-				if err != nil {
-					return err
-				}
-				o.mu.Lock()
-				recalcPending := o.resetLocalStartingSeq(sseq)
-				if o.store != nil {
-					o.store.Reset(sseq - 1)
-				}
-				// Cleanup messages that lost interest.
-				if o.retention == InterestPolicy {
-					if mset := o.mset; mset != nil {
-						o.mu.Unlock()
-						ss := mset.state()
-						o.checkStateForInterestStream(&ss)
-						o.mu.Lock()
-					}
-				}
-				// Recalculate pending, and re-trigger message delivery.
-				if !o.isLeader() {
-					o.mu.Unlock()
-				} else {
-					if recalcPending {
-						o.streamNumPending()
-					}
-					o.signalNewMessages()
-					s, a := o.srv, o.acc
-					if reply == _EMPTY_ {
-						o.mu.Unlock()
-					} else if rr, ok := o.rsm[reply]; !ok {
-						o.mu.Unlock()
-					} else {
-						delete(o.rsm, reply)
-						o.mu.Unlock()
-
-						// Check if the reset request needs to be answered on the system account.
-						// This will happen for replicated sourcing consumers that get reset as part of a create/update.
-						if rr.internal {
-							a = nil
-						}
-						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
-						if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
-							// The consumer was closed before we could respond.
-							resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
-							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
-						} else {
-							resp.ResetSeq = sseq
-							if rr.identity {
-								rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
-								s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, rhdr, s.jsonResponse(&resp), false)
-							} else {
-								s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
-							}
-						}
-					}
-				}
-			case addPendingRequest:
-				o.mu.Lock()
-				if !o.isLeader() {
-					if o.prm == nil {
-						o.prm = make(map[string]struct{})
-					}
-					o.prm[string(buf[1:])] = struct{}{}
-				}
-				o.mu.Unlock()
-			case removePendingRequest:
-				o.mu.Lock()
-				if !o.isLeader() {
-					if o.prm != nil {
-						delete(o.prm, string(buf[1:]))
-					}
-				}
-				o.mu.Unlock()
-			default:
-				return fmt.Errorf("unknown consumer entry op type: %v", entryOp(buf[0]))
+				wd.recycle()
+				delete(o.waitingDeliveries, dsubj)
 			}
 		}
+		o.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	case updateAcksOp:
+		dseq, sseq, err := decodeAckUpdate(buf[1:])
+		if err != nil {
+			if mset, node := o.streamAndNode(); mset != nil && node != nil {
+				s := js.srv
+				s.Errorf("JetStream cluster could not decode consumer ack update for '%s > %s > %s' [%s]",
+					mset.account(), mset.name(), o, node.Group())
+			}
+			return err
+		}
+		if err := o.processReplicatedAck(dseq, sseq); err == errConsumerClosed {
+			return err
+		}
+	case updateSkipOp:
+		sseq, err := decodeSkipUpdate(buf[1:])
+		if err != nil {
+			return err
+		}
+		o.mu.Lock()
+		if !o.isLeader() && sseq > o.sseq {
+			o.sseq = sseq
+		}
+		if o.dseq == 0 {
+			o.dseq = 1
+		}
+		if o.store != nil {
+			o.store.UpdateStarting(sseq - 1)
+		}
+		o.mu.Unlock()
+	case resetSeqOp:
+		sseq, reply, err := decodeResetUpdate(buf[1:])
+		if err != nil {
+			return err
+		}
+		o.mu.Lock()
+		recalcPending := o.resetLocalStartingSeq(sseq)
+		if o.store != nil {
+			o.store.Reset(sseq - 1)
+		}
+		// Cleanup messages that lost interest.
+		if o.retention == InterestPolicy {
+			if mset := o.mset; mset != nil {
+				o.mu.Unlock()
+				ss := mset.state()
+				o.checkStateForInterestStream(&ss)
+				o.mu.Lock()
+			}
+		}
+		// Recalculate pending, and re-trigger message delivery.
+		if !o.isLeader() {
+			o.mu.Unlock()
+		} else {
+			if recalcPending {
+				o.streamNumPending()
+			}
+			o.signalNewMessages()
+			s, a := o.srv, o.acc
+			if reply == _EMPTY_ {
+				o.mu.Unlock()
+			} else if rr, ok := o.rsm[reply]; !ok {
+				o.mu.Unlock()
+			} else {
+				delete(o.rsm, reply)
+				o.mu.Unlock()
+
+				// Check if the reset request needs to be answered on the system account.
+				// This will happen for replicated sourcing consumers that get reset as part of a create/update.
+				if rr.internal {
+					a = nil
+				}
+				var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
+				if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.info()); resp.ConsumerInfo == nil {
+					// The consumer was closed before we could respond.
+					resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
+					s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+				} else {
+					resp.ResetSeq = sseq
+					if rr.identity {
+						rhdr := genHeader(nil, JSStreamIdentity, o.streamIdentity())
+						s.sendInternalAccountMsgWithReply(a, reply, _EMPTY_, rhdr, s.jsonResponse(&resp), false)
+					} else {
+						s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+					}
+				}
+			}
+		}
+	case addPendingRequest:
+		o.mu.Lock()
+		if !o.isLeader() {
+			if o.prm == nil {
+				o.prm = make(map[string]struct{})
+			}
+			o.prm[string(buf[1:])] = struct{}{}
+		}
+		o.mu.Unlock()
+	case removePendingRequest:
+		o.mu.Lock()
+		if !o.isLeader() {
+			if o.prm != nil {
+				delete(o.prm, string(buf[1:]))
+			}
+		}
+		o.mu.Unlock()
+	default:
+		return fmt.Errorf("unknown consumer entry op type: %v", entryOp(buf[0]))
 	}
 	return nil
 }
@@ -9086,7 +9107,7 @@ func (js *jetStream) processConsumerLeaderChangeWithAssignment(o *consumer, ca *
 		// Only log if the consumer is replicated and/or durable.
 		// Logging about R1 ephemerals, like KV watchers, is mostly noise since the leader will always be known.
 		o.mu.RLock()
-		isReplicated, durable := o.node != nil, o.isDurable()
+		isReplicated, durable := o.isClustered(), o.isDurable()
 		o.mu.RUnlock()
 		if isReplicated || durable {
 			s.Noticef("JetStream cluster new consumer leader for '%s > %s > %s'", ca.Client.serviceAccount(), streamName, consumerName)
@@ -13533,7 +13554,7 @@ func (mset *stream) isCatchingUp() bool {
 // Determine if a non-leader is current.
 // Lock should be held.
 func (mset *stream) isCurrent() bool {
-	if mset.node == nil {
+	if !mset.isClustered() {
 		return true
 	}
 	return mset.node.Current() && !mset.catchup.Load()
