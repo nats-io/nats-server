@@ -8564,18 +8564,19 @@ func TestJWTRefreshReplacesExpiration(t *testing.T) {
 	t.Run("shortens", func(t *testing.T) {
 		f := newJWTRefreshFixture(t, nil)
 		c := f.connect(f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() }))
-		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(3 * time.Second).Unix() })
+		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
 		c.refresh(candidate)
 		expires := c.userInfo().Expires
-		require_True(t, expires > 0 && expires <= 3*time.Second)
+		require_True(t, expires > 0 && expires <= 2*time.Second)
 		require_JWTRefreshExpirationClose(t, c, time.Unix(candidate.Expires, 0), "User Authentication Expired")
 	})
 	t.Run("finite-connection-window", func(t *testing.T) {
 		f := newJWTRefreshFixture(t, nil)
 		c := f.connect(f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() }))
+		closeRange := 4 * time.Second
 		start := time.Now().UTC()
 		locale := "UTC"
-		if start.Add(-time.Second).Day() != start.Add(5*time.Second).Day() {
+		if start.Add(-time.Second).Day() != start.Add(closeRange).Day() {
 			locale = "Etc/GMT+12"
 			location, err := time.LoadLocation(locale)
 			require_NoError(t, err)
@@ -8583,12 +8584,12 @@ func TestJWTRefreshReplacesExpiration(t *testing.T) {
 		}
 		candidate := f.claims(func(claims *jwt.UserClaims) {
 			claims.Locale = locale
-			claims.Times = []jwt.TimeRange{newTimeRange(start.Add(-time.Second), 5*time.Second)}
+			claims.Times = []jwt.TimeRange{newTimeRange(start.Add(-time.Second), closeRange)}
 		})
 		c.refresh(candidate)
 		expires := c.userInfo().Expires
-		require_True(t, expires > 0 && expires <= 5*time.Second)
-		require_JWTRefreshExpirationClose(t, c, start.Add(5*time.Second), "User Authentication Expired")
+		require_True(t, expires > 0 && expires <= closeRange)
+		require_JWTRefreshExpirationClose(t, c, start.Add(closeRange), "User Authentication Expired")
 	})
 }
 
@@ -8643,7 +8644,7 @@ func TestJWTRefreshDuringExpiration(t *testing.T) {
 }
 
 func TestJWTRefreshPreservesAccountExpiration(t *testing.T) {
-	deadline := time.Now().Add(4 * time.Second).Truncate(time.Second)
+	deadline := time.Now().Add(2 * time.Second).Truncate(time.Second)
 	f := newJWTRefreshFixture(t, func(claims *jwt.AccountClaims) { claims.Expires = deadline.Unix() })
 	c := f.connect(f.claims(nil))
 	c.refresh(f.claims(nil))
@@ -9126,7 +9127,7 @@ func TestJWTRefreshClearsExpirationMetadata(t *testing.T) {
 
 func TestJWTRefreshRemovesOldExpiration(t *testing.T) {
 	f := newJWTRefreshFixture(t, nil)
-	initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(3 * time.Second).Unix() })
+	initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
 	c := f.connect(initial)
 	before := c.connectionInfo()
 	c.refresh(f.claims(nil))
