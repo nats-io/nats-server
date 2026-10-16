@@ -8548,7 +8548,7 @@ func TestJWTRefreshRoutedQueueInterest(t *testing.T) {
 func TestJWTRefreshReplacesExpiration(t *testing.T) {
 	t.Run("extends", func(t *testing.T) {
 		f := newJWTRefreshFixture(t, nil)
-		initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(3 * time.Second).Unix() })
+		initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
 		c := f.connect(initial)
 		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() })
 		c.refresh(candidate)
