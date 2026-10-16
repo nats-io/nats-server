@@ -3084,6 +3084,17 @@ func TestAuthCallout_ClientAuthErrorOperatorMode(t *testing.T) {
 }
 
 func TestOperatorModeUserRevocation(t *testing.T) {
+	// The async error callback can run before the client finishes closing.
+	requireDisconnected := func(t *testing.T, nc *nats.Conn) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if nc.IsConnected() {
+				return fmt.Errorf("client %q is still connected", nc.Opts.Name)
+			}
+			return nil
+		})
+	}
+
 	skp, spub := createKey(t)
 	sysClaim := jwt.NewAccountClaims(spub)
 	sysClaim.Name = "$SYS"
@@ -3212,7 +3223,7 @@ func TestOperatorModeUserRevocation(t *testing.T) {
 
 	// wait for the user to be disconnected with the error we expect
 	fwg.Wait()
-	require_Equal(t, nc.IsConnected(), false)
+	requireDisconnected(t, nc)
 
 	// update the account to remove any revocations
 	accClaim.Revocations = make(map[string]int64)
@@ -3230,8 +3241,8 @@ func TestOperatorModeUserRevocation(t *testing.T) {
 	updateAccount(t, sysNC, accJwt)
 
 	swg.Wait()
-	require_Equal(t, ncA.IsConnected(), false)
-	require_Equal(t, ncB.IsConnected(), false)
+	requireDisconnected(t, ncA)
+	requireDisconnected(t, ncB)
 }
 
 func updateAccount(t *testing.T, sys *nats.Conn, jwtToken string) {

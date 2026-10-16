@@ -116,6 +116,7 @@ type Info struct {
 	Port              int      `json:"port"`
 	Headers           bool     `json:"headers"`
 	AuthRequired      bool     `json:"auth_required,omitempty"`
+	JWTRefresh        bool     `json:"jwt_refresh,omitempty"`
 	TLSRequired       bool     `json:"tls_required,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
 	TLSAvailable      bool     `json:"tls_available,omitempty"`

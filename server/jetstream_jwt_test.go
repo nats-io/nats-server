@@ -28,10 +28,9 @@ import (
 	"testing"
 	"time"
 
+	jwt "github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
-
-	jwt "github.com/nats-io/jwt/v2"
 )
 
 func TestJetStreamJWTLimits(t *testing.T) {
@@ -2341,4 +2340,154 @@ func TestJetStreamAccountResolverNoFetchIfNotMember(t *testing.T) {
 		js.processStreamAssignment(sa)
 	}
 	require_LessThan(t, time.Since(start), 100*time.Millisecond)
+}
+
+func jwtRefreshJetStreamFixture(t *testing.T) (*jwtRefreshFixture, nats.JetStreamContext) {
+	t.Helper()
+	f := newJWTRefreshFixtureWithOptions(t, func(claims *jwt.AccountClaims) {
+		claims.Limits.JetStreamLimits = jwt.JetStreamLimits{MemoryStorage: 1024 * 1024, Streams: 1, Consumer: 2}
+	}, func(opts *Options) {
+		opts.JetStream, opts.StoreDir = true, t.TempDir()
+		opts.JetStreamMaxMemory, opts.JetStreamMaxStore = 8*1024*1024, 8*1024*1024
+	})
+	admin := f.observer()
+	js, err := admin.JetStream(nats.MaxWait(time.Second))
+	require_NoError(t, err)
+	_, err = js.AddStream(&nats.StreamConfig{Name: "REFRESH", Subjects: []string{"events"}, Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+	return f, js
+}
+
+func jwtRefreshJetStreamClaims(f *jwtRefreshFixture, allowAck bool) *jwt.UserClaims {
+	return f.claims(func(claims *jwt.UserClaims) {
+		claims.Pub.Allow.Add("$JS.API.>")
+		claims.Sub.Allow.Add("deliver.>", "_INBOX.>")
+		if allowAck {
+			claims.Pub.Allow.Add("$JS.ACK.>")
+		} else {
+			claims.Pub.Deny.Add("$JS.ACK.>")
+		}
+	})
+}
+
+func jwtRefreshConsumerState(t *testing.T, js nats.JetStreamContext, consumer string, pending int, waiting int) *nats.ConsumerInfo {
+	t.Helper()
+	var info *nats.ConsumerInfo
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		var err error
+		info, err = js.ConsumerInfo("REFRESH", consumer)
+		if err != nil {
+			return err
+		}
+		if info.NumAckPending != pending || (waiting >= 0 && info.NumWaiting != waiting) {
+			return fmt.Errorf("consumer pending=%d waiting=%d, want pending=%d waiting=%d", info.NumAckPending, info.NumWaiting, pending, waiting)
+		}
+		return nil
+	})
+	return info
+}
+
+func jwtRefreshPublishRequest(subject, reply string, payload []byte) string {
+	return fmt.Sprintf("PUB %s %s %d\r\n%s\r\n", subject, reply, len(payload), payload)
+}
+
+func TestJetStreamJWTRefreshPushDeliveryAndAcknowledgments(t *testing.T) {
+	f, js := jwtRefreshJetStreamFixture(t)
+	created, err := js.AddConsumer("REFRESH", &nats.ConsumerConfig{Durable: "PUSH", DeliverSubject: "deliver.push", AckPolicy: nats.AckExplicitPolicy, AckWait: time.Minute})
+	require_NoError(t, err)
+	c := f.connect(jwtRefreshJetStreamClaims(f, true))
+	before := c.connectionInfo()
+	c.requireNoErrors(c.command("SUB deliver.push old\r\n"))
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		info, err := js.ConsumerInfo("REFRESH", "PUSH")
+		if err != nil {
+			return err
+		}
+		if !info.PushBound {
+			return fmt.Errorf("push consumer has not observed delivery interest")
+		}
+		return nil
+	})
+	_, err = js.Publish("events", []byte("ack-before"))
+	require_NoError(t, err)
+	frame := jwtRefreshIntegrationMessage(t, c, c.command(""), "old")
+	require_Equal(t, string(frame.payload), "ack-before")
+	require_True(t, frame.reply != "")
+	c.requireNoErrors(c.command(jwtRefreshPublish(frame.reply, "+ACK")))
+	jwtRefreshConsumerState(t, js, "PUSH", 0, -1)
+	_, err = js.Publish("events", []byte("pending-before"))
+	require_NoError(t, err)
+	oldDelivery := jwtRefreshIntegrationMessage(t, c, c.command(""), "old")
+	jwtRefreshConsumerState(t, js, "PUSH", 1, -1)
+	c.refresh(jwtRefreshJetStreamClaims(f, false))
+	require_Equal(t, c.connectionInfo().NumSubs, uint32(0))
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish(oldDelivery.reply, "+ACK")), "Publish", oldDelivery.reply)
+	jwtRefreshConsumerState(t, js, "PUSH", 1, -1)
+	_, err = js.Publish("events", []byte("during-gap"))
+	require_NoError(t, err)
+	frames := c.command("SUB deliver.push recreated\r\n")
+	c.requireNoErrors(frames)
+	newDelivery := jwtRefreshIntegrationMessage(t, c, frames, "recreated")
+	require_Equal(t, string(newDelivery.payload), "during-gap")
+	jwtRefreshConsumerState(t, js, "PUSH", 2, -1)
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish(newDelivery.reply, "+ACK")), "Publish", newDelivery.reply)
+	c.refresh(jwtRefreshJetStreamClaims(f, true))
+	c.requireNoErrors(c.command(jwtRefreshPublish(oldDelivery.reply, "+ACK") + jwtRefreshPublish(newDelivery.reply, "+ACK")))
+	info := jwtRefreshConsumerState(t, js, "PUSH", 0, -1)
+	require_Equal(t, info.Created, created.Created)
+	stream, err := js.StreamInfo("REFRESH")
+	require_NoError(t, err)
+	require_Equal(t, stream.State.Msgs, uint64(3))
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+}
+
+func TestJetStreamJWTRefreshPullDeliveryAndPendingFetch(t *testing.T) {
+	f, js := jwtRefreshJetStreamFixture(t)
+	created, err := js.AddConsumer("REFRESH", &nats.ConsumerConfig{Durable: "PULL", AckPolicy: nats.AckExplicitPolicy, AckWait: time.Minute})
+	require_NoError(t, err)
+	c := f.connect(jwtRefreshJetStreamClaims(f, true))
+	before := c.connectionInfo()
+	c.requireNoErrors(c.command("SUB _INBOX.before old\r\n"))
+	next := "$JS.API.CONSUMER.MSG.NEXT.REFRESH.PULL"
+	fetch := func(reply string, batch int) []jwtRefreshFrame {
+		request, err := json.Marshal(JSApiConsumerGetNextRequest{Batch: batch, Expires: 5 * time.Second})
+		require_NoError(t, err)
+		frames := c.command(jwtRefreshPublishRequest(next, reply, request))
+		c.requireNoErrors(frames)
+		return frames
+	}
+	_, err = js.Publish("events", []byte("ack-before"))
+	require_NoError(t, err)
+	frame := jwtRefreshIntegrationMessage(t, c, fetch("_INBOX.before", 1), "old")
+	require_Equal(t, string(frame.payload), "ack-before")
+	c.requireNoErrors(c.command(jwtRefreshPublish(frame.reply, "+ACK")))
+	jwtRefreshConsumerState(t, js, "PULL", 0, 0)
+	_, err = js.Publish("events", []byte("pending-before"))
+	require_NoError(t, err)
+	oldDelivery := jwtRefreshIntegrationMessage(t, c, fetch("_INBOX.before", 2), "old")
+	require_Equal(t, string(oldDelivery.payload), "pending-before")
+	jwtRefreshConsumerState(t, js, "PULL", 1, 1)
+	c.refresh(jwtRefreshJetStreamClaims(f, false))
+	require_Equal(t, c.connectionInfo().NumSubs, uint32(0))
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish(oldDelivery.reply, "+ACK")), "Publish", oldDelivery.reply)
+	jwtRefreshConsumerState(t, js, "PULL", 1, -1)
+	c.requireNoErrors(c.command("SUB _INBOX.after recreated\r\n"))
+	_, err = js.Publish("events", []byte("after-reset"))
+	require_NoError(t, err)
+	newDelivery := jwtRefreshIntegrationMessage(t, c, fetch("_INBOX.after", 1), "recreated")
+	require_Equal(t, string(newDelivery.payload), "after-reset")
+	jwtRefreshConsumerState(t, js, "PULL", 2, 0)
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish(newDelivery.reply, "+ACK")), "Publish", newDelivery.reply)
+	c.refresh(jwtRefreshJetStreamClaims(f, true))
+	c.requireNoErrors(c.command(jwtRefreshPublish(oldDelivery.reply, "+ACK") + jwtRefreshPublish(newDelivery.reply, "+ACK")))
+	info := jwtRefreshConsumerState(t, js, "PULL", 0, 0)
+	require_Equal(t, info.Created, created.Created)
+	stream, err := js.StreamInfo("REFRESH")
+	require_NoError(t, err)
+	require_Equal(t, stream.State.Msgs, uint64(3))
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
 }
