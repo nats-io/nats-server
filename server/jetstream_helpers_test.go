@@ -1562,6 +1562,7 @@ func (c *cluster) randomNonConsumerLeader(account, stream, consumer string) *Ser
 // stepDownStreamLeader steps the stream leader down to the given server if it's not equal.
 func (c *cluster) stepDownStreamLeader(nc *nats.Conn, account, stream string, s *Server) {
 	c.t.Helper()
+	c.waitOnStreamCurrent(s, account, stream)
 	req, err := json.Marshal(JSApiLeaderStepdownRequest{Placement: &Placement{Preferred: s.Name()}})
 	require_NoError(c.t, err)
 	sl := c.streamLeader(account, stream)
