@@ -705,6 +705,69 @@ func TestMonitorConnzWithCIDAndAccountFilter(t *testing.T) {
 	checkConns(t, sysReq(t, ncB, cidA), 0, 0)
 }
 
+func TestMonitorConnzTotalWithFilters(t *testing.T) {
+	s := runMonitorServerWithAccounts()
+	defer s.Shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+
+	// Create a single connection for user "a" and three for user "b".
+	ncA := createClientConnWithUserSubscribeAndPublish(t, s, "a", "a")
+	defer ncA.Close()
+	connsB := make([]*nats.Conn, 0, 3)
+	for i := 0; i < 3; i++ {
+		nc := createClientConnWithUserSubscribeAndPublish(t, s, "b", "b")
+		defer nc.Close()
+		connsB = append(connsB, nc)
+	}
+
+	checkConnz := func(t *testing.T, c *Connz, total, numConns int) {
+		t.Helper()
+		require_Equal(t, c.Total, total)
+		require_Equal(t, c.NumConns, numConns)
+		require_Len(t, len(c.Conns), numConns)
+	}
+
+	for mode := 0; mode < 2; mode++ {
+		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
+			// Without a filter the server wide total is reported.
+			checkConnz(t, pollConnz(t, s, mode, url+"connz", nil), 4, 4)
+
+			// The total must only count the connections matching the user filter.
+			checkConnz(t, pollConnz(t, s, mode, url+"connz?user=a", &ConnzOptions{User: "a"}), 1, 1)
+			checkConnz(t, pollConnz(t, s, mode, url+"connz?user=b", &ConnzOptions{User: "b"}), 3, 3)
+
+			// The total must not be affected by the pagination.
+			checkConnz(t, pollConnz(t, s, mode, url+"connz?user=b&limit=1", &ConnzOptions{User: "b", Limit: 1}), 3, 1)
+			checkConnz(t, pollConnz(t, s, mode, url+"connz?user=b&offset=1&limit=2", &ConnzOptions{User: "b", Offset: 1, Limit: 2}), 3, 2)
+
+			// A filter matching no connection must report a total of zero.
+			checkConnz(t, pollConnz(t, s, mode, url+"connz?user=nobody", &ConnzOptions{User: "nobody"}), 0, 0)
+		})
+	}
+
+	// Same expectations for closed connections, once they are all in the
+	// closed ring buffer.
+	ncA.Close()
+	for _, nc := range connsB {
+		nc.Close()
+	}
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if c := pollConnz(t, s, 1, _EMPTY_, &ConnzOptions{State: ConnClosed}); c.Total != 4 {
+			return fmt.Errorf("Expected a closed total of 4, got %d", c.Total)
+		}
+		return nil
+	})
+	for mode := 0; mode < 2; mode++ {
+		checkConnz(t, pollConnz(t, s, mode, url+"connz?state=closed&user=a",
+			&ConnzOptions{State: ConnClosed, User: "a"}), 1, 1)
+		checkConnz(t, pollConnz(t, s, mode, url+"connz?state=closed&user=b",
+			&ConnzOptions{State: ConnClosed, User: "b"}), 3, 3)
+		checkConnz(t, pollConnz(t, s, mode, url+"connz?state=closed&user=nobody",
+			&ConnzOptions{State: ConnClosed, User: "nobody"}), 0, 0)
+	}
+}
+
 // Helper to map to connection name
 func createConnMap(cz *Connz) map[string]*ConnInfo {
 	cm := make(map[string]*ConnInfo)

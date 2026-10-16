@@ -319,16 +319,17 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 
 	// Number of total clients. The resulting ConnInfo array
 	// may be smaller if pagination is used.
+	totalClients := 0
 	switch state {
 	case ConnOpen:
-		c.Total = len(clist)
+		totalClients = len(clist)
 	case ConnClosed:
 		closedClients = s.closed.closedClients()
-		c.Total = len(closedClients)
+		totalClients = len(closedClients)
 	case ConnAll:
-		c.Total = len(clist)
+		totalClients = len(clist)
 		closedClients = s.closed.closedClients()
-		c.Total += len(closedClients)
+		totalClients += len(closedClients)
 	}
 
 	// We may need to filter these connections.
@@ -340,11 +341,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 			}
 			ccc = append(ccc, cc)
 		}
-		c.Total -= (len(closedClients) - len(ccc))
+		totalClients -= (len(closedClients) - len(ccc))
 		closedClients = ccc
 	}
 
-	totalClients := c.Total
 	if cid > 0 { // Meaning we only want 1.
 		totalClients = 1
 	}
@@ -535,6 +535,10 @@ func (s *Server) Connz(opts *ConnzOptions) (*Connz, error) {
 		pconns = pconns[:i]
 		totalClients = i
 	}
+
+	// The total number of connections that matched the filters, regardless
+	// of the pagination limit.
+	c.Total = totalClients
 
 	switch sortOpt {
 	case ByCid, ByStart:

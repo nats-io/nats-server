@@ -7500,6 +7500,7 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		if c.Conns == nil || len(c.Conns) != 3 {
 			t.Fatalf("Expected 3 connections in array, got %v", len(c.Conns))
 		}
+		require_Equal(t, c.Total, 3)
 
 		// Check that client ID is present
 		for _, conn := range c.Conns {
@@ -7516,6 +7517,14 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		if c.Conns[0].MQTTClient != "conn2" {
 			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
 		}
+		require_Equal(t, c.Total, 1)
+
+		// Check that a client ID that does not exist reports no connections and
+		// a total of zero, instead of the number of connections on the server.
+		c = pollConnz(t, s, mode, url+"connz?mqtt_client=nope", &ConnzOptions{MQTTClient: "nope"})
+		require_Len(t, len(c.Conns), 0)
+		require_Equal(t, c.NumConns, 0)
+		require_Equal(t, c.Total, 0)
 
 		// Check that we have the closed ones
 		c = pollConnz(t, s, mode, url+"connz?state=closed", &ConnzOptions{State: ConnClosed})
@@ -7536,11 +7545,13 @@ func TestMQTTConnectAndDisconnectEvent(t *testing.T) {
 		if c.Conns[0].MQTTClient != "conn3" {
 			t.Fatalf("Unexpected client ID: %+v", c.Conns[0])
 		}
+		require_Equal(t, c.Total, 1)
 		// Check that we can select with client ID for closed state (but in this case not found)
 		c = pollConnz(t, s, mode, url+"connz?state=closed&mqtt_client=conn5", &ConnzOptions{State: ConnClosed, MQTTClient: "conn5"})
 		if len(c.Conns) != 0 {
 			t.Fatalf("Expected 0 connection in array, got %v", len(c.Conns))
 		}
+		require_Equal(t, c.Total, 0)
 	}
 
 	reply := nc.NewRespInbox()

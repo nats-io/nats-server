@@ -2859,7 +2859,8 @@ func TestNoRaceJetStreamSuperClusterAccountConnz(t *testing.T) {
 				cr := parseConnz(m.Data)
 				// For account scoped, NumConns and Total should be the same (sans limits and offsets).
 				// It Total should not include other accounts since that would leak information about the system.
-				if filter == _EMPTY_ && cr.NumConns != cr.Total {
+				// Same when filtering on subject interest, the total must only count the matching connections.
+				if cr.NumConns != cr.Total {
 					t.Fatalf("NumConns and Total should be same with account scoped connz, got %+v", cr)
 				}
 				for _, c := range cr.Conns {
