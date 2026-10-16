@@ -2101,7 +2101,11 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	}
 	c.mu.Unlock()
 
-	c.Noticef("Route connection created")
+	if didSolicit {
+		c.Noticef("Route connection created (%s)", rURL.Host)
+	} else {
+		c.Noticef("Route connection created")
+	}
 	return c
 }
 
