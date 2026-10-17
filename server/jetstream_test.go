@@ -27348,3 +27348,93 @@ func TestJetStreamInterestCheckWithoutConsumersDoesNotCompact(t *testing.T) {
 	require_Equal(t, state.FirstSeq, 1)
 	require_Equal(t, state.LastSeq, numMsgs)
 }
+
+// https://github.com/nats-io/nats-server/issues/8725
+
+func TestJetStreamDeleteStreamPreservesAccountDirectories(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	cfg := &nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"test"},
+		Storage:  nats.FileStorage,
+	}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+
+	accDir := filepath.Join(s.JetStreamConfig().StoreDir, globalAccountName)
+	sdir := filepath.Join(accDir, streamsDir)
+
+	_, err = os.Stat(sdir)
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteStream("TEST"))
+
+	// Allow any asynchronous cleanup goroutines time to run.
+	time.Sleep(50 * time.Millisecond)
+
+	// Streams and account directories must not be removed when deleting
+	// the last stream; they belong to the account lifecycle.
+	_, err = os.Stat(sdir)
+	require_NoError(t, err)
+	_, err = os.Stat(accDir)
+	require_NoError(t, err)
+
+	// Recreating the stream in the account must succeed immediately.
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+}
+
+func TestJetStreamConcurrentDeleteAndCreateStream(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	const (
+		name1 = "S1"
+		name2 = "S2"
+	)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     name1,
+		Subjects: []string{"s1"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var delErr, createErr error
+	start := make(chan struct{})
+
+	go func() {
+		defer wg.Done()
+		<-start
+		delErr = js.DeleteStream(name1)
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-start
+		_, createErr = js.AddStream(&nats.StreamConfig{
+			Name:     name2,
+			Subjects: []string{"s2"},
+			Storage:  nats.FileStorage,
+		})
+	}()
+
+	close(start)
+	wg.Wait()
+
+	require_NoError(t, delErr)
+	require_NoError(t, createErr)
+
+	require_NoError(t, js.DeleteStream(name2))
+}
