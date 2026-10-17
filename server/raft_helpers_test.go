@@ -500,17 +500,91 @@ func runServerWaitingForRouting(t *testing.T) *Server {
 	return RunServer(&o)
 }
 
-// requireRaftNodeReleased checks that a stopped node closed its WAL and its
-// commit file, if it had one, and is no longer registered with the server.
+// requireRaftNodeReleased checks that a stopped node closed its transport, WAL
+// and commit file, if it had one, and is no longer registered with the server,
+// nor are its queues.
 func requireRaftNodeReleased(t *testing.T, s *Server, n *raft) {
 	t.Helper()
 	n.RLock()
+	open, acc, terr := raftTransportOpen(n.t)
 	fs, cf := n.wal.(*fileStore), n.cf
+	subjects := []string{n.vsubj, n.vreply, n.asubj, n.areply}
+	queues := []string{n.reqs.name, n.votes.name, n.prop.name, n.entry.name, n.resp.name, n.apply.name}
 	n.RUnlock()
+	require_NoError(t, terr)
+	require_False(t, open)
+	// Subscriptions are only removed while the server isn't shutting down.
+	if acc != nil && !s.isShuttingDown() {
+		for _, subject := range subjects {
+			require_Len(t, len(acc.sl.Match(subject).psubs), 0)
+		}
+	}
+	for _, name := range queues {
+		_, ok := s.ipQueues.Load(name)
+		require_False(t, ok)
+	}
 	require_True(t, fs.isClosed())
 	if cf != nil {
 		_, err := cf.Stat()
 		require_Error(t, err, os.ErrClosed)
 	}
 	require_True(t, s.lookupRaftNode(n.group) == nil)
+}
+
+// raftTransportOpen reports whether a transport still holds what it set up,
+// and the account it subscribes in.
+// Lock of the node should be held.
+func raftTransportOpen(tr raftTransport) (open bool, acc *Account, err error) {
+	switch tr := tr.(type) {
+	case *defaultTransport:
+		return tr.c != nil, tr.acc, nil
+	case *failSubscribeTransport:
+		return raftTransportOpen(tr.defaultTransport)
+	}
+	return false, nil, fmt.Errorf("unexpected transport %T", tr)
+}
+
+var errSubscribeFailed = errors.New("subscribe failed")
+
+// failSubscribeTransport is the default transport, except that subscribing to
+// the fail subject fails. It records the subjects it did subscribe to.
+type failSubscribeTransport struct {
+	*defaultTransport
+	fail       string
+	subscribed []string
+}
+
+func (t *failSubscribeTransport) Subscribe(subject string, cb msgHandler) (*subscription, error) {
+	if subject == t.fail {
+		return nil, errSubscribeFailed
+	}
+	sub, err := t.defaultTransport.Subscribe(subject, cb)
+	if err == nil {
+		t.subscribed = append(t.subscribed, subject)
+	}
+	return sub, err
+}
+
+// requireRaftNodeInitFails checks that initRaftNode fails for cfg, and that it
+// released what it set up and stopped the WAL.
+func requireRaftNodeInitFails(t *testing.T, s *Server, cfg *RaftConfig) error {
+	t.Helper()
+	// The node isn't returned, get it from its transport.
+	var n *raft
+	newTransport := cfg.NewTransport
+	if newTransport == nil {
+		newTransport = defaultRaftTransport
+	}
+	cfg.NewTransport = func(s *Server, rn RaftNode) raftTransport {
+		n = rn.(*raft)
+		return newTransport(s, rn)
+	}
+
+	rn, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_Error(t, err)
+	require_True(t, rn == nil)
+	require_NotNil(t, n)
+	require_Equal(t, n.State(), Closed)
+	requireRaftNodeReleased(t, s, n)
+	return err
 }
