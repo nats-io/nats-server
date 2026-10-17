@@ -12296,31 +12296,157 @@ func TestJetStreamConsumerReconcileConsumerAfterStreamDataLoss(t *testing.T) {
 		require_NoError(t, err)
 		defer sub.Drain()
 
-		// The consumer should be able to consume above message.
-		// Previously the consumer state would not be reconciled and would not be able to consume the message.
-		msgs, err = sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
-		require_NoError(t, err)
-		require_Len(t, len(msgs), 1)
-		msg := msgs[0]
-		meta, err := msg.Metadata()
-		require_NoError(t, err)
-		require_Equal(t, meta.Sequence.Stream, lseq)
-		require_NoError(t, msg.AckSync())
+		// The consumer should be able to consume the new message (no starvation).
+		// Because the consumer's position was ahead of the (rolled-back) stream,
+		// it is reset to the beginning on recovery (issue #8036). It may therefore
+		// re-deliver any recovered messages (at-least-once) before the new one, and
+		// its delivery sequence restarts. Fetch until the new message (seq lseq)
+		// is received, then ack everything.
+		var gotNew bool
+		for range totalMsgs + 1 {
+			batch, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+			if err != nil || len(batch) == 0 {
+				break
+			}
+			meta, err := batch[0].Metadata()
+			require_NoError(t, err)
+			if meta.Sequence.Stream == lseq {
+				gotNew = true
+			}
+			require_NoError(t, batch[0].AckSync())
+		}
+		// The new message must have been delivered (the bug was that it was starved).
+		require_True(t, gotNew)
 
-		// Confirm the consumer info reports all messages as delivered and acked.
-		// But the delivered sequence shouldn't be reset and still move monotonically.
+		// Confirm the consumer caught up: nothing pending, floor at the new last seq.
 		ci, err = js.ConsumerInfo("TEST", "CONSUMER")
 		require_NoError(t, err)
 		require_Equal(t, ci.NumPending, 0)
 		require_Equal(t, ci.NumAckPending, 0)
 		require_Equal(t, ci.Delivered.Stream, lseq)
 		require_Equal(t, ci.AckFloor.Stream, lseq)
-		require_Equal(t, ci.Delivered.Consumer, lseq+1)
 	}
 
 	for _, totalMsgs := range []int{1, 2} {
 		t.Run(fmt.Sprint(totalMsgs), func(t *testing.T) { test(t, totalMsgs) })
 	}
+}
+
+// TestJetStreamConsumerNoStarvationAfterStreamRollback verifies that when the
+// stream rolls back (data loss) and new messages are published, the consumer
+// is reset to the beginning and delivers ALL new messages rather than being
+// clamped past the end (starvation). See issue #8036.
+func TestJetStreamConsumerNoStarvationAfterStreamRollback(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+	listen: 127.0.0.1:-1
+	jetstream: {store_dir: %q}
+`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+	})
+	require_NoError(t, err)
+
+	// Publish 5 messages and consume+ack all of them.
+	const initialMsgs = 5
+	for range initialMsgs {
+		_, err = js.Publish("foo", []byte("initial"))
+		require_NoError(t, err)
+	}
+
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "DURABLE",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+
+	sub, err := js.PullSubscribe(_EMPTY_, "DURABLE", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	msgs, err := sub.Fetch(initialMsgs, nats.MaxWait(200*time.Millisecond))
+	require_NoError(t, err)
+	require_Len(t, len(msgs), initialMsgs)
+	for _, msg := range msgs {
+		require_NoError(t, msg.AckSync())
+	}
+
+	// Confirm consumer is fully caught up.
+	ci, err := js.ConsumerInfo("TEST", "DURABLE")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.AckFloor.Stream, uint64(initialMsgs))
+
+	// Simulate data loss: shut down, truncate the message block, remove the index.
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	fs := mset.store.(*fileStore)
+	blk := filepath.Join(fs.fcfg.StoreDir, msgDir, "1.blk")
+	index := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
+	nc.Close()
+	s.Shutdown()
+
+	stat, err := os.Stat(blk)
+	require_NoError(t, err)
+	require_NoError(t, os.Truncate(blk, stat.Size()/2+1))
+	require_NoError(t, os.Remove(index))
+
+	// Restart the server.
+	s, _ = RunServerWithConfig(conf)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Publish 3 new messages. With the old clamp-to-end fix, the consumer
+	// would be positioned at streamLastSeq+1 (past the end) and starve on
+	// ALL of these. With the reset-to-beginning fix, the consumer starts
+	// over and delivers everything.
+	const newMsgs = 3
+	var newSeqs []uint64
+	for range newMsgs {
+		pubAck, err := js.Publish("foo", []byte("new"))
+		require_NoError(t, err)
+		newSeqs = append(newSeqs, pubAck.Sequence)
+	}
+
+	sub, err = js.PullSubscribe(_EMPTY_, "DURABLE", nats.BindStream("TEST"))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Fetch until we've seen all new messages. The consumer may re-deliver
+	// recovered messages first (at-least-once), so we collect stream seqs
+	// and verify all new ones appear.
+	gotNew := make(map[uint64]bool)
+	for range initialMsgs + newMsgs + 5 {
+		batch, err := sub.Fetch(1, nats.MaxWait(200*time.Millisecond))
+		if err != nil || len(batch) == 0 {
+			break
+		}
+		meta, err := batch[0].Metadata()
+		require_NoError(t, err)
+		gotNew[meta.Sequence.Stream] = true
+		require_NoError(t, batch[0].AckSync())
+	}
+
+	// Every new message must have been delivered (no starvation).
+	for _, seq := range newSeqs {
+		require_True(t, gotNew[seq])
+	}
+
+	// Consumer should be fully caught up after acking everything.
+	ci, err = js.ConsumerInfo("TEST", "DURABLE")
+	require_NoError(t, err)
+	require_Equal(t, ci.NumPending, 0)
+	require_Equal(t, ci.NumAckPending, 0)
+	require_Equal(t, ci.AckFloor.Stream, newSeqs[len(newSeqs)-1])
 }
 
 func TestJetStreamConsumerStuckMaxAckPendingAfterMsgDelete(t *testing.T) {
