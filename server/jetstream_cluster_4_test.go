@@ -12433,6 +12433,20 @@ func TestJetStreamClusterMetaGroupStopsWALOnSetupFailure(t *testing.T) {
 				require_Equal(t, perr.Path, filepath.Join(sd, peerStateFile)+".tmp")
 			},
 		},
+		{
+			// A file where the snapshots directory should be fails the meta node's start.
+			name: "StartRaftNode",
+			setup: func(t *testing.T, sd string) {
+				snapDir := filepath.Join(sd, snapshotsDir)
+				require_NoError(t, os.RemoveAll(snapDir))
+				require_NoError(t, os.WriteFile(snapDir, nil, defaultFilePerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				_, rerr := os.ReadDir(filepath.Join(sd, snapshotsDir))
+				require_Error(t, rerr)
+				require_Error(t, err, rerr)
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := runServerWaitingForRouting(t)
@@ -12450,4 +12464,25 @@ func TestJetStreamClusterMetaGroupStopsWALOnSetupFailure(t *testing.T) {
 			requireFileStoreStopped(t, l, defaultMetaGroupName)
 		})
 	}
+}
+
+func TestJetStreamClusterCreateRaftGroupStopsWALOnFailure(t *testing.T) {
+	s := runServerWaitingForRouting(t)
+	defer s.Shutdown()
+	js := s.getJetStream()
+
+	// A file where the snapshots directory should be fails the node's start.
+	storeDir := filepath.Join(s.StoreDir(), s.SystemAccount().Name, defaultStoreDirName, "TEST")
+	require_NoError(t, os.MkdirAll(storeDir, defaultDirPerms))
+	snapDir := filepath.Join(storeDir, snapshotsDir)
+	require_NoError(t, os.WriteFile(snapDir, nil, defaultFilePerms))
+	_, rerr := os.ReadDir(snapDir)
+	require_Error(t, rerr)
+
+	l := &captureDebugLogger{dbgCh: make(chan string, 100)}
+	s.SetLogger(l, true, false)
+	rg := &raftGroup{Name: "TEST", Peers: []string{js.getMetaGroup().ID(), "ABCDEFGH"}}
+	_, err := js.createRaftGroup(globalAccountName, rg, false, FileStorage, pprofLabels{})
+	require_Error(t, err, rerr)
+	requireFileStoreStopped(t, l, "TEST")
 }
