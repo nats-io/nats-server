@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -2561,4 +2562,31 @@ func publishAsync(t testing.TB, js nats.JetStreamContext, subj string, msg []byt
 		}
 		require_Error(t, err, nats.ErrTooManyStalledMsgs)
 	}
+}
+
+// fileStoreFlushLoops returns the number of filestores running their state
+// flush loop, which they do until stopped.
+func fileStoreFlushLoops() int {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			// Matched by its creator, as until it runs its stack only shows a
+			// wrapper. The creator starts no other goroutine directly.
+			return bytes.Count(buf[:n], []byte("server.newFileStoreWithCreatedAndMode in goroutine"))
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// requireFileStoresStopped checks that the filestores opened since flushLoops
+// was counted have been stopped.
+func requireFileStoresStopped(t *testing.T, flushLoops int) {
+	t.Helper()
+	// Stopping waits for the flush loop to return, not for its goroutine to exit.
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if n := fileStoreFlushLoops() - flushLoops; n > 0 {
+			return fmt.Errorf("filestores not stopped: %d", n)
+		}
+		return nil
+	})
 }
