@@ -3551,7 +3551,7 @@ func (c *client) leafSendAllowed(bsubject []byte) bool {
 	}
 
 	allowed := true
-	if perms.Allow != nil && !strings.HasPrefix(subject, mqttPrefix) {
+	if perms.Allow != nil {
 		allowed = false
 		for _, allowSubj := range perms.Allow {
 			if matchLiteral(subject, allowSubj) {
