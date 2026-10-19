@@ -1695,6 +1695,149 @@ func TestAuthCalloutScopedUserTemplateProxyRequired(t *testing.T) {
 	})
 }
 
+func TestAuthCalloutAllowedConnectionTypes(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		websocket { listen: "127.0.0.1:-1", no_tls: true }
+		authorization {
+			timeout: 1s
+			users: [ { user: "auth", password: "pwd" } ]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`
+	tests := []struct {
+		name            string
+		connectionTypes []string
+		ws              bool
+		allowed         bool
+	}{
+		{"allowed", []string{jwt.ConnectionTypeStandard}, false, true},
+		{"not allowed", []string{jwt.ConnectionTypeWebsocket}, false, false},
+		{"allowed websocket", []string{jwt.ConnectionTypeWebsocket}, true, true},
+		{"not allowed websocket", []string{jwt.ConnectionTypeStandard}, true, false},
+		{"allowed lowercase", []string{strings.ToLower(jwt.ConnectionTypeStandard)}, false, true},
+		{"allowed with unknown", []string{jwt.ConnectionTypeStandard, "SomeNewType"}, false, true},
+		{"not allowed with unknown", []string{"SomeNewType"}, false, false},
+	}
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		var j jwt.UserPermissionLimits
+		for _, test := range tests {
+			if test.name == opts.Username {
+				j.AllowedConnectionTypes = test.connectionTypes
+			}
+		}
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, "", nil, 10*time.Minute, &j)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var nc *nats.Conn
+			var err error
+			if test.ws {
+				nc, err = at.WSNewClient(nats.UserInfo(test.name, "pwd"))
+			} else {
+				nc, err = at.NewClient(nats.UserInfo(test.name, "pwd"))
+			}
+			if test.allowed {
+				require_NoError(t, err)
+				nc.Close()
+			} else {
+				require_True(t, errors.Is(err, nats.ErrAuthorization))
+			}
+		})
+	}
+}
+
+func TestAuthCalloutScopedUserTemplateAllowedConnectionTypes(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account with a scoped signing key that only allows websocket.
+	_, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	wsScope, wsKp := newScopedRole(t, "ws", []string{">"}, []string{">"}, false)
+	wsScope.Template.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
+	accClaim.SigningKeys.AddScopedSigner(wsScope)
+	okScope, okKp := newScopedRole(t, "ok", []string{">"}, []string{">"}, false)
+	accClaim.SigningKeys.AddScopedSigner(okScope)
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	sentinelScope, sentinelKp := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	sentinelCreds := createScopedUser(t, akp, sentinelKp)
+	defer removeFile(t, sentinelCreds)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		var skp nkeys.KeyPair
+		switch opts.Token {
+		case "ws":
+			skp = wsKp
+		case "ok":
+			skp = okKp
+		default:
+			m.Respond(nil)
+			return
+		}
+		// The user JWT itself has no constraints, only the scoped template does.
+		ujwt := createAuthUser(t, user, _EMPTY_, tpub, tpub, skp, 0, &jwt.UserPermissionLimits{})
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	nc := ac.Connect(nats.UserCredentials(sentinelCreds), nats.Token("ok"))
+	nc.Close()
+
+	// Only allowed to connect over websocket.
+	_, err = ac.NewClient(nats.UserCredentials(sentinelCreds), nats.Token("ws"))
+	require_True(t, errors.Is(err, nats.ErrAuthorization))
+}
+
 func TestAuthCalloutScopedUserAssignedAccount(t *testing.T) {
 	testAuthCalloutScopedUser(t, false)
 }
