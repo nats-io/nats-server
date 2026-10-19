@@ -5666,6 +5666,72 @@ func TestMQTTSubscribeDenyRetainedAndQoSReplay(t *testing.T) {
 	testMQTTExpectNothing(t, rc)
 }
 
+func TestMQTTLeafnodePermissionsNoImplicitMQTTPrefix(t *testing.T) {
+	hubConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: hub
+		listen: "127.0.0.1:-1"
+		jetstream { store_dir: %q }
+		mqtt { listen: "127.0.0.1:-1" }
+		leafnodes { listen: "127.0.0.1:-1" }
+		authorization {
+			users: [
+				{ user: mqtt, password: pass }
+				{ user: leaf, password: pass, permissions: { publish: "foo.>", subscribe: "foo.>" } }
+			]
+		}
+	`, t.TempDir()))
+	hub, ohub := RunServerWithConfig(hubConf)
+	defer hub.Shutdown()
+
+	leafConf := createConfFile(t, fmt.Appendf(nil, `
+		server_name: leaf
+		listen: "127.0.0.1:-1"
+		leafnodes { remotes [ { urls: [ nats-leaf://leaf:pass@127.0.0.1:%d ] } ] }
+	`, ohub.LeafNode.Port))
+	leaf, _ := RunServerWithConfig(leafConf)
+	defer leaf.Shutdown()
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, leaf)
+
+	nc := natsConnect(t, leaf.ClientURL())
+	defer nc.Close()
+	allowed := natsSubSync(t, nc, "foo.>")
+	internal := natsSubSync(t, nc, "$MQTT.>")
+	natsFlush(t, nc)
+	checkSubInterest(t, hub, globalAccountName, "foo.x", time.Second)
+
+	mc, rc := testMQTTConnect(t, &mqttConnInfo{clientID: "sub", user: "mqtt", pass: "pass"}, ohub.MQTT.Host, ohub.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, rc, mqttConnAckRCConnectionAccepted, false)
+	testMQTTSub(t, 1, mc, rc, []*mqttFilter{{filter: "secret/x", qos: 1}}, []byte{1})
+	testMQTTFlush(t, mc, nil, rc)
+
+	mp, rp := testMQTTConnect(t, &mqttConnInfo{cleanSess: true, user: "mqtt", pass: "pass"}, ohub.MQTT.Host, ohub.MQTT.Port)
+	defer mp.Close()
+	testMQTTCheckConnAck(t, rp, mqttConnAckRCConnectionAccepted, false)
+	testMQTTPublish(t, mp, rp, 1, false, false, "foo/x", 1, []byte("allowed"))
+	testMQTTPublish(t, mp, rp, 1, false, true, "secret/x", 2, []byte("secret"))
+	testMQTTCheckPubMsg(t, mc, rc, "secret/x", mqttPubQos1, []byte("secret"))
+
+	// The leaf receives MQTT messages on subjects it is allowed to subscribe to.
+	msg := natsNexMsg(t, allowed, time.Second)
+	require_Equal(t, msg.Subject, "foo.x")
+	require_Equal(t, string(msg.Data), "allowed")
+
+	// But not the internal MQTT traffic, such as messages, retained messages and sessions.
+	if msg, err := internal.NextMsg(250 * time.Millisecond); err == nil {
+		t.Fatalf("Expected no internal MQTT message, got %q", msg.Subject)
+	}
+
+	// The leaf must also not be able to inject messages into the MQTT stream.
+	im := nats.NewMsg(mqttStreamSubjectPrefix + "secret.x")
+	im.Header.Set(mqttNatsHeader, "1")
+	im.Data = []byte("injected")
+	require_NoError(t, nc.PublishMsg(im))
+	natsFlush(t, nc)
+	testMQTTExpectNothing(t, rc)
+}
+
 func TestMQTTCleanSession(t *testing.T) {
 	o := testMQTTDefaultOptions()
 	s := testMQTTRunServer(t, o)
@@ -9264,7 +9330,7 @@ func TestMQTTJSApiMapping(t *testing.T) {
                         user:h
                         password:x
                         permissions: {
-                            subscribe: {allow: ["foo", "bar", "_INBOX.>"], deny: ["baz"] }
+                            subscribe: {allow: ["foo", "bar", "_INBOX.>", "$MQTT.>"], deny: ["baz"] }
                         }
                     }
                 ]
