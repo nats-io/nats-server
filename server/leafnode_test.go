@@ -5862,6 +5862,100 @@ func TestLeafNodeRoutedSubKeyDifferentBetweenLeafSubAndRoutedSub(t *testing.T) {
 	}
 }
 
+// Connects a raw leaf to the given port, sends the given protocol and waits for the PONG.
+func createRawLeafConn(t *testing.T, port int, proto string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	nc, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	require_NoError(t, err)
+	t.Cleanup(func() { nc.Close() })
+	br := bufio.NewReader(nc)
+	nc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer nc.SetReadDeadline(time.Time{})
+	_, err = br.ReadString('\n')
+	require_NoError(t, err)
+	_, err = nc.Write([]byte("CONNECT {\"verbose\":false,\"pedantic\":false}\r\n" + proto + "PING\r\n"))
+	require_NoError(t, err)
+	for {
+		l, err := br.ReadString('\n')
+		require_NoError(t, err)
+		if strings.HasPrefix(l, "PONG") {
+			return nc, br
+		}
+	}
+}
+
+// Runs a two server hub cluster with leafnode listeners.
+func createHubClusterWithLeafListeners(t *testing.T) (*Server, *Server, *Options) {
+	t.Helper()
+	conf := `
+		server_name: %s
+		listen: "127.0.0.1:-1"
+		cluster {
+			name: HUB
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	s1Conf := createConfFile(t, []byte(fmt.Sprintf(conf, "S1", _EMPTY_)))
+	s1, s1Opts := RunServerWithConfig(s1Conf)
+	t.Cleanup(s1.Shutdown)
+
+	s2Conf := createConfFile(t, []byte(fmt.Sprintf(conf, "S2",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", s1Opts.Cluster.Port))))
+	s2, _ := RunServerWithConfig(s2Conf)
+	t.Cleanup(s2.Shutdown)
+
+	checkClusterFormed(t, s1, s2)
+	return s1, s2, s1Opts
+}
+
+func TestLeafNodeQueueWeightRoutedMsgPicksLeafByWeight(t *testing.T) {
+	s1, s2, _ := createHubClusterWithLeafListeners(t)
+
+	// Two leafs on s2 with queue weights 9 and 1, and no local queue members.
+	port := s2.getOpts().LeafNode.Port
+	var received [2]atomic.Int64
+	for i, proto := range []string{"LS+ foo Q1 9\r\n", "LS+ foo Q1 1\r\n"} {
+		_, br := createRawLeafConn(t, port, proto)
+		go func() {
+			for {
+				l, err := br.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if strings.HasPrefix(l, "LMSG ") {
+					received[i].Add(1)
+				}
+			}
+		}()
+	}
+
+	// s1 sees the combined weight from s2 over the route.
+	checkSubInterest(t, s1, globalAccountName, "foo", time.Second)
+
+	// Messages published on s1 reach s2 over the route, where a leaf is picked by weight.
+	nc := natsConnect(t, s1.ClientURL())
+	defer nc.Close()
+	const n = 2000
+	for range n {
+		natsPub(t, nc, "foo", []byte("x"))
+	}
+	natsFlush(t, nc)
+
+	checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+		if total := received[0].Load() + received[1].Load(); total != n {
+			return fmt.Errorf("expected %d messages, got %d", n, total)
+		}
+		return nil
+	})
+	if pct := float64(received[0].Load()) / n; pct < 0.85 || pct > 0.95 {
+		t.Fatalf("Expected the leaf with weight 9 to get ~90%%, got %.2f%%", pct*100)
+	}
+}
+
 func TestLeafNodeQueueGroupWithLateLNJoin(t *testing.T) {
 	/*
 

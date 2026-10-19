@@ -1049,34 +1049,79 @@ func testSublistRemoteQueueSubscriptions(t *testing.T, s *Sublist) {
 	rs2 := newRemoteQSub("foo", "bar", 10)
 	s.Insert(rs2)
 
-	// These are just shadowed in results, so should appear as 4 subs.
+	// Weights are not expanded in results, so should appear as 4 subs.
 	verifyCount(s, 4, t)
 
 	r := s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
-	verifyLen(r.qsubs[0], 22, t)
+	verifyLen(r.qsubs[0], 4, t)
 
 	s.Remove(s1)
 	s.Remove(rs1)
 
 	verifyCount(s, 2, t)
 
-	// Now make sure our shadowed results are correct after a removal.
 	r = s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
-	verifyLen(r.qsubs[0], 11, t)
+	verifyLen(r.qsubs[0], 2, t)
 
 	// Now do an update to an existing remote sub to update its weight.
 	rs2.qw = 1
 	s.UpdateRemoteQSub(rs2)
 
-	// Results should reflect new weight.
 	r = s.Match("foo")
 	verifyLen(r.psubs, 0, t)
 	verifyQLen(r.qsubs, 1, t)
 	verifyLen(r.qsubs[0], 2, t)
+
+	// A huge weight must not grow the results.
+	rs2.qw = 999_999_999
+	s.UpdateRemoteQSub(rs2)
+	r = s.Match("foo")
+	verifyQLen(r.qsubs, 1, t)
+	verifyLen(r.qsubs[0], 2, t)
+}
+
+func TestSublistWeightedQSubIndex(t *testing.T) {
+	s := NewSublistWithCache()
+	for range 3 {
+		require_NoError(t, s.Insert(newQSub("foo", "bar")))
+	}
+	remote := newRemoteQSub("foo", "bar", 7)
+	require_NoError(t, s.Insert(remote))
+
+	// The weighted remote sub is moved to the front.
+	r := s.Match("foo")
+	require_Len(t, len(r.qsubs[0]), 4)
+	require_Equal(t, r.qwn[0], 1)
+	require_True(t, r.qsubs[0][0] == remote)
+
+	// The remote sub has weight 7 out of 10, so should be picked ~70% of the time.
+	const n = 100_000
+	var picked int
+	for range n {
+		if weightedQSubIndex(r.qsubs[0], r.qwn[0]) == 0 {
+			picked++
+		}
+	}
+	if pct := float64(picked) / n; pct < 0.68 || pct > 0.72 {
+		t.Fatalf("Expected remote picked ~70%%, got %.2f%%", pct*100)
+	}
+
+	// A weighted remote sub inserted into a cached result is also moved to the front.
+	remote2 := newRemoteQSub("foo", "bar", 5)
+	require_NoError(t, s.Insert(remote2))
+	r = s.Match("foo")
+	require_Len(t, len(r.qsubs[0]), 5)
+	require_Equal(t, r.qwn[0], 2)
+	require_True(t, r.qsubs[0][1] == remote2)
+
+	// A local sub keeps weight 1 regardless of qw.
+	local := newQSub("foo", "bar")
+	local.qw = 9
+	require_Equal(t, qsubWeight(local), 1)
 }
 
 func TestSublistSharedEmptyResult(t *testing.T) {
