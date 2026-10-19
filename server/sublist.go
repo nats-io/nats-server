@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"errors"
 	"iter"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,6 +60,7 @@ const (
 type SublistResult struct {
 	psubs []*subscription
 	qsubs [][]*subscription // don't make this a map, too expensive to iterate
+	qwn   []int             // number of weighted remote qsubs at the front of each queue group
 }
 
 // SublistFilter is a function that is used to decide if a subscription should
@@ -470,6 +472,7 @@ func copyResult(r *SublistResult) *SublistResult {
 		nqr := append([]*subscription(nil), qr...)
 		nr.qsubs = append(nr.qsubs, nqr)
 	}
+	nr.qwn = append([]int(nil), r.qwn...)
 	return nr
 }
 
@@ -480,13 +483,28 @@ func (r *SublistResult) addSubToResult(sub *subscription) *SublistResult {
 	if sub.queue == nil {
 		nr.psubs = append(nr.psubs, sub)
 	} else {
-		if i := findQSlot(sub.queue, nr.qsubs); i >= 0 {
-			nr.qsubs[i] = append(nr.qsubs[i], sub)
-		} else {
-			nr.qsubs = append(nr.qsubs, []*subscription{sub})
+		i := findQSlot(sub.queue, nr.qsubs)
+		if i < 0 {
+			i = len(nr.qsubs)
+			nr.qsubs = append(nr.qsubs, nil)
 		}
+		nr.addQSub(i, sub)
 	}
 	return nr
+}
+
+// Adds a queue sub to queue group i, keeping weighted remote qsubs at the front.
+func (r *SublistResult) addQSub(i int, sub *subscription) {
+	r.qsubs[i] = append(r.qsubs[i], sub)
+	if qsubWeight(sub) == 1 {
+		return
+	}
+	for len(r.qwn) <= i {
+		r.qwn = append(r.qwn, 0)
+	}
+	qs, n := r.qsubs[i], r.qwn[i]
+	qs[n], qs[len(qs)-1] = qs[len(qs)-1], qs[n]
+	r.qwn[i]++
 }
 
 // addToCache will add the new entry to the existing cache
@@ -703,9 +721,44 @@ func (s *Sublist) reduceCacheCount() {
 	s.Unlock()
 }
 
-// Helper function for auto-expanding remote qsubs.
+// Helper function for weighted remote qsubs.
 func isRemoteQSub(sub *subscription) bool {
 	return sub != nil && sub.queue != nil && sub.client != nil && (sub.client.kind == ROUTER || sub.client.kind == LEAF)
+}
+
+// Returns the selection weight of a queue sub.
+// Remote queue subs represent qw members on the remote side.
+func qsubWeight(sub *subscription) uint64 {
+	if isRemoteQSub(sub) {
+		if qw := atomic.LoadInt32(&sub.qw); qw > 1 {
+			return uint64(qw)
+		}
+	}
+	return 1
+}
+
+// Picks a random index into qsubs, weighted by qsubWeight.
+// The first nw subs are weighted remote qsubs, the rest have weight 1.
+func weightedQSubIndex(qsubs []*subscription, nw int) int {
+	// All weights are 1, so pick uniformly.
+	if nw == 0 {
+		return int(rand.Uint64N(uint64(len(qsubs))))
+	}
+	total := uint64(len(qsubs) - nw)
+	for _, sub := range qsubs[:nw] {
+		total += qsubWeight(sub)
+	}
+	n := rand.Uint64N(total)
+	for i, sub := range qsubs[:nw] {
+		w := qsubWeight(sub)
+		if n < w {
+			return i
+		}
+		n -= w
+	}
+	// Past the weighted prefix every sub has weight 1.
+	// Clamp in case a weight was lowered concurrently.
+	return min(nw+int(n), len(qsubs)-1)
 }
 
 // UpdateRemoteQSub should be called when we update the weight of an existing
@@ -742,16 +795,9 @@ func addNodeToResults(n *node, results *SublistResult) {
 			nqsub := make([]*subscription, 0, len(qr))
 			results.qsubs = append(results.qsubs, nqsub)
 		}
+		// Remote queue subs are added once, their weight is applied on delivery.
 		for sub := range qr {
-			if isRemoteQSub(sub) {
-				ns := atomic.LoadInt32(&sub.qw)
-				// Shadow these subscriptions
-				for n := 0; n < int(ns); n++ {
-					results.qsubs[i] = append(results.qsubs[i], sub)
-				}
-			} else {
-				results.qsubs[i] = append(results.qsubs[i], sub)
-			}
+			results.addQSub(i, sub)
 		}
 	}
 }
