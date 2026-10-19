@@ -5167,7 +5167,7 @@ func TestLeafNodeQueueGroupWeightCorrectOnConnectionCloseInSuperCluster(t *testi
 	checkLeafNodeConnectedCount(t, sb2, 2)
 
 	// Helper to check that the interest is propagated to all servers
-	checkInterest := func(t *testing.T, expected []int, expectedGW int32) {
+	checkInterest := func(t *testing.T, expected []int, expectedGW int64) {
 		t.Helper()
 		subj := "foo"
 		for i, s := range []*Server{sa1, sa2, so1, so2, sb1, sb2, sc, sd} {
@@ -5196,7 +5196,7 @@ func TestLeafNodeQueueGroupWeightCorrectOnConnectionCloseInSuperCluster(t *testi
 				s.gateway.pasi.Lock()
 				accMap := s.gateway.pasi.m
 				st := accMap["USER"]
-				var n int32
+				var n int64
 				entry, ok := st["foo bar"]
 				if ok {
 					n = entry.n
@@ -5973,8 +5973,8 @@ func createRawLeafConn(t *testing.T, port int, proto string) (net.Conn, *bufio.R
 	}
 }
 
-// Runs a two server hub cluster with leafnode listeners.
-func createHubClusterWithLeafListeners(t *testing.T) (*Server, *Server, *Options) {
+// Runs a two server hub cluster with leafnode listeners and optionally a gateway.
+func createHubClusterWithLeafListeners(t *testing.T, gateway bool) (*Server, *Server, *Options) {
 	t.Helper()
 	conf := `
 		server_name: %s
@@ -5987,13 +5987,20 @@ func createHubClusterWithLeafListeners(t *testing.T) (*Server, *Server, *Options
 		leafnodes {
 			listen: "127.0.0.1:-1"
 		}
+		%s
 	`
-	s1Conf := createConfFile(t, []byte(fmt.Sprintf(conf, "S1", _EMPTY_)))
+	var gw string
+	if gateway {
+		gw = `gateway { name: HUB, listen: "127.0.0.1:-1" }
+		accounts { SYS {} }
+		system_account: SYS`
+	}
+	s1Conf := createConfFile(t, []byte(fmt.Sprintf(conf, "S1", _EMPTY_, gw)))
 	s1, s1Opts := RunServerWithConfig(s1Conf)
 	t.Cleanup(s1.Shutdown)
 
 	s2Conf := createConfFile(t, []byte(fmt.Sprintf(conf, "S2",
-		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", s1Opts.Cluster.Port))))
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", s1Opts.Cluster.Port), gw)))
 	s2, _ := RunServerWithConfig(s2Conf)
 	t.Cleanup(s2.Shutdown)
 
@@ -6002,7 +6009,7 @@ func createHubClusterWithLeafListeners(t *testing.T) (*Server, *Server, *Options
 }
 
 func TestLeafNodeQueueWeightRoutedMsgPicksLeafByWeight(t *testing.T) {
-	s1, s2, _ := createHubClusterWithLeafListeners(t)
+	s1, s2, _ := createHubClusterWithLeafListeners(t, false)
 
 	// Two leafs on s2 with queue weights 9 and 1, and no local queue members.
 	port := s2.getOpts().LeafNode.Port
@@ -6043,6 +6050,89 @@ func TestLeafNodeQueueWeightRoutedMsgPicksLeafByWeight(t *testing.T) {
 	if pct := float64(received[0].Load()) / n; pct < 0.85 || pct > 0.95 {
 		t.Fatalf("Expected the leaf with weight 9 to get ~90%%, got %.2f%%", pct*100)
 	}
+}
+
+func TestLeafNodeQueueWeightOverflowKeepsRouteInterest(t *testing.T) {
+	s1, s2, s1Opts := createHubClusterWithLeafListeners(t, true)
+
+	leafConn := func(proto string) net.Conn {
+		t.Helper()
+		nc, _ := createRawLeafConn(t, s1Opts.LeafNode.Port, proto)
+		return nc
+	}
+
+	// Returns the weight total s1 tracks for the gateway queue interest.
+	gatewayWeight := func(subj string) int64 {
+		s1.gateway.pasi.Lock()
+		defer s1.gateway.pasi.Unlock()
+		if entry, ok := s1.gateway.pasi.m[globalAccountName][subj+" Q1"]; ok {
+			return entry.n
+		}
+		return 0
+	}
+
+	// Returns the weight total s1 tracks for the leaf queue interest.
+	totalWeight := func(subj string) int64 {
+		key := keyFromSubWithOrigin(&subscription{leaf: true, subject: []byte(subj), queue: []byte("Q1")})
+		acc := s1.GlobalAccount()
+		acc.mu.RLock()
+		defer acc.mu.RUnlock()
+		return acc.rm[key]
+	}
+
+	// Returns the weight s2 received from s1 for the leaf queue interest.
+	routeWeight := func(subj string) (qw int32, found bool) {
+		s2.forEachRoute(func(r *client) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for _, sub := range r.subs {
+				if sub.leaf && string(sub.subject) == subj && string(sub.queue) == "Q1" {
+					qw, found = atomic.LoadInt32(&sub.qw), true
+				}
+			}
+		})
+		return qw, found
+	}
+
+	checkWeights := func(subj string, total int64, expected int32) {
+		t.Helper()
+		checkFor(t, 2*time.Second, 20*time.Millisecond, func() error {
+			if n := totalWeight(subj); n != total {
+				return fmt.Errorf("expected total weight %d, got %d", total, n)
+			}
+			if n := gatewayWeight(subj); n != total {
+				return fmt.Errorf("expected gateway weight %d, got %d", total, n)
+			}
+			qw, found := routeWeight(subj)
+			if expected == 0 && found {
+				return fmt.Errorf("expected no route interest, got weight %d", qw)
+			} else if expected > 0 && qw != expected {
+				return fmt.Errorf("expected route weight %d, got %d (found=%v)", expected, qw, found)
+			}
+			return nil
+		})
+	}
+
+	// The total stays exact past int32 and the parseable weight limit, peers get the max weight.
+	var conns []net.Conn
+	for i := int64(1); i <= 3; i++ {
+		conns = append(conns, leafConn("LS+ foo Q1 999999999\r\n"))
+		checkWeights("foo", i*maxQueueWeight, maxQueueWeight)
+	}
+
+	// Interest is kept until the last leaf is gone.
+	for i := int64(2); i >= 0; i-- {
+		conns[i].Close()
+		expected := int32(maxQueueWeight)
+		if i == 0 {
+			expected = 0
+		}
+		checkWeights("foo", i*maxQueueWeight, expected)
+	}
+
+	// A malformed weight counts as a single member.
+	leafConn("LS+ bar Q1 1234567890\r\n")
+	checkWeights("bar", 1, 1)
 }
 
 func TestLeafNodeQueueGroupWithLateLNJoin(t *testing.T) {

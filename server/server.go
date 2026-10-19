@@ -2024,7 +2024,7 @@ func (s *Server) registerAccountNoLock(acc *Account) *Account {
 	// make sure we create only if needed.
 	// TODO(dlc)- Double check that we need this for GWs.
 	if acc.rm == nil && s.opts != nil && s.shouldTrackSubscriptions() {
-		acc.rm = make(map[string]int32)
+		acc.rm = make(map[string]int64)
 		acc.lws = make(map[string]int32)
 	}
 	acc.srv = s
