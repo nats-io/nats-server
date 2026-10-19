@@ -79,8 +79,8 @@ type Account struct {
 	nleafs       int32
 	nrleafs      int32
 	clients      map[*client]struct{}
-	rm           map[string]int32
-	lws          map[string]int32 // per key, last rm[key] sent to routes; used to dedup sends
+	rm           map[string]int64
+	lws          map[string]int32 // per key, last queueWeight(rm[key]) sent to routes; used to dedup sends
 	usersRevoked map[string]int64
 	mappings     []*mapping
 	hasMapped    atomic.Bool
