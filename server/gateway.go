@@ -185,7 +185,7 @@ type srvGateway struct {
 // Subject interest tally. Also indicates if the key in the map is a
 // queue or not.
 type sitally struct {
-	n int32 // number of subscriptions directly matching
+	n int64 // number of subscriptions directly matching
 	q bool  // indicate that this is a queue
 }
 
@@ -2409,11 +2409,11 @@ func (s *Server) gatewayUpdateSubInterest(accName string, sub *subscription, cha
 		if change < 0 {
 			return
 		}
-		entry = &sitally{n: change, q: sub.queue != nil}
+		entry = &sitally{n: int64(change), q: sub.queue != nil}
 		st[string(key)] = entry
 		first = true
 	} else {
-		entry.n += change
+		entry.n += int64(change)
 		if entry.n <= 0 {
 			delete(st, bytesToString(key))
 			last = true
