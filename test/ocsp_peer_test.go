@@ -1332,6 +1332,11 @@ func TestOCSPPeerMonitor(t *testing.T) {
 					t.Fatalf("Expected WS Client TLSOCSPPeerVerify to be true, got false")
 				}
 			}
+			if test.MQTTClient {
+				if !v.MQTT.TLSOCSPPeerVerify {
+					t.Fatalf("Expected MQTT Client TLSOCSPPeerVerify to be true, got false")
+				}
+			}
 			if test.LeafClient {
 				if !v.LeafNode.TLSOCSPPeerVerify {
 					t.Fatalf("Expected Leaf Client TLSOCSPPeerVerify to be true, got false")
