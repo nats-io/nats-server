@@ -42,7 +42,8 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 		c := createJetStreamClusterExplicit(t, "R3S", 3)
 		defer c.shutdown()
 
-		nc, js := jsClientConnect(t, c.randomServer())
+		s := c.randomServer()
+		nc, js := jsClientConnect(t, s)
 		defer nc.Close()
 
 		var pubAck JSPubAckResponse
@@ -57,6 +58,8 @@ func TestJetStreamAtomicBatchPublish(t *testing.T) {
 
 		_, err := jsStreamCreate(t, nc, cfg)
 		require_NoError(t, err)
+		// The stream's subscription can take a moment to reach the client server.
+		checkSubInterest(t, s, globalAccountName, "foo.0", 2*time.Second)
 
 		m := nats.NewMsg("foo.0")
 		m.Data = []byte("foo.0")
