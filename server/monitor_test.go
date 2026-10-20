@@ -977,6 +977,36 @@ func TestMonitorConnzOffsetOverflow(t *testing.T) {
 	require_NoError(t, err)
 }
 
+func TestMonitorConnzSortedPaging(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	// All clients tie on these sort options.
+	clients := make([]*nats.Conn, 50)
+	for i := range clients {
+		clients[i] = createClientConnSubscribeAndPublish(t, s)
+		defer clients[i].Close()
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for _, sortOpt := range []SortOpt{BySubs, ByPending, ByOutMsgs, ByInMsgs, ByOutBytes, ByInBytes} {
+		for mode := range 2 {
+			// Paging must return every connection exactly once.
+			seen := make(map[uint64]struct{})
+			for offset := 0; offset < 50; offset += 10 {
+				c := pollConnz(t, s, mode, fmt.Sprintf("%sconnz?sort=%s&offset=%d&limit=10", url, sortOpt, offset),
+					&ConnzOptions{Sort: sortOpt, Offset: offset, Limit: 10})
+				require_Equal(t, c.Total, 50)
+				require_Len(t, len(c.Conns), 10)
+				for _, ci := range c.Conns {
+					seen[ci.Cid] = struct{}{}
+				}
+			}
+			require_Len(t, len(seen), 50)
+		}
+	}
+}
+
 func TestMonitorConnzDefaultSorted(t *testing.T) {
 	s := runMonitorServer()
 	defer s.Shutdown()
@@ -1966,6 +1996,40 @@ func TestMonitorSubszMultiAccount(t *testing.T) {
 				t.Fatalf("Expected account information to be present and be 'A', got %q", sd.Account)
 			}
 		}
+	}
+}
+
+func TestMonitorSubszMultiAccountPaging(t *testing.T) {
+	s := runMonitorServer()
+	defer s.Shutdown()
+
+	ncA := createClientConnWithUserSubscribeAndPublish(t, s, "a", "a")
+	defer ncA.Close()
+	ncB := createClientConnWithUserSubscribeAndPublish(t, s, "b", "b")
+	defer ncB.Close()
+
+	for _, nc := range []*nats.Conn{ncA, ncB} {
+		for i := range 200 {
+			_, err := nc.Subscribe(fmt.Sprintf("foo.%d", i), func(m *nats.Msg) {})
+			require_NoError(t, err)
+		}
+		require_NoError(t, nc.Flush())
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/", s.MonitorAddr().Port)
+	for mode := range 2 {
+		// Paging must return every subscription exactly once.
+		seen := make(map[SubDetail]struct{})
+		for offset := 0; offset < 400; offset += 100 {
+			sl := pollSubsz(t, s, mode, fmt.Sprintf("%ssubsz?subs=1&offset=%d&limit=100", url, offset),
+				&SubszOptions{Subscriptions: true, Offset: offset, Limit: 100})
+			require_Equal(t, sl.Total, 400)
+			require_Len(t, len(sl.Subs), 100)
+			for _, sd := range sl.Subs {
+				seen[sd] = struct{}{}
+			}
+		}
+		require_Len(t, len(seen), 400)
 	}
 }
 
