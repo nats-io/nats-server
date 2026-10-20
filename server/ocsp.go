@@ -613,7 +613,7 @@ func (s *Server) configureOCSP() []*tlsConfigKind {
 		configs = append(configs, o)
 	}
 	if config := sopts.MQTT.TLSConfig; config != nil {
-		opts := sopts.tlsConfigOpts
+		opts := sopts.MQTT.tlsConfigOpts
 		o := &tlsConfigKind{
 			kind:      kindStringMap[CLIENT],
 			tlsConfig: config,
