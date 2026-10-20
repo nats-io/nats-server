@@ -15,6 +15,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -530,6 +531,36 @@ func TestRemoveAdditionalAuthFieldsFromTrace(t *testing.T) {
 			output := removeSecretsFromTrace([]byte(test.input))
 			if !bytes.Equal(output, []byte(test.expected)) {
 				t.Errorf("\nExpected %q\n    got: %q", test.expected, string(output))
+			}
+		})
+	}
+}
+
+func TestRemoveCaseVariantAuthFieldsFromTrace(t *testing.T) {
+	const secret = "s3cr3t"
+	tests := []struct {
+		key     string
+		decoded func(ClientOpts) string
+	}{
+		{"JWT", func(o ClientOpts) string { return o.JWT }},
+		{"Jwt", func(o ClientOpts) string { return o.JWT }},
+		{"SIG", func(o ClientOpts) string { return o.Sig }},
+		{"NKEY", func(o ClientOpts) string { return o.Nkey }},
+		{"PASS", func(o ClientOpts) string { return o.Password }},
+		{"Auth_Token", func(o ClientOpts) string { return o.Token }},
+		{"PROXY_SIG", func(o ClientOpts) string { return o.ProxySig }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.key, func(t *testing.T) {
+			arg := []byte(`{"` + test.key + `":"` + secret + `","user":"foo"}`)
+			var opts ClientOpts
+			require_NoError(t, json.Unmarshal(arg, &opts))
+			require_Equal(t, test.decoded(opts), secret)
+
+			output := removeSecretsFromTrace(arg)
+			if bytes.Contains(output, []byte(secret)) {
+				t.Fatalf("trace exposed a credential the CONNECT decoder accepts: %q", output)
 			}
 		})
 	}
