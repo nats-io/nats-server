@@ -1965,9 +1965,11 @@ func (c *client) flushOutbound() bool {
 			}
 		} else {
 			// Other errors will cause connection to be closed.
-			// For clients, report as debug but for others report as error.
+			// For clients, or if the connection was already marked as closed
+			// while the write was in progress, report as debug, otherwise
+			// report as error.
 			report := c.Debugf
-			if c.kind != CLIENT {
+			if c.kind != CLIENT && !c.isClosed() {
 				report = c.Errorf
 			}
 			report("Error flushing: %v", err)
@@ -2086,6 +2088,12 @@ func (c *client) markConnAsClosed(reason ClosedState) {
 		c.flags.set(skipFlushOnClose)
 		skipFlush = true
 	case StaleConnection:
+		// For server-to-server connections, close without attempting to flush
+		// pending data to the unresponsive remote, see closeStaleWithoutFlush().
+		if c.closeStaleWithoutFlush() {
+			c.flags.set(skipFlushOnClose)
+			skipFlush = true
+		}
 		// Track stale connections statistics.
 		atomic.AddInt64(&c.srv.staleConnections, 1)
 		switch c.kind {
@@ -5987,7 +5995,7 @@ func (c *client) processPingTimer() {
 		}
 		if c.ping.out+1 > maxPingsOut {
 			c.Debugf("Stale Client Connection - Closing")
-			c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+			c.enqueueStaleConnectionErr()
 			c.mu.Unlock()
 			c.closeConnection(StaleConnection)
 			return
@@ -6017,6 +6025,36 @@ func adjustPingInterval(kind int, d time.Duration) time.Duration {
 	return d
 }
 
+// Returns true if this connection, once detected as stale, should be closed
+// right away without attempting to flush pending outbound data.
+//
+// This is the case for server-to-server connections (routes, gateways and
+// leafnodes): the remote server has not responded to our PINGs, so the pending
+// data (including the -ERR protocol) would be flushed to a peer that is not
+// reading, with the flush blocking for up to the write deadline per batch.
+// Doing so only delays the close of the socket, which in turn delays the
+// reconnect of the soliciting side and, on the accepting side, the acceptance
+// of the new connection.
+//
+// Lock should be held.
+func (c *client) closeStaleWithoutFlush() bool {
+	return c.kind == ROUTER || c.kind == GATEWAY || c.kind == LEAF
+}
+
+// Enqueues the -ERR protocol for a stale connection, unless this connection
+// is to be closed without flushing (see closeStaleWithoutFlush()). In that
+// case, enqueuing would be pointless and would also signal the writeLoop,
+// which could then block on a write to the unresponsive peer before the
+// connection is marked as closed.
+//
+// Lock should be held.
+func (c *client) enqueueStaleConnectionErr() {
+	if c.closeStaleWithoutFlush() {
+		return
+	}
+	c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+}
+
 // This is used when a connection cannot yet start to send PINGs because
 // the remote would not be able to handle them (case of compression,
 // or outbound gateway, etc...), but we still want to close the connection
@@ -6028,7 +6066,7 @@ func (c *client) watchForStaleConnection(pingInterval time.Duration, pingMax int
 	c.ping.tmr = time.AfterFunc(pingInterval*time.Duration(pingMax+1), func() {
 		c.mu.Lock()
 		c.Debugf("Stale Client Connection - Closing")
-		c.enqueueProto([]byte(fmt.Sprintf(errProto, "Stale Connection")))
+		c.enqueueStaleConnectionErr()
 		c.mu.Unlock()
 		c.closeConnection(StaleConnection)
 	})
@@ -6302,6 +6340,21 @@ func (c *client) closeConnection(reason ClosedState) {
 	c.clearPingTimer()
 	c.clearTlsToTimer()
 	c.markConnAsClosed(reason)
+
+	// For server-to-server connections detected as stale while the writeLoop
+	// is blocked in a write (the remote is not draining, or is draining slowly,
+	// the pending data), close the socket now to unblock that write instead of
+	// waiting for its deadline. The writeLoop will then complete the teardown.
+	if reason == StaleConnection && c.closeStaleWithoutFlush() && c.flags.isSet(flushOutbound) {
+		if nc := c.nc; nc != nil {
+			// See flushAndClose() for why the TLS close is done in a go routine.
+			if _, ok := nc.(*tls.Conn); ok {
+				go func() { nc.Close() }()
+			} else {
+				nc.Close()
+			}
+		}
+	}
 
 	// Unblock anyone who is potentially stalled waiting on us.
 	if c.out.stc != nil {

@@ -3842,9 +3842,12 @@ func (s *Server) leafNodeResumeConnectProcess(c *client) {
 		}
 		clearTimer(&c.ping.tmr)
 		closed := c.isClosed()
+		if !closed {
+			c.enqueueStaleConnectionErr()
+		}
 		c.mu.Unlock()
 		if !closed {
-			c.sendErrAndDebug("Stale Leaf Node Connection - Closing")
+			c.RateLimitDebugf("Stale Leaf Node Connection - Closing")
 			c.closeConnection(StaleConnection)
 		}
 	})

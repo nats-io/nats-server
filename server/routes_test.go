@@ -4672,6 +4672,179 @@ func TestRouteCompressionStaleConnectionUsesClusterPingMax(t *testing.T) {
 	}
 }
 
+// stalledConn simulates a connection whose link is dead in both directions:
+// any Write blocks until the write deadline expires (returning a timeout error
+// as the kernel would when the socket send buffer is full) or until Close()
+// is called. The underlying connection is intentionally not closed by Close()
+// so that the remote does not get an EOF: the test closes it explicitly.
+type stalledConn struct {
+	net.Conn
+	mu       sync.Mutex
+	deadline time.Time
+	closed   chan struct{}
+	once     sync.Once
+	writes   atomic.Int32
+}
+
+func (c *stalledConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.mu.Unlock()
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func (c *stalledConn) Write(b []byte) (int, error) {
+	c.writes.Add(1)
+	c.mu.Lock()
+	dl := c.deadline
+	c.mu.Unlock()
+	var expired <-chan time.Time
+	if !dl.IsZero() {
+		tmr := time.NewTimer(time.Until(dl))
+		defer tmr.Stop()
+		expired = tmr.C
+	}
+	select {
+	case <-expired:
+		return 0, os.ErrDeadlineExceeded
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *stalledConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+// stallConnection replaces the socket of the given connection with a
+// stalledConn, as if the remote was not reading anymore. It also puts some
+// data in the outbound queue (as if the remote was not draining it) and makes
+// it so that the next invocation of the ping timer detects the connection as
+// stale. If `inFlight` is true, the writeLoop is signaled and the function
+// returns once it is blocked writing the pending data.
+func stallConnection(t *testing.T, c *client, maxPingsOut int, inFlight bool) *stalledConn {
+	t.Helper()
+	c.mu.Lock()
+	sc := &stalledConn{Conn: c.nc, closed: make(chan struct{})}
+	c.nc = sc
+	c.queueOutbound(make([]byte, 64*1024))
+	c.clearPingTimer()
+	c.ping.out = maxPingsOut
+	// Some connections (hub side of a leafnode) delay sending PINGs if data
+	// was recently received, so make it look like nothing was received.
+	c.lastIn = time.Time{}
+	if inFlight {
+		c.flushSignal()
+	}
+	c.mu.Unlock()
+	if inFlight {
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			if sc.writes.Load() == 0 {
+				return fmt.Errorf("writeLoop not yet blocked in a write")
+			}
+			return nil
+		})
+	}
+	return sc
+}
+
+// checkStalledConnsClosed verifies that the given stalled connections were
+// closed shortly after `start`, with exactly `writes` write attempts.
+func checkStalledConnsClosed(t *testing.T, start time.Time, wdl time.Duration, writes int32, scs ...*stalledConn) {
+	t.Helper()
+	for i, sc := range scs {
+		select {
+		case <-sc.closed:
+		case <-time.After(time.Second):
+			t.Fatalf("Stale connection %d not closed after %v (write deadline is %v)",
+				i+1, time.Since(start).Round(time.Millisecond), wdl)
+		}
+		if n := sc.writes.Load(); n != writes {
+			t.Fatalf("Expected %d write attempt(s) on stale connection %d, got %d", writes, i+1, n)
+		}
+	}
+}
+
+func TestRouteStaleConnectionClosesWithoutFlush(t *testing.T) {
+	// A write to the stalled route blocks for that long. Before the fix,
+	// a stale route would attempt a final flush of its pending data, and
+	// so the close of the socket (and the reconnect) was delayed by up to
+	// the write deadline per batch of pending data, in addition to the
+	// write deadline of the write possibly already in progress.
+	const wdl = 5 * time.Second
+
+	for _, test := range []struct {
+		name     string
+		inFlight bool
+	}{
+		{"writeLoop idle", false},
+		{"writeLoop blocked in write", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			o1 := DefaultOptions()
+			o1.Cluster.PoolSize = -1
+			// Make sure that no PING is exchanged during the test so that
+			// the stale detection is fully under the control of the test.
+			o1.Cluster.PingInterval = time.Hour
+			o1.Cluster.WriteDeadline = wdl
+			s1 := RunServer(o1)
+			defer s1.Shutdown()
+
+			o2 := DefaultOptions()
+			o2.Cluster.PoolSize = -1
+			o2.Cluster.PingInterval = time.Hour
+			o2.Cluster.WriteDeadline = wdl
+			o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+			s2 := RunServer(o2)
+			defer s2.Shutdown()
+
+			checkClusterFormed(t, s1, s2)
+
+			// Stall both ends of the route: from each server's perspective,
+			// the remote server is not reading anymore.
+			stall := func(s *Server) (*client, *stalledConn) {
+				t.Helper()
+				s.mu.RLock()
+				r := getFirstRoute(s)
+				s.mu.RUnlock()
+				require_True(t, r != nil)
+				return r, stallConnection(t, r, s.getOpts().MaxPingsOut, test.inFlight)
+			}
+			r1, sc1 := stall(s1)
+			r2, sc2 := stall(s2)
+			// Make sure that the underlying connections are closed at the
+			// end of the test so that the read loops of the stalled routes exit.
+			defer sc1.Conn.Close()
+			defer sc2.Conn.Close()
+
+			// Both servers now detect the route as stale, as they would when
+			// their ping timers fire.
+			start := time.Now()
+			r1.processPingTimer()
+			r2.processPingTimer()
+
+			// Both ends should have closed their socket right away, without
+			// attempting to flush anything to the unresponsive remote (the
+			// only write attempt being the one possibly already in progress).
+			var writes int32
+			if test.inFlight {
+				writes = 1
+			}
+			checkStalledConnsClosed(t, start, wdl, writes, sc1, sc2)
+			// The connections should have been accounted as stale connections.
+			require_Equal(t, s1.staleStats.routes.Load(), 1)
+			require_Equal(t, s2.staleStats.routes.Load(), 1)
+
+			// Simulate the remote getting the close of the socket, and check
+			// that the route is re-established.
+			sc1.Conn.Close()
+			sc2.Conn.Close()
+			checkClusterFormed(t, s1, s2)
+		})
+	}
+}
+
 func TestRouteNoLeakOnSlowConsumer(t *testing.T) {
 	o1 := DefaultOptions()
 	o1.Cluster.PoolSize = -1

@@ -2072,6 +2072,10 @@ type netProxy struct {
 	url      string
 	surl     string
 	port     int
+	// If set, the receive buffer of the proxied connections is set to this
+	// size, which limits how much data the kernel can absorb and so forces
+	// the servers to keep the pending data in their own outbound queues.
+	rcvbuf int
 }
 
 func newNetProxy(rtt time.Duration, upRate, downRate int, serverURL string) *netProxy {
@@ -2138,6 +2142,10 @@ func (np *netProxy) start() {
 			server, err := net.DialTimeout("tcp", host, time.Second)
 			if err != nil {
 				continue
+			}
+			if np.rcvbuf > 0 {
+				client.(*net.TCPConn).SetReadBuffer(np.rcvbuf)
+				server.(*net.TCPConn).SetReadBuffer(np.rcvbuf)
 			}
 			np.conns = append(np.conns, client, server)
 			go np.loop(np.up, client, server)

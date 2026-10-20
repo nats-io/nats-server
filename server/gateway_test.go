@@ -7712,6 +7712,56 @@ func TestGatewayOCSPMissingPeerStapleIssue(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGatewayStaleConnectionClosesWithoutFlush(t *testing.T) {
+	// See TestRouteStaleConnectionClosesWithoutFlush for details.
+	const wdl = 5 * time.Second
+
+	ob := testDefaultOptionsForGateway("B")
+	// Make sure that no PING is exchanged during the test so that the stale
+	// detection is fully under the control of the test.
+	ob.PingInterval = time.Hour
+	ob.Gateway.WriteDeadline = wdl
+	sb := runGatewayServer(ob)
+	defer sb.Shutdown()
+
+	oa := testGatewayOptionsFromToWithServers(t, "A", "B", sb)
+	oa.PingInterval = time.Hour
+	oa.Gateway.WriteDeadline = wdl
+	sa := runGatewayServer(oa)
+	defer sa.Shutdown()
+
+	waitForOutboundGateways(t, sa, 1, 2*time.Second)
+	waitForInboundGateways(t, sb, 1, 2*time.Second)
+
+	// Stall both ends of the A->B gateway connection.
+	out := sa.getOutboundGatewayConnection("B")
+	require_True(t, out != nil)
+	var inbounds []*client
+	sb.getInboundGatewayConnections(&inbounds)
+	require_Equal(t, len(inbounds), 1)
+	in := inbounds[0]
+	sco := stallConnection(t, out, oa.MaxPingsOut, false)
+	sci := stallConnection(t, in, ob.MaxPingsOut, false)
+	defer sco.Conn.Close()
+	defer sci.Conn.Close()
+
+	// Both servers now detect the gateway connection as stale.
+	start := time.Now()
+	out.processPingTimer()
+	in.processPingTimer()
+
+	checkStalledConnsClosed(t, start, wdl, 0, sco, sci)
+	require_Equal(t, sa.staleStats.gateways.Load(), 1)
+	require_Equal(t, sb.staleStats.gateways.Load(), 1)
+
+	// Simulate the remote getting the close of the socket, and check that
+	// the gateway connection is re-established.
+	sco.Conn.Close()
+	sci.Conn.Close()
+	waitForOutboundGateways(t, sa, 1, 5*time.Second)
+	waitForInboundGateways(t, sb, 1, 5*time.Second)
+}
+
 func TestGatewayOutboundDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require_NoError(t, err)

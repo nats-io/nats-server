@@ -9909,6 +9909,68 @@ func (l *captureLeafConnClosed) Noticef(format string, v ...any) {
 	}
 }
 
+func TestLeafNodeStaleConnectionClosesWithoutFlush(t *testing.T) {
+	// See TestRouteStaleConnectionClosesWithoutFlush for details.
+	const wdl = 5 * time.Second
+
+	ho := DefaultOptions()
+	ho.Cluster.Name = "HUB"
+	ho.LeafNode.Host = "127.0.0.1"
+	ho.LeafNode.Port = -1
+	// Make sure that no PING is exchanged during the test so that the stale
+	// detection is fully under the control of the test.
+	ho.PingInterval = time.Hour
+	ho.LeafNode.WriteDeadline = wdl
+	hub := RunServer(ho)
+	defer hub.Shutdown()
+
+	so := DefaultOptions()
+	so.Cluster.Name = "SPOKE"
+	so.PingInterval = time.Hour
+	so.LeafNode.WriteDeadline = wdl
+	u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", hub.getOpts().LeafNode.Port))
+	require_NoError(t, err)
+	so.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}}}
+	spoke := RunServer(so)
+	defer spoke.Shutdown()
+
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, spoke)
+
+	// Stall both ends of the leafnode connection.
+	stall := func(s *Server) (*client, *stalledConn) {
+		t.Helper()
+		var l *client
+		s.mu.RLock()
+		for _, l = range s.leafs {
+			break
+		}
+		s.mu.RUnlock()
+		require_True(t, l != nil)
+		return l, stallConnection(t, l, s.getOpts().MaxPingsOut, false)
+	}
+	lh, sch := stall(hub)
+	ls, scs := stall(spoke)
+	defer sch.Conn.Close()
+	defer scs.Conn.Close()
+
+	// Both servers now detect the leafnode connection as stale.
+	start := time.Now()
+	lh.processPingTimer()
+	ls.processPingTimer()
+
+	checkStalledConnsClosed(t, start, wdl, 0, sch, scs)
+	require_Equal(t, hub.staleStats.leafs.Load(), 1)
+	require_Equal(t, spoke.staleStats.leafs.Load(), 1)
+
+	// Simulate the remote getting the close of the socket, and check that
+	// the leafnode connection is re-established.
+	sch.Conn.Close()
+	scs.Conn.Close()
+	checkLeafNodeConnected(t, hub)
+	checkLeafNodeConnected(t, spoke)
+}
+
 func TestLeafNodeDetectsStaleConnectionIfNoInfo(t *testing.T) {
 	for _, test := range []struct {
 		name      string

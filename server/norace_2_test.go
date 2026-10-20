@@ -3924,3 +3924,115 @@ func TestNoRaceFileStoreWeakCacheGCRecyclesBuf(t *testing.T) {
 		expectNotRecycled(t, arr)
 	})
 }
+
+func TestNoRaceRouteStaleOnCongestedLinkRecoversPromptly(t *testing.T) {
+	// The route is healthy but the link is congested in both directions:
+	// each server has a large backlog of pending data for the other, so the
+	// PINGs, and the PONGs replying to them, are queued behind that backlog
+	// and are not processed in time. A server then detects the route as
+	// stale while its writeLoop is busy draining the backlog. The route
+	// must be closed and re-established right away, without waiting for
+	// the write in progress, nor for a final flush of the backlog (each
+	// bounded by the write deadline).
+	const (
+		wdl     = 2 * time.Second
+		backlog = 16 * 1024 * 1024
+		rate    = 512 * 1024 // bytes/sec, in each direction
+	)
+
+	o1 := DefaultOptions()
+	o1.Cluster.PoolSize = -1
+	// The ping interval is such that the stale detection happens once the
+	// backlogs have built up (which takes a few seconds since producers
+	// get stalled by the write deadline) and both writeLoops are busy.
+	o1.Cluster.PingInterval = 3 * time.Second
+	o1.Cluster.WriteDeadline = wdl
+	s1 := RunServer(o1)
+	defer s1.Shutdown()
+
+	np := createNetProxy(0, rate, rate, fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port), false)
+	// Limit what the kernel can absorb so that the backlog stays in the
+	// servers' outbound queues.
+	np.rcvbuf = 64 * 1024
+	np.start()
+	defer np.stop()
+
+	o2 := DefaultOptions()
+	o2.Cluster.PoolSize = -1
+	o2.Cluster.PingInterval = 3 * time.Second
+	o2.Cluster.WriteDeadline = wdl
+	o2.Routes = RoutesFromStr(np.routeURL())
+	s2 := RunServer(o2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	nc1 := natsConnect(t, s1.ClientURL())
+	defer nc1.Close()
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+
+	// Interest on each side so that messages are routed in both directions.
+	natsSub(t, nc1, "to.s1", func(*nats.Msg) {})
+	natsSub(t, nc2, "to.s2", func(*nats.Msg) {})
+	natsFlush(t, nc1)
+	natsFlush(t, nc2)
+	checkSubInterest(t, s1, globalAccountName, "to.s2", time.Second)
+	checkSubInterest(t, s2, globalAccountName, "to.s1", time.Second)
+
+	// Create the backlogs.
+	payload := make([]byte, 512*1024)
+	var wg sync.WaitGroup
+	publish := func(nc *nats.Conn, subj string) {
+		defer wg.Done()
+		for i := 0; i < backlog/len(payload); i++ {
+			if err := nc.Publish(subj, payload); err != nil {
+				return
+			}
+		}
+		nc.Flush()
+	}
+	wg.Add(2)
+	go publish(nc1, "to.s2")
+	go publish(nc2, "to.s1")
+	wg.Wait()
+
+	// Check that both servers have a backlog and are busy writing it.
+	checkFor(t, 2*time.Second, 15*time.Millisecond, func() error {
+		for _, s := range []*Server{s1, s2} {
+			s.mu.RLock()
+			r := getFirstRoute(s)
+			s.mu.RUnlock()
+			if r == nil {
+				return fmt.Errorf("route on %s already gone", s)
+			}
+			r.mu.Lock()
+			pb, busy := r.out.pb, r.flags.isSet(flushOutbound)
+			r.mu.Unlock()
+			if pb < backlog/4 || !busy {
+				return fmt.Errorf("route on %s: pending=%d busy=%v", s, pb, busy)
+			}
+		}
+		return nil
+	})
+
+	// A server should detect the route as stale (the other may instead get
+	// the close of the socket from the first one).
+	checkFor(t, 10*time.Second, 15*time.Millisecond, func() error {
+		if s1.staleStats.routes.Load()+s2.staleStats.routes.Load() == 0 {
+			return fmt.Errorf("stale route not detected")
+		}
+		return nil
+	})
+	// From then, the route should be re-established well before the write
+	// deadline: with the old behavior, it would take up to two write
+	// deadlines (the write in progress, then the final flush).
+	start := time.Now()
+	checkFor(t, wdl/2, 15*time.Millisecond, func() error {
+		if n1, n2 := s1.NumRoutes(), s2.NumRoutes(); n1 != 1 || n2 != 1 {
+			return fmt.Errorf("route not re-established after %v: s1=%d s2=%d",
+				time.Since(start).Round(time.Millisecond), n1, n2)
+		}
+		return nil
+	})
+}
