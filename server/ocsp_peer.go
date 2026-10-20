@@ -312,7 +312,7 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 			// Check if OCSP Response delegation present and if so is valid
 			if !certidp.ValidDelegationCheck(link.Issuer, ocspr) {
 				// Invalid delegation was already in cache, purge it and don't use it
-				s.Debugf(certidp.MsgCachedOCSPResponseInvalid, subj)
+				s.Debugf(certidp.MsgCachedOCSPResponseInvalid, subj, fingerprint)
 				rc.Delete(fingerprint, true, sLogs)
 				goto AFTERCACHE
 			}
