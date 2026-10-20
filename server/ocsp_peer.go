@@ -306,8 +306,8 @@ func (s *Server) certOCSPGood(link *certidp.ChainLink, opts *certidp.OCSPPeerCon
 	// Check our cache before calling out to the CA OCSP responder
 	s.Debugf(certidp.DbgCheckingCacheForCert, subj, fingerprint)
 	if rawResp = rc.Get(fingerprint, sLogs); len(rawResp) > 0 {
-		// Signature validation of CA's OCSP response occurs in ParseResponse
-		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
+		// Signature and serial number validation of CA's OCSP response occurs in ParseResponseForCert
+		ocspr, err = ocsp.ParseResponseForCert(rawResp, link.Leaf, link.Issuer)
 		if err == nil && ocspr != nil {
 			// Check if OCSP Response delegation present and if so is valid
 			if !certidp.ValidDelegationCheck(link.Issuer, ocspr) {
@@ -356,8 +356,8 @@ AFTERCACHE:
 			}
 			return certidp.MsgFailedOCSPResponseFetch, false
 		}
-		// Signature validation of CA's OCSP response occurs in ParseResponse
-		ocspr, err = ocsp.ParseResponse(rawResp, link.Issuer)
+		// Signature and serial number validation of CA's OCSP response occurs in ParseResponseForCert
+		ocspr, err = ocsp.ParseResponseForCert(rawResp, link.Leaf, link.Issuer)
 		if err == nil && ocspr != nil {
 			// Check if OCSP Response delegation present and if so is valid
 			if !certidp.ValidDelegationCheck(link.Issuer, ocspr) {

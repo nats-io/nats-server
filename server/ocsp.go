@@ -140,7 +140,7 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 		return nil, nil, err
 	}
 
-	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
+	resp, err := ocsp.ParseResponseForCert(raw, oc.Leaf, oc.Issuer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get local status: %w", err)
 	}
@@ -246,7 +246,7 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("exhausted ocsp servers: %w", err)
 	}
-	resp, err := ocsp.ParseResponse(raw, oc.Issuer)
+	resp, err := ocsp.ParseResponseForCert(raw, oc.Leaf, oc.Issuer)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get remote status: %w", err)
 	}
