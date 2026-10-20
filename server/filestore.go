@@ -13491,12 +13491,18 @@ type consumerFileStore struct {
 	ifn     string
 	hh      *highwayhash.Digest64
 	state   ConsumerState
-	fch     chan struct{}
-	qch     chan struct{}
-	flusher bool
-	writing bool
-	dirty   bool
-	closed  bool
+	// stateSet is true once the in-memory state has been explicitly loaded or
+	// written (even if it is the zero state). It distinguishes "the consumer is
+	// legitimately at the beginning (Delivered={0,0})" from "no state has been
+	// loaded yet, read it from disk". Without it, a consumer reset to the
+	// beginning (issue #8036) would be re-read from disk as its old, stale state.
+	stateSet bool
+	fch      chan struct{}
+	qch      chan struct{}
+	flusher  bool
+	writing  bool
+	dirty    bool
+	closed   bool
 }
 
 func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
@@ -14087,6 +14093,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+	o.stateSet = true
 
 	o.kickFlusher()
 
@@ -14129,6 +14136,7 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+	o.stateSet = true
 	buf, err := o.encodeState()
 	o.mu.Unlock()
 	if err != nil {
@@ -14321,7 +14329,10 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 	state := &ConsumerState{}
 
 	// See if we have a running state or if we need to read in from disk.
-	if o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0 {
+	// Use stateSet (not a non-zero check) so a consumer legitimately reset to
+	// the beginning (Delivered={0,0}, issue #8036) is not re-read from disk as
+	// its old, stale state.
+	if o.stateSet {
 		state.Delivered = o.state.Delivered
 		state.AckFloor = o.state.AckFloor
 		if len(o.state.Pending) > 0 {
@@ -14400,8 +14411,13 @@ func (o *consumerFileStore) loadState() error {
 	if _, err := os.Stat(o.ifn); err == nil {
 		// This will load our state in from disk.
 		_, err = o.stateWithCopyLocked(false)
+		if err == nil {
+			o.stateSet = true
+		}
 		return err
 	} else if os.IsNotExist(err) {
+		// New consumer with no state on disk; the zero state is authoritative.
+		o.stateSet = true
 		return nil
 	} else {
 		return err
