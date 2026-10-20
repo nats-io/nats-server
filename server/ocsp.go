@@ -140,12 +140,9 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 		return nil, nil, err
 	}
 
-	resp, err := ocsp.ParseResponseForCert(raw, oc.Leaf, oc.Issuer)
+	resp, err := oc.parseStatus(raw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get local status: %w", err)
-	}
-	if err := validOCSPResponse(resp); err != nil {
-		return nil, nil, err
 	}
 
 	// Cache the response.
@@ -155,6 +152,23 @@ func (oc *OCSPMonitor) getLocalStatus() ([]byte, *ocsp.Response, error) {
 	oc.mu.Unlock()
 
 	return raw, resp, nil
+}
+
+// parseStatus parses the OCSP response for the monitored certificate, checks if OCSP Response
+// delegation present and if so is valid, and checks the response's time validity.
+func (oc *OCSPMonitor) parseStatus(raw []byte) (*ocsp.Response, error) {
+	resp, err := ocsp.ParseResponseForCert(raw, oc.Leaf, oc.Issuer)
+	if err != nil {
+		return nil, err
+	}
+	// Check if OCSP Response delegation present and if so is valid
+	if !certidp.ValidDelegationCheck(oc.Issuer, resp) {
+		return nil, errors.New("OCSP response signer missing authorization by CA to act as OCSP signer")
+	}
+	if err := validOCSPResponse(resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
@@ -223,35 +237,32 @@ func (oc *OCSPMonitor) getRemoteStatus() ([]byte, *ocsp.Response, error) {
 	hc := oc.hc
 	oc.mu.Unlock()
 
-	var raw []byte
+	var (
+		raw  []byte
+		resp *ocsp.Response
+	)
 	for _, u := range responders {
 		var postErr, getErr error
 		u = strings.TrimSuffix(u, "/")
 		// Prefer to make POST requests first.
 		raw, postErr = postRequestBytes(u, reqDER, hc)
-		if postErr == nil {
-			err = nil
-			break
-		} else {
+		if postErr != nil {
 			// Fallback to use a GET request.
 			raw, getErr = getRequestBytes(u, reqDER, hc)
-			if getErr == nil {
-				err = nil
-				break
-			} else {
+			if getErr != nil {
 				err = errors.Join(postErr, getErr)
+				continue
 			}
 		}
+		// An invalid response must not prevent trying the next responder.
+		if resp, err = oc.parseStatus(raw); err != nil {
+			err = fmt.Errorf("failed to get remote status from %s: %w", u, err)
+			continue
+		}
+		break
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("exhausted ocsp servers: %w", err)
-	}
-	resp, err := ocsp.ParseResponseForCert(raw, oc.Leaf, oc.Issuer)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get remote status: %w", err)
-	}
-	if err := validOCSPResponse(resp); err != nil {
-		return nil, nil, err
 	}
 
 	if storeDir := opts.StoreDir; storeDir != _EMPTY_ {
