@@ -519,17 +519,8 @@ func (srv *Server) NewOCSPMonitor(config *tlsConfigKind) (*tls.Config, *OCSPMoni
 				}
 
 				// If signer was issuer delegate double-check issuer delegate authorization
-				if resp.Certificate != nil {
-					ok := false
-					for _, eku := range resp.Certificate.ExtKeyUsage {
-						if eku == x509.ExtKeyUsageOCSPSigning {
-							ok = true
-							break
-						}
-					}
-					if !ok {
-						return fmt.Errorf("OCSP staple's signer missing authorization by CA to act as OCSP signer")
-					}
+				if !certidp.ValidDelegationCheck(peerIssuer, resp) {
+					return fmt.Errorf("OCSP staple's signer missing authorization by CA to act as OCSP signer")
 				}
 
 				// Check that the OCSP response is effective, take defaults for clockskew and default validity
