@@ -3647,6 +3647,14 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		if !leader || o.store.HasState() {
 			info.Delivered.Consumer, info.Delivered.Stream = state.Delivered.Consumer, state.Delivered.Stream
 		}
+		// Deliveries awaiting quorum are sent once it's reached, even if paused meanwhile,
+		// so count them as delivered like NumAckPending does.
+		if leader && len(o.pendingDeliveries) > 0 {
+			info.Delivered.Consumer = max(info.Delivered.Consumer, o.dseq-1)
+			for sseq := range o.pendingDeliveries {
+				info.Delivered.Stream = max(info.Delivered.Stream, sseq)
+			}
+		}
 		info.AckFloor.Consumer, info.AckFloor.Stream = state.AckFloor.Consumer, state.AckFloor.Stream
 		if !leader {
 			info.NumAckPending = len(state.Pending)

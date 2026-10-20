@@ -12400,3 +12400,112 @@ func TestJetStreamClusterScaleDownNotBlockedByUnaddedPeer(t *testing.T) {
 		require_Equal(t, status.Description, "selecting peers to scale down to")
 	})
 }
+
+func TestJetStreamClusterConsumerPausedInfoCountsDeliveriesAwaitingQuorum(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Replicas: 3,
+	})
+	require_NoError(t, err)
+	for range 20 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:   "CONSUMER",
+		AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+
+	sub, err := nc.SubscribeSync(nats.NewInbox())
+	require_NoError(t, err)
+	defer sub.Unsubscribe()
+	pull := func() {
+		t.Helper()
+		req, err := json.Marshal(&JSApiConsumerGetNextRequest{Batch: 10, Expires: 10 * time.Second})
+		require_NoError(t, err)
+		require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), sub.Subject, req))
+	}
+	getConsumerInfo := func() ConsumerInfo {
+		t.Helper()
+		var ci ConsumerInfo
+		resp, err := nc.Request(fmt.Sprintf(JSApiConsumerInfoT, "TEST", "CONSUMER"), nil, time.Second)
+		require_NoError(t, err)
+		require_NoError(t, json.Unmarshal(resp.Data, &ci))
+		return ci
+	}
+
+	// Deliver some first, so the leader reports delivered from its replicated state.
+	pull()
+	checkSubsPending(t, sub, 10)
+
+	// Cut both followers off from new entries, so the leader holds its next
+	// deliveries until they reach quorum.
+	cl := c.consumerLeader(globalAccountName, "TEST", "CONSUMER")
+	var stalled []*raft
+	for _, s := range c.servers {
+		if s == cl {
+			continue
+		}
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		rn := o.raftNode().(*raft)
+		rn.Lock()
+		rn.unsubscribe(rn.aesub)
+		rn.Unlock()
+		stalled = append(stalled, rn)
+	}
+	var unstall sync.Once
+	resume := func() {
+		unstall.Do(func() {
+			for _, rn := range stalled {
+				rn.Lock()
+				aesub, err := rn.subscribe(rn.asubj, rn.handleAppendEntry)
+				rn.aesub = aesub
+				rn.Unlock()
+				require_NoError(t, err)
+			}
+		})
+	}
+	defer resume()
+
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+	pull()
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if n := len(o.pendingDeliveries); n != 10 {
+			return fmt.Errorf("expected 10 deliveries awaiting quorum, got %d", n)
+		}
+		return nil
+	})
+
+	jsTestPause_PauseConsumer(t, nc, "TEST", "CONSUMER", time.Now().Add(time.Minute))
+	var ci ConsumerInfo
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if ci = getConsumerInfo(); !ci.Paused {
+			return errors.New("consumer not paused")
+		}
+		return nil
+	})
+
+	// The held deliveries were made before the pause and still go out. A client
+	// that waits for a paused consumer's delivered count to know it has received
+	// everything must be shown them.
+	resume()
+	checkSubsPending(t, sub, 20)
+	require_Equal(t, ci.Delivered.Consumer, 20)
+}
