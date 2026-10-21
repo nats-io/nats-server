@@ -12431,6 +12431,57 @@ func TestJetStreamClusterNoInterestDesyncOnConsumerCreate(t *testing.T) {
 	t.Run("TwoConsumers", func(t *testing.T) { test(t, true) })
 }
 
+func TestJetStreamClusterInterestCheckDoesNotCompactPastReplay(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Storage:   nats.FileStorage,
+		Retention: nats.InterestPolicy,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	const numMsgs = 3
+	for range numMsgs {
+		_, err = js.Publish("foo", []byte("msg"))
+		require_NoError(t, err)
+	}
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(numMsgs)
+	require_NoError(t, err)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+		if state := mset.state(); state.Msgs != 0 {
+			return fmt.Errorf("expected acked messages to be removed, got %d", state.Msgs)
+		}
+		return nil
+	})
+
+	mset.checkInterestState()
+	require_NoError(t, mset.store.Truncate(0))
+	require_Equal(t, mset.state().LastSeq, uint64(0))
+
+	mset.checkInterestState()
+	require_Equal(t, mset.state().LastSeq, uint64(0))
+	for seq := uint64(1); seq <= numMsgs; seq++ {
+		require_NoError(t, mset.store.StoreRawMsg("foo", nil, []byte("msg"), seq, time.Now().UnixNano(), 0, false))
+	}
+	require_Equal(t, mset.state().LastSeq, uint64(numMsgs))
+}
+
 func TestJetStreamClusterRaftCatchupSignalsMetaRecovery(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

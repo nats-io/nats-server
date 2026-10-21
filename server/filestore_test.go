@@ -1059,6 +1059,27 @@ func TestFileStoreCompactPerf(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompactSkipsDeletedSpans(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 4096},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, _, err = fs.StoreMsg("foo", nil, []byte("first"), 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.SkipMsgs(2, 50_000))
+	_, _, err = fs.StoreMsg("foo", nil, []byte("last"), 0)
+	require_NoError(t, err)
+
+	purged, err := fs.Compact(50_003)
+	require_Equal(t, purged, uint64(2))
+	state := fs.State()
+	require_Equal(t, state.Msgs, uint64(0))
+	require_Equal(t, state.FirstSeq, uint64(50_003))
+	require_Equal(t, fs.dmapEntries(), 0)
+}
+
 func TestFileStoreStreamTruncate(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 350
