@@ -13481,22 +13481,24 @@ func deleteBlockContentsEqual(a, b DeleteBlock) bool {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	mu      sync.Mutex
-	fs      *fileStore
-	cfg     *FileConsumerInfo
-	prf     keyGen
-	aek     cipher.AEAD
-	name    string
-	odir    string
-	ifn     string
-	hh      *highwayhash.Digest64
-	state   ConsumerState
-	fch     chan struct{}
-	qch     chan struct{}
-	flusher bool
-	writing bool
-	dirty   bool
-	closed  bool
+	mu          sync.Mutex
+	writeCond   *sync.Cond // Uses mu to wait for checkpoint and shutdown IO.
+	writing     bool
+	fs          *fileStore
+	cfg         *FileConsumerInfo
+	prf         keyGen
+	aek         cipher.AEAD
+	name        string
+	odir        string
+	ifn         string
+	hh          *highwayhash.Digest64
+	state       ConsumerState
+	stateLoaded bool // Initialized in memory, even when no checkpoint exists yet.
+	fch         chan struct{}
+	qch         chan struct{}
+	flusher     bool
+	dirty       bool
+	closed      bool
 }
 
 func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
@@ -13762,19 +13764,21 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				}
 			}
 			o.mu.Lock()
+			o.waitOnWriteLocked()
 			if o.closed {
 				o.mu.Unlock()
 				return
 			}
 			buf, err := o.encodeState()
-			o.mu.Unlock()
 			if err != nil {
+				o.mu.Unlock()
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeState(buf); err == nil {
+			if err := o.writeStateLocked(buf); err == nil {
 				lastWrite = time.Now()
 			}
+			o.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -13784,11 +13788,15 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 // SetStarting sets our starting stream sequence.
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.waitOnWriteLocked()
+	if o.closed {
+		return ErrStoreClosed
+	}
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
-	buf := encodeConsumerState(&o.state)
-	o.mu.Unlock()
-	return o.writeState(buf)
+	o.stateLoaded = true
+	return o.writeStateLocked(encodeConsumerState(&o.state))
 }
 
 // UpdateStarting updates our starting stream sequence.
@@ -13803,6 +13811,7 @@ func (o *consumerFileStore) UpdateStarting(sseq uint64) {
 			o.state.AckFloor.Stream = sseq
 		}
 	}
+	o.stateLoaded = true
 	// Make sure we flush to disk.
 	o.kickFlusher()
 }
@@ -13810,15 +13819,34 @@ func (o *consumerFileStore) UpdateStarting(sseq uint64) {
 // Reset all values in the store, and reset the starting sequence.
 func (o *consumerFileStore) Reset(sseq uint64) error {
 	o.mu.Lock()
-	o.state = ConsumerState{}
-	o.mu.Unlock()
-	return o.SetStarting(sseq)
+	o.waitOnWriteLocked()
+	defer o.mu.Unlock()
+	if o.closed {
+		return ErrStoreClosed
+	}
+	state := ConsumerState{
+		Delivered: SequencePair{Stream: sseq},
+		AckFloor:  SequencePair{Stream: sseq},
+	}
+	buf, err := o.encryptState(encodeConsumerState(&state))
+	if err != nil {
+		return err
+	}
+	// Publish the reset in memory only after the checkpoint write succeeds.
+	if err := o.fs.writeFileWithOptionalSync(o.ifn, buf, defaultFilePerms); err != nil {
+		return err
+	}
+	o.state = state
+	o.stateLoaded = true
+	o.dirty = false
+	return nil
 }
 
 // HasState returns if this store has a recorded state.
 func (o *consumerFileStore) HasState() bool {
 	o.mu.Lock()
-	// We have a running state, or stored on disk but not yet initialized.
+	// An initialized empty state without a checkpoint is still a new consumer.
+	// A checkpoint records progress even when its delivered sequences are zero.
 	if o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0 {
 		o.mu.Unlock()
 		return true
@@ -13891,6 +13919,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 			o.state.AckFloor.Stream = sseq
 		}
 	}
+	o.stateLoaded = true
 	// Make sure we flush to disk.
 	o.kickFlusher()
 
@@ -14087,6 +14116,7 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+	o.stateLoaded = true
 
 	o.kickFlusher()
 
@@ -14123,18 +14153,23 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 		}
 	}
 
-	// Replace our state.
+	// Wait before replacing state or capturing a snapshot.
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.waitOnWriteLocked()
+	if o.closed {
+		return ErrStoreClosed
+	}
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
+	o.stateLoaded = true
 	buf, err := o.encodeState()
-	o.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return o.writeState(buf)
+	return o.writeStateLocked(buf)
 }
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
@@ -14153,43 +14188,58 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 	return o.aek.Seal(nonce, nonce, buf, nil), nil
 }
 
+// Lock should be held. Wait before capturing state, replacing it, or closing the store.
+// Ordinary delivery/ack updates do not wait for checkpoint IO.
+func (o *consumerFileStore) waitOnWriteLocked() {
+	for o.writing {
+		if o.writeCond == nil {
+			o.writeCond = sync.NewCond(&o.mu)
+		}
+		o.writeCond.Wait()
+	}
+}
+
+// Lock should be held.
+func (o *consumerFileStore) finishWriteLocked() {
+	o.writing = false
+	if o.writeCond != nil {
+		o.writeCond.Broadcast()
+	}
+}
+
+// Raw snapshots are used only during startup cipher conversion and tests.
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
-	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
+	defer o.mu.Unlock()
+	o.waitOnWriteLocked()
+	return o.writeStateLocked(buf)
+}
+
+// Lock should be held and any previous write finished before capturing buf.
+// Releases the lock for IO and returns with it held again.
+func (o *consumerFileStore) writeStateLocked(buf []byte) error {
 	if o.closed {
-		o.mu.Unlock()
 		return ErrStoreClosed
 	}
-	// Check if we have the index file open.
-	if o.writing || len(buf) == 0 {
-		o.mu.Unlock()
+	if len(buf) == 0 {
 		return nil
 	}
-
-	// Check on encryption.
-	if o.aek != nil {
-		var err error
-		if buf, err = o.encryptState(buf); err != nil {
-			o.mu.Unlock()
-			return err
-		}
+	var err error
+	if buf, err = o.encryptState(buf); err != nil {
+		return err
 	}
-
 	o.writing = true
 	o.dirty = false
 	ifn := o.ifn
 	o.mu.Unlock()
 
-	// Lock not held here but we do limit number of outstanding calls that could block OS threads.
-	err := o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
+	err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 
 	o.mu.Lock()
 	if err != nil {
 		o.dirty = true
 	}
-	o.writing = false
-	o.mu.Unlock()
-
+	o.finishWriteLocked()
 	return err
 }
 
@@ -14320,8 +14370,8 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 
 	state := &ConsumerState{}
 
-	// See if we have a running state or if we need to read in from disk.
-	if o.state.Delivered.Consumer != 0 || o.state.Delivered.Stream != 0 {
+	// A successfully loaded or reset zero state is valid, not an unloaded sentinel.
+	if o.stateLoaded {
 		state.Delivered = o.state.Delivered
 		state.AckFloor = o.state.AckFloor
 		if len(o.state.Pending) > 0 {
@@ -14351,6 +14401,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 	}
 
 	if len(buf) == 0 {
+		o.stateLoaded = true
 		return state, nil
 	}
 
@@ -14392,6 +14443,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 		}
 	}
 
+	o.stateLoaded = true
 	return state, nil
 }
 
@@ -14402,6 +14454,7 @@ func (o *consumerFileStore) loadState() error {
 		_, err = o.stateWithCopyLocked(false)
 		return err
 	} else if os.IsNotExist(err) {
+		o.stateLoaded = true
 		return nil
 	} else {
 		return err
@@ -14523,6 +14576,7 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 // Stop the processing of the consumers's state.
 func (o *consumerFileStore) Stop() error {
 	o.mu.Lock()
+	o.waitOnWriteLocked()
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -14547,6 +14601,12 @@ func (o *consumerFileStore) Stop() error {
 		}
 	}
 
+	o.writing = true
+	defer func() {
+		o.mu.Lock()
+		o.finishWriteLocked()
+		o.mu.Unlock()
+	}()
 	o.odir = _EMPTY_
 	o.closed = true
 	ifn, fs := o.ifn, o.fs
@@ -14556,26 +14616,10 @@ func (o *consumerFileStore) Stop() error {
 		return err
 	}
 
-	// Wait for an in-progress flush, even if not dirty, so the state is on disk when we return.
-	o.waitOnFlusher()
 	if len(buf) > 0 {
 		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
 	}
 	return err
-}
-
-func (o *consumerFileStore) waitOnFlusher() {
-	if !o.inFlusher() {
-		return
-	}
-
-	timeout := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(timeout) {
-		if !o.inFlusher() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 // Delete the consumer.
@@ -14589,6 +14633,7 @@ func (o *consumerFileStore) StreamDelete() error {
 
 func (o *consumerFileStore) delete(streamDeleted bool) error {
 	o.mu.Lock()
+	o.waitOnWriteLocked()
 	if o.closed {
 		o.mu.Unlock()
 		return nil
@@ -14599,6 +14644,12 @@ func (o *consumerFileStore) delete(streamDeleted bool) error {
 	}
 
 	odir := o.odir
+	o.writing = true
+	defer func() {
+		o.mu.Lock()
+		o.finishWriteLocked()
+		o.mu.Unlock()
+	}()
 	o.odir = _EMPTY_
 	o.closed = true
 	fs := o.fs
