@@ -1077,10 +1077,18 @@ func metaPeerRemove(t *testing.T, nc *nats.Conn, subject, peer string) *ApiError
 	t.Helper()
 	req, err := json.Marshal(&JSApiMetaServerRemoveRequest{Server: peer})
 	require_NoError(t, err)
-	rmsg, err := nc.Request(subject, req, 5*time.Second)
-	require_NoError(t, err)
 	var resp JSApiMetaServerRemoveResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+	// A previous membership change can still be committing, retry until it's done.
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		rmsg, err := nc.Request(subject, req, 5*time.Second)
+		require_NoError(t, err)
+		resp = JSApiMetaServerRemoveResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		if resp.Error != nil && resp.Error.ErrCode == uint16(JSClusterServerMemberChangeInflightErr) {
+			return resp.Error
+		}
+		return nil
+	})
 	return resp.Error
 }
 
@@ -5434,7 +5442,7 @@ func TestJetStreamClusterDuplicateMsgIdsOnCatchupAndLeaderTakeover(t *testing.T)
 	require_NoError(t, err)
 	if node := mset.raftNode(); node == nil {
 		t.Fatalf("Could not get stream group name")
-	} else if err := node.InstallSnapshot(mset.stateSnapshot(), false); err != nil {
+	} else if err := node.InstallSnapshot(mset.stateSnapshot(), true); err != nil {
 		t.Fatalf("Error installing snapshot: %v", err)
 	}
 
