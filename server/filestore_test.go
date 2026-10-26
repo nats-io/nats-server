@@ -46,6 +46,7 @@ import (
 	"unsafe"
 
 	"github.com/klauspost/compress/s2"
+	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
@@ -9239,6 +9240,57 @@ func TestFileStoreRecoverFullStateDetectCorruptState(t *testing.T) {
 
 	err = fs.recoverFullState()
 	require_Error(t, err, errCorruptState)
+}
+
+func TestFileStoreRecoverFullStateBoundsCounts(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.*"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	msg := []byte("abc")
+	for i := 1; i <= 10; i++ {
+		_, _, err = fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, msg, 0)
+		require_NoError(t, err)
+	}
+
+	key := sha256.Sum256([]byte(cfg.Name))
+	hh, err := highwayhash.NewDigest64(key[:])
+	require_NoError(t, err)
+
+	for _, test := range []struct {
+		title  string
+		fields []uint64
+	}{
+		{"SubjectCount", []uint64{1 << 40}},
+		{"SubjectLen", []uint64{1, math.MaxInt64}},
+		{"BlockCount", []uint64{0, 1 << 62}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs.Stop()
+
+			// Empty stream state, followed by the counts under test and some padding.
+			buf := []byte{fullStateMagic, fullStateVersion, 0, 0, 0, 0, 0, 0}
+			for _, f := range test.fields {
+				buf = binary.AppendUvarint(buf, f)
+			}
+			buf = append(buf, make([]byte, 32)...)
+			hh.Reset()
+			hh.Write(buf)
+			buf = hh.Sum(buf)
+			sfile := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+			require_NoError(t, os.WriteFile(sfile, buf, defaultFilePerms))
+
+			// Must reject the state and rebuild from the blocks.
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			state := fs.State()
+			require_Equal(t, state.Msgs, 10)
+			require_Equal(t, state.FirstSeq, 1)
+			require_Equal(t, state.LastSeq, 10)
+		})
+	}
 }
 
 func TestFileStoreResetConsumerToStreamState(t *testing.T) {
