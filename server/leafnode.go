@@ -86,7 +86,7 @@ type leaf struct {
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
 	// leaf nodes. This represents all the interest we want to send to the other side.
-	smap map[string]int32
+	smap map[string]int64
 	// This map will contain all the subscriptions that have been added to the smap
 	// during initLeafNodeSmapAndSendSubs. It is short lived and is there to avoid
 	// race between processing of a sub where sub is added to account sublist but
@@ -2638,7 +2638,7 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 
 	// Now walk the results and add them to our smap
 	rc := c.leaf.remoteCluster
-	c.leaf.smap = make(map[string]int32)
+	c.leaf.smap = make(map[string]int64)
 	for _, sub := range subs {
 		// Check perms regardless of role.
 		if c.perms != nil && !c.canSubscribe(string(sub.subject)) {
@@ -2649,9 +2649,9 @@ func (s *Server) initLeafNodeSmapAndSendSubs(c *client) {
 		// Also don't add the subscription if it has a origin cluster and the
 		// cluster name matches the one of the client we are sending to.
 		if c != sub.client && (sub.origin == nil || (bytesToString(sub.origin) != rc)) {
-			count := int32(1)
+			count := int64(1)
 			if len(sub.queue) > 0 && sub.qw > 0 {
-				count = sub.qw
+				count = int64(sub.qw)
 			}
 			c.leaf.smap[keyFromSub(sub)] += count
 			if c.leaf.tsub == nil {
@@ -2846,8 +2846,9 @@ func (c *client) updateSmap(sub *subscription, delta int32, isLDS bool) {
 	}
 
 	// We will update if its a queue, if count is zero (or negative), or we were 0 and are N > 0.
-	update := sub.queue != nil || (n <= 0 && n+delta > 0) || (n > 0 && n+delta <= 0)
-	n += delta
+	d := int64(delta)
+	update := sub.queue != nil || (n <= 0 && n+d > 0) || (n > 0 && n+d <= 0)
+	n += d
 	if n > 0 {
 		c.leaf.smap[key] = n
 	} else {
@@ -2899,7 +2900,7 @@ func (c *client) forceRemoveFromSmap(subj string) {
 
 // Send the subscription interest change to the other side.
 // Lock should be held.
-func (c *client) sendLeafNodeSubUpdate(key string, n int32) {
+func (c *client) sendLeafNodeSubUpdate(key string, n int64) {
 	// If we are a spoke, we need to check if we are allowed to send this subscription over to the hub.
 	if c.isSpokeLeafNode() {
 		checkPerms := true
@@ -2985,7 +2986,7 @@ func keyFromSubWithOrigin(sub *subscription) string {
 }
 
 // Lock should be held.
-func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
+func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int64) {
 	if key == _EMPTY_ {
 		return
 	}
@@ -2996,13 +2997,14 @@ func (c *client) writeLeafSub(w *bytes.Buffer, key string, n int32) {
 			w.WriteString(" ")
 			var b [12]byte
 			var i = len(b)
-			for l := n; l > 0; l /= 10 {
+			qw := queueWeight(n)
+			for l := qw; l > 0; l /= 10 {
 				i--
 				b[i] = digits[l%10]
 			}
 			w.Write(b[i:])
 			if c.trace {
-				arg := fmt.Sprintf("%s %d", key, n)
+				arg := fmt.Sprintf("%s %d", key, qw)
 				c.traceOutOp("LS+", []byte(arg))
 			}
 		} else if c.trace {
@@ -3041,14 +3043,12 @@ func (c *client) processLeafSub(argo []byte) (err error) {
 	case 3:
 		sub.queue = args[1]
 		sub.qw = int32(parseSize(args[2]))
-		// TODO: (ik) We should have a non empty queue name and a queue
-		// weight >= 1. For 2.11, we may want to return an error if that
-		// is not the case, but for now just overwrite `delta` if queue
-		// weight is greater than 1 (it is possible after a reconnect/
-		// server restart to receive a queue weight > 1 for a new sub).
-		if sub.qw > 1 {
-			delta = sub.qw
+		// A missing or malformed weight counts as a single member.
+		if sub.qw < 1 {
+			sub.qw = 1
 		}
+		// A new sub can have a weight > 1 after a reconnect or server restart.
+		delta = sub.qw
 	default:
 		return fmt.Errorf("processLeafSub Parse Error: '%s'", arg)
 	}
@@ -3551,7 +3551,7 @@ func (c *client) leafSendAllowed(bsubject []byte) bool {
 	}
 
 	allowed := true
-	if perms.Allow != nil && !strings.HasPrefix(subject, mqttPrefix) {
+	if perms.Allow != nil {
 		allowed = false
 		for _, allowSubj := range perms.Allow {
 			if matchLiteral(subject, allowSubj) {

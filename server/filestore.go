@@ -2057,15 +2057,24 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	setTime(&state.LastTime, readI64())
 
 	// Check for per subject info.
-	if numSubjects := int(readU64()); numSubjects > 0 {
+	numSubjects := readU64()
+	// Each subject takes at least one byte, so the count can't exceed the remaining length.
+	if bi < 0 || numSubjects > uint64(len(buf)-bi) {
+		_ = os.Remove(fn)
+		fs.warn("Stream state bad subject count (%d)", numSubjects)
+		return errCorruptState
+	}
+	if numSubjects > 0 {
 		fs.psim, fs.tsl = fs.psim.Empty(), 0
-		for i := 0; i < numSubjects; i++ {
-			if lsubj := int(readU64()); lsubj > 0 {
-				if bi+lsubj > len(buf) {
-					_ = os.Remove(fn)
-					fs.warn("Stream state bad subject len (%d)", lsubj)
-					return errCorruptState
-				}
+		for i := uint64(0); i < numSubjects; i++ {
+			// Compare against the remaining length so a large subject length can't overflow.
+			n := readU64()
+			if bi < 0 || n > uint64(len(buf)-bi) {
+				_ = os.Remove(fn)
+				fs.warn("Stream state bad subject len (%d)", n)
+				return errCorruptState
+			}
+			if lsubj := int(n); lsubj > 0 {
 				// If we have lots of subjects this will alloc for each one.
 				// We could reference the underlying buffer, but we could guess wrong if
 				// number of blocks is large and subjects is low, since we would reference buf.
@@ -2093,7 +2102,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	// Track the state as represented by the blocks themselves.
 	var mstate StreamState
 
-	if numBlocks := readU64(); numBlocks > 0 {
+	numBlocks := readU64()
+	// Each block takes at least one byte, so the count can't exceed the remaining length.
+	if bi < 0 || numBlocks > uint64(len(buf)-bi) {
+		_ = os.Remove(fn)
+		fs.warn("Stream state bad block count (%d)", numBlocks)
+		return errCorruptState
+	}
+	if numBlocks > 0 {
 		lastIndex := int(numBlocks - 1)
 		fs.blks = make([]*msgBlock, 0, numBlocks)
 		for i := 0; i < int(numBlocks); i++ {
