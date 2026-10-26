@@ -10908,3 +10908,147 @@ func TestNRGPreferredCandidateRetriesOnInsufficientInterest(t *testing.T) {
 		})
 	}
 }
+
+func TestNRGLeaderTransferTargetRetriesQuickly(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	n.Lock()
+	n.lxfer = true
+	n.commit = n.processed + 1
+	n.Unlock()
+
+	n.switchToCandidate()
+	require_Equal(t, n.State(), Follower)
+	select {
+	case <-n.electTimer().C:
+	case <-time.After(2 * minCampaignTimeout):
+		t.Fatal("Transfer target didn't retry quickly")
+	}
+}
+
+func TestNRGLeaderTransferTargetFollowsNewLeader(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	nats1 := "yrzKKRBu" // "nats-1"
+
+	// The old leader names us as its successor.
+	entries := []*Entry{newEntry(EntryLeaderTransfer, []byte(n.id))}
+	n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 0, pterm: 0, pindex: 0, entries: entries}), n.aesub)
+	require_True(t, n.lxfer)
+
+	// Granting another candidate our vote moves us to its term.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 1, candidate: nats1}))
+	require_Equal(t, n.term, 2)
+	require_True(t, n.lxfer)
+
+	// Following the new leader in that same term clears the transfer.
+	n.processAppendEntry(encode(t, &appendEntry{leader: nats1, term: 2, commit: 0, pterm: 1, pindex: 1, entries: nil}), n.aesub)
+	require_Equal(t, n.leader, nats1)
+	require_False(t, n.lxfer)
+}
+
+func TestNRGStepDownToStalledPeerElectsQuickly(t *testing.T) {
+	for _, replicas := range []int{3, 5} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			c := createJetStreamClusterExplicit(t, fmt.Sprintf("R%dS", replicas), replicas)
+			defer c.shutdown()
+
+			rg := c.createRaftGroup("TEST", replicas, newStateAdder)
+			leader := rg.waitOnLeader()
+			require_NotNil(t, leader)
+
+			// Stand-in for a successor stuck in writeTermVote.
+			stalled := rg.nonLeader().node().(*raft)
+			stalled.Lock()
+			unlock := time.AfterFunc(10*time.Second, stalled.Unlock)
+			defer func() {
+				if unlock.Stop() {
+					stalled.Unlock()
+				}
+			}()
+
+			require_NoError(t, leader.node().StepDown(stalled.ID()))
+			// Like in lame duck mode, the old leader only votes.
+			leader.node().SetObserver(true)
+
+			// Without shortening the followers' election timers, this would take at least 1.5s.
+			checkFor(t, minElectionTimeout-100*time.Millisecond, 10*time.Millisecond, func() error {
+				if rg.leader() == nil {
+					return errors.New("no leader yet")
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestNRGVoteRequestPersistsNewTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// Granting persists the new term with the vote.
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 1, lastTerm: 0, lastIndex: 0, candidate: nats0}))
+	term, voted, err := n.readTermVote()
+	require_NoError(t, err)
+	require_Equal(t, term, 1)
+	require_Equal(t, voted, nats0)
+
+	// Denying an outdated candidate still persists the new term.
+	n.pterm, n.pindex = 1, 100
+	require_NoError(t, n.processVoteRequest(&voteRequest{term: 2, lastTerm: 1, lastIndex: 2, candidate: nats0}))
+	term, voted, err = n.readTermVote()
+	require_NoError(t, err)
+	require_Equal(t, term, 2)
+	require_Equal(t, voted, noVote)
+}
+
+func TestNRGStepDownPrefersCaughtUpPeer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	rg := c.createRaftGroup("TEST", 3, newStateAdder)
+
+	// Repeat, as peers are visited in random order.
+	for range 10 {
+		leader := rg.waitOnLeader()
+		require_NotNil(t, leader)
+		ln := leader.node().(*raft)
+
+		// Followers only count as caught up once they've acked since the election.
+		leader.(*stateAdder).proposeDelta(1)
+		followers := rg.followers()
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			for _, f := range followers {
+				if !ln.IsFollowerCaughtUp(f.node().ID()) {
+					return fmt.Errorf("follower %s not caught up", f.node().ID())
+				}
+			}
+			return nil
+		})
+
+		// Pretend we're catching up one of the followers.
+		catchingUp := followers[0].node().ID()
+		ln.Lock()
+		if ln.progress == nil {
+			ln.progress = make(map[string]*ipQueue[uint64])
+		}
+		q := newIPQueue[uint64](ln.s, "test")
+		ln.progress[catchingUp] = q
+		ln.Unlock()
+
+		require_NoError(t, ln.StepDown())
+		ln.Lock()
+		delete(ln.progress, catchingUp)
+		ln.Unlock()
+		q.unregister()
+
+		nl := rg.waitOnLeader()
+		require_NotNil(t, nl)
+		require_NotEqual(t, nl.node().ID(), catchingUp)
+	}
+}
