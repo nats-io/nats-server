@@ -11717,7 +11717,8 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 
 	nc, js := jsClientConnect(t, c.randomServer())
 	defer nc.Close()
-	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1})
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 1}
+	_, err := js.AddStream(cfg)
 	require_NoError(t, err)
 	for range 5 {
 		_, err = js.Publish("foo", nil)
@@ -11761,14 +11762,15 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 	mljs.mu.Unlock()
 	require_NoError(t, err)
 
-	_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	cfg.Replicas = 3
+	_, err = js.UpdateStream(cfg)
 	require_NoError(t, err)
 
 	// The source snapshots for the scale up, and stays the only member.
 	mset, err := sl.globalAccount().lookupStream("TEST")
 	require_NoError(t, err)
 	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
-		if n := mset.raftNode(); n == nil || !n.Leader() || n.NeedSnapshot() {
+		if n := mset.raftNode(); n == nil || !n.Leader() || n.NeedSnapshot() || !mset.IsClustered() {
 			return errors.New("source has no scale up snapshot yet")
 		}
 		return nil
@@ -11782,12 +11784,14 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 	require_NoError(t, mset.flushAllPending())
 
 	// Hard kill the source, a clean shutdown would snapshot on the way out.
+	// The store dir is only known while running.
+	sd := sl.StoreDir()
 	copySd := path.Join(t.TempDir(), JetStreamStoreDir)
-	require_NoError(t, copyDir(t, copySd, sl.StoreDir()))
+	require_NoError(t, copyDir(t, copySd, sd))
 	sl.Shutdown()
 	sl.WaitForShutdown()
-	require_NoError(t, os.RemoveAll(sl.StoreDir()))
-	require_NoError(t, copyDir(t, sl.StoreDir(), copySd))
+	require_NoError(t, os.RemoveAll(sd))
+	require_NoError(t, copyDir(t, sd, copySd))
 	c.restartServer(sl)
 
 	// Not waitOnStreamLeader, it waits for the scale up we're still holding.
@@ -11822,6 +11826,133 @@ func TestJetStreamClusterScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) 
 			t.Fatalf("server %s has %d msgs, last %d", s.Name(), state.Msgs, state.LastSeq)
 		}
 	}
+}
+
+func TestJetStreamClusterConsumerScaleUpFromOneSnapshotsStoreAfterRestart(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	cfg := &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 1}
+	_, err = js.AddConsumer("TEST", cfg)
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+
+	// The source restarts below, so it mustn't be the meta leader.
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	var ml *Server
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		if ml = c.leader(); ml == nil || ml == cl {
+			if ml != nil {
+				ml.getJetStream().getMetaGroup().StepDown()
+			}
+			return errors.New("meta leader is unknown or the source")
+		}
+		return nil
+	})
+	mljs := ml.getJetStream()
+	nc, js = jsClientConnect(t, ml)
+	defer nc.Close()
+
+	// Hold the scale up before the assignment is extended onto the new peers.
+	var dropExpand atomic.Bool
+	dropExpand.Store(true)
+	mljs.mu.Lock()
+	cc := mljs.cluster
+	origSub := cc.consumerReconcile
+	cc.consumerReconcile = nil
+	mljs.mu.Unlock()
+	ml.sysUnsubscribe(origSub)
+	mljs.mu.Lock()
+	cc.consumerReconcile, err = ml.systemSubscribe(consumerAssignmentReconcileSubj, _EMPTY_, false, cc.c,
+		func(sub *subscription, c *client, acc *Account, subject, reply string, msg []byte) {
+			var reconcile consumerAssignmentReconcile
+			if json.Unmarshal(msg, &reconcile) == nil && dropExpand.Load() && len(reconcile.MetaPeers) > 1 {
+				return
+			}
+			mljs.reconcileDesiredConsumerAssignment(sub, c, acc, subject, reply, msg)
+		})
+	mljs.mu.Unlock()
+	require_NoError(t, err)
+
+	cfg.Replicas = 3
+	_, err = js.UpdateConsumer("TEST", cfg)
+	require_NoError(t, err)
+
+	// The source snapshots for the scale up, and stays the only member.
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+	checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+		if n := o.raftNode(); n == nil || !n.Leader() || n.NeedSnapshot() || !o.IsClustered() {
+			return errors.New("source has no scale up snapshot yet")
+		}
+		return nil
+	})
+
+	// Acks neither the snapshot nor the log hold.
+	acked := &ConsumerState{Delivered: SequencePair{Consumer: 5, Stream: 5}, AckFloor: SequencePair{Consumer: 5, Stream: 5}}
+	require_NoError(t, o.store.(*consumerFileStore).ForceUpdate(acked))
+
+	// Hard kill the source, a clean shutdown would snapshot on the way out.
+	// The store dir is only known while running.
+	sd := cl.StoreDir()
+	copySd := path.Join(t.TempDir(), JetStreamStoreDir)
+	require_NoError(t, copyDir(t, copySd, sd))
+	cl.Shutdown()
+	cl.WaitForShutdown()
+	require_NoError(t, os.RemoveAll(sd))
+	require_NoError(t, copyDir(t, sd, copySd))
+	c.restartServer(cl)
+
+	// Not waitOnConsumerLeader, it waits for the scale up we're still holding.
+	checkFor(t, 10*time.Second, 50*time.Millisecond, func() error {
+		if c.consumerLeader(globalAccountName, "TEST", "C") == nil {
+			return errors.New("no consumer leader yet")
+		}
+		return nil
+	})
+	dropExpand.Store(false)
+	checkFor(t, 20*time.Second, 250*time.Millisecond, func() error {
+		ml := c.leader()
+		if ml == nil {
+			return errors.New("no meta leader")
+		}
+		mljs := ml.getJetStream()
+		mljs.mu.RLock()
+		defer mljs.mu.RUnlock()
+		if ca := mljs.consumerAssignment(globalAccountName, "TEST", "C"); ca == nil || ca.Group.Desired != nil {
+			return errors.New("scale up not done yet")
+		}
+		return nil
+	})
+
+	// The new peers caught up from a snapshot holding the acks, they won't redeliver them.
+	checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				return err
+			}
+			o := mset.lookupConsumer("C")
+			if o == nil {
+				return fmt.Errorf("server %s has no consumer", s.Name())
+			}
+			if state, err := o.store.State(); err != nil {
+				return err
+			} else if state.AckFloor.Stream != 5 {
+				return fmt.Errorf("server %s has ack floor %d, expected 5", s.Name(), state.AckFloor.Stream)
+			}
+		}
+		return nil
+	})
 }
 
 func TestJetStreamClusterPlacementPeersWhileConverging(t *testing.T) {
