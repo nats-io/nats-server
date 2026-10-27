@@ -5356,8 +5356,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 	// delivery subject for clients
 	var dsubj []byte
-	// Used as scratch if mapping
-	var _dsubj [128]byte
+	// Mapping buffer, allocated on first use. It keeps any capacity that
+	// append adds, so later iterations reuse the enlarged buffer.
+	var mbuf []byte
 
 	// For stats, we will keep track of the number of messages that have been
 	// delivered and then multiply by the size of that message and update
@@ -5458,14 +5459,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			if flags&pmrMsgImportedFromService != 0 {
 				continue
 			}
+			if mbuf == nil {
+				mbuf = make([]byte, 0, 128)
+			}
 			if sub.im.tr != nil {
 				to := sub.im.tr.TransformSubject(bytesToString(subject))
-				dsubj = append(_dsubj[:0], to...)
+				mbuf = append(mbuf[:0], to...)
 			} else if sub.im.usePub {
-				dsubj = append(_dsubj[:0], subj...)
+				mbuf = append(mbuf[:0], subj...)
 			} else {
-				dsubj = append(_dsubj[:0], sub.im.to...)
+				mbuf = append(mbuf[:0], sub.im.to...)
 			}
+			dsubj = mbuf
 
 			if mt != nil {
 				mt.addStreamExportEvent(sub.client, dsubj)
@@ -5490,11 +5495,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
 				deliver = subj
 			}
-			// If we are mapping for a deliver subject we will reverse roles.
-			// The original subj we set from above is correct for the msg header,
-			// but we need to transform the deliver subject to properly route.
+			// If we are mapping for a deliver subject, the original subj we set
+			// from above is correct for the msg header. Keep subj unchanged so
+			// later subscriptions do not see this subscription's mapped subject.
 			if len(deliver) > 0 {
-				dsubj, subj = subj, dsubj
+				dsubj = subj
 			}
 		}
 
@@ -5684,14 +5689,18 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				if flags&pmrMsgImportedFromService != 0 {
 					continue
 				}
+				if mbuf == nil {
+					mbuf = make([]byte, 0, 128)
+				}
 				if sub.im.tr != nil {
 					to := sub.im.tr.TransformSubject(bytesToString(subject))
-					dsubj = append(_dsubj[:0], to...)
+					mbuf = append(mbuf[:0], to...)
 				} else if sub.im.usePub {
-					dsubj = append(_dsubj[:0], subj...)
+					mbuf = append(mbuf[:0], subj...)
 				} else {
-					dsubj = append(_dsubj[:0], sub.im.to...)
+					mbuf = append(mbuf[:0], sub.im.to...)
 				}
+				dsubj = mbuf
 
 				if mt != nil {
 					mt.addStreamExportEvent(sub.client, dsubj)
@@ -5713,11 +5722,11 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 				if remapped && (c.kind == GATEWAY || c.kind == ROUTER || c.kind == LEAF) {
 					deliver = subj
 				}
-				// If we are mapping for a deliver subject we will reverse roles.
-				// The original subj we set from above is correct for the msg header,
-				// but we need to transform the deliver subject to properly route.
+				// If we are mapping for a deliver subject, the original subj we set
+				// from above is correct for the msg header. Keep subj unchanged so
+				// later subscriptions do not see this subscription's mapped subject.
 				if len(deliver) > 0 {
-					dsubj, subj = subj, dsubj
+					dsubj = subj
 				}
 			}
 
