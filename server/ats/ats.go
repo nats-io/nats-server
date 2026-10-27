@@ -34,7 +34,7 @@ var (
 	// previous worker's stop signal.
 	lifecycleMu sync.Mutex
 	stop        chan struct{}
-	stopped     chan struct{}
+	workerWG    sync.WaitGroup
 )
 
 // Register usage. This will happen on filestore creation.
@@ -47,10 +47,10 @@ func Register() {
 		// so spin up Go routine and grab initial time.
 		utime.Store(time.Now().UnixNano())
 		stop = make(chan struct{})
-		stopped = make(chan struct{})
+		workerWG.Add(1)
 
-		go func(stop <-chan struct{}, stopped chan<- struct{}) {
-			defer close(stopped)
+		go func(stop <-chan struct{}) {
+			defer workerWG.Done()
 			ticker := time.NewTicker(TickInterval)
 			defer ticker.Stop()
 			for {
@@ -61,7 +61,7 @@ func Register() {
 					return
 				}
 			}
-		}(stop, stopped)
+		}(stop)
 	}
 }
 
@@ -72,8 +72,8 @@ func Unregister() {
 
 	if v := refs.Add(-1); v == 0 {
 		close(stop)
-		<-stopped
-		stop, stopped = nil, nil
+		workerWG.Wait()
+		stop = nil
 	} else if v < 0 {
 		refs.Store(0)
 		panic("unbalanced unregister for access time state")
