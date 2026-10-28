@@ -11047,47 +11047,53 @@ func TestLeafNodeLMSGHonorsPublishPermissions(t *testing.T) {
 	hlog := &captureErrorLogger{errCh: make(chan string, 4)}
 	hub.SetLogger(hlog, false, false)
 
-	leafConn, err := net.DialTimeout("tcp", net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)), 2*time.Second)
-	require_NoError(t, err)
-	defer leafConn.Close()
-
-	br := bufio.NewReader(leafConn)
-	_, err = br.ReadString('\n')
-	require_NoError(t, err)
-
-	connectOp := fmt.Appendf(nil, "CONNECT {\"name\":\"leaf\",\"user\":%q,\"pass\":%q}\r\n", "leaf", "pwd")
-	_, err = leafConn.Write(connectOp)
-	require_NoError(t, err)
-	_, err = leafConn.Write([]byte("PING\r\n"))
-	require_NoError(t, err)
-
-	checkLeafNodeConnected(t, hub)
-
 	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
 	defer ncHub.Close()
 
 	subOK := natsSubSync(t, ncHub, "pub.ok")
-	subBlocked := natsSubSync(t, ncHub, "pub.blocked")
 	natsFlush(t, ncHub)
 
-	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", "pub.ok", len("ok"), "ok")
-	require_NoError(t, err)
-	msg := natsNexMsg(t, subOK, time.Second)
-	require_Equal(t, "ok", string(msg.Data))
+	// A violation closes the connection, so each blocked subject uses a new one.
+	// JetStream acks must also be blocked, otherwise a leaf could forge them.
+	for _, blocked := range []string{"pub.blocked", "$JS.ACK.TEST.CONSUMER.1.1.1.1.1"} {
+		leafConn, err := net.DialTimeout("tcp", net.JoinHostPort(ohub.LeafNode.Host, fmt.Sprintf("%d", ohub.LeafNode.Port)), 2*time.Second)
+		require_NoError(t, err)
+		defer leafConn.Close()
 
-	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", "pub.blocked", len("blocked"), "blocked")
-	require_NoError(t, err)
-	if msg, err := subBlocked.NextMsg(250 * time.Millisecond); err == nil {
-		t.Fatalf("Should not have received the blocked publish, got %q", msg.Data)
-	}
+		br := bufio.NewReader(leafConn)
+		_, err = br.ReadString('\n')
+		require_NoError(t, err)
 
-	select {
-	case errMsg := <-hlog.errCh:
-		if !strings.Contains(errMsg, `Publish Violation on "pub.blocked"`) {
-			t.Fatalf("Expected publish violation log, got %q", errMsg)
+		connectOp := fmt.Appendf(nil, "CONNECT {\"name\":\"leaf\",\"user\":%q,\"pass\":%q}\r\n", "leaf", "pwd")
+		_, err = leafConn.Write(connectOp)
+		require_NoError(t, err)
+		_, err = leafConn.Write([]byte("PING\r\n"))
+		require_NoError(t, err)
+
+		checkLeafNodeConnected(t, hub)
+
+		subBlocked := natsSubSync(t, ncHub, blocked)
+		natsFlush(t, ncHub)
+
+		_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", "pub.ok", len("ok"), "ok")
+		require_NoError(t, err)
+		msg := natsNexMsg(t, subOK, time.Second)
+		require_Equal(t, "ok", string(msg.Data))
+
+		_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n", blocked, len("blocked"), "blocked")
+		require_NoError(t, err)
+		if msg, err := subBlocked.NextMsg(250 * time.Millisecond); err == nil {
+			t.Fatalf("Should not have received the blocked publish, got %q", msg.Data)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Did not get expected publish violation log")
+
+		select {
+		case errMsg := <-hlog.errCh:
+			if !strings.Contains(errMsg, fmt.Sprintf("Publish Violation on %q", blocked)) {
+				t.Fatalf("Expected publish violation log, got %q", errMsg)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Did not get expected publish violation log")
+		}
 	}
 }
 
@@ -11190,6 +11196,28 @@ func TestLeafNodeHubSideLMSGHonorsAllowResponses(t *testing.T) {
 
 	resp := natsNexMsg(t, sub, time.Second)
 	require_Equal(t, "ok", string(resp.Data))
+
+	// A JetStream ack reply is also allowed once it's tracked.
+	// Clients can't use it as a reply, so send the request internally.
+	ackReply := "$JS.ACK.TEST.CONSUMER.1.1.1.1.1"
+	ackSub := natsSubSync(t, ncHub, ackReply)
+	natsFlush(t, ncHub)
+
+	acc, err := hub.LookupAccount("A")
+	require_NoError(t, err)
+	require_NoError(t, hub.sendInternalAccountMsgWithReply(acc, "svc.req", ackReply, nil, nil, false))
+	select {
+	case trackedReply = <-reqCh:
+	case <-time.After(time.Second):
+		t.Fatal("Did not receive request on leaf side")
+	}
+	require_Equal(t, ackReply, trackedReply)
+
+	_, err = fmt.Fprintf(leafConn.nc, "LMSG %s %d\r\n%s\r\n", ackReply, len("ok"), "ok")
+	require_NoError(t, err)
+
+	resp = natsNexMsg(t, ackSub, time.Second)
+	require_Equal(t, "ok", string(resp.Data))
 }
 
 // Test that allow_responses works when the tracked reply subject has a
@@ -11247,6 +11275,8 @@ func TestLeafNodeHubSideLMSGHonorsAllowResponsesGatewayRouted(t *testing.T) {
 	// delivering a gateway-routed request to the leaf: it stores
 	// the reply under the full GW-routed form ($GNR...).
 	gwRoutedReply := gwReplyPrefix + "AAAAAAA1.BBBBBBB2._INBOX.test"
+	// A JetStream ack reply is also allowed once it's tracked.
+	gwRoutedAck := gwReplyPrefix + "AAAAAAA1.BBBBBBB2.$JS.ACK.TEST.CONSUMER.1.1.1.1.1"
 
 	var hubLeaf *client
 	hub.mu.Lock()
@@ -11258,12 +11288,14 @@ func TestLeafNodeHubSideLMSGHonorsAllowResponsesGatewayRouted(t *testing.T) {
 
 	hubLeaf.mu.Lock()
 	hubLeaf.replies[gwRoutedReply] = &resp{t: time.Now()}
+	hubLeaf.replies[gwRoutedAck] = &resp{t: time.Now()}
 	hubLeaf.mu.Unlock()
 
 	// Subscribe on the hub so we can verify delivery.
 	ncHub := natsConnect(t, hub.ClientURL(), nats.UserInfo("a", "a"))
 	defer ncHub.Close()
 	sub := natsSubSync(t, ncHub, gwRoutedReply)
+	ackSub := natsSubSync(t, ncHub, gwRoutedAck)
 	natsFlush(t, ncHub)
 
 	// The leaf sends LMSG with the GW-routed reply as subject.
@@ -11272,8 +11304,13 @@ func TestLeafNodeHubSideLMSGHonorsAllowResponsesGatewayRouted(t *testing.T) {
 	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n",
 		gwRoutedReply, len("ok"), "ok")
 	require_NoError(t, err)
+	_, err = fmt.Fprintf(leafConn, "LMSG %s %d\r\n%s\r\n",
+		gwRoutedAck, len("ok"), "ok")
+	require_NoError(t, err)
 
 	resp := natsNexMsg(t, sub, time.Second)
+	require_Equal(t, "ok", string(resp.Data))
+	resp = natsNexMsg(t, ackSub, time.Second)
 	require_Equal(t, "ok", string(resp.Data))
 }
 

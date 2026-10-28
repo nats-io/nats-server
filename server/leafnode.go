@@ -3549,10 +3549,8 @@ func (c *client) leafMsgAllowed() bool {
 	// Strip any gateway routing prefix for the permission check.
 	subjectToCheck, isGW := getGWRoutedSubjectOrSelf(wireSubject)
 
-	// Service-import replies (_R_), JS ack subjects ($JS.ACK.)
-	// are internal routing subjects forwarded via LS+ without
-	// permission checks.
-	if isServiceReply(subjectToCheck) || isJSAckSubject(subjectToCheck) {
+	// Service-import replies (_R_) are forwarded via LS+ without permission checks.
+	if isServiceReply(subjectToCheck) {
 		return true
 	}
 
