@@ -222,6 +222,11 @@ const (
 	jsAckPre    = "$JS.ACK."
 	jsAckPreLen = len(jsAckPre)
 
+	// jsReservedPre is the prefix shared by all JetStream subjects, like API
+	// requests and acks. It is never valid as a user provided reply subject.
+	jsReservedPre    = "$JS."
+	jsReservedPreLen = len(jsReservedPre)
+
 	// jsFlowControl is for flow control subjects.
 	jsFlowControlPre = "$JS.FC."
 	// jsFlowControl is for FC responses.
@@ -4023,7 +4028,7 @@ func (s *Server) processStreamRestore(ci *ClientInfo, acc *Account, cfg *StreamC
 		s.sendInternalAccountMsg(acc, reply, nil)
 	}
 
-	sub, err := acc.subscribeInternal(restoreSubj, processChunk)
+	sub, err := acc.subscribeInternal(restoreSubj, jsRequestHandler(processChunk))
 	if err != nil {
 		closeWithError(err)
 		resp.Error = NewJSRestoreSubscribeFailedError(err, restoreSubj)
@@ -4213,7 +4218,8 @@ func (s *Server) jsStreamSnapshotRequest(sub *subscription, c *client, _ *Accoun
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return
 	}
-	if !IsValidPublishSubject(req.DeliverSubject) {
+	// Never deliver to a reserved destination. This would issue a request on the user's behalf.
+	if !IsValidPublishSubject(req.DeliverSubject) || isReservedDestination(req.DeliverSubject) {
 		resp.Error = NewJSSnapshotDeliverSubjectInvalidError()
 		s.sendAPIErrResponse(ci, acc, subject, reply, smsg, s.jsonResponse(&resp))
 		return

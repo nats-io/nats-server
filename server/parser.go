@@ -52,6 +52,8 @@ type pubArg struct {
 	psi       []*serviceImport
 	trace     *msgTrace
 	delivered bool // Only used for service imports
+	jsReply   bool // Only used for service imports, the original reply was a JetStream subject
+	respGrant bool // Only used for service imports, only allowed as a response by allow_responses
 }
 
 // Parser constants
@@ -540,7 +542,7 @@ func (c *client) parse(buf []byte) error {
 			c.pa.arg, c.pa.pacache, c.pa.origin, c.pa.account, c.pa.subject, c.pa.mapped = nil, nil, nil, nil, nil, nil
 			c.pa.reply, c.pa.hdr, c.pa.size, c.pa.szb, c.pa.hdb, c.pa.queues = nil, -1, 0, nil, nil, nil
 			c.pa.trace = nil
-			c.pa.delivered = false
+			c.pa.delivered, c.pa.jsReply, c.pa.respGrant = false, false, false
 			lmsg = false
 		case OP_A:
 			switch b {

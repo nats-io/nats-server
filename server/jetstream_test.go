@@ -26326,3 +26326,821 @@ func TestJetStreamAccountImportAckV2AccountHash(t *testing.T) {
 		return nil
 	})
 }
+
+// Adds a stream that's purged or deleted if a JetStream API request is issued on the user's behalf.
+func addJSAPIVictim(t *testing.T, nc *nats.Conn, js nats.JetStreamContext, name string, wait time.Duration) (purge string, checkVictim func()) {
+	t.Helper()
+	_, err := js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{name}})
+	require_NoError(t, err)
+	_, err = js.Publish(name, nil)
+	require_NoError(t, err)
+	purge = fmt.Sprintf(JSApiStreamPurgeT, name)
+	apiSub := natsSubSync(t, nc, purge)
+	natsFlush(t, nc)
+	return purge, func() {
+		t.Helper()
+		// Give any API request time to arrive.
+		time.Sleep(wait)
+		n, _, err := apiSub.Pending()
+		require_NoError(t, err)
+		require_Equal(t, n, 0)
+		si, err := js.StreamInfo(name)
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 1)
+	}
+}
+
+func TestJetStreamRequestHandlerDropsJSReply(t *testing.T) {
+	var got string
+	cb := jsRequestHandler(func(_ *subscription, _ *client, _ *Account, _, reply string, _ []byte) { got = reply })
+	for _, test := range []struct{ reply, expected string }{
+		{"_INBOX.x", "_INBOX.x"},
+		{"_R_.x", "_R_.x"},
+		{"_GR_.aaaaaa.bbbbbb._INBOX.x", "_GR_.aaaaaa.bbbbbb._INBOX.x"},
+		{"$JS.API.STREAM.PURGE.X", _EMPTY_},
+		{"$JS.ACK.X.dur.1.1.1.0.0", _EMPTY_},
+		// Delivery strips one gateway prefix, a crafted reply could still wrap a JetStream subject.
+		{"_GR_.aaaaaa.bbbbbb.$JS.API.STREAM.PURGE.X", _EMPTY_},
+	} {
+		cb(nil, nil, nil, "subj", test.reply, nil)
+		require_Equal(t, got, test.expected)
+	}
+}
+
+func TestJetStreamIsFlowControlReply(t *testing.T) {
+	for _, test := range []struct {
+		reply    string
+		expected bool
+	}{
+		{"$JS.FC.S.C.abcd", true},
+		{"$JS.FC._.hash.S.C.abcd", true},
+		{"$JS.API.STREAM.PURGE.S", false},
+		// Delivery strips one gateway prefix, a crafted reply could still wrap a flow control subject.
+		{"_GR_.aaaaaa.bbbbbb.$JS.FC.S.C.abcd", false},
+	} {
+		require_Equal(t, isFlowControlReply(test.reply), test.expected)
+	}
+}
+
+func TestJetStreamReservedKind(t *testing.T) {
+	for _, test := range []struct {
+		subj          string
+		reserved, api bool
+	}{
+		{"$JS.API.STREAM.PURGE.S", true, true},
+		{"$JS.HUB.API.STREAM.PURGE.S", true, true},
+		{"$JS.EVENT.ADVISORY.API.AUDIT", true, false},
+		{"$JS.SNAPSHOT.ACK.S.abcd", true, false},
+		// An ack or flow control for a stream or domain named API.
+		{"$JS.ACK.API.C.1.1.1.0.0", true, false},
+		{"$JS.ACK.API.hash.S.C.1.1.1.0.0.x", true, false},
+		{"$JS.FC.API.C.abcd", true, false},
+		{"$JS.X.Y.STREAM.PURGE.S", false, false},
+		{"_INBOX.x", false, false},
+	} {
+		reserved, api := jsReservedKind(test.subj)
+		require_Equal(t, reserved, test.reserved)
+		require_Equal(t, api, test.api)
+	}
+}
+
+func TestJetStreamIsJSAliasRequestOnBehalf(t *testing.T) {
+	const api = "$JS.API.STREAM.PURGE.S"
+	type testCase struct {
+		name, subj, mapped, reply, to string
+		kind                          int
+		respGrant, jsReply, expected  bool
+	}
+	tests := []testCase{
+		// An import that isn't into a JetStream subject.
+		{name: "not js", kind: CLIENT, subj: "svc", respGrant: true, to: "svc"},
+		{name: "not js lookalike", kind: JETSTREAM, subj: "alias", to: "$JS.X.Y.STREAM.PURGE.S"},
+		// A response that re-enters a wildcard import keeps the _R_ subject as its destination.
+		{name: "response into wildcard import", kind: CLIENT, subj: "_R_.aaaaaa.bbbbbb", to: "_R_.aaaaaa.bbbbbb"},
+		// A user publishes through an alias it's allowed to publish to.
+		{name: "client", kind: CLIENT, subj: "alias", to: api},
+		{name: "client request", kind: CLIENT, subj: "alias", reply: "_INBOX.x", to: api},
+		{name: "client js subject", kind: CLIENT, subj: api, to: api},
+		// A response only allowed by allow_responses.
+		{name: "allow responses", kind: CLIENT, subj: "alias", respGrant: true, to: api, expected: true},
+		{name: "allow responses with reply", kind: CLIENT, subj: "alias", reply: "_INBOX.x", respGrant: true, to: api, expected: true},
+		// An ack only allowed by allow_responses, like for a push consumer in another account.
+		{name: "allow responses ack", kind: CLIENT, subj: "$JS.ACK.S.C.1.1.1.0.0", respGrant: true, to: "$JS.ACK.S.C.1.1.1.0.0"},
+		// Delivery strips a gateway prefix, but a subject that kept it is a reply as well.
+		{name: "gateway reply subject", kind: JETSTREAM, subj: "_GR_.aaaaaa.bbbbbb.alias", to: api, expected: true},
+		// A message from a kind that never issues an import.
+		{name: "route", kind: ROUTER, subj: "alias", to: api},
+		{name: "gateway", kind: GATEWAY, subj: "alias", to: api},
+	}
+	for _, kind := range []int{CLIENT, JETSTREAM, ACCOUNT, SYSTEM, LEAF} {
+		// A response through a response import, whoever responded and whatever its reply.
+		tests = append(tests,
+			testCase{name: "response import", kind: kind, subj: "_R_.aaaaaa.bbbbbb", to: api, expected: true},
+			testCase{name: "response import with reply", kind: kind, subj: "_R_.aaaaaa.bbbbbb", reply: "_INBOX.x", to: api, expected: true},
+		)
+		if kind == CLIENT {
+			continue
+		}
+		tests = append(tests,
+			// A JetStream subject, also from before a mapping.
+			testCase{name: "js subject", kind: kind, subj: api, reply: "_INBOX.x", to: api},
+			testCase{name: "flow control", kind: kind, subj: "$JS.FC.S.C.abcd", to: "$JS.FC.S.C.abcd"},
+			testCase{name: "domain mapping", kind: kind, subj: api, mapped: "$JS.hub.API.STREAM.PURGE.S", reply: "_INBOX.x", to: api},
+			// A mapping turned an alias into a JetStream subject.
+			testCase{name: "alias mapping", kind: kind, subj: api, mapped: "alias", to: api, expected: true},
+			// A request with a reply of its own.
+			testCase{name: "own request", kind: kind, subj: "alias", reply: "_INBOX.x", to: api},
+			// A response or delivery to a subject a user configured.
+			testCase{name: "response", kind: kind, subj: "alias", to: api, expected: true},
+			testCase{name: "ack reply", kind: kind, subj: "alias", reply: "$JS.ACK.S.C.1.1.1.0.0", jsReply: true, to: api, expected: true},
+			testCase{name: "domain api", kind: kind, subj: "alias", to: "$JS.hub.API.STREAM.PURGE.S", expected: true},
+			testCase{name: "ack", kind: kind, subj: "alias", to: "$JS.ACK.S.C.1.1.1.0.0", expected: true},
+			testCase{name: "flow control alias", kind: kind, subj: "alias", to: "$JS.FC.S.C.abcd", expected: true},
+			testCase{name: "snapshot", kind: kind, subj: "alias", to: "$JS.SNAPSHOT.ACK.S.abcd", expected: true},
+		)
+	}
+	for _, test := range tests {
+		c := &client{kind: test.kind}
+		c.pa.subject, c.pa.mapped, c.pa.reply, c.pa.respGrant = []byte(test.subj), []byte(test.mapped), []byte(test.reply), test.respGrant
+		if c.isJSAliasRequestOnBehalf(test.to, test.jsReply) != test.expected {
+			t.Errorf("%s %s: expected %v", c.kindString(), test.name, test.expected)
+		}
+	}
+}
+
+func TestJetStreamImportedJSAPIAliasAsServiceReplyRejected(t *testing.T) {
+	// Strict mode would reject some of the requests as invalid.
+	// Disable it so any request that reaches the API is processed.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q, strict: false}
+		leafnodes: { listen: 127.0.0.1:-1 }
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ { user: a, password: pwd } ]
+				exports: [ { service: "$JS.API.>" } ]
+			},
+			B: {
+				users: [ { user: req, password: pwd, permissions: { publish: ["dget", "svc", "svcleaf", "$SYS.REQ.USER.INFO"], subscribe: "_INBOX.>" } } ]
+				imports: [
+					{ service: { account: A, subject: "$JS.API.STREAM.PURGE.V1" }, to: "purge1" },
+					{ service: { account: A, subject: "$JS.API.STREAM.PURGE.V2" }, to: "purge2" },
+					{ service: { account: A, subject: "$JS.API.STREAM.PURGE.V3" }, to: "purge3" },
+					{ service: { account: A, subject: "$JS.API.STREAM.PURGE.V4" }, to: "purge4" },
+					{ service: { account: C, subject: "$JS.API.DIRECT.GET.SRC" }, to: "dget" },
+					{ service: { account: C, subject: "svc" } },
+					{ service: { account: C, subject: "svcleaf" } },
+				]
+			},
+			C: {
+				jetstream: enabled
+				users: [ { user: c, password: pwd }, { user: leaf, password: pwd } ]
+				exports: [ { service: "$JS.API.DIRECT.GET.SRC" }, { service: "svc" }, { service: "svcleaf" } ]
+			},
+		}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// A responder on a leafnode.
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		accounts: { C: { users: [ { user: c, password: pwd } ] } }
+		leafnodes: { remotes: [ { url: "nats://leaf:pwd@127.0.0.1:%d", account: C } ] }
+	`, s.getOpts().LeafNode.Port)))
+	ln, _ := RunServerWithConfig(lconf)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, s)
+
+	anc, ajs := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+	defer anc.Close()
+	cnc, cjs := jsClientConnect(t, s, nats.UserInfo("c", "pwd"))
+	defer cnc.Close()
+	qnc := natsConnect(t, s.ClientURL(), nats.UserInfo("req", "pwd"))
+	defer qnc.Close()
+
+	_, err := cjs.AddStream(&nats.StreamConfig{Name: "SRC", Subjects: []string{"src"}, AllowDirect: true})
+	require_NoError(t, err)
+	_, err = cjs.Publish("src", nil)
+	require_NoError(t, err)
+
+	// An empty body is a valid purge request.
+	replies := make(chan string, 10)
+	respond := func(m *nats.Msg) {
+		replies <- m.Reply
+		m.Respond(nil)
+	}
+	_, err = cnc.Subscribe("svc", respond)
+	require_NoError(t, err)
+	natsFlush(t, cnc)
+	lnc := natsConnect(t, ln.ClientURL(), nats.UserInfo("c", "pwd"))
+	defer lnc.Close()
+	_, err = lnc.Subscribe("svcleaf", respond)
+	require_NoError(t, err)
+	natsFlush(t, lnc)
+	checkSubInterest(t, s, "C", "svcleaf", time.Second)
+
+	for _, test := range []struct {
+		name      string
+		victim    string
+		subj      string
+		reply     string
+		responder bool
+	}{
+		// A 404 response is an empty body.
+		{"jetstream", "V1", "dget", "purge1", false},
+		{"client", "V2", "svc", "purge2", true},
+		{"leafnode", "V3", "svcleaf", "purge3", true},
+		{"system", "V4", "$SYS.REQ.USER.INFO", "purge4", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// The requester can't publish to the alias, so the response must not reach the API either.
+			_, checkVictim := addJSAPIVictim(t, anc, ajs, test.victim, 250*time.Millisecond)
+			require_NoError(t, qnc.PublishRequest(test.subj, test.reply, []byte(`{"seq":999}`)))
+			// Make sure the responder got the request, otherwise this isn't testing anything.
+			if test.responder {
+				select {
+				case reply := <-replies:
+					require_True(t, isServiceReply([]byte(reply)))
+				case <-time.After(time.Second):
+					t.Fatal("Expected the responder to get the request")
+				}
+			}
+			checkVictim()
+
+			// Make sure the requester can still get a normal response.
+			rm, err := qnc.Request(test.subj, []byte(`{"seq":1}`), time.Second)
+			require_NoError(t, err)
+			if test.responder {
+				<-replies
+			} else if test.subj == "dget" {
+				require_Equal(t, rm.Header.Get(JSSequence), "1")
+			}
+		})
+	}
+}
+
+func TestJetStreamAPIRequestOnUsersBehalfRejected(t *testing.T) {
+	// Strict mode would reject some of the requests as invalid.
+	// Disable it so any request that reaches the API is processed.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q, strict: false}
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [
+					{ user: admin, password: s3cr3t },
+					{ user: resp, password: pwd, permissions: { publish: { deny: ">" }, subscribe: { allow: ["svc", "deliver"] }, allow_responses: true } },
+				]
+			},
+		}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s, nats.UserInfo("admin", "s3cr3t"))
+	defer nc.Close()
+
+	// An internal client skips the client check, like a routed request from an unpatched server.
+	acc, err := s.lookupAccount("A")
+	require_NoError(t, err)
+
+	// Collects the async errors of a connection, to expect a permissions violation.
+	violations := func(nc *nats.Conn) func(t *testing.T, violation string) {
+		errCh := make(chan error, 10)
+		nc.SetErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, e error) {
+			select {
+			case errCh <- e:
+			default:
+			}
+		})
+		return func(t *testing.T, violation string) {
+			t.Helper()
+			select {
+			case e := <-errCh:
+				require_Contains(t, e.Error(), violation)
+			case <-time.After(time.Second):
+				t.Fatalf("Expected to get a permissions error, got none")
+			}
+		}
+	}
+
+	_, err = js.AddStream(&nats.StreamConfig{Name: "SRC", Subjects: []string{"src"}, AllowDirect: true})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("SRC", &nats.ConsumerConfig{Durable: "dur", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.Publish("src", []byte("{}"))
+	require_NoError(t, err)
+
+	t.Run("reply", func(t *testing.T) {
+		expectViolation := violations(nc)
+		next := fmt.Sprintf(JSApiRequestNextT, "SRC", "dur")
+
+		// Pull a message, its ack reply is used for the ack case below.
+		sub := natsSubSync(t, nc, "_INBOX.pull")
+		require_NoError(t, nc.PublishRequest(next, "_INBOX.pull", []byte(`{"batch":1}`)))
+		m := natsNexMsg(t, sub, time.Second)
+
+		// A subject added by a stream update is subscribed separately.
+		_, err := js.UpdateStream(&nats.StreamConfig{Name: "SRC", Subjects: []string{"src", "upd"}, AllowDirect: true})
+		require_NoError(t, err)
+
+		for i, test := range []struct{ name, subject, body string }{
+			{"direct get", fmt.Sprintf(JSDirectMsgGetT, "SRC"), `{"seq":1}`},
+			{"direct get last by subject", fmt.Sprintf(JSDirectGetLastBySubjectT, "SRC", "src"), ""},
+			{"next request", next, `{"batch":1,"no_wait":true}`},
+			// Ack with +NXT uses the ack's reply for the next pull request.
+			{"ack next", m.Reply, `+NXT {"batch":1,"no_wait":true}`},
+			{"reset", fmt.Sprintf(JSApiConsumerResetT, "SRC", "dur"), ""},
+			{"stream publish", "src", "{}"},
+			{"stream publish after update", "upd", "{}"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				reply, checkVictim := addJSAPIVictim(t, nc, js, fmt.Sprintf("V%d", i), 0)
+				require_NoError(t, nc.PublishRequest(test.subject, reply, []byte(test.body)))
+				expectViolation(t, "Permissions Violation for Publish with Reply")
+				require_NoError(t, s.sendInternalAccountMsgWithReply(acc, test.subject, reply, nil, []byte(test.body), false))
+
+				// Make sure the request is handled with a normal reply, otherwise the above isn't testing anything.
+				// The requests are handled in order, so any API request would have arrived by now.
+				inbox := nats.NewInbox()
+				rsub := natsSubSync(t, nc, inbox)
+				natsFlush(t, nc)
+				require_NoError(t, s.sendInternalAccountMsgWithReply(acc, test.subject, inbox, nil, []byte(test.body), false))
+				natsNexMsg(t, rsub, time.Second)
+				checkVictim()
+			})
+		}
+
+		// A restore chunk is acked with an empty body, so a valid purge request.
+		// Without a reply the restore is aborted, so wait instead of checking a normal reply.
+		purge, checkVictim := addJSAPIVictim(t, nc, js, "VRST", 250*time.Millisecond)
+		req, err := json.Marshal(&JSApiStreamRestoreRequest{Config: StreamConfig{Name: "RST", Storage: FileStorage}})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamRestoreT, "RST"), req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamRestoreResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+		// The restore subscribes with the account's internal client, so it needs echo.
+		require_NoError(t, s.sendInternalAccountMsgWithReply(acc, resp.DeliverSubject, purge, nil, []byte("chunk"), true))
+		checkVictim()
+	})
+
+	t.Run("destination", func(t *testing.T) {
+		purge, checkVictim := addJSAPIVictim(t, nc, js, "VD", 0)
+
+		// Idle heartbeats are an empty body, so a valid purge request.
+		for _, dsubj := range []string{purge, "$JS.hub.API.STREAM.PURGE.VD", "$JS.ACK.SRC.dur", "$JS.FC.SRC.dur", "$JS.SNAPSHOT.ACK.SRC", "$JS.EVENT.ADVISORY.API", "_GR_.abcdef.ghijkl." + purge} {
+			_, err := js.AddConsumer("SRC", &nats.ConsumerConfig{Durable: "push", DeliverSubject: dsubj, Heartbeat: 100 * time.Millisecond})
+			require_Error(t, err, NewJSConsumerInvalidDeliverSubjectError())
+		}
+		_, err := js.AddConsumer("SRC", &nats.ConsumerConfig{Durable: "push", DeliverSubject: "deliver"})
+		require_NoError(t, err)
+
+		// Replicas apply an update without the API's checks, for example proposed by an older meta leader.
+		mset, err := acc.lookupStream("SRC")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("push")
+		cfg := o.config()
+		cfg.DeliverSubject = purge
+		require_Error(t, o.updateConfig(&cfg), NewJSConsumerInvalidDeliverSubjectError())
+		require_NoError(t, js.DeleteConsumer("SRC", "push"))
+
+		// Mirror and source consumers deliver on these subjects, also with an external deliver prefix.
+		for _, dsubj := range []string{"$JS.M.dur", "$JS.S.dur", "$JS.ext.M.dur"} {
+			_, err = js.AddConsumer("SRC", &nats.ConsumerConfig{Durable: "push", DeliverSubject: dsubj})
+			require_NoError(t, err)
+			require_NoError(t, js.DeleteConsumer("SRC", "push"))
+		}
+
+		// The final snapshot chunk is an empty body, so a valid purge request.
+		req, err := json.Marshal(&JSApiStreamSnapshotRequest{DeliverSubject: purge})
+		require_NoError(t, err)
+		rmsg, err := nc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "SRC"), req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamSnapshotResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_Error(t, resp.Error, NewJSSnapshotDeliverSubjectInvalidError())
+
+		// The republish transform can produce any subject, so the republished subject must be checked.
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:      "RP",
+			Subjects:  []string{"rp.>"},
+			RePublish: &nats.RePublish{Source: "rp.*.*.*.*.*", Destination: "{{wildcard(1)}}.{{wildcard(2)}}.{{wildcard(3)}}.{{wildcard(4)}}.{{wildcard(5)}}"},
+		})
+		require_NoError(t, err)
+		_, err = js.Publish("rp."+purge, []byte("{}"))
+		require_NoError(t, err)
+
+		// Make sure a normal republish still works.
+		// Republishes are sent in order, so any API request would have arrived by now.
+		sub := natsSubSync(t, nc, "a.b.c.d.e")
+		_, err = js.Publish("rp.a.b.c.d.e", []byte("{}"))
+		require_NoError(t, err)
+		natsNexMsg(t, sub, time.Second)
+		checkVictim()
+	})
+
+	t.Run("sourcing control message", func(t *testing.T) {
+		purge, checkVictim := addJSAPIVictim(t, nc, js, "VFC", 0)
+		_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN", Subjects: []string{"origin"}})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "M", Mirror: &nats.StreamSource{Name: "ORIGIN"}})
+		require_NoError(t, err)
+		_, err = js.AddStream(&nats.StreamConfig{Name: "S", Sources: []*nats.StreamSource{{Name: "ORIGIN"}}})
+		require_NoError(t, err)
+
+		fcSub := natsSubSync(t, nc, "$JS.FC.ORIGIN.>")
+		natsFlush(t, nc)
+
+		stalled := func(reply string) []byte {
+			return fmt.Appendf(nil, "NATS/1.0 100 Idle Heartbeat\r\n%s: %s\r\n\r\n", JSConsumerStalled, reply)
+		}
+		fcRequest := []byte("NATS/1.0 100 FlowControl Request\r\n\r\n")
+
+		for _, name := range []string{"M", "S"} {
+			mset, err := acc.lookupStream(name)
+			require_NoError(t, err)
+			// Anyone that can publish to the deliver subject of a mirror or source controls its control messages.
+			var dsubj, fcPre string
+			checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+				mset.mu.RLock()
+				defer mset.mu.RUnlock()
+				si := mset.mirror
+				for _, ssi := range mset.sources {
+					si = ssi
+				}
+				if si == nil || si.sub == nil || si.cname == _EMPTY_ {
+					return fmt.Errorf("no consumer for %q yet", name)
+				}
+				dsubj, fcPre = string(si.sub.subject), fmt.Sprintf("$JS.FC.ORIGIN.%s.", si.cname)
+				return nil
+			})
+
+			// An idle heartbeat reporting to be stalled on a reply that's not for flow control.
+			require_NoError(t, s.sendInternalAccountMsgWithReply(acc, dsubj, _EMPTY_, stalled(purge), nil, false))
+			// A flow control request with a reply that's not for flow control.
+			require_NoError(t, s.sendInternalAccountMsgWithReply(acc, dsubj, purge, fcRequest, nil, false))
+
+			// Make sure flow control replies are still sent, otherwise the above isn't testing anything.
+			require_NoError(t, s.sendInternalAccountMsgWithReply(acc, dsubj, _EMPTY_, stalled(fcPre+"stal"), nil, false))
+			require_Equal(t, natsNexMsg(t, fcSub, time.Second).Subject, fcPre+"stal")
+			require_NoError(t, s.sendInternalAccountMsgWithReply(acc, dsubj, fcPre+"reqs", fcRequest, nil, false))
+			require_Equal(t, natsNexMsg(t, fcSub, time.Second).Subject, fcPre+"reqs")
+
+			// A reply replicated by a server without the flow control reply check.
+			mset.mu.Lock()
+			mset.sendFlowControlReply(purge, nil)
+			mset.sendFlowControlReply(fcPre+"repl", nil)
+			mset.mu.Unlock()
+			require_Equal(t, natsNexMsg(t, fcSub, time.Second).Subject, fcPre+"repl")
+
+			// The replies are sent in order, so any purge request would have arrived by now.
+			checkVictim()
+		}
+	})
+
+	t.Run("allow responses", func(t *testing.T) {
+		purge, checkVictim := addJSAPIVictim(t, nc, js, "VAR", 0)
+		rnc, _ := jsClientConnect(t, s, nats.UserInfo("resp", "pwd"))
+		defer rnc.Close()
+		expectViolation := violations(rnc)
+
+		// A non-JSON body is a valid purge request.
+		_, err := rnc.Subscribe("svc", func(m *nats.Msg) { m.Respond([]byte("not json")) })
+		require_NoError(t, err)
+		natsFlush(t, rnc)
+		require_NoError(t, s.sendInternalAccountMsgWithReply(acc, "svc", purge, nil, nil, false))
+		expectViolation(t, "Permissions Violation for Publish")
+		checkVictim()
+
+		// Make sure the responder can still ack, since an ack isn't an API request.
+		_, err = js.AddConsumer("VAR", &nats.ConsumerConfig{Durable: "dur", DeliverSubject: "deliver", AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		sub := natsSubSync(t, rnc, "deliver")
+		require_NoError(t, natsNexMsg(t, sub, time.Second).Ack())
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if ci, err := js.ConsumerInfo("VAR", "dur"); err != nil || ci.AckFloor.Consumer != 1 {
+				return fmt.Errorf("expected ack floor 1, got %+v, %v", ci, err)
+			}
+			return nil
+		})
+	})
+}
+
+func TestJetStreamImportedJSAPIAliasRejected(t *testing.T) {
+	// Strict mode would reject some of the requests as invalid.
+	// Disable it so any request that reaches the API is processed.
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q, domain: hub, strict: false}
+		leafnodes: { listen: 127.0.0.1:-1 }
+		accounts: {
+			A: {
+				jetstream: enabled
+				users: [ { user: a, password: pwd } ]
+				exports: [ { service: "$JS.API.>" }, { service: "$JS.FC.>" }, { stream: "deliver.B.>" } ]
+			},
+			B: {
+				jetstream: enabled
+				users: [
+					{ user: b, password: pwd },
+					{ user: leaf, password: pwd },
+					{ user: req, password: pwd, permissions: { publish: "svc", subscribe: "_INBOX.>" } },
+					{ user: resp, password: pwd, permissions: { publish: { deny: ">" }, subscribe: "svc", allow_responses: true } },
+				]
+				mappings: { "JS.B.API.>": "$JS.API.>" }
+				exports: [ { service: "JS.A.API.>" } ]
+				imports: [
+					{ service: { account: A, subject: "$JS.API.>" }, to: "JS.A.API.>" },
+					{ service: { account: A, subject: "$JS.API.>" }, to: "$JS.X.Y.>" },
+					{ service: { account: A, subject: "$JS.FC.>" } },
+					{ stream: { account: A, subject: "deliver.B.>" } },
+				]
+			},
+			C: {
+				jetstream: enabled
+				users: [ { user: c, password: pwd } ]
+				imports: [ { service: { account: B, subject: "JS.A.API.>" }, to: "JS.C.API.>" } ]
+			},
+		}
+	`, t.TempDir())))
+
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	// JetStream on the leafnode doesn't know about the hub's alias.
+	lconf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {max_mem_store: 64GB, max_file_store: 10TB, store_dir: %q, domain: leaf}
+		accounts: { B: { jetstream: enabled, users: [ { user: b, password: pwd } ] } }
+		leafnodes: { remotes: [ { url: "nats://leaf:pwd@127.0.0.1:%d", account: B } ] }
+	`, t.TempDir(), s.getOpts().LeafNode.Port)))
+	ln, _ := RunServerWithConfig(lconf)
+	defer ln.Shutdown()
+	checkLeafNodeConnected(t, s)
+
+	anc, ajs := jsClientConnect(t, s, nats.UserInfo("a", "pwd"))
+	defer anc.Close()
+	bnc, bjs := jsClientConnect(t, s, nats.UserInfo("b", "pwd"))
+	defer bnc.Close()
+	lnc, ljs := jsClientConnect(t, ln, nats.UserInfo("b", "pwd"))
+	defer lnc.Close()
+	lacc, err := ln.lookupAccount("B")
+	require_NoError(t, err)
+
+	// Every case gets its own victim, so a failure doesn't affect the others.
+	newVictim := func(t *testing.T, name, prefix string) (string, func()) {
+		t.Helper()
+		// Give any API request sent through the alias time to arrive.
+		purge, checkVictim := addJSAPIVictim(t, anc, ajs, name, 250*time.Millisecond)
+		return strings.Replace(purge, JSApiPrefix, prefix, 1), checkVictim
+	}
+	// Makes sure messages reach the hub's alias, otherwise this isn't testing anything.
+	hubSub := func(t *testing.T, dsubj string) *nats.Subscription {
+		t.Helper()
+		sub := natsSubSync(t, bnc, dsubj)
+		natsFlush(t, bnc)
+		// The leafnode only forwards once the hub's interest has propagated.
+		checkSubInterest(t, ln, "B", dsubj, 2*time.Second)
+		return sub
+	}
+
+	// A non-JSON body is a valid purge request.
+	_, err = bjs.AddStream(&nats.StreamConfig{Name: "SRC", Subjects: []string{"src"}, AllowDirect: true})
+	require_NoError(t, err)
+	_, err = bjs.Publish("src", []byte("not json"))
+	require_NoError(t, err)
+	_, err = ljs.AddStream(&nats.StreamConfig{Name: "LSRC", Subjects: []string{"lsrc"}, AllowDirect: true})
+	require_NoError(t, err)
+	_, err = ljs.Publish("lsrc", []byte("not json"))
+	require_NoError(t, err)
+
+	t.Run("direct get", func(t *testing.T) {
+		dsubj, checkVictim := newVictim(t, "V1", "JS.A.API")
+		sub := hubSub(t, dsubj)
+		require_NoError(t, bnc.PublishRequest(fmt.Sprintf(JSDirectMsgGetT, "SRC"), dsubj, []byte(`{"seq":1}`)))
+		natsNexMsg(t, sub, time.Second)
+		checkVictim()
+
+		// JetStream on the leafnode responds through the hub's alias as well.
+		// A 404 response is an empty body, so a valid purge request.
+		dsubj, checkVictim = newVictim(t, "V1L", "JS.A.API")
+		sub = hubSub(t, dsubj)
+		require_NoError(t, lnc.PublishRequest(fmt.Sprintf(JSDirectMsgGetT, "LSRC"), dsubj, []byte(`{"seq":999}`)))
+		natsNexMsg(t, sub, time.Second)
+		checkVictim()
+	})
+
+	t.Run("push consumer", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			nc     *nats.Conn
+			js     nats.JetStreamContext
+			stream string
+		}{
+			{"V2", bnc, bjs, "SRC"},
+			// JetStream on the leafnode delivers through the hub's alias as well.
+			{"V2L", lnc, ljs, "LSRC"},
+		} {
+			dsubj, checkVictim := newVictim(t, test.name, "JS.A.API")
+			sub := hubSub(t, dsubj)
+			// The consumer only delivers if there's local interest besides the import.
+			natsSubSync(t, test.nc, dsubj)
+			natsFlush(t, test.nc)
+
+			// Messages are a non-JSON body, and idle heartbeats an empty body, so both valid purge requests.
+			_, err := test.js.AddConsumer(test.stream, &nats.ConsumerConfig{Durable: "dur", DeliverSubject: dsubj, Heartbeat: 100 * time.Millisecond})
+			require_NoError(t, err)
+			natsNexMsg(t, sub, time.Second)
+			natsNexMsg(t, sub, time.Second)
+			checkVictim()
+			require_NoError(t, test.js.DeleteConsumer(test.stream, "dur"))
+		}
+
+		// A delivery that crossed a gateway on the leafnode's side has a gateway routed ack reply.
+		dsubj, checkVictim := newVictim(t, "V2G", "JS.A.API")
+		sub := hubSub(t, dsubj)
+		require_NoError(t, ln.sendInternalAccountMsgWithReply(lacc, dsubj, "_GR_.aaaaaa.bbbbbb.$JS.ACK.LSRC.dur.1.1.1.0.0", nil, []byte("not json"), false))
+		natsNexMsg(t, sub, time.Second)
+		checkVictim()
+	})
+
+	t.Run("republish", func(t *testing.T) {
+		// An alias could also look like a JetStream subject.
+		dsubj, checkVictim := newVictim(t, "V3", "$JS.X.Y")
+		sub := hubSub(t, dsubj)
+		_, err := bjs.AddStream(&nats.StreamConfig{Name: "RP", Subjects: []string{"rp"}, RePublish: &nats.RePublish{Source: "rp", Destination: dsubj}})
+		require_NoError(t, err)
+		_, err = bjs.Publish("rp", []byte("not json"))
+		require_NoError(t, err)
+		// Make sure the republish reached the alias, otherwise this isn't testing anything.
+		natsNexMsg(t, sub, time.Second)
+		checkVictim()
+	})
+
+	t.Run("snapshot", func(t *testing.T) {
+		cnc, cjs := jsClientConnect(t, s, nats.UserInfo("c", "pwd"))
+		defer cnc.Close()
+		_, err := cjs.AddStream(&nats.StreamConfig{Name: "CSRC", Subjects: []string{"csrc"}})
+		require_NoError(t, err)
+
+		// Only chunks that aren't the last have a JetStream reply, so the snapshot needs multiple.
+		data := make([]byte, 8*1024)
+		crand.Read(data)
+		_, err = cjs.Publish("csrc", data)
+		require_NoError(t, err)
+
+		// A chained import rewrites that reply before reaching the API.
+		dsubj, checkVictim := newVictim(t, "V4", "JS.C.API")
+		// The snapshot only starts once there's interest besides the import.
+		sub := natsSubSync(t, cnc, dsubj)
+		natsFlush(t, cnc)
+
+		req, err := json.Marshal(&JSApiStreamSnapshotRequest{DeliverSubject: dsubj, ChunkSize: 1024})
+		require_NoError(t, err)
+		rmsg, err := cnc.Request(fmt.Sprintf(JSApiStreamSnapshotT, "CSRC"), req, time.Second)
+		require_NoError(t, err)
+		var resp JSApiStreamSnapshotResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+		require_True(t, resp.Error == nil)
+
+		// Make sure a chunk with a reply was delivered, otherwise this isn't testing anything.
+		require_True(t, natsNexMsg(t, sub, time.Second).Reply != _EMPTY_)
+		checkVictim()
+	})
+
+	t.Run("api", func(t *testing.T) {
+		newVictim(t, "V5", "JS.A.API")
+
+		// Make sure the API can still be used through the alias, by a user, a leafnode and an external mirror.
+		for _, nc := range []*nats.Conn{bnc, lnc} {
+			rm, err := nc.Request(fmt.Sprintf("JS.A.API.STREAM.INFO.%s", "V5"), nil, time.Second)
+			require_NoError(t, err)
+			var resp JSApiStreamInfoResponse
+			require_NoError(t, json.Unmarshal(rm.Data, &resp))
+			require_True(t, resp.Error == nil)
+		}
+
+		_, err = bjs.AddStream(&nats.StreamConfig{
+			Name:   "MIRROR",
+			Mirror: &nats.StreamSource{Name: "V5", External: &nats.ExternalStream{APIPrefix: "JS.A.API", DeliverPrefix: "deliver.B"}},
+		})
+		require_NoError(t, err)
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if si, err := bjs.StreamInfo("MIRROR"); err != nil || si.State.Msgs != 1 {
+				return fmt.Errorf("expected 1 mirrored message, got %+v, %v", si, err)
+			}
+			return nil
+		})
+
+		// Make sure a user can still publish through the alias without a reply.
+		dsubj, _ := newVictim(t, "V6", "JS.A.API")
+		require_NoError(t, bnc.Publish(dsubj, nil))
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			if si, err := ajs.StreamInfo("V6"); err != nil || si.State.Msgs != 0 {
+				return fmt.Errorf("expected V6 to be purged, got %+v, %v", si, err)
+			}
+			return nil
+		})
+	})
+
+	t.Run("allow responses", func(t *testing.T) {
+		dsubj, checkVictim := newVictim(t, "V7", "JS.A.API")
+		rnc := natsConnect(t, s.ClientURL(), nats.UserInfo("resp", "pwd"))
+		defer rnc.Close()
+		replies := make(chan string, 10)
+		// A non-JSON body is a valid purge request.
+		_, err := rnc.Subscribe("svc", func(m *nats.Msg) {
+			replies <- m.Reply
+			m.Respond([]byte("not json"))
+		})
+		require_NoError(t, err)
+		natsFlush(t, rnc)
+
+		// The requester can't publish to the alias, so the responder must not either.
+		qnc := natsConnect(t, s.ClientURL(), nats.UserInfo("req", "pwd"))
+		defer qnc.Close()
+		require_NoError(t, qnc.PublishRequest("svc", dsubj, nil))
+		select {
+		case reply := <-replies:
+			require_Equal(t, reply, dsubj)
+		case <-time.After(time.Second):
+			t.Fatal("Expected the responder to get the request")
+		}
+		checkVictim()
+	})
+
+	t.Run("mapping", func(t *testing.T) {
+		_, err := bjs.AddStream(&nats.StreamConfig{Name: "VB", Subjects: []string{"VB"}})
+		require_NoError(t, err)
+		_, err = bjs.Publish("VB", nil)
+		require_NoError(t, err)
+
+		// A mapping can also turn a subject into a JetStream API request, before it reaches the import.
+		dsubj := "JS.B.API.STREAM.PURGE.VB"
+		sub := natsSubSync(t, bnc, fmt.Sprintf(JSApiStreamPurgeT, "VB"))
+		natsFlush(t, bnc)
+		checkSubInterest(t, ln, "B", dsubj, 2*time.Second)
+
+		// JetStream on the leafnode responds through the hub's mapping.
+		// A 404 response is an empty body, so a valid purge request.
+		require_NoError(t, lnc.PublishRequest(fmt.Sprintf(JSDirectMsgGetT, "LSRC"), dsubj, []byte(`{"seq":999}`)))
+		// Make sure the response reached the hub as an API request, otherwise this isn't testing anything.
+		natsNexMsg(t, sub, time.Second)
+		time.Sleep(250 * time.Millisecond)
+		si, err := bjs.StreamInfo("VB")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 1)
+	})
+}
+
+func TestJetStreamStoredReservedDeliverSubjectRejected(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"TEST"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "dur", DeliverSubject: "deliver"})
+	require_NoError(t, err)
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("dur")
+	require_NotNil(t, o)
+	// Stores a reserved deliver subject for a consumer, like an older server or a crafted snapshot could have.
+	cfg := o.config()
+	cfg.DeliverSubject = fmt.Sprintf(JSApiStreamPurgeT, "VICTIM")
+	require_NoError(t, o.store.UpdateConfig(&cfg))
+	scfg := mset.config()
+	sr, err := mset.snapshot(5*time.Second, false, true)
+	require_NoError(t, err)
+	snapshot, err := io.ReadAll(sr.Reader)
+	require_NoError(t, err)
+
+	sd := s.JetStreamConfig().StoreDir
+	s.Shutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	// The consumer must not be loaded, so it never delivers.
+	_, err = js.ConsumerInfo("TEST", "dur")
+	require_Error(t, err, nats.ErrConsumerNotFound)
+	// It's also removed, so recreating it doesn't reuse the config.
+	_, err = os.Stat(filepath.Join(sd, "$G", streamsDir, "TEST", consumerDir, "dur"))
+	require_True(t, os.IsNotExist(err))
+
+	// A restore must also reject it.
+	require_NoError(t, js.DeleteStream("TEST"))
+	_, err = s.GlobalAccount().RestoreStream(&scfg, bytes.NewReader(snapshot))
+	require_Error(t, err)
+	require_Contains(t, err.Error(), NewJSConsumerInvalidDeliverSubjectError().Error())
+}
