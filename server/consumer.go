@@ -822,7 +822,7 @@ func checkConsumerCfg(
 		if !subjectIsLiteral(config.DeliverSubject) {
 			return NewJSConsumerDeliverToWildcardsError()
 		}
-		if !IsValidSubject(config.DeliverSubject) {
+		if !IsValidSubject(config.DeliverSubject) || isReservedDestination(config.DeliverSubject) {
 			return NewJSConsumerInvalidDeliverSubjectError()
 		}
 		if deliveryFormsCycle(cfg, config.DeliverSubject) {
@@ -1844,11 +1844,11 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 
 		var err error
 		if o.cfg.AckPolicy != AckNone && o.cfg.AckPolicy != AckFlowControl {
-			if o.ackSubOld, err = o.subscribeInternal(o.ackSubjOld, o.pushAck); err != nil {
+			if o.ackSubOld, err = o.subscribeInternal(o.ackSubjOld, jsRequestHandler(o.pushAck)); err != nil {
 				o.mu.Unlock()
 				return nil
 			}
-			if o.ackSub, err = o.subscribeInternal(o.ackSubj, o.pushAck); err != nil {
+			if o.ackSub, err = o.subscribeInternal(o.ackSubj, jsRequestHandler(o.pushAck)); err != nil {
 				o.mu.Unlock()
 				return nil
 			}
@@ -1856,11 +1856,11 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 
 		// Setup the internal sub for next message requests regardless.
 		// Will error if wrong mode to provide feedback to users.
-		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, o.processNextMsgReq); err != nil {
+		if o.reqSub, err = o.subscribeInternal(o.nextMsgSubj, jsRequestHandler(o.processNextMsgReq)); err != nil {
 			o.mu.Unlock()
 			return nil
 		}
-		if o.resetSub, err = o.subscribeInternal(o.resetSubj, o.processResetReq); err != nil {
+		if o.resetSub, err = o.subscribeInternal(o.resetSubj, jsRequestHandler(o.processResetReq)); err != nil {
 			o.mu.Unlock()
 			return nil
 		}
@@ -1868,11 +1868,11 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 		// Check on flow control settings.
 		if o.cfg.FlowControl {
 			o.setMaxPendingBytes(JsFlowControlMaxPending)
-			if o.fcSubOld, err = o.subscribeInternal(o.fcSubjOld, o.processFlowControl); err != nil {
+			if o.fcSubOld, err = o.subscribeInternal(o.fcSubjOld, jsRequestHandler(o.processFlowControl)); err != nil {
 				o.mu.Unlock()
 				return nil
 			}
-			if o.fcSub, err = o.subscribeInternal(o.fcSubj, o.processFlowControl); err != nil {
+			if o.fcSub, err = o.subscribeInternal(o.fcSubj, jsRequestHandler(o.processFlowControl)); err != nil {
 				o.mu.Unlock()
 				return nil
 			}
@@ -2620,6 +2620,11 @@ func (acc *Account) checkNewConsumerConfig(cfg, ncfg *ConsumerConfig) error {
 		}
 		if ncfg.DeliverSubject == _EMPTY_ {
 			return errors.New("can not update push consumer to pull based")
+		}
+		// Replicas apply updates without checkConsumerCfg.
+		// An older meta leader also wouldn't have checked.
+		if isReservedDestination(ncfg.DeliverSubject) {
+			return NewJSConsumerInvalidDeliverSubjectError()
 		}
 		if acc.sl.HasInterest(cfg.DeliverSubject) {
 			return NewJSConsumerNameExistError()

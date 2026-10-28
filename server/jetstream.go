@@ -1414,6 +1414,14 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			obs, err := mset.addConsumerWithAssignment(&cfg.ConsumerConfig, _EMPTY_, nil, true, ActionCreateOrUpdate, false)
 			if err != nil {
 				s.Warnf("    Error adding consumer '%s > %s > %s': %v", a.Name, mset.name(), cfg.Name, err)
+				// The deliver subject will never be valid, so remove the consumer.
+				// Otherwise recreating it would reuse this config.
+				if IsNatsErr(err, JSConsumerInvalidDeliverSubject) {
+					s.Warnf("    Removing consumer '%s > %s > %s' with reserved deliver subject %q", a.Name, mset.name(), cfg.Name, cfg.DeliverSubject)
+					if err := os.RemoveAll(filepath.Join(odir, ofi.Name())); err != nil {
+						s.Warnf("    Error removing consumer '%s > %s > %s': %v", a.Name, mset.name(), cfg.Name, err)
+					}
+				}
 				continue
 			}
 			if isEphemeral {

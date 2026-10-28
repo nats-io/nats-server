@@ -2808,7 +2808,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 		// the originals first, since if it is in there we can skip, already added.
 		for _, s := range cfg.Subjects {
 			if _, ok := current[s]; !ok {
-				if _, err := mset.subscribeInternal(s, mset.processInboundJetStreamMsg); err != nil {
+				if _, err := mset.subscribeInternal(s, jsRequestHandler(mset.processInboundJetStreamMsg)); err != nil {
 					mset.mu.Unlock()
 					return err
 				}
@@ -4850,6 +4850,10 @@ func (m *inMsg) isControlMsg() bool {
 // Sends a reply to a flow control request.
 // Lock should be held.
 func (mset *stream) sendFlowControlReply(reply string, hdr []byte) {
+	// The reply could have been replicated by a server without the flow control reply check.
+	if !isFlowControlReply(reply) {
+		return
+	}
 	if mset.isLeader() && mset.outq != nil {
 		dseq := parseInt64(sliceHeader(JSLastConsumerSeq, hdr))
 		sseq := parseInt64(sliceHeader(JSLastStreamSeq, hdr))
@@ -4872,6 +4876,10 @@ func (mset *stream) sendFlowControlReply(reply string, hdr []byte) {
 // handleFlowControl will properly handle flow control messages for both R==1 and R>1.
 // Lock should be held.
 func (mset *stream) handleFlowControl(m *inMsg, dseq, sseq uint64) {
+	// Anyone that can publish to the deliver subject controls the reply.
+	if !isFlowControlReply(m.rply) {
+		return
+	}
 	// If we are clustered we will send the flow control message through the replication stack.
 	if mset.isClustered() {
 		// Append the current delivery and stream sequences, to be sent after replication.
@@ -4893,6 +4901,10 @@ const sourceFCStalledThreshold = 3
 // If it keeps reporting the same one, our replies are not reaching it, so report an error.
 // Lock should be held.
 func (mset *stream) processStalledFlowControl(si *sourceInfo, fcReply string) {
+	// Anyone that can publish to the deliver subject controls the header.
+	if !isFlowControlReply(fcReply) {
+		return
+	}
 	if fcReply != si.fcid {
 		si.fcid, si.fcsc = fcReply, 0
 	}
@@ -5297,7 +5309,7 @@ func (mset *stream) subscribeToStream() error {
 		return nil
 	}
 	for _, subject := range mset.cfg.Subjects {
-		if _, err := mset.subscribeInternal(subject, mset.processInboundJetStreamMsg); err != nil {
+		if _, err := mset.subscribeInternal(subject, jsRequestHandler(mset.processInboundJetStreamMsg)); err != nil {
 			return err
 		}
 	}
@@ -5354,7 +5366,7 @@ func (mset *stream) subscribeToDirect() error {
 	// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
 	if mset.directSub == nil {
 		dsubj := fmt.Sprintf(JSDirectMsgGetT, mset.cfg.Name)
-		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err == nil {
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, jsRequestHandler(mset.processDirectGetRequest)); err == nil {
 			mset.directSub = sub
 		} else {
 			return err
@@ -5364,7 +5376,7 @@ func (mset *stream) subscribeToDirect() error {
 	if mset.lastBySub == nil {
 		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mset.cfg.Name, fwcs)
 		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetLastBySubjectRequest); err == nil {
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, jsRequestHandler(mset.processDirectGetLastBySubjectRequest)); err == nil {
 			mset.lastBySub = sub
 		} else {
 			return err
@@ -5397,7 +5409,7 @@ func (mset *stream) subscribeToMirrorDirect() error {
 	if mset.mirrorDirectSub == nil {
 		dsubj := fmt.Sprintf(JSDirectMsgGetT, mirrorName)
 		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetRequest); err == nil {
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, jsRequestHandler(mset.processDirectGetRequest)); err == nil {
 			mset.mirrorDirectSub = sub
 		} else {
 			return err
@@ -5407,7 +5419,7 @@ func (mset *stream) subscribeToMirrorDirect() error {
 	if mset.mirrorLastBySub == nil {
 		dsubj := fmt.Sprintf(JSDirectGetLastBySubjectT, mirrorName, fwcs)
 		// We will make this listen on a queue group by default, which can allow mirrors to participate on opt-in basis.
-		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, mset.processDirectGetLastBySubjectRequest); err == nil {
+		if sub, err := mset.queueSubscribeInternal(dsubj, dgetGroup, jsRequestHandler(mset.processDirectGetLastBySubjectRequest)); err == nil {
 			mset.mirrorLastBySub = sub
 		} else {
 			return err
@@ -7407,7 +7419,7 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	var thdrsOnly bool
 	if mset.tr != nil {
 		tsubj, _ = mset.tr.Match(subject)
-		if tsubj != _EMPTY_ && !IsValidPublishSubject(tsubj) {
+		if tsubj != _EMPTY_ && (!IsValidPublishSubject(tsubj) || isReservedDestination(tsubj)) {
 			s.RateLimitWarnf("Stream '%s > %s' suppressing republish with invalid subject %q", accName, name, tsubj)
 			tsubj = _EMPTY_ // ... stops the republish.
 		}
