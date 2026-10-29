@@ -214,6 +214,10 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	}
 
 	getExpirationAndAllowedConnections := func(arc *jwt.UserClaims, account string) (time.Duration, map[string]struct{}, error) {
+		if !validateSrc(arc, c.host) {
+			c.Errorf("Bad src Ip %s", c.host)
+			return 0, nil, fmt.Errorf("authorized user on account %q not allowed from source %q", account, c.host)
+		}
 		allowNow, expiration := validateTimes(arc)
 		if !allowNow {
 			c.Errorf("Outside connect times")

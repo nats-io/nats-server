@@ -1964,6 +1964,110 @@ func TestAuthCalloutScopedUserTemplateAllowedConnectionTypes(t *testing.T) {
 	require_True(t, errors.Is(err, nats.ErrAuthorization))
 }
 
+func TestAuthCalloutSrc(t *testing.T) {
+	_, spub := createKey(t)
+	sysClaim := jwt.NewAccountClaims(spub)
+	sysClaim.Name = "$SYS"
+	sysJwt, err := sysClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// TEST account with a plain signing key, and scoped signing keys with and without src.
+	_, tpub := createKey(t)
+	accClaim := jwt.NewAccountClaims(tpub)
+	accClaim.Name = "TEST"
+	skKp, skPub := createKey(t)
+	accClaim.SigningKeys.Add(skPub)
+	srcScope, srcKp := newScopedRole(t, "src", []string{">"}, []string{">"}, false)
+	srcScope.Template.Src.Set("10.0.0.0/8")
+	accClaim.SigningKeys.AddScopedSigner(srcScope)
+	okScope, okKp := newScopedRole(t, "ok", []string{">"}, []string{">"}, false)
+	accClaim.SigningKeys.AddScopedSigner(okScope)
+	accJwt, err := accClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	// AUTH service account.
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+
+	upub, creds := createAuthServiceUser(t, akp)
+	defer removeFile(t, creds)
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.Name = "AUTH"
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(tpub)
+	sentinelScope, sentinelKp := newScopedRole(t, "sentinel", nil, nil, false)
+	sentinelScope.Template.Sub.Deny.Add(">")
+	sentinelScope.Template.Pub.Deny.Add(">")
+	authClaim.SigningKeys.AddScopedSigner(sentinelScope)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	sentinelCreds := createScopedUser(t, akp, sentinelKp)
+	defer removeFile(t, sentinelCreds)
+
+	conf := fmt.Sprintf(`
+        listen: 127.0.0.1:-1
+        operator: %s
+        system_account: %s
+        resolver: MEM
+        resolver_preload: {
+            %s: %s
+            %s: %s
+            %s: %s
+        }
+    `, ojwt, spub, apub, authJwt, tpub, accJwt, spub, sysJwt)
+
+	tests := []struct {
+		name    string
+		skp     nkeys.KeyPair
+		src     string
+		allowed bool
+	}{
+		{"allowed", skKp, "127.0.0.0/8", true},
+		{"not allowed", skKp, "10.0.0.0/8", false},
+		{"allowed with other", skKp, "10.0.0.0/8,127.0.0.1/32", true},
+		{"scoped allowed", okKp, _EMPTY_, true},
+		{"scoped not allowed", srcKp, _EMPTY_, false},
+	}
+	handler := func(m *nats.Msg) {
+		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
+		for _, test := range tests {
+			if test.name != opts.Token {
+				continue
+			}
+			// Scoped users must have no limits of their own, the template sets src.
+			var j jwt.UserPermissionLimits
+			if test.src != _EMPTY_ {
+				j.Subs = jwt.NoLimit
+				j.Payload = jwt.NoLimit
+				j.Src.Set(test.src)
+			}
+			ujwt := createAuthUser(t, user, _EMPTY_, tpub, tpub, test.skp, 0, &j)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+			return
+		}
+		m.Respond(nil)
+	}
+
+	ac := NewAuthTest(t, conf, handler, nats.UserCredentials(creds))
+	defer ac.Cleanup()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nc, err := ac.NewClient(nats.UserCredentials(sentinelCreds), nats.Token(test.name))
+			if test.allowed {
+				require_NoError(t, err)
+				nc.Close()
+			} else {
+				require_True(t, errors.Is(err, nats.ErrAuthorization))
+			}
+		})
+	}
+}
+
 func TestAuthCalloutScopedUserAssignedAccount(t *testing.T) {
 	testAuthCalloutScopedUser(t, false)
 }
