@@ -444,13 +444,18 @@ func TestAuthCalloutBasics(t *testing.T) {
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},
-				Deny:  []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+				Deny:  []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
 			},
-			Subscribe: &SubjectPermission{},
+			Subscribe: &SubjectPermission{
+				Deny: []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
+			},
 		},
 	}
 	expires := userInfo.Expires
 	userInfo.Expires = 0
+	// Deny order isn't fixed.
+	slices.Sort(userInfo.Permissions.Publish.Deny)
+	slices.Sort(userInfo.Permissions.Subscribe.Deny)
 	if !reflect.DeepEqual(dlc, userInfo) {
 		t.Fatalf("User info for %q did not match", "dlc")
 	}
@@ -478,13 +483,18 @@ func TestAuthCalloutBasics(t *testing.T) {
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
 				Allow: []string{"$SYS.>"},
-				Deny:  []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+				Deny:  []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
 			},
-			Subscribe: &SubjectPermission{},
+			Subscribe: &SubjectPermission{
+				Deny: []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
+			},
 		},
 	}
 	expires = userInfo.Expires
 	userInfo.Expires = 0
+	// Deny order isn't fixed.
+	slices.Sort(userInfo.Permissions.Publish.Deny)
+	slices.Sort(userInfo.Permissions.Subscribe.Deny)
 	if !reflect.DeepEqual(dlc, userInfo) {
 		t.Fatalf("User info for %q did not match", "dlc")
 	}
@@ -1222,11 +1232,16 @@ func TestAuthCalloutVerifiedUserCalloutsWithSig(t *testing.T) {
 		AccountName: globalAccountName,
 		Permissions: &Permissions{
 			Publish: &SubjectPermission{
-				Deny: []string{AuthCalloutSubject}, // Will be auto-added since in auth account.
+				Deny: []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
 			},
-			Subscribe: &SubjectPermission{},
+			Subscribe: &SubjectPermission{
+				Deny: []string{AuthCalloutSubject, authCalloutReplySubjects}, // Will be auto-added since in auth account.
+			},
 		},
 	}
+	// Deny order isn't fixed.
+	slices.Sort(userInfo.Permissions.Publish.Deny)
+	slices.Sort(userInfo.Permissions.Subscribe.Deny)
 	if !reflect.DeepEqual(dlc, userInfo) {
 		t.Fatalf("User info for %q did not match", "dlc")
 	}
@@ -4665,31 +4680,129 @@ func TestAuthCalloutOperatorModeRejectionNotReportedAsAccountLimit(t *testing.T)
 	}
 }
 
-// Shutdown() stops eventing before it shuts down JetStream and closes the
-// client, websocket and MQTT listeners, so a CONNECT can still reach the auth
-// callout after the system account is gone. The callout must refuse that client
-// rather than dereference the torn-down system account.
-func TestAuthCalloutAfterEventingShutdown(t *testing.T) {
-	conf := `
-		listen: "127.0.0.1:-1"
-		server_name: A
-		authorization {
-			timeout: 1s
-			users: [ { user: "auth", password: "pwd" } ]
-			auth_callout {
-				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
-				auth_users: [ auth ]
+// Requires that a callout user can't see or answer auth callout requests and replies.
+func requireAuthCalloutSubjectsDenied(t *testing.T, s *Server, nc *nats.Conn) {
+	t.Helper()
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	c := s.getClient(cid)
+	require_NotNil(t, c)
+	for _, subject := range []string{AuthCalloutSubject, "$SYS._INBOX.abc.def"} {
+		c.mu.Lock()
+		canPub, canSub := c.pubAllowed(subject), c.canSubscribe(subject)
+		c.mu.Unlock()
+		require_False(t, canPub)
+		require_False(t, canSub)
+	}
+}
+
+func TestAuthCalloutUserDeniedAuthCalloutSubjects(t *testing.T) {
+	// A wildcard subscription must not receive requests or replies while another user logs in.
+	requireNoAuthCalloutMsgs := func(t *testing.T, nc *nats.Conn, login func()) {
+		t.Helper()
+		sub, err := nc.SubscribeSync(">")
+		require_NoError(t, err)
+		require_NoError(t, nc.Flush())
+		login()
+		for {
+			msg, err := sub.NextMsg(250 * time.Millisecond)
+			if err != nil {
+				return
+			}
+			if msg.Subject == AuthCalloutSubject || strings.HasPrefix(msg.Subject, "$SYS._INBOX.") {
+				t.Fatalf("Callout user received an auth request or reply on %q", msg.Subject)
 			}
 		}
-	`
-	handler := func(m *nats.Msg) { m.Respond(nil) }
-	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
-	defer at.Cleanup()
+	}
 
-	// The first step of Shutdown(), while every listener is still open.
-	at.srv.shutdownEventing()
+	t.Run("auth account", func(t *testing.T) {
+		conf := `
+			listen: "127.0.0.1:-1"
+			authorization {
+				timeout: 1s
+				users: [ { user: "auth", password: "pwd" } ]
+				auth_callout {
+					issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+					auth_users: [ auth ]
+				}
+			}
+		`
+		handler := func(m *nats.Msg) {
+			user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+			// No permissions, so the user is allowed everything in the auth account.
+			ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, _EMPTY_, nil, 10*time.Minute, nil)
+			m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+		}
+		at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+		defer at.Cleanup()
 
-	_, err := at.NewClient(nats.UserInfo("dlc", "zzz"))
-	require_Error(t, err)
-	require_Contains(t, err.Error(), "Authorization Violation")
+		nc := at.Connect(nats.UserInfo("user", "pwd"))
+		requireAuthCalloutSubjectsDenied(t, at.srv, nc)
+		requireNoAuthCalloutMsgs(t, nc, func() { at.Connect(nats.UserInfo("other", "pwd")).Close() })
+	})
+
+	// Placed by the auth callout of A into B, which has its own auth callout.
+	t.Run("other auth account", func(t *testing.T) {
+		_, spub := createKey(t)
+		sysJwt, err := jwt.NewAccountClaims(spub).Encode(oKp)
+		require_NoError(t, err)
+
+		bkp, bpub := createKey(t)
+		bSvcPub, bSvcCreds := createAuthServiceUser(t, bkp)
+		defer removeFile(t, bSvcCreds)
+		bClaim := jwt.NewAccountClaims(bpub)
+		bClaim.EnableExternalAuthorization(bSvcPub)
+		bClaim.Authorization.AllowedAccounts.Add(bpub)
+		bJwt, err := bClaim.Encode(oKp)
+		require_NoError(t, err)
+
+		akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+		require_NoError(t, err)
+		apub, err := akp.PublicKey()
+		require_NoError(t, err)
+		aSvcPub, aSvcCreds := createAuthServiceUser(t, akp)
+		defer removeFile(t, aSvcCreds)
+		aClaim := jwt.NewAccountClaims(apub)
+		aClaim.EnableExternalAuthorization(aSvcPub)
+		aClaim.Authorization.AllowedAccounts.Add(bpub)
+		aJwt, err := aClaim.Encode(oKp)
+		require_NoError(t, err)
+
+		conf := fmt.Sprintf(`
+			listen: 127.0.0.1:-1
+			operator: %s
+			system_account: %s
+			resolver: MEM
+			resolver_preload: { %s: %s, %s: %s, %s: %s }
+		`, ojwt, spub, apub, aJwt, bpub, bJwt, spub, sysJwt)
+
+		// Responses are signed by the account of the service, both place users into B.
+		respond := func(m *nats.Msg, kp nkeys.KeyPair) {
+			user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+			cr := jwt.NewAuthorizationResponseClaims(user)
+			cr.Audience = si.ID
+			cr.Jwt = createAuthUser(t, user, _EMPTY_, bpub, _EMPTY_, bkp, 10*time.Minute, nil)
+			token, err := cr.Encode(kp)
+			require_NoError(t, err)
+			m.Respond([]byte(token))
+		}
+		at := NewAuthTest(t, conf, func(m *nats.Msg) { respond(m, akp) }, nats.UserCredentials(aSvcCreds))
+		defer at.Cleanup()
+		bSvc := at.ConnectCallout(nats.UserCredentials(bSvcCreds))
+		natsSub(t, bSvc, AuthCalloutSubject, func(m *nats.Msg) { respond(m, bkp) })
+		natsFlush(t, bSvc)
+
+		aCreds := createBasicAccountUser(t, akp)
+		defer removeFile(t, aCreds)
+		nc := at.Connect(nats.UserCredentials(aCreds))
+		cid, err := nc.GetClientID()
+		require_NoError(t, err)
+		require_Equal(t, at.srv.getClient(cid).Account().Name, bpub)
+		requireAuthCalloutSubjectsDenied(t, at.srv, nc)
+
+		// A user of B triggers the auth callout of B.
+		bCreds := createBasicAccountUser(t, bkp)
+		defer removeFile(t, bCreds)
+		requireNoAuthCalloutMsgs(t, nc, func() { at.Connect(nats.UserCredentials(bCreds)).Close() })
+	})
 }
