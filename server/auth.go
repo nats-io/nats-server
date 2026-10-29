@@ -767,17 +767,18 @@ func (s *Server) processClientOrLeafAuthentication(c *client, opts *Options) (au
 		if !skip {
 			authorized, reason = s.processClientOrLeafCallout(c, opts, proxyRequired, trustedProxy, ujwt)
 		}
-		// Check if we are authorized and in the auth callout account, and if so add in deny publish permissions for the auth subject.
+		// Check if we are authorized and in the auth callout account, and if so add in deny permissions for the auth subject.
 		if authorized {
-			var authAccountName string
-			if juc == nil && opts.AuthCallout != nil {
-				authAccountName = opts.AuthCallout.Account
-			} else if juc != nil {
-				authAccountName = acc.Name
-			}
 			c.mu.Lock()
-			if c.acc != nil && c.acc.Name == authAccountName {
-				c.mergeDenyPermissions(pub, []string{AuthCalloutSubject})
+			var inAuthAccount bool
+			if juc == nil && opts.AuthCallout != nil {
+				inAuthAccount = c.acc != nil && c.acc.Name == opts.AuthCallout.Account
+			} else if juc != nil {
+				// Any account with external auth receives auth requests, also if another account placed us there.
+				inAuthAccount = c.acc.hasExternalAuth()
+			}
+			if inAuthAccount {
+				c.denyAuthCalloutSubjects(skip)
 			}
 			c.mu.Unlock()
 		} else {
