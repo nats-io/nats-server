@@ -1092,19 +1092,23 @@ func (c *client) updateDefaultPermissions(perms *Permissions) bool {
 		c.mperms = nil
 		c.darray = nil
 		c.replies = nil
-		return true
+	} else {
+		var responsePermissionsUnchanged bool
+		if c.user.Permissions != nil {
+			responsePermissionsUnchanged = sameResponsePermissions(c.user.Permissions.Response, perms.Response)
+		}
+		replies := c.replies
+		c.user.Permissions = perms.clone()
+		c.setPermissions(c.user.Permissions)
+		if responsePermissionsUnchanged {
+			c.replies = replies
+		} else if c.user.Permissions.Response == nil {
+			c.replies = nil
+		}
 	}
-	var responsePermissionsUnchanged bool
-	if c.user.Permissions != nil {
-		responsePermissionsUnchanged = sameResponsePermissions(c.user.Permissions.Response, perms.Response)
-	}
-	replies := c.replies
-	c.user.Permissions = perms.clone()
-	c.setPermissions(c.user.Permissions)
-	if responsePermissionsUnchanged {
-		c.replies = replies
-	} else if c.user.Permissions.Response == nil {
-		c.replies = nil
+	// Restore the auth callout subject denies that were added during authentication.
+	if c.acc.hasExternalAuth() {
+		c.denyAuthCalloutSubjects(!c.flags.isSet(authCallout) && c.acc.isExternalAuthUser(c.user.Nkey))
 	}
 	for _, sub := range c.subs {
 		if len(sub.queue) > 0 {

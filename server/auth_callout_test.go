@@ -4873,3 +4873,65 @@ func TestAuthCalloutEmptyAccountDefaultsToGlobalAccount(t *testing.T) {
 	require_False(t, c.pubAllowed(AuthCalloutSubject))
 	require_False(t, c.canSubscribe(AuthCalloutSubject))
 }
+
+// Starts an operator mode auth callout test, whose auth callout places users in the auth account.
+// The returned connect function connects such a user.
+func newOperatorModeAuthCalloutTest(t *testing.T, limits *jwt.UserPermissionLimits) (*authTest, *jwt.AccountClaims, func() *nats.Conn) {
+	t.Helper()
+	_, spub := createKey(t)
+	sysJwt, err := jwt.NewAccountClaims(spub).Encode(oKp)
+	require_NoError(t, err)
+
+	akp, err := nkeys.FromSeed([]byte(authCalloutIssuerSeed))
+	require_NoError(t, err)
+	apub, err := akp.PublicKey()
+	require_NoError(t, err)
+	upub, svcCreds := createAuthServiceUser(t, akp)
+	t.Cleanup(func() { removeFile(t, svcCreds) })
+
+	authClaim := jwt.NewAccountClaims(apub)
+	authClaim.EnableExternalAuthorization(upub)
+	authClaim.Authorization.AllowedAccounts.Add(apub)
+	authJwt, err := authClaim.Encode(oKp)
+	require_NoError(t, err)
+
+	conf := fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		operator: %s
+		system_account: %s
+		resolver: MEM
+		resolver_preload: { %s: %s, %s: %s }
+	`, ojwt, spub, apub, authJwt, spub, sysJwt)
+
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, _EMPTY_, apub, _EMPTY_, akp, 10*time.Minute, limits)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserCredentials(svcCreds))
+	t.Cleanup(at.Cleanup)
+
+	creds := createBasicAccountUser(t, akp)
+	t.Cleanup(func() { removeFile(t, creds) })
+	return at, authClaim, func() *nats.Conn { return at.Connect(nats.UserCredentials(creds)) }
+}
+
+func TestAuthCalloutDefaultPermissionsUpdateKeepsAuthSubjectDeny(t *testing.T) {
+	// No permissions, so the user gets the account's default permissions.
+	at, authClaim, connect := newOperatorModeAuthCalloutTest(t, nil)
+	nc := connect()
+	acc, err := at.srv.LookupAccount(authClaim.Subject)
+	require_NoError(t, err)
+
+	// Set and then clear the default permissions.
+	for _, perms := range []jwt.Permissions{
+		{Pub: jwt.Permission{Allow: jwt.StringList{">"}}, Sub: jwt.Permission{Allow: jwt.StringList{">"}}},
+		{},
+	} {
+		authClaim.DefaultPermissions = perms
+		at.srv.UpdateAccountClaims(acc, authClaim)
+		requireAuthCalloutSubjectsDenied(t, at.srv, nc)
+		// The auth service must still receive requests and reply.
+		connect().Close()
+	}
+}
