@@ -30,6 +30,9 @@ const (
 	AuthCalloutSubject    = "$SYS.REQ.USER.AUTH"
 	AuthRequestSubject    = "nats-authorization-request"
 	AuthRequestXKeyHeader = "Nats-Server-Xkey"
+
+	// Auth callout replies are sent to the server's response inboxes.
+	authCalloutReplySubjects = "$SYS._INBOX.>"
 )
 
 func titleCase(m string) string {
@@ -486,6 +489,18 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	}
 
 	return authorized, errStr
+}
+
+// Deny the auth callout subjects for a client in an auth callout account.
+// Lock should be held.
+func (c *client) denyAuthCalloutSubjects(authUser bool) {
+	// Auth users receive the requests and reply to them, but must not send requests.
+	if authUser {
+		c.mergeDenyPermissions(pub, []string{AuthCalloutSubject})
+		return
+	}
+	// Callout users must not see or answer other users' requests and replies.
+	c.mergeDenyPermissions(both, []string{AuthCalloutSubject, authCalloutReplySubjects})
 }
 
 // Fill in client information for the request.
