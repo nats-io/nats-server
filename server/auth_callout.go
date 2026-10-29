@@ -19,6 +19,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -105,6 +106,7 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	reply := s.newRespInbox()
 	s.mu.RUnlock()
 	respCh := make(chan string, 1)
+	var replied atomic.Bool
 
 	decodeResponse := func(rc *client, rmsg []byte, acc *Account) (*jwt.UserClaims, error) {
 		account := acc.Name
@@ -272,6 +274,10 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	}
 
 	processReply := func(_ *subscription, rc *client, racc *Account, subject, reply string, rmsg []byte) {
+		// Only handle the first reply, later ones would block on respCh or override the result.
+		if !replied.CompareAndSwap(false, true) {
+			return
+		}
 		arc, err := decodeResponse(rc, rmsg, racc)
 		if err != nil {
 			c.authViolation()

@@ -4943,3 +4943,40 @@ func TestAuthCalloutUserLimits(t *testing.T) {
 	at.srv.UpdateAccountClaims(acc, authClaim)
 	requireClientLimits(t, at.srv, nc, 64, 2)
 }
+
+func TestAuthCalloutOnlyFirstReplyHandled(t *testing.T) {
+	conf := `
+		listen: "127.0.0.1:-1"
+		server_name: A
+		authorization {
+			timeout: 1s
+			users: [ { user: "auth", password: "pwd" } ]
+			auth_callout {
+				issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+				auth_users: [ auth ]
+			}
+		}
+	`
+	handler := func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, _EMPTY_, nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+		// Duplicate replies, like a second service would send, must be ignored.
+		m.Respond(nil)
+		m.Respond(nil)
+	}
+	at := NewAuthTest(t, conf, handler, nats.UserInfo("auth", "pwd"))
+	defer at.Cleanup()
+
+	for i := range 5 {
+		nc, err := at.NewClient(nats.UserInfo(fmt.Sprintf("user%d", i), "pwd"))
+		require_NoError(t, err)
+		// The duplicate rejects must not close the connection.
+		time.Sleep(20 * time.Millisecond)
+		require_True(t, nc.IsConnected())
+		nc.Close()
+	}
+
+	// The service's connection must not be blocked by its ignored replies.
+	require_NoError(t, at.authClient.FlushTimeout(time.Second))
+}
