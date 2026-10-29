@@ -3450,17 +3450,10 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 			}
 		}
 	} else {
-		mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
-			if err != nil {
-				return
-			}
-			if havePartial {
-				// If we already found a partial then don't do anything else.
-				return
-			}
+		mb.fss.MatchUntil(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) bool {
 			if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 				if err = mb.recalculateForSubj(bytesToString(bsubj), ss); err != nil {
-					return
+					return false
 				}
 			}
 			if sseq <= ss.First {
@@ -3469,6 +3462,7 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 				// We matched but its a partial.
 				havePartial = true
 			}
+			return !havePartial
 		})
 		if err != nil {
 			return 0, 0, 0, err
@@ -3589,6 +3583,37 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) (SimpleState, error
 	return ss, nil
 }
 
+// filteredBlockRange returns the first and last block indexes that may contain
+// messages with subjects matching the given filter.
+// Returns (0, 0) if no subjects match. Lock should be held.
+func (fs *fileStore) filteredBlockRange(filter string, wc bool) (uint32, uint32) {
+	start, stop := uint32(math.MaxUint32), uint32(0)
+	if len(fs.blks) == 0 {
+		return 0, 0
+	}
+
+	if wc {
+		firstBlock, lastBlock := fs.blks[0].index, fs.lmb.index
+		fs.psim.MatchUntil(stringToBytes(filter), func(_ []byte, info *psi) bool {
+			start = min(start, info.fblk)
+			stop = max(stop, info.lblk)
+			if start <= firstBlock && stop >= lastBlock {
+				return false
+			}
+			return true
+		})
+	} else {
+		if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+			start, stop = info.fblk, info.lblk
+		}
+	}
+
+	if stop == 0 {
+		return 0, 0
+	}
+	return start, stop
+}
+
 // This is used to see if we can selectively jump start blocks based on filter subject and a starting block index.
 // Will return -1 and ErrStoreEOF if no matches at all or no more from where we are.
 func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, error) {
@@ -3596,25 +3621,11 @@ func (fs *fileStore) checkSkipFirstBlock(filter string, wc bool, bi int) (int, e
 	if filter == _EMPTY_ || filter == fwcs {
 		return bi + 1, nil
 	}
-	// Move through psim to gather start and stop bounds.
-	start, stop := uint32(math.MaxUint32), uint32(0)
-	if wc {
-		if fs.psim.Size() > highCardinalityThreshold {
-			return bi + 1, nil
-		}
-		fs.psim.Match(stringToBytes(filter), func(_ []byte, psi *psi) {
-			if psi.fblk < start {
-				start = psi.fblk
-			}
-			if psi.lblk > stop {
-				stop = psi.lblk
-			}
-		})
-	} else if psi, ok := fs.psim.Find(stringToBytes(filter)); ok {
-		start, stop = psi.fblk, psi.lblk
+	if wc && fs.psim.Size() > highCardinalityThreshold {
+		return bi + 1, nil
 	}
-	// Nothing was found.
-	if start == uint32(math.MaxUint32) {
+	start, stop := fs.filteredBlockRange(filter, wc)
+	if stop == 0 {
 		return -1, ErrStoreEOF
 	}
 	return fs.selectSkipFirstBlock(bi, start, stop)
@@ -4439,18 +4450,11 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 			var t uint64
 			var ierr error
 			var havePartial bool
-			mb.fss.Match(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) {
-				if ierr != nil {
-					return
-				}
-				if havePartial {
-					// If we already found a partial then don't do anything else.
-					return
-				}
+			mb.fss.MatchUntil(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) bool {
 				subj := bytesToString(bsubj)
 				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 					if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-						return
+						return false
 					}
 				}
 				if sseq <= ss.First {
@@ -4459,6 +4463,7 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 					// We matched but its a partial.
 					havePartial = true
 				}
+				return !havePartial
 			})
 			if ierr != nil {
 				mb.mu.Unlock()
@@ -9570,33 +9575,13 @@ func (fs *fileStore) lastSeqLocked(subj string) (*msgBlock, uint64, error) {
 	}
 
 	wc := subjectHasWildcard(subj)
-	var start, stop uint32
-
-	// If literal subject check for presence.
-	if wc {
-		start = fs.lmb.index
-		fs.psim.Match(stringToBytes(subj), func(_ []byte, psi *psi) {
-			// Keep track of start and stop indexes for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
-			}
-			if psi.lblk > stop {
-				stop = psi.lblk
-			}
-		})
-		// None matched.
-		if stop == 0 {
-			return nil, 0, ErrStoreMsgNotFound
-		}
-		// These need to be swapped.
-		start, stop = stop, start
-	} else if info, ok := fs.psim.Find(stringToBytes(subj)); ok {
-		start, stop = info.lblk, info.fblk
-	} else {
+	start, stop := fs.filteredBlockRange(subj, wc)
+	if stop == 0 {
 		return nil, 0, ErrStoreMsgNotFound
 	}
 
 	// Walk blocks backwards.
+	start, stop = stop, start
 	for i := start; i >= stop; i-- {
 		mb := fs.bim[i]
 		if mb == nil {
@@ -9907,25 +9892,27 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 		var first, last uint64
 		if bfilter := stringToBytes(filter); wc {
 			var ierr error
-			mb.fss.Match(bfilter, func(bsubj []byte, ss *SimpleState) {
-				if ierr != nil {
-					return
-				}
+			mb.fss.MatchUntil(bfilter, func(bsubj []byte, ss *SimpleState) bool {
 				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
 					if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
-						return
+						return false
 					}
 				}
 				if end < ss.First {
-					return
+					return true
 				}
 				if !found {
 					found = true
 					first, last = ss.First, min(end, ss.Last)
-					return
+				} else {
+					first = min(first, ss.First)
+					last = max(last, min(end, ss.Last))
 				}
-				first = min(first, ss.First)
-				last = max(last, min(end, ss.Last))
+				// No remaining subject can expand either bound of the scan.
+				if first <= lseq && last >= end {
+					return false
+				}
+				return true
 			})
 			if ierr != nil {
 				return nil, false, ierr
@@ -10489,28 +10476,8 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 		return purged, nil
 	}
 
-	var start, stop uint32
-
-	// If literal subject check for presence.
-	if wc {
-		start = fs.lmb.index
-		fs.psim.Match(stringToBytes(subject), func(_ []byte, psi *psi) {
-			// Keep track of start and stop indexes for this subject.
-			if psi.fblk < start {
-				start = psi.fblk
-			}
-			if psi.lblk > stop {
-				stop = psi.lblk
-			}
-		})
-		// None matched.
-		if stop == 0 {
-			fs.mu.Unlock()
-			return purged, nil
-		}
-	} else if info, ok := fs.psim.Find(stringToBytes(subject)); ok {
-		start, stop = info.fblk, info.lblk
-	} else {
+	start, stop := fs.filteredBlockRange(subject, wc)
+	if stop == 0 {
 		fs.mu.Unlock()
 		return purged, nil
 	}
