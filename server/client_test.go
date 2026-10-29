@@ -2954,10 +2954,6 @@ func TestClientConnectionName(t *testing.T) {
 }
 
 func TestClientLimits(t *testing.T) {
-	accKp, err := nkeys.CreateAccount()
-	if err != nil {
-		t.Fatalf("Error creating account key: %v", err)
-	}
 	uKp, err := nkeys.CreateUser()
 	if err != nil {
 		t.Fatalf("Error creating user key: %v", err)
@@ -3000,10 +2996,7 @@ func TestClientLimits(t *testing.T) {
 			uc := jwt.NewUserClaims(uPub)
 			uc.Limits.Subs = int64(test.client)
 			uc.Limits.Payload = int64(test.client)
-			c.opts.JWT, err = uc.Encode(accKp)
-			if err != nil {
-				t.Fatalf("Error encoding jwt: %v", err)
-			}
+			c.user = buildInternalNkeyUser(uc, nil, c.acc)
 			c.applyAccountLimits()
 			if c.mpay != test.expect {
 				t.Fatalf("payload %d not as expected %d", c.mpay, test.expect)
@@ -3029,7 +3022,8 @@ func TestClientApplyAccountLimitsSigningKeysRace(t *testing.T) {
 	nuc.IssuerAccount = apub // != Issuer (spub) so the signingKeys lookup runs
 	nuc.Limits.Payload = jwt.NoLimit
 	nuc.Limits.Subs = jwt.NoLimit
-	ujwt, err := nuc.Encode(skp)
+	// Encoding sets the issuer to the signing key.
+	_, err := nuc.Encode(skp)
 	require_NoError(t, err)
 
 	// The scope stored in the account's signing keys map.
@@ -3045,7 +3039,7 @@ func TestClientApplyAccountLimitsSigningKeysRace(t *testing.T) {
 
 	srv := &Server{opts: &Options{}}
 	c := &client{srv: srv, acc: acc, kind: CLIENT}
-	c.opts.JWT = ujwt
+	c.user = buildInternalNkeyUser(nuc, nil, acc)
 
 	const iters = 1000
 	var wg sync.WaitGroup
@@ -3088,7 +3082,8 @@ func TestClientApplyAccountLimitsMpayAtomicRace(t *testing.T) {
 	nuc.IssuerAccount = apub // != Issuer (spub) so the scoped signingKeys branch runs
 	nuc.Limits.Payload = 2048
 	nuc.Limits.Subs = 20
-	ujwt, err := nuc.Encode(skp)
+	// Encoding sets the issuer to the signing key.
+	_, err := nuc.Encode(skp)
 	require_NoError(t, err)
 
 	// The scope stored in the account's signing keys map, carrying a Payload
@@ -3105,7 +3100,7 @@ func TestClientApplyAccountLimitsMpayAtomicRace(t *testing.T) {
 
 	srv := &Server{opts: &Options{}}
 	c := &client{srv: srv, acc: acc, kind: CLIENT}
-	c.opts.JWT = ujwt
+	c.user = buildInternalNkeyUser(nuc, nil, acc)
 
 	// Sanity: ensure we actually hit the scoped-signing-key branch.
 	c.applyAccountLimits()
