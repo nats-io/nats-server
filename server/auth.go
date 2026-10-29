@@ -70,6 +70,8 @@ type NkeyUser struct {
 	AllowedConnectionTypes map[string]struct{} `json:"connection_types,omitempty"`
 	ProxyRequired          bool                `json:"proxy_required,omitempty"`
 	defaultPerms           bool
+	// Limits from the user JWT, set if built from one.
+	limits *jwt.NatsLimits
 }
 
 // User is for multiple accounts/users.

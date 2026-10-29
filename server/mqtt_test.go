@@ -1605,6 +1605,64 @@ func TestMQTTJWTWithAllowedConnectionTypes(t *testing.T) {
 	}
 }
 
+func TestMQTTJWTUserLimits(t *testing.T) {
+	o := testMQTTDefaultOptions()
+	syskp, _ := nkeys.CreateAccount()
+	syspub, _ := syskp.PublicKey()
+	sysjwt, err := jwt.NewAccountClaims(syspub).Encode(oKp)
+	require_NoError(t, err)
+	mr := &MemAccResolver{}
+	mr.Store(syspub, sysjwt)
+	o.SystemAccount = syspub
+	o.AccountResolver = mr
+	setupAddTrusted(o)
+
+	s := testMQTTRunServer(t, o)
+	defer testMQTTShutdownServer(s)
+
+	akp, _ := nkeys.CreateAccount()
+	apub, _ := akp.PublicKey()
+	nac := jwt.NewAccountClaims(apub)
+	nac.Limits.JetStreamLimits.Consumer = -1
+	nac.Limits.JetStreamLimits.Streams = -1
+	nac.Limits.JetStreamLimits.MemoryStorage = 1024 * 1024
+	nac.Limits.JetStreamLimits.DiskStorage = 1024 * 1024
+	ajwt, err := nac.Encode(oKp)
+	require_NoError(t, err)
+	addAccountToMemResolver(s, apub, ajwt)
+
+	nkp, _ := nkeys.CreateUser()
+	upub, _ := nkp.PublicKey()
+	nuc := newJWTTestUserClaims()
+	nuc.Subject = upub
+	nuc.BearerToken = true
+	nuc.Limits.Payload = 1024
+	nuc.Limits.Subs = 10
+	ujwt, err := nuc.Encode(akp)
+	require_NoError(t, err)
+
+	ci := &mqttConnInfo{cleanSess: true, user: "ignore_use_token", pass: ujwt}
+	mc, r := testMQTTConnect(t, ci, o.MQTT.Host, o.MQTT.Port)
+	defer mc.Close()
+	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+
+	// The JWT is only set on the client after authentication, so limits must come from the user.
+	var c *client
+	s.mu.RLock()
+	for _, cl := range s.clients {
+		if cl.isMqtt() {
+			c = cl
+		}
+	}
+	s.mu.RUnlock()
+	require_NotNil(t, c)
+	c.mu.Lock()
+	mpay, msubs := atomic.LoadInt32(&c.mpay), c.msubs
+	c.mu.Unlock()
+	require_Equal(t, mpay, 1024)
+	require_Equal(t, msubs, 10)
+}
+
 func TestMQTTUsersAuth(t *testing.T) {
 	users := []*User{{Username: "user", Password: "pwd"}}
 	for _, test := range []struct {
