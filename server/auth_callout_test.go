@@ -4835,3 +4835,41 @@ func TestAuthCalloutUserDeniedAuthCalloutSubjects(t *testing.T) {
 		requireNoAuthCalloutMsgs(t, nc, func() { at.Connect(nats.UserCredentials(bCreds)).Close() })
 	})
 }
+
+func TestAuthCalloutEmptyAccountDefaultsToGlobalAccount(t *testing.T) {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.Users = []*User{{Username: "auth", Password: "pwd"}}
+	// Set up programmatically, so the config parser default doesn't apply.
+	opts.AuthCallout = &AuthCallout{
+		Issuer:    "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA",
+		AuthUsers: []string{"auth"},
+	}
+	s := RunServer(&opts)
+	defer s.Shutdown()
+	require_Equal(t, s.getOpts().AuthCallout.Account, globalAccountName)
+
+	ac, err := nats.Connect(s.ClientURL(), nats.UserInfo("auth", "pwd"))
+	require_NoError(t, err)
+	defer ac.Close()
+	_, err = ac.Subscribe(AuthCalloutSubject, func(m *nats.Msg) {
+		user, si, _, _, _ := decodeAuthRequest(t, m.Data)
+		ujwt := createAuthUser(t, user, _EMPTY_, globalAccountName, _EMPTY_, nil, 10*time.Minute, nil)
+		m.Respond(serviceResponse(t, user, si.ID, ujwt, _EMPTY_, 0))
+	})
+	require_NoError(t, err)
+	require_NoError(t, ac.Flush())
+
+	nc, err := nats.Connect(s.ClientURL(), nats.UserInfo("user", "pwd"))
+	require_NoError(t, err)
+	defer nc.Close()
+
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	c := s.getClient(cid)
+	require_NotNil(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require_False(t, c.pubAllowed(AuthCalloutSubject))
+	require_False(t, c.canSubscribe(AuthCalloutSubject))
+}
