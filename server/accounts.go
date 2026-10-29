@@ -4175,7 +4175,7 @@ func buildPermissionsFromJwt(uc *jwt.Permissions) *Permissions {
 
 // Helper to build internal NKeyUser.
 func buildInternalNkeyUser(uc *jwt.UserClaims, acts map[string]struct{}, acc *Account) *NkeyUser {
-	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts, Issued: uc.IssuedAt}
+	nu := &NkeyUser{Nkey: uc.Subject, Account: acc, AllowedConnectionTypes: acts, Issued: uc.IssuedAt, limits: &uc.NatsLimits}
 	if uc.IssuerAccount != _EMPTY_ {
 		nu.SigningKey = uc.Issuer
 	}

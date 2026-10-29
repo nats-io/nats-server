@@ -400,6 +400,7 @@ func TestAuthCalloutBasics(t *testing.T) {
 			var j jwt.UserPermissionLimits
 			j.Pub.Allow.Add("$SYS.>")
 			j.Payload = 1024
+			j.Subs = 10
 			if opts.Token == "SECRET_TOKEN" {
 				// Token MUST NOT be exposed in user info.
 				require_Equal(t, ci.User, "[REDACTED]")
@@ -428,6 +429,8 @@ func TestAuthCalloutBasics(t *testing.T) {
 	// This one will use callout since not defined in server config.
 	nc := at.Connect(nats.UserInfo("dlc", "zzz"))
 	defer nc.Close()
+	// Limits from the callout response must be applied.
+	requireClientLimits(t, at.srv, nc, 1024, 10)
 
 	resp, err := nc.Request(userDirectInfoSubj, nil, time.Second)
 	require_NoError(t, err)
@@ -1708,6 +1711,8 @@ func testAuthCalloutScopedUser(t *testing.T, allowAnyAccount bool) {
 	slices.Sort(userInfo.Permissions.Subscribe.Allow)
 	require_True(t, len(userInfo.Permissions.Subscribe.Allow) == 2)
 	require_Equal(t, "foo.>", userInfo.Permissions.Subscribe.Allow[1])
+	// Limits come from the scoped signing key template.
+	requireClientLimits(t, ac.srv, nc, 512, 10)
 
 	_, err = nc.Subscribe("foo.>", func(msg *nats.Msg) {
 		t.Log("got request on foo.>")
@@ -1845,6 +1850,8 @@ func TestAuthCalloutAllowedConnectionTypes(t *testing.T) {
 	handler := func(m *nats.Msg) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		var j jwt.UserPermissionLimits
+		j.Subs = jwt.NoLimit
+		j.Payload = jwt.NoLimit
 		for _, test := range tests {
 			if test.name == opts.Username {
 				j.AllowedConnectionTypes = test.connectionTypes
@@ -3534,7 +3541,7 @@ func TestOperatorModeUserRevocation(t *testing.T) {
 		user, si, _, opts, _ := decodeAuthRequest(t, m.Data)
 		if opts.Token == token {
 			// must have no limits set
-			ujwt := createAuthUser(t, user, "user", tpub, tpub, tkp, 0, &jwt.UserPermissionLimits{})
+			ujwt := createAuthUser(t, user, "user", tpub, tpub, tkp, 0, &jwt.NewUserClaims(user).UserPermissionLimits)
 			users[opts.Name] = ujwt
 			m.Respond(serviceResponse(t, user, si.ID, ujwt, "", 0))
 		} else {
@@ -4905,4 +4912,34 @@ func TestAuthCalloutDefaultPermissionsUpdateKeepsAuthSubjectDeny(t *testing.T) {
 		// The auth service must still receive requests and reply.
 		connect().Close()
 	}
+}
+
+func requireClientLimits(t *testing.T, s *Server, nc *nats.Conn, mpay, msubs int32) {
+	t.Helper()
+	cid, err := nc.GetClientID()
+	require_NoError(t, err)
+	c := s.getClient(cid)
+	require_NotNil(t, c)
+	c.mu.Lock()
+	gotMpay, gotMsubs := atomic.LoadInt32(&c.mpay), c.msubs
+	c.mu.Unlock()
+	require_Equal(t, gotMpay, mpay)
+	require_Equal(t, gotMsubs, msubs)
+}
+
+// Config mode is covered by TestAuthCalloutBasics, and scoped signing keys by testAuthCalloutScopedUser.
+func TestAuthCalloutUserLimits(t *testing.T) {
+	var j jwt.UserPermissionLimits
+	j.Payload = 64
+	j.Subs = 2
+	at, authClaim, connect := newOperatorModeAuthCalloutTest(t, &j)
+	nc := connect()
+	requireClientLimits(t, at.srv, nc, 64, 2)
+
+	// Limits must be kept when the account limits are applied again.
+	acc, err := at.srv.LookupAccount(authClaim.Subject)
+	require_NoError(t, err)
+	authClaim.Limits.Payload = 128
+	at.srv.UpdateAccountClaims(acc, authClaim)
+	requireClientLimits(t, at.srv, nc, 64, 2)
 }

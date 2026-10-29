@@ -958,17 +958,16 @@ func (c *client) applyAccountLimits() {
 	}
 	atomic.StoreInt32(&c.mpay, jwt.NoLimit)
 	c.msubs = jwt.NoLimit
-	if c.opts.JWT != _EMPTY_ { // user jwt implies account
-		if uc, _ := jwt.DecodeUserClaims(c.opts.JWT); uc != nil {
-			atomic.StoreInt32(&c.mpay, clampInt64ToInt32(uc.Limits.Payload))
-			c.msubs = clampInt64ToInt32(uc.Limits.Subs)
-			if uc.IssuerAccount != _EMPTY_ && uc.IssuerAccount != uc.Issuer {
-				if scope, ok := c.acc.hasIssuer(uc.Issuer); ok {
-					if userScope, ok := scope.(*jwt.UserScope); ok {
-						// if signing key disappeared or changed and we don't get here, the client will be disconnected
-						atomic.StoreInt32(&c.mpay, clampInt64ToInt32(userScope.Template.Limits.Payload))
-						c.msubs = clampInt64ToInt32(userScope.Template.Limits.Subs)
-					}
+	// Users built from a user JWT, including auth callout users, carry its limits.
+	if c.user != nil && c.user.limits != nil {
+		atomic.StoreInt32(&c.mpay, clampInt64ToInt32(c.user.limits.Payload))
+		c.msubs = clampInt64ToInt32(c.user.limits.Subs)
+		if c.user.SigningKey != _EMPTY_ {
+			if scope, ok := c.acc.hasIssuer(c.user.SigningKey); ok {
+				if userScope, ok := scope.(*jwt.UserScope); ok {
+					// if signing key disappeared or changed and we don't get here, the client will be disconnected
+					atomic.StoreInt32(&c.mpay, clampInt64ToInt32(userScope.Template.Limits.Payload))
+					c.msubs = clampInt64ToInt32(userScope.Template.Limits.Subs)
 				}
 			}
 		}
@@ -1054,16 +1053,24 @@ func (c *client) registerUser(user *User) error {
 // client with the authenticated user. This is used to map
 // any permissions into the client and setup accounts.
 func (c *client) RegisterNkeyUser(user *NkeyUser) error {
+	// Set the user first, so registering with the account applies its limits.
+	c.mu.Lock()
+	prev := c.user
+	c.user = user
+	c.mu.Unlock()
+
 	// Register with proper account and sublist.
 	if user.Account != nil {
 		if err := c.registerWithAccount(user.Account); err != nil {
+			c.mu.Lock()
+			c.user = prev
+			c.mu.Unlock()
 			c.reportErrRegisterAccount(user.Account, err)
 			return err
 		}
 	}
 
 	c.mu.Lock()
-	c.user = user
 	// Assign permissions.
 	if user.Permissions == nil {
 		// Reset perms to nil in case client previously had them.
