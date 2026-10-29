@@ -6275,6 +6275,10 @@ func setBaselineOptions(opts *Options) {
 	if opts.LameDuckGracePeriod == 0 {
 		opts.LameDuckGracePeriod = DEFAULT_LAME_DUCK_GRACE_PERIOD
 	}
+	// Same default as the config parser, so the auth callout account is always known.
+	if opts.AuthCallout != nil && opts.AuthCallout.Account == _EMPTY_ {
+		opts.AuthCallout.Account = globalAccountName
+	}
 	if opts.Gateway.Port != 0 {
 		if opts.Gateway.Host == _EMPTY_ {
 			opts.Gateway.Host = DEFAULT_HOST
