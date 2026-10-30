@@ -873,9 +873,20 @@ func (c *client) Kind() int {
 	return kind
 }
 
+type accountRegistrationMode uint8
+
+const (
+	accountRegistrationAuthenticated accountRegistrationMode = iota
+	accountRegistrationPendingAuthentication
+)
+
 // registerWithAccount will register the given user with a specific
 // account. This will change the subject namespace.
 func (c *client) registerWithAccount(acc *Account) error {
+	return c.registerWithAccountMode(acc, accountRegistrationAuthenticated)
+}
+
+func (c *client) registerWithAccountMode(acc *Account, mode accountRegistrationMode) error {
 	if acc == nil {
 		return ErrBadAccount
 	}
@@ -904,7 +915,9 @@ func (c *client) registerWithAccount(acc *Account) error {
 	kind := c.kind
 	srv := c.srv
 	c.acc = acc
-	c.applyAccountLimits()
+	if mode == accountRegistrationAuthenticated {
+		c.applyAccountLimits()
+	}
 	c.mu.Unlock()
 
 	// Check if we have a max connections violation
@@ -1377,11 +1390,14 @@ func (c *client) mergeDenyPermissionsLocked(what denyType, denyPubs []string) {
 }
 
 // Check to see if we have an expiration for the user JWT via base claims.
-// FIXME(dlc) - Clear on connect with new JWT.
 func (c *client) setExpiration(claims *jwt.ClaimsData, validFor time.Duration) {
 	if claims.Expires == 0 {
 		if validFor != 0 {
 			c.setExpirationTimer(validFor)
+		} else {
+			c.mu.Lock()
+			c.expires = time.Time{}
+			c.mu.Unlock()
 		}
 		return
 	}
@@ -2297,11 +2313,11 @@ func (c *client) processErr(errStr string) {
 }
 
 // Matcher for pass/password and auth_token fields.
-var prefixAuthPat = regexp.MustCompile(`"?\s*(?:auth_token\S*?|pass\S*?)"?\s*[:=]\s*"?([^",\r\n}]*)`)
+var prefixAuthPat = regexp.MustCompile(`(?i)"?\s*(?:auth_token\S*?|pass\S*?)"?\s*[:=]\s*"?([^",\r\n}]*)`)
 
-// Exact matcher for fields sig, proxy_sig and nkey.
+// Bearer JWTs must not be exposed when tracing CONNECT.
 // Overlapping field "sig" does not match inside "proxy_sig".
-var exactAuthPat = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])"?\s*(?:proxy_sig|nkey|sig)"?\s*[:=]\s*"?([^",\r\n}]*)`)
+var exactAuthPat = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])"?\s*(?:proxy_sig|nkey|sig|jwt)"?\s*[:=]\s*"?([^",\r\n}]*)`)
 
 // removeSecretsFromTrace removes any notion of passwords/tokens from trace
 // messages for logging.
@@ -2545,6 +2561,9 @@ func (c *client) processConnect(arg []byte) error {
 			c.closeConnection(NoRespondersRequiresHeaders)
 			return ErrNoRespondersRequiresHeaders
 		}
+		if !firstConnect && proto >= ClientProtoInfo && srv != nil && srv.trustedKeys != nil {
+			c.sendConnectInfo()
+		}
 		if verbose {
 			c.sendOK()
 		}
@@ -2779,6 +2798,7 @@ func (c *client) sendPing() {
 // Assume lock is held.
 func (c *client) generateClientInfoJSON(info Info, includeClientIP bool) []byte {
 	info.CID = c.cid
+	info.JWTRefresh = c.kind == CLIENT && c.srv != nil && c.srv.trustedKeys != nil
 	if includeClientIP {
 		info.ClientIP = c.host
 	}
@@ -2856,11 +2876,17 @@ func (c *client) processPing() {
 	c.mu.Unlock()
 
 	if sendConnectInfo {
-		srv.mu.Lock()
-		info := srv.copyInfo()
-		c.mu.Lock()
-		// Keep the in-process tls_required override from the initial INFO,
-		// otherwise this async INFO would flip it back to true.
+		c.sendConnectInfo()
+	}
+}
+
+func (c *client) sendConnectInfo() {
+	srv := c.srv
+	srv.mu.Lock()
+	info := srv.copyInfo()
+	c.mu.Lock()
+	if !c.isClosed() && c.acc != nil {
+		// In-process connections retain the initial INFO's TLS override.
 		if c.iproc && info.TLSRequired && !c.flags.isSet(didTLSFirst) {
 			info.TLSRequired = false
 			info.TLSAvailable = true
@@ -2869,9 +2895,9 @@ func (c *client) processPing() {
 		info.IsSystemAccount = c.acc == srv.SystemAccount()
 		info.ConnectInfo = true
 		c.enqueueProto(c.generateClientInfoJSON(info, true))
-		c.mu.Unlock()
-		srv.mu.Unlock()
 	}
+	c.mu.Unlock()
+	srv.mu.Unlock()
 }
 
 func (c *client) processPong() {
@@ -3765,6 +3791,7 @@ func (c *client) msgHeaderForRouteOrLeaf(subj, reply []byte, rt *routeTarget, ac
 }
 
 // Create a message header for clients. Header aware.
+// The destination client lock must be held to keep framing consistent with payload stripping.
 func (c *client) msgHeader(subj, reply []byte, sub *subscription) []byte {
 	// See if we should do headers. We have to have a headers msg and
 	// the client we are going to deliver to needs to support headers as well.
@@ -3941,6 +3968,25 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	}
 
 	srv := client.srv
+	if c.kind == CLIENT && client.out.stc != nil && (sub.icb == nil || c.noIcb) {
+		if srv.getOpts().NoFastProducerStall {
+			mt.addEgressEvent(client, sub, errMsgTraceFastProdNoStall)
+			client.mu.Unlock()
+			return false
+		}
+		client.stalledWait(c)
+		if client.isClosed() {
+			mt.addEgressEvent(client, sub, errMsgTraceClientClosed)
+			client.mu.Unlock()
+			return false
+		}
+		// Refresh can remove this subscription while stalledWait releases the lock.
+		if sub.isClosed() {
+			mt.addEgressEvent(client, sub, errMsgTraceSubClosed)
+			client.mu.Unlock()
+			return false
+		}
+	}
 
 	// We don't want to bump the number of delivered messages to the subscription
 	// if we are doing trace-only (since really we are not sending it to the sub).
@@ -3985,6 +4031,9 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	// support we need to strip the headers from the payload.
 	// The actual header would have been processed correctly for us, so just
 	// need to update payload.
+	if mh == nil {
+		mh = c.msgHeader(subject, reply, sub)
+	}
 	hdrSize := c.pa.hdr
 	if c.pa.hdr > 0 && !sub.client.headers {
 		msg = msg[c.pa.hdr:]
@@ -4037,18 +4086,6 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 		}
 
 		return didDeliver
-	}
-
-	// If we are a client and we detect that the consumer we are
-	// sending to is in a stalled state, go ahead and wait here
-	// with a limit.
-	if c.kind == CLIENT && client.out.stc != nil {
-		if srv.getOpts().NoFastProducerStall {
-			mt.addEgressEvent(client, sub, errMsgTraceFastProdNoStall)
-			client.mu.Unlock()
-			return false
-		}
-		client.stalledWait(c)
 	}
 
 	// Check for closed connection
@@ -5556,8 +5593,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		}
 
 		// Normal delivery
-		mh := c.msgHeader(dsubj, creply, sub)
-		if c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) {
+		if c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, nil, msg, rplyHasGWPrefix) {
 			// We don't count internal deliveries, so do only when sub.icb is nil.
 			if sub.icb == nil {
 				dlvMsgs++
@@ -5790,8 +5826,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 			var delivered bool
 			if !skipDelivery {
-				mh := c.msgHeader(dsubj, creply, sub)
-				delivered = c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix)
+				delivered = c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, nil, msg, rplyHasGWPrefix)
 				if restorePaTrace {
 					c.pa.trace = mt
 				}
@@ -6534,7 +6569,8 @@ func (c *client) clearAccountSubs(close bool) {
 
 	if !close {
 		// Register back to global account, mimicking the state after client initialization.
-		c.registerWithAccount(srv.globalAccount())
+		// Scoped user limits cannot be evaluated in this temporary account.
+		c.registerWithAccountMode(srv.globalAccount(), accountRegistrationPendingAuthentication)
 	}
 }
 

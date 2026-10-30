@@ -36,6 +36,7 @@ import (
 
 	"github.com/klauspost/compress/s2"
 	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nats-server/v2/internal/testhelper"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
@@ -5294,5 +5295,450 @@ func TestClientMsgsMetric(t *testing.T) {
 
 	} else {
 		t.Fatalf("Did not get expected outClientMsg/Bytes for message sent on qsub")
+	}
+}
+
+func TestClientJWTRefreshPublishesUpdatedInfoBeforePong(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	initial := f.claims(func(claims *jwt.UserClaims) { claims.Limits.Payload = 64 })
+	c := connectJWTRefreshProtocol(t, f, initial, ClientProtoInfo)
+	before := c.connectionInfo()
+	for _, limit := range []int64{128, 32} {
+		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Limits.Payload = limit })
+		frames := c.command(encodeJWTRefreshOptions(t, f, c, candidate, ClientProtoInfo))
+		c.requireNoErrors(frames)
+		infos := 0
+		for _, frame := range frames {
+			if frame.op != "INFO" {
+				continue
+			}
+			var info Info
+			require_NoError(t, json.Unmarshal(frame.payload, &info))
+			require_Equal(t, info.MaxPayload, int32(limit))
+			require_Equal(t, info.CID, c.info.CID)
+			require_Equal(t, info.RemoteAccount, f.accountID)
+			require_True(t, info.ConnectInfo)
+			require_True(t, info.JWTRefresh)
+			require_True(t, info.ID != "" && info.Version != "")
+			infos++
+		}
+		if infos != 1 {
+			t.Fatalf("expected one updated INFO before refresh PONG, got %d", infos)
+		}
+	}
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+}
+
+func TestClientJWTRefreshProtocolZeroDoesNotReceiveUpdatedInfo(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := connectJWTRefreshProtocol(t, f, f.claims(nil), ClientProtoZero)
+	frames := c.command(encodeJWTRefreshOptions(t, f, c, f.claims(nil), ClientProtoZero))
+	c.requireNoErrors(frames)
+	for _, frame := range frames {
+		if frame.op == "INFO" {
+			t.Fatal("protocol-zero refresh received unsolicited INFO")
+		}
+	}
+}
+
+type jwtRefreshPublicationRound struct {
+	index  int
+	ready  chan struct{}
+	marker chan struct{}
+	result chan error
+}
+
+func TestClientJWTRefreshRejectsStalledSubscriptionDelivery(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := f.connect(f.claims(nil))
+	target := c.serverClient()
+	observedOverlap := false
+	for attempt := 0; attempt < 32 && !observedOverlap; attempt++ {
+		oldSID := fmt.Sprintf("old-%d", attempt)
+		c.requireNoErrors(c.command("SUB events " + oldSID + "\r\n"))
+		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Name = fmt.Sprintf("stall-%d", attempt) })
+		protocol := encodeJWTRefreshOptions(t, f, c, candidate, ClientProtoZero)
+		stall := make(chan struct{})
+		target.mu.Lock()
+		previous, account := target.subs[oldSID], target.acc
+		wasOpen := previous != nil && !previous.isClosed() && !target.isClosed()
+		target.out.stc = stall
+		target.mu.Unlock()
+		require_True(t, wasOpen)
+		producer := &client{kind: CLIENT, srv: f.server, pcd: make(map[*client]struct{})}
+		result := make(chan bool, 1)
+		done := make(chan struct{})
+		stalls := atomic.LoadInt64(&target.stalls)
+		go func() {
+			defer close(done)
+			result <- producer.deliverMsg(false, previous, account, []byte("events"), nil, []byte("MSG events "+oldSID+" 5\r\n"), []byte("stale\r\n"), false)
+			producer.flushClients(0)
+		}()
+		ownsStall := false
+		var releaseOnce sync.Once
+		release := func() {
+			releaseOnce.Do(func() {
+				target.mu.Lock()
+				if target.out.stc == stall {
+					target.out.stc = nil
+					ownsStall = true
+				}
+				target.mu.Unlock()
+				if ownsStall {
+					close(stall)
+				}
+			})
+		}
+		join := func() {
+			release()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Error("stalled delivery worker did not stop")
+			}
+		}
+		t.Cleanup(join)
+		deadline := time.Now().Add(time.Second)
+		for atomic.LoadInt64(&target.stalls) == stalls && time.Now().Before(deadline) {
+			runtime.Gosched()
+		}
+		require_True(t, atomic.LoadInt64(&target.stalls) > stalls)
+		target.mu.Lock()
+		if target.out.stc == stall {
+			target.out.stc = nil
+			ownsStall = true
+		}
+		target.mu.Unlock()
+		c.requireNoErrors(c.command(protocol))
+		require_True(t, previous.isClosed())
+		var delivered bool
+		select {
+		case delivered = <-result:
+			// Rejection proves reset interrupted the wait even if the PONG is read later.
+			observedOverlap = !delivered
+		default:
+			observedOverlap = true
+			release()
+			select {
+			case delivered = <-result:
+			case <-time.After(2 * time.Second):
+				t.Fatal("stalled delivery did not finish after refresh")
+			}
+		}
+		join()
+		if observedOverlap && delivered {
+			t.Error("delivery accepted a subscription reset during its stall")
+		}
+		newSID := fmt.Sprintf("new-%d", attempt)
+		frames := c.command("SUB events " + newSID + "\r\n" + jwtRefreshPublish("events", "marker"))
+		c.requireNoErrors(frames)
+		require_JWTRefreshMessage(t, frames, newSID, "marker")
+		for _, frame := range frames {
+			if frame.op == "MSG" && frame.sid == oldSID {
+				t.Error("stalled old SID delivered after refresh confirmation")
+			}
+		}
+		if t.Failed() {
+			return
+		}
+	}
+	if !observedOverlap {
+		t.Fatal("harness did not observe reset interrupting stalled delivery")
+	}
+}
+
+func TestClientJWTRefreshConcurrentDeliveryReset(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	claims := func(index int) *jwt.UserClaims {
+		return f.claims(func(claims *jwt.UserClaims) {
+			claims.Name = fmt.Sprintf("refresh-%d", index)
+			claims.Pub.Allow.Add("race.>")
+			claims.Sub.Allow.Add("race.>")
+		})
+	}
+	c := f.connect(claims(-1))
+	before := c.connectionInfo()
+	publisher := f.observer()
+	jobs := make(chan *jwtRefreshPublicationRound)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var round *jwtRefreshPublicationRound
+			select {
+			case <-stop:
+				return
+			case round = <-jobs:
+			}
+			var err error
+			for index := 0; index < 64; index++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				err = publisher.PublishMsg(&nats.Msg{Subject: "race.old", Header: nats.Header{"Phase": []string{"before"}}, Data: []byte(fmt.Sprintf("before-%d-%d", round.index, index))})
+				if err == nil && index%16 == 0 {
+					err = publisher.FlushTimeout(time.Second)
+				}
+				if index == 0 {
+					close(round.ready)
+				}
+				if err != nil {
+					break
+				}
+			}
+			if err != nil {
+				round.result <- err
+				continue
+			}
+			select {
+			case <-stop:
+				return
+			case <-round.marker:
+			}
+			for index := 0; index < 32; index++ {
+				err = publisher.PublishMsg(&nats.Msg{Subject: "race.old", Header: nats.Header{"Phase": []string{"after"}}, Data: []byte(fmt.Sprintf("after-%d-%d", round.index, index))})
+				if err != nil {
+					break
+				}
+			}
+			if err == nil {
+				err = publisher.PublishMsg(&nats.Msg{Subject: "race.marker", Header: nats.Header{"Round": []string{fmt.Sprint(round.index)}}, Data: []byte(fmt.Sprintf("marker-%d", round.index))})
+			}
+			if err == nil {
+				err = publisher.FlushTimeout(time.Second)
+			}
+			round.result <- err
+		}
+	}()
+	var stopOnce sync.Once
+	stopPublisher := func() {
+		stopOnce.Do(func() { close(stop) })
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("publication worker did not stop")
+		}
+	}
+	t.Cleanup(stopPublisher)
+	for index := 0; index < 16; index++ {
+		oldSID, controlSID := fmt.Sprintf("old-%d", index), fmt.Sprintf("control-%d", index)
+		c.requireNoErrors(c.command("SUB race.old " + oldSID + "\r\n"))
+		require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("race.old", "baseline")), oldSID, "baseline")
+		headerAware := index%2 != 0
+		protocol := jwtRefreshTransportProtocol(t, c, claims(index), func(opts *ClientOpts) { opts.Headers = headerAware })
+		var options ClientOpts
+		require_NoError(t, json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(protocol, "CONNECT "))), &options))
+		encoded, err := json.Marshal(struct {
+			ClientOpts
+			Headers bool `json:"headers"`
+		}{ClientOpts: options, Headers: headerAware})
+		require_NoError(t, err)
+		protocol = "CONNECT " + string(encoded) + "\r\n"
+		c.write(protocol[:3])
+		round := &jwtRefreshPublicationRound{index: index, ready: make(chan struct{}), marker: make(chan struct{}), result: make(chan error, 1)}
+		select {
+		case jobs <- round:
+		case <-time.After(time.Second):
+			t.Fatal("publication worker did not accept round")
+		}
+		select {
+		case <-round.ready:
+		case <-time.After(2 * time.Second):
+			t.Fatal("publication worker did not establish traffic")
+		}
+		c.requireNoErrors(c.command(protocol[3:]))
+		require_Equal(t, c.connectionInfo().NumSubs, uint32(0))
+		frames := c.command("SUB race.marker " + controlSID + "\r\n")
+		c.requireNoErrors(frames)
+		for _, frame := range frames {
+			if frame.op == "MSG" || frame.op == "HMSG" {
+				t.Fatalf("old SID %s delivered after refresh confirmation", frame.sid)
+			}
+		}
+		close(round.marker)
+		marker := jwtRefreshIntegrationMessage(t, c, nil, controlSID)
+		require_Equal(t, string(marker.payload), fmt.Sprintf("marker-%d", index))
+		if headerAware {
+			require_Equal(t, marker.op, "HMSG")
+			require_True(t, len(marker.headers) > 0)
+		} else {
+			require_Equal(t, marker.op, "MSG")
+			require_Equal(t, len(marker.headers), 0)
+		}
+		select {
+		case err := <-round.result:
+			require_NoError(t, err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("publication worker did not complete round")
+		}
+		frames = c.command("")
+		c.requireNoErrors(frames)
+		for _, frame := range frames {
+			if frame.op == "MSG" || frame.op == "HMSG" {
+				t.Fatalf("unexpected SID %s after ordered marker", frame.sid)
+			}
+		}
+	}
+	stopPublisher()
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+}
+
+func TestClientJWTRefreshRejectsStaleSubscriptionDelivery(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := f.connect(f.claims(nil))
+	c.requireNoErrors(c.command("SUB events old\r\n"))
+	target := c.serverClient()
+	target.mu.Lock()
+	previous := target.subs["old"]
+	account := target.acc
+	target.mu.Unlock()
+	require_True(t, previous != nil)
+	c.refresh(f.claims(nil))
+	require_True(t, previous.isClosed())
+	require_False(t, target.deliverMsg(false, previous, account, []byte("events"), nil, []byte("MSG events old 5\r\n"), []byte("stale\r\n"), false))
+	c.requireNoErrors(c.command("SUB events new\r\n"))
+	frames := c.command(jwtRefreshPublish("events", "marker"))
+	require_JWTRefreshMessage(t, frames, "new", "marker")
+	for _, frame := range frames {
+		if frame.op == "MSG" && frame.sid == "old" {
+			t.Fatal("reset subscription delivered after refresh confirmation")
+		}
+	}
+}
+
+func TestClientJWTRefreshTransportPermissionsAndFraming(t *testing.T) {
+	for _, transport := range []string{"TCP", "TLS", "WebSocket", "SecureWebSocket"} {
+		t.Run(transport, func(t *testing.T) {
+			f := jwtRefreshTransportFixture(t, transport)
+			c := jwtRefreshTransportConnect(t, f, transport)
+			claims := func(subject string) *jwt.UserClaims {
+				return f.claims(func(claims *jwt.UserClaims) {
+					claims.Pub.Allow.Add(subject)
+					claims.Sub.Allow.Add(subject)
+					if strings.Contains(transport, "WebSocket") {
+						claims.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
+					} else {
+						claims.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
+					}
+				})
+			}
+			c.requireNoErrors(c.command(jwtRefreshTransportProtocol(t, c, claims("chat.alpha.>"), nil)))
+			before := c.connectionInfo()
+			c.requireNoErrors(c.command("SUB chat.alpha.event old\r\n"))
+			require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.alpha.event", "before")), "old", "before")
+			frames := jwtRefreshFragmentedCommand(t, c, jwtRefreshTransportProtocol(t, c, claims("chat.beta.>"), nil))
+			c.requireNoErrors(frames)
+			after := c.connectionInfo()
+			require_Equal(t, after.Cid, before.Cid)
+			require_Equal(t, after.Start, before.Start)
+			require_Equal(t, after.NumSubs, uint32(0))
+			c.requireNoErrors(c.command("SUB chat.beta.event new\r\n"))
+			require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.beta.event", "after")), "new", "after")
+			require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("chat.alpha.event", "denied")), "Publish", "chat.alpha.event")
+			require_JWTRefreshPermissionError(t, c.command("SUB chat.alpha.event denied\r\n"), "Subscription", "chat.alpha.event")
+			rejected := f.claims(func(claims *jwt.UserClaims) {
+				if strings.Contains(transport, "WebSocket") {
+					claims.AllowedConnectionTypes.Add(jwt.ConnectionTypeStandard)
+				} else {
+					claims.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
+				}
+			})
+			require_JWTRefreshClosed(t, c, jwtRefreshTransportProtocol(t, c, rejected, nil), "Authorization Violation")
+		})
+	}
+}
+
+func TestClientJWTRefreshProtocolOptions(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := connectJWTRefreshProtocol(t, f, f.claims(nil), ClientProtoInfo)
+	options := func(opts *ClientOpts) {
+		opts.Echo, opts.Headers, opts.NoResponders = false, true, true
+		opts.Protocol, opts.Name, opts.Lang, opts.Version = ClientProtoInfo, "refresh-client", "go", "test"
+	}
+	c.requireNoErrors(c.command(jwtRefreshTransportProtocol(t, c, f.claims(nil), options)))
+	before := c.connectionInfo()
+	c.requireNoErrors(jwtRefreshFragmentedCommand(t, c, jwtRefreshTransportProtocol(t, c, f.claims(func(claims *jwt.UserClaims) { claims.Name = "replacement" }), options)))
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+	require_Equal(t, after.Name, "refresh-client")
+	require_Equal(t, after.Lang, "go")
+	require_Equal(t, after.Version, "test")
+	c.requireNoErrors(c.command("SUB options.event echo\r\nSUB _INBOX.options reply\r\n"))
+	frames := c.command(jwtRefreshPublish("options.event", "suppressed") + "PUB missing.responder _INBOX.options 0\r\n\r\n")
+	c.requireNoErrors(frames)
+	seenStatus := false
+	for _, frame := range frames {
+		if frame.op == "MSG" && frame.sid == "echo" {
+			t.Fatal("echo=false was lost after refresh")
+		}
+		if frame.op == "HMSG" && frame.sid == "reply" && strings.Contains(string(frame.headers), "NATS/1.0 503") {
+			seenStatus = true
+		}
+	}
+	require_True(t, seenStatus)
+	observer := f.observer()
+	require_NoError(t, observer.Publish("options.event", []byte("external")))
+	require_NoError(t, observer.Flush())
+	require_JWTRefreshMessage(t, c.command(""), "echo", "external")
+	client := c.serverClient()
+	client.mu.Lock()
+	protocol, headers, noResponders := client.opts.Protocol, client.opts.Headers, client.opts.NoResponders
+	client.mu.Unlock()
+	require_Equal(t, protocol, ClientProtoInfo)
+	require_True(t, headers && noResponders)
+}
+
+func TestClientJWTRefreshRejectsOversizedConnect(t *testing.T) {
+	for _, transport := range []string{"TCP", "TLS", "WebSocket", "SecureWebSocket"} {
+		t.Run(transport, func(t *testing.T) {
+			f := jwtRefreshTransportFixture(t, transport)
+			c := jwtRefreshTransportConnect(t, f, transport)
+			c.requireNoErrors(c.command(jwtRefreshTransportProtocol(t, c, f.claims(nil), nil)))
+			c.requireNoErrors(c.command("SUB before.limit active\r\n"))
+			limit := int(f.server.getOpts().MaxControlLine)
+			oversized := "CONNECT {\"name\":\"" + strings.Repeat("x", limit+1) + "\"}\r\n"
+			require_JWTRefreshClosed(t, c, oversized, "maximum control line exceeded")
+		})
+	}
+}
+
+func TestClientJWTRefreshTraceRedactsCredentials(t *testing.T) {
+	for _, bearer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Bearer=%v", bearer), func(t *testing.T) {
+			f := newJWTRefreshFixture(t, nil)
+			logger := testhelper.NewDummyLogger(32)
+			f.server.SetLogger(logger, false, true)
+			c := f.connect(f.claims(nil))
+			logger.Drain()
+			protocol := jwtRefreshTransportProtocol(t, c, f.claims(func(claims *jwt.UserClaims) {
+				claims.Name, claims.BearerToken = "refresh", bearer
+			}), nil)
+			c.requireNoErrors(c.command(protocol))
+			var options ClientOpts
+			require_NoError(t, json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(protocol, "CONNECT "))), &options))
+			logger.Lock()
+			defer logger.Unlock()
+			seen := false
+			for _, message := range logger.AllMsgs {
+				if strings.Contains(message, options.Sig) {
+					t.Fatal("repeated CONNECT trace exposed its nonce signature")
+				}
+				if strings.Contains(message, options.JWT) {
+					t.Fatal("repeated CONNECT trace exposed its JWT")
+				}
+				if strings.Contains(message, "CONNECT") && strings.Contains(message, "[REDACTED]") {
+					seen = true
+				}
+			}
+			require_True(t, seen)
+		})
 	}
 }

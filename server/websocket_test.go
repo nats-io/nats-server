@@ -5494,3 +5494,192 @@ func TestWSUpgradeMQTTOnlyWhenEnabled(t *testing.T) {
 		})
 	}
 }
+
+type jwtRefreshWebsocketConn struct {
+	net.Conn
+	reader  *bufio.Reader
+	pending []byte
+}
+
+func (c *jwtRefreshWebsocketConn) Read(buffer []byte) (int, error) {
+	for len(c.pending) == 0 {
+		var header [2]byte
+		if _, err := io.ReadFull(c.reader, header[:]); err != nil {
+			return 0, err
+		}
+		if header[0]&wsRsv1Bit != 0 || header[1]&wsMaskBit != 0 {
+			return 0, fmt.Errorf("unexpected compressed or masked server frame")
+		}
+		size := uint64(header[1] & 0x7f)
+		if size == 126 {
+			var extended [2]byte
+			if _, err := io.ReadFull(c.reader, extended[:]); err != nil {
+				return 0, err
+			}
+			size = uint64(binary.BigEndian.Uint16(extended[:]))
+		} else if size == 127 {
+			var extended [8]byte
+			if _, err := io.ReadFull(c.reader, extended[:]); err != nil {
+				return 0, err
+			}
+			size = binary.BigEndian.Uint64(extended[:])
+		}
+		if size > 1024*1024 {
+			return 0, fmt.Errorf("server WebSocket frame exceeds test limit")
+		}
+		payload := make([]byte, int(size))
+		if _, err := io.ReadFull(c.reader, payload); err != nil {
+			return 0, err
+		}
+		switch wsOpCode(header[0] & 0xf) {
+		case wsBinaryMessage, wsTextMessage, wsContinuationFrame:
+			c.pending = payload
+		case wsPingMessage:
+			if _, err := c.Conn.Write(testWSCreateClientMsg(wsPongMessage, 1, true, false, payload)); err != nil {
+				return 0, err
+			}
+		case wsPongMessage:
+		case wsCloseMessage:
+			return 0, io.EOF
+		default:
+			return 0, fmt.Errorf("unexpected server WebSocket opcode")
+		}
+	}
+	n := copy(buffer, c.pending)
+	c.pending = c.pending[n:]
+	return n, nil
+}
+
+func (c *jwtRefreshWebsocketConn) Write(payload []byte) (int, error) {
+	_, err := c.Conn.Write(testWSCreateClientMsg(wsBinaryMessage, 1, true, false, payload))
+	if err != nil {
+		return 0, err
+	}
+	return len(payload), nil
+}
+
+func jwtRefreshTransportFixture(t *testing.T, transport string) *jwtRefreshFixture {
+	t.Helper()
+	return newJWTRefreshFixtureWithOptions(t, nil, func(opts *Options) {
+		config, err := GenTLSConfig(&TLSConfigOpts{CertFile: "./configs/certs/server.pem", KeyFile: "./configs/certs/key.pem"})
+		require_NoError(t, err)
+		switch transport {
+		case "TLS":
+			opts.TLSConfig = config
+		case "WebSocket", "SecureWebSocket":
+			opts.Websocket.Host, opts.Websocket.Port = "127.0.0.1", -1
+			opts.Websocket.JWTCookie = "refresh_jwt"
+			opts.Websocket.NoTLS = transport == "WebSocket"
+			if !opts.Websocket.NoTLS {
+				opts.Websocket.TLSConfig = config
+			}
+		}
+	})
+}
+
+func jwtRefreshTransportConnect(t *testing.T, f *jwtRefreshFixture, transport string, cookies ...string) *jwtRefreshConnection {
+	t.Helper()
+	address := f.server.Addr().String()
+	if strings.Contains(transport, "WebSocket") {
+		address = f.server.websocket.listener.Addr().String()
+	}
+	conn, err := net.DialTimeout("tcp", address, time.Second)
+	require_NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	require_NoError(t, conn.SetDeadline(time.Now().Add(2*time.Second)))
+	if transport == "SecureWebSocket" {
+		secured := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		require_NoError(t, secured.Handshake())
+		conn = secured
+	}
+	c := &jwtRefreshConnection{fixture: f, conn: conn, reader: bufio.NewReader(conn)}
+	if strings.Contains(transport, "WebSocket") {
+		request := testWSCreateValidReq()
+		for _, cookie := range cookies {
+			request.AddCookie(&http.Cookie{Name: "refresh_jwt", Value: cookie})
+		}
+		request.URL, err = url.Parse("http://" + address)
+		require_NoError(t, err)
+		require_NoError(t, request.Write(conn))
+		response, err := http.ReadResponse(c.reader, request)
+		require_NoError(t, err)
+		require_Equal(t, response.StatusCode, http.StatusSwitchingProtocols)
+		require_NoError(t, response.Body.Close())
+		stream := &jwtRefreshWebsocketConn{Conn: conn, reader: c.reader}
+		c.conn, c.reader = stream, bufio.NewReader(stream)
+	}
+	frame := c.readFrame()
+	require_Equal(t, frame.op, "INFO")
+	require_NoError(t, json.Unmarshal(frame.payload, &c.info))
+	if transport == "TLS" {
+		require_True(t, c.info.TLSRequired)
+		secured := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		require_NoError(t, secured.Handshake())
+		c.conn, c.reader = secured, bufio.NewReader(secured)
+	}
+	return c
+}
+
+func jwtRefreshFragmentedCommand(t *testing.T, c *jwtRefreshConnection, protocol string) []jwtRefreshFrame {
+	t.Helper()
+	protocol += "PING\r\n"
+	parts := []string{protocol[:3], protocol[3 : len(protocol)/2], protocol[len(protocol)/2 : len(protocol)-4], protocol[len(protocol)-4:]}
+	if stream, ok := c.conn.(*jwtRefreshWebsocketConn); ok {
+		require_NoError(t, stream.SetWriteDeadline(time.Now().Add(2*time.Second)))
+		for index, part := range parts {
+			_, err := stream.Conn.Write(testWSCreateClientMsg(wsBinaryMessage, index+1, index == len(parts)-1, false, []byte(part)))
+			require_NoError(t, err)
+			if index == 0 {
+				_, err = stream.Conn.Write(testWSCreateClientMsg(wsPingMessage, 1, true, false, []byte("control")))
+				require_NoError(t, err)
+			}
+		}
+	} else {
+		for _, part := range parts {
+			c.write(part)
+		}
+	}
+	var frames []jwtRefreshFrame
+	for {
+		frame := c.readFrame()
+		if frame.op == "PONG" {
+			return frames
+		}
+		frames = append(frames, frame)
+	}
+}
+
+func TestWSJWTRefreshCookiePrecedence(t *testing.T) {
+	f := jwtRefreshTransportFixture(t, "WebSocket")
+	claims := func(subject string) *jwt.UserClaims {
+		return f.claims(func(claims *jwt.UserClaims) {
+			claims.Pub.Allow.Add(subject)
+			claims.Sub.Allow.Add(subject)
+			claims.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
+		})
+	}
+	cookie, err := claims("chat.alpha.>").Encode(f.accountKey)
+	require_NoError(t, err)
+	c := jwtRefreshTransportConnect(t, f, "WebSocket", cookie)
+	signature, err := f.userKey.Sign([]byte(c.info.Nonce))
+	require_NoError(t, err)
+	proof := base64.RawURLEncoding.EncodeToString(signature)
+	c.requireNoErrors(c.command(jwtRefreshConnectProtocol("", proof)))
+	c.requireNoErrors(c.command("SUB chat.alpha.event initial\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.alpha.event", "cookie")), "initial", "cookie")
+	before := c.connectionInfo()
+	c.requireNoErrors(c.command(jwtRefreshTransportProtocol(t, c, claims("chat.beta.>"), nil)))
+	c.requireNoErrors(c.command("SUB chat.beta.event explicit\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.beta.event", "explicit")), "explicit", "explicit")
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("chat.alpha.event", "denied")), "Publish", "chat.alpha.event")
+	c.requireNoErrors(c.command(jwtRefreshTransportProtocol(t, c, claims("chat.alpha.>"), func(opts *ClientOpts) { opts.JWT = "" })))
+	c.requireNoErrors(c.command("SUB chat.beta.event inherited\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.beta.event", "omitted")), "inherited", "omitted")
+	c.requireNoErrors(c.command(jwtRefreshConnectProtocol("", proof)))
+	c.requireNoErrors(c.command("SUB chat.alpha.event fallback\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.alpha.event", "empty")), "fallback", "empty")
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("chat.beta.event", "denied")), "Publish", "chat.beta.event")
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+}

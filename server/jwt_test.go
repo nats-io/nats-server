@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8424,4 +8425,816 @@ func TestJWTAccountMaxConnsStillReportedAsAccountLimit(t *testing.T) {
 			t.Fatalf("account connection limit was reported as an authentication error: %q", e)
 		}
 	}
+}
+
+func TestJWTRefreshLegacyIdentityAndAccountSwitch(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		changeAccount bool
+		changeUser    bool
+	}{
+		{name: "User", changeUser: true},
+		{name: "Account", changeAccount: true},
+		{name: "AccountAndUser", changeAccount: true, changeUser: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newJWTRefreshFixture(t, nil)
+			candidateFixture := *f
+			var err error
+			if test.changeAccount {
+				candidateFixture.accountKey, err = nkeys.CreateAccount()
+				require_NoError(t, err)
+				candidateFixture.accountID, err = candidateFixture.accountKey.PublicKey()
+				require_NoError(t, err)
+				encoded, err := jwt.NewAccountClaims(candidateFixture.accountID).Encode(oKp)
+				require_NoError(t, err)
+				require_NoError(t, f.server.AccountResolver().Store(candidateFixture.accountID, encoded))
+			}
+			if test.changeUser {
+				candidateFixture.userKey, err = nkeys.CreateUser()
+				require_NoError(t, err)
+				candidateFixture.userID, err = candidateFixture.userKey.PublicKey()
+				require_NoError(t, err)
+			}
+			observerA := f.observer()
+			observerB := observerA
+			if test.changeAccount {
+				observerB = candidateFixture.observer()
+			}
+			controlA, err := observerA.SubscribeSync("shared.event")
+			require_NoError(t, err)
+			var controlB *nats.Subscription
+			if test.changeAccount {
+				controlB, err = observerB.SubscribeSync("shared.event")
+				require_NoError(t, err)
+			}
+			require_NoError(t, observerA.Flush())
+			require_NoError(t, observerB.Flush())
+			claims := func(claims *jwt.UserClaims) {
+				claims.Pub.Allow.Add("shared.event")
+				claims.Sub.Allow.Add("shared.event")
+			}
+			c := f.connect(f.claims(claims))
+			before := c.connectionInfo()
+			accountA, err := f.server.LookupAccount(f.accountID)
+			require_NoError(t, err)
+			accountB, err := f.server.LookupAccount(candidateFixture.accountID)
+			require_NoError(t, err)
+			connectionsA, connectionsB := accountA.NumConnections(), accountB.NumConnections()
+			c.requireNoErrors(c.command("SUB shared.event old\r\n"))
+			require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("shared.event", "before")), "old", "before")
+			message, err := controlA.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(message.Data), "before")
+			if test.changeAccount {
+				require_NoError(t, observerB.Publish("shared.event", []byte("other-account")))
+				require_NoError(t, observerB.Flush())
+				message, err = controlB.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_Equal(t, string(message.Data), "other-account")
+			}
+			candidate, err := candidateFixture.claims(claims).Encode(candidateFixture.accountKey)
+			require_NoError(t, err)
+			proof, err := candidateFixture.userKey.Sign([]byte(c.info.Nonce))
+			require_NoError(t, err)
+			options, err := json.Marshal(ClientOpts{JWT: candidate, Sig: base64.RawURLEncoding.EncodeToString(proof), Echo: true, Pedantic: true})
+			require_NoError(t, err)
+			c.requireNoErrors(c.command("CONNECT " + string(options) + "\r\n"))
+			after := c.connectionInfo()
+			require_Equal(t, after.Cid, before.Cid)
+			require_Equal(t, after.Start, before.Start)
+			require_Equal(t, after.AuthorizedUser, candidateFixture.userID)
+			require_Equal(t, after.Account, candidateFixture.accountID)
+			require_Equal(t, after.NumSubs, uint32(0))
+			if test.changeAccount {
+				require_Equal(t, accountA.NumConnections(), connectionsA-1)
+				require_Equal(t, accountB.NumConnections(), connectionsB+1)
+				for _, sub := range accountA.sl.Match("shared.event").psubs {
+					require_True(t, sub.client != c.serverClient())
+				}
+			} else {
+				require_Equal(t, accountA.NumConnections(), connectionsA)
+			}
+			c.requireNoErrors(c.command("SUB shared.event new\r\n"))
+			require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("shared.event", "after")), "new", "after")
+			activeControl := controlA
+			if test.changeAccount {
+				activeControl = controlB
+			}
+			message, err = activeControl.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(message.Data), "after")
+			if test.changeAccount {
+				require_NoError(t, observerA.Publish("shared.event", []byte("old-account-marker")))
+				require_NoError(t, observerA.Flush())
+				message, err = controlA.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_Equal(t, string(message.Data), "old-account-marker")
+				frames := c.command(jwtRefreshPublish("shared.event", "new-account-marker"))
+				c.requireNoErrors(frames)
+				for _, frame := range frames {
+					if frame.op == "MSG" {
+						require_Equal(t, frame.sid, "new")
+						require_Equal(t, string(frame.payload), "new-account-marker")
+					}
+				}
+				require_JWTRefreshMessage(t, frames, "new", "new-account-marker")
+			}
+		})
+	}
+}
+
+func TestJWTRefreshAdvertisesCapability(t *testing.T) {
+	for _, operator := range []bool{false, true} {
+		name := "NoJWTTrust"
+		if operator {
+			name = "Operator"
+		}
+		t.Run(name, func(t *testing.T) {
+			var s *Server
+			if operator {
+				s = newJWTRefreshFixture(t, nil).server
+			} else {
+				s = RunServer(&Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
+				t.Cleanup(s.Shutdown)
+			}
+			conn, err := net.DialTimeout("tcp", s.Addr().String(), time.Second)
+			require_NoError(t, err)
+			t.Cleanup(func() { conn.Close() })
+			require_NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			require_NoError(t, err)
+			require_True(t, len(line) > len("INFO "))
+			require_Equal(t, line[:len("INFO ")], "INFO ")
+			var info Info
+			require_NoError(t, json.Unmarshal([]byte(line[len("INFO "):]), &info))
+			require_Equal(t, info.JWTRefresh, operator)
+		})
+	}
+}
+
+func TestJWTRefreshRoutedQueueInterest(t *testing.T) {
+	f := newJWTRefreshFixtureWithOptions(t, nil, func(opts *Options) {
+		opts.ServerName = "refresh-a"
+		opts.Cluster.Name = "refresh"
+		opts.Cluster.Host, opts.Cluster.Port, opts.Cluster.PoolSize = "127.0.0.1", -1, -1
+	})
+	remoteOptions := f.server.getOpts().Clone()
+	remoteOptions.TrustedKeys = nil
+	remoteOptions.Port, remoteOptions.Cluster.Port = -1, -1
+	remoteOptions.ServerName = "refresh-b"
+	remoteOptions.Routes = RoutesFromStr("nats://" + f.server.ClusterAddr().String())
+	remote := RunServer(remoteOptions)
+	t.Cleanup(remote.Shutdown)
+	checkClusterFormed(t, f.server, remote)
+	remoteFixture := *f
+	remoteFixture.server = remote
+	observer := remoteFixture.observer()
+	claims := func(subject string) *jwt.UserClaims {
+		return f.claims(func(claims *jwt.UserClaims) {
+			claims.Pub.Allow.Add(subject)
+			claims.Sub.Allow.Add(subject + " workers")
+		})
+	}
+	c := f.connect(claims("chat.alpha.event"))
+	before := c.connectionInfo()
+	c.requireNoErrors(c.command("SUB chat.alpha.event workers old\r\n"))
+	checkSubInterest(t, remote, f.accountID, "chat.alpha.event", time.Second)
+	require_NoError(t, observer.Publish("chat.alpha.event", []byte("before")))
+	require_NoError(t, observer.Flush())
+	frame := jwtRefreshIntegrationMessage(t, c, c.command(""), "old")
+	require_Equal(t, string(frame.payload), "before")
+	c.refresh(claims("chat.beta.event"))
+	require_Equal(t, c.connectionInfo().NumSubs, uint32(0))
+	checkSubNoInterest(t, remote, f.accountID, "chat.alpha.event", time.Second)
+	c.requireNoErrors(c.command("SUB chat.beta.event workers new\r\n"))
+	checkSubInterest(t, remote, f.accountID, "chat.beta.event", time.Second)
+	require_NoError(t, observer.Publish("chat.alpha.event", []byte("forbidden")))
+	require_NoError(t, observer.Publish("chat.beta.event", []byte("after")))
+	require_NoError(t, observer.Flush())
+	frame = jwtRefreshIntegrationMessage(t, c, c.command(""), "new")
+	require_Equal(t, string(frame.payload), "after")
+	require_JWTRefreshPermissionError(t, c.command("SUB chat.alpha.event workers denied\r\n"), "Subscription", "chat.alpha.event")
+	control, err := observer.QueueSubscribeSync("chat.beta.event", "other")
+	require_NoError(t, err)
+	require_NoError(t, observer.Flush())
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		account, err := f.server.LookupAccount(f.accountID)
+		if err != nil {
+			return err
+		}
+		for _, group := range account.sl.Match("chat.beta.event").qsubs {
+			for _, sub := range group {
+				if string(sub.queue) == "other" {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("remote control queue interest has not converged")
+	})
+	c.requireNoErrors(c.command(jwtRefreshPublish("chat.beta.event", "control")))
+	message, err := control.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(message.Data), "control")
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+}
+
+func TestJWTRefreshReplacesExpiration(t *testing.T) {
+	t.Run("extends", func(t *testing.T) {
+		f := newJWTRefreshFixture(t, nil)
+		initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
+		c := f.connect(initial)
+		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() })
+		c.refresh(candidate)
+		require_True(t, c.userInfo().Expires > 30*time.Second)
+		oldDeadline := time.Unix(initial.Expires, 0).Add(time.Second)
+		for time.Now().Before(oldDeadline) {
+			c.requireNoErrors(c.command(""))
+			time.Sleep(100 * time.Millisecond)
+		}
+		c.requireNoErrors(c.command("SUB extended 1\r\n"))
+		require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("extended", "alive")), "1", "alive")
+	})
+	t.Run("shortens", func(t *testing.T) {
+		f := newJWTRefreshFixture(t, nil)
+		c := f.connect(f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() }))
+		candidate := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
+		c.refresh(candidate)
+		expires := c.userInfo().Expires
+		require_True(t, expires > 0 && expires <= 2*time.Second)
+		require_JWTRefreshExpirationClose(t, c, time.Unix(candidate.Expires, 0), "User Authentication Expired")
+	})
+	t.Run("finite-connection-window", func(t *testing.T) {
+		f := newJWTRefreshFixture(t, nil)
+		c := f.connect(f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() }))
+		closeRange := 4 * time.Second
+		start := time.Now().UTC()
+		locale := "UTC"
+		if start.Add(-time.Second).Day() != start.Add(closeRange).Day() {
+			locale = "Etc/GMT+12"
+			location, err := time.LoadLocation(locale)
+			require_NoError(t, err)
+			start = start.In(location)
+		}
+		candidate := f.claims(func(claims *jwt.UserClaims) {
+			claims.Locale = locale
+			claims.Times = []jwt.TimeRange{newTimeRange(start.Add(-time.Second), closeRange)}
+		})
+		c.refresh(candidate)
+		expires := c.userInfo().Expires
+		require_True(t, expires > 0 && expires <= closeRange)
+		require_JWTRefreshExpirationClose(t, c, start.Add(closeRange), "User Authentication Expired")
+	})
+}
+
+func TestJWTRefreshDuringExpiration(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := f.connect(f.claims(nil))
+	target := c.serverClient()
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		unblock()
+		select {
+		case <-finished:
+		case <-time.After(2 * time.Second):
+			t.Error("expiration callback did not finish")
+		}
+	})
+	target.mu.Lock()
+	previousJWT := target.opts.JWT
+	target.atmr = time.AfterFunc(0, func() {
+		close(entered)
+		<-release
+		target.authExpired()
+		close(finished)
+	})
+	target.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("expiration callback did not start")
+	}
+	candidate := f.claims(func(claims *jwt.UserClaims) { claims.Name = "must-not-install" })
+	c.write(encodeJWTRefreshOptions(t, f, c, candidate, ClientProtoZero) + "PING\r\n")
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		target.mu.Lock()
+		defer target.mu.Unlock()
+		if target.atmr != nil {
+			return fmt.Errorf("refresh has not observed the running expiration callback")
+		}
+		if target.isClosed() {
+			return fmt.Errorf("test expiration closed before its release barrier")
+		}
+		return nil
+	})
+	unblock()
+	require_JWTRefreshExpirationClose(t, c, time.Now(), "User Authentication Expired")
+	target.mu.Lock()
+	currentJWT := target.opts.JWT
+	target.mu.Unlock()
+	require_True(t, currentJWT == previousJWT)
+}
+
+func TestJWTRefreshPreservesAccountExpiration(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Second).Truncate(time.Second)
+	f := newJWTRefreshFixture(t, func(claims *jwt.AccountClaims) { claims.Expires = deadline.Unix() })
+	c := f.connect(f.claims(nil))
+	c.refresh(f.claims(nil))
+	require_Equal(t, c.userInfo().Expires, time.Duration(0))
+	require_JWTRefreshExpirationClose(t, c, deadline, "Account Authentication Expired")
+}
+
+func TestJWTRefreshAdmissionEvents(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	key, err := nkeys.CreateUser()
+	require_NoError(t, err)
+	user, err := key.PublicKey()
+	require_NoError(t, err)
+	credentials, err := jwt.NewUserClaims(user).Encode(f.systemKey)
+	require_NoError(t, err)
+	observer := natsConnect(t, f.server.ClientURL(), nats.UserJWT(func() (string, error) {
+		return credentials, nil
+	}, key.Sign), nats.NoReconnect())
+	t.Cleanup(observer.Close)
+	connects, err := observer.SubscribeSync(fmt.Sprintf(connectEventSubj, f.accountID))
+	require_NoError(t, err)
+	disconnects, err := observer.SubscribeSync(fmt.Sprintf(disconnectEventSubj, f.accountID))
+	require_NoError(t, err)
+	require_NoError(t, observer.Flush())
+	c := f.connect(f.claims(nil))
+	message, err := connects.NextMsg(time.Second)
+	require_NoError(t, err)
+	var initial ConnectEventMsg
+	require_NoError(t, json.Unmarshal(message.Data, &initial))
+	require_Equal(t, initial.Client.ID, c.info.CID)
+	require_True(t, initial.Client.Start != nil)
+	c.refresh(f.claims(func(claims *jwt.UserClaims) { claims.Name = "renewed-user" }))
+	message, err = connects.NextMsg(time.Second)
+	require_NoError(t, err)
+	var refreshed ConnectEventMsg
+	require_NoError(t, json.Unmarshal(message.Data, &refreshed))
+	require_Equal(t, refreshed.Client.ID, initial.Client.ID)
+	require_Equal(t, *refreshed.Client.Start, *initial.Client.Start)
+	require_Equal(t, refreshed.Client.Account, f.accountID)
+	require_Equal(t, refreshed.Client.User, initial.Client.User)
+	require_True(t, refreshed.ID != initial.ID)
+	require_NoError(t, c.conn.Close())
+	message, err = disconnects.NextMsg(time.Second)
+	require_NoError(t, err)
+	var closed DisconnectEventMsg
+	require_NoError(t, json.Unmarshal(message.Data, &closed))
+	require_Equal(t, closed.Client.ID, initial.Client.ID)
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		account, err := f.server.LookupAccount(f.accountID)
+		if err != nil {
+			return err
+		}
+		if account.NumConnections() != 0 {
+			return fmt.Errorf("closed target remains counted")
+		}
+		return nil
+	})
+}
+
+func TestJWTRefreshRejectsInvalidCredentials(t *testing.T) {
+	for _, name := range []string{"forged", "expired", "not-yet-valid", "unknown-signing-key", "revoked-signing-key", "source", "connection-type", "empty-signature", "malformed-signature", "wrong-key-signature", "wrong-nonce-signature", "bearer-denied", "revoked-user"} {
+		t.Run(name, func(t *testing.T) {
+			key, err := nkeys.CreateAccount()
+			require_NoError(t, err)
+			keyID, err := key.PublicKey()
+			require_NoError(t, err)
+			f := newJWTRefreshFixture(t, func(ac *jwt.AccountClaims) {
+				ac.Limits.DisallowBearer = true
+				if name == "revoked-signing-key" {
+					ac.SigningKeys.Add(keyID)
+				}
+			})
+			c := f.connect(f.claims(nil))
+			c.requireNoErrors(c.command("SUB old 1\r\n"))
+			candidate := f.claims(nil)
+			signer := f.accountKey
+			sig, err := f.userKey.Sign([]byte(c.info.Nonce))
+			require_NoError(t, err)
+			signature := base64.RawURLEncoding.EncodeToString(sig)
+			switch name {
+			case "expired":
+				candidate.Expires = time.Now().Add(-time.Minute).Unix()
+			case "not-yet-valid":
+				candidate.NotBefore = time.Now().Add(time.Minute).Unix()
+			case "unknown-signing-key":
+				signer, err = nkeys.CreateAccount()
+				require_NoError(t, err)
+				candidate.IssuerAccount = f.accountID
+			case "revoked-signing-key":
+				signer = key
+				candidate.IssuerAccount = f.accountID
+				acc, err := f.server.LookupAccount(f.accountID)
+				require_NoError(t, err)
+				_, trusted := acc.hasIssuer(keyID)
+				require_True(t, trusted)
+				f.server.UpdateAccountClaims(acc, jwt.NewAccountClaims(f.accountID))
+				_, trusted = acc.hasIssuer(keyID)
+				require_False(t, trusted)
+			case "source":
+				candidate.Src.Set("192.0.2.0/24")
+			case "connection-type":
+				candidate.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket)
+			case "empty-signature":
+				signature = ""
+			case "malformed-signature":
+				signature = "!invalid!"
+			case "wrong-key-signature":
+				other, err := nkeys.CreateUser()
+				require_NoError(t, err)
+				sig, err = other.Sign([]byte(c.info.Nonce))
+				require_NoError(t, err)
+				signature = base64.RawURLEncoding.EncodeToString(sig)
+			case "wrong-nonce-signature":
+				other := f.connect(f.claims(nil))
+				require_False(t, other.info.Nonce == c.info.Nonce)
+				sig, err = f.userKey.Sign([]byte(other.info.Nonce))
+				require_NoError(t, err)
+				signature = base64.RawURLEncoding.EncodeToString(sig)
+				require_NoError(t, other.conn.Close())
+			case "bearer-denied":
+				candidate.BearerToken = true
+				signature = ""
+			case "revoked-user":
+				other, err := nkeys.CreateUser()
+				require_NoError(t, err)
+				otherID, err := other.PublicKey()
+				require_NoError(t, err)
+				candidate.Subject = otherID
+				sig, err = other.Sign([]byte(c.info.Nonce))
+				require_NoError(t, err)
+				signature = base64.RawURLEncoding.EncodeToString(sig)
+				ac := jwt.NewAccountClaims(f.accountID)
+				ac.Revoke(otherID)
+				acc, err := f.server.LookupAccount(f.accountID)
+				require_NoError(t, err)
+				f.server.UpdateAccountClaims(acc, ac)
+			}
+			token, err := candidate.Encode(signer)
+			require_NoError(t, err)
+			if name == "forged" {
+				parts := strings.Split(token, ".")
+				proof, err := base64.RawURLEncoding.DecodeString(parts[2])
+				require_NoError(t, err)
+				proof[0] ^= 1
+				parts[2] = base64.RawURLEncoding.EncodeToString(proof)
+				token = strings.Join(parts, ".")
+			}
+			require_JWTRefreshClosed(t, c, jwtRefreshConnectProtocol(token, signature), "Authorization Violation")
+		})
+	}
+}
+
+func TestJWTRefreshAllowsBearerCredentials(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := f.connect(f.claims(nil))
+	candidate := f.claims(func(uc *jwt.UserClaims) { uc.BearerToken = true })
+	token, err := candidate.Encode(f.accountKey)
+	require_NoError(t, err)
+	c.requireNoErrors(c.command(jwtRefreshConnectProtocol(token, "")))
+	c.requireNoErrors(c.command("SUB bearer 1\r\n"))
+	c.write("PUB bearer 1\r\nx\r\n")
+	frame := c.readFrame()
+	require_Equal(t, frame.op, "MSG")
+	require_Equal(t, frame.subject, "bearer")
+}
+
+func TestJWTRefreshAppliesEffectivePermissions(t *testing.T) {
+	t.Run("account-defaults-and-explicit-user", func(t *testing.T) {
+		f := newJWTRefreshFixture(t, func(ac *jwt.AccountClaims) {
+			ac.DefaultPermissions.Pub.Allow.Add("default")
+			ac.DefaultPermissions.Sub.Allow.Add("default")
+		})
+		explicit := f.claims(func(uc *jwt.UserClaims) {
+			uc.Pub.Allow.Add("explicit")
+			uc.Sub.Allow.Add("explicit")
+		})
+		c := f.connect(explicit)
+		for _, step := range []struct {
+			claims          *jwt.UserClaims
+			allowed, denied string
+		}{{f.claims(nil), "default", "explicit"}, {explicit, "explicit", "default"}} {
+			c.refresh(step.claims)
+			c.requireNoErrors(c.command("SUB " + step.allowed + " 1\r\n"))
+			c.write("PUB " + step.allowed + " 1\r\nx\r\n")
+			frame := c.readFrame()
+			require_Equal(t, frame.op, "MSG")
+			require_Equal(t, frame.subject, step.allowed)
+			require_JWTRefreshPermissionError(t, c.command("PUB "+step.denied+" 0\r\n\r\n"), "Publish", step.denied)
+			require_JWTRefreshPermissionError(t, c.command("SUB "+step.denied+" 2\r\n"), "Subscription", step.denied)
+		}
+	})
+	t.Run("scoped-key", func(t *testing.T) {
+		signer, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		signerID, err := signer.PublicKey()
+		require_NoError(t, err)
+		f := newJWTRefreshFixture(t, func(ac *jwt.AccountClaims) {
+			scope := jwt.NewUserScope()
+			scope.Key = signerID
+			scope.Template.Pub.Allow.Add("scoped")
+			scope.Template.Sub.Allow.Add("scoped")
+			scope.Template.Limits.Payload = 4
+			scope.Template.Limits.Subs = jwt.NoLimit
+			ac.SigningKeys.AddScopedSigner(scope)
+		})
+		c := f.connect(f.claims(nil))
+		candidate := f.claims(func(uc *jwt.UserClaims) { uc.SetScoped(true); uc.IssuerAccount = f.accountID })
+		token, err := candidate.Encode(signer)
+		require_NoError(t, err)
+		sig, err := f.userKey.Sign([]byte(c.info.Nonce))
+		require_NoError(t, err)
+		frames := c.command(jwtRefreshConnectProtocol(token, base64.RawURLEncoding.EncodeToString(sig)))
+		actual := c.serverClient()
+		actual.mu.Lock()
+		maxSubs := actual.msubs
+		actual.mu.Unlock()
+		require_Equal(t, maxSubs, int32(jwt.NoLimit))
+		c.requireNoErrors(frames)
+		c.requireNoErrors(c.command(jwtRefreshConnectProtocol(token, base64.RawURLEncoding.EncodeToString(sig))))
+		c.requireNoErrors(c.command("SUB scoped 1\r\n"))
+		c.write("PUB scoped 4\r\npass\r\n")
+		frame := c.readFrame()
+		require_Equal(t, string(frame.payload), "pass")
+		require_JWTRefreshPermissionError(t, c.command("PUB old 0\r\n\r\n"), "Publish", "old")
+		require_JWTRefreshPermissionError(t, c.command("SUB old 2\r\n"), "Subscription", "old")
+		require_JWTRefreshClosed(t, c, "PUB scoped 5\r\nlarge\r\n", "Maximum Payload Violation")
+	})
+}
+
+func TestJWTRefreshAccountAccounting(t *testing.T) {
+	f := newJWTRefreshFixture(t, func(ac *jwt.AccountClaims) { ac.Limits.Conn = 1 })
+	c := f.connect(f.claims(nil))
+	initial := c.connectionInfo()
+	acc, err := f.server.LookupAccount(f.accountID)
+	require_NoError(t, err)
+	baselineSubscriptions := acc.sl.Count()
+	for i := 0; i < 5; i++ {
+		c.requireNoErrors(c.command("SUB old 1\r\n"))
+		c.refresh(f.claims(nil))
+		require_Equal(t, acc.NumConnections(), 1)
+		require_Equal(t, acc.sl.Count(), baselineSubscriptions)
+		require_Equal(t, c.connectionInfo().Cid, initial.Cid)
+		require_Equal(t, c.connectionInfo().Start, initial.Start)
+		require_Equal(t, f.server.globalAccount().NumConnections(), 0)
+	}
+}
+
+func TestJWTRefreshAppliesLimits(t *testing.T) {
+	for _, name := range []string{"shrink", "expand", "account-ceiling"} {
+		t.Run(name, func(t *testing.T) {
+			f := newJWTRefreshFixture(t, func(ac *jwt.AccountClaims) { ac.Limits.Payload = 8; ac.Limits.Subs = 3 })
+			oldLimit, newLimit, effective := int64(8), int64(4), int64(4)
+			oldSubs, newSubs, effectiveSubs := int64(3), int64(1), int64(1)
+			if name == "expand" {
+				oldLimit, newLimit, effective = 4, 8, 8
+				oldSubs, newSubs, effectiveSubs = 1, 3, 3
+			}
+			if name == "account-ceiling" {
+				newLimit, effective = 20, 8
+				newSubs, effectiveSubs = 20, 3
+			}
+			c := f.connect(f.claims(func(uc *jwt.UserClaims) { uc.Limits.Payload = oldLimit; uc.Limits.Subs = oldSubs }))
+			c.requireNoErrors(c.command("SUB old 1\r\n"))
+			c.refresh(f.claims(func(uc *jwt.UserClaims) { uc.Limits.Payload = newLimit; uc.Limits.Subs = newSubs }))
+			for i := int64(0); i < effectiveSubs; i++ {
+				c.requireNoErrors(c.command(fmt.Sprintf("SUB limit.%d %d\r\n", i, i)))
+			}
+			frames := c.command("SUB excess extra\r\n")
+			require_Equal(t, len(frames), 1)
+			require_Contains(t, frames[0].error, "maximum subscriptions exceeded")
+			payload := strings.Repeat("x", int(effective))
+			c.write(fmt.Sprintf("PUB limit.0 %d\r\n%s\r\n", effective, payload))
+			frame := c.readFrame()
+			require_Equal(t, string(frame.payload), payload)
+			require_JWTRefreshClosed(t, c, fmt.Sprintf("PUB limit.0 %d\r\n%sx\r\n", effective+1, payload), "Maximum Payload Violation")
+		})
+	}
+}
+
+func TestJWTRefreshEnforcesZeroSubscriptionLimit(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	c := f.connect(f.claims(nil))
+	acc, err := f.server.LookupAccount(f.accountID)
+	require_NoError(t, err)
+	baselineSubscriptions := acc.sl.Count()
+	c.requireNoErrors(c.command("SUB old 1\r\n"))
+	candidate := f.claims(func(uc *jwt.UserClaims) { uc.Limits.Subs = 0 })
+	token, err := candidate.Encode(f.accountKey)
+	require_NoError(t, err)
+	sig, err := f.userKey.Sign([]byte(c.info.Nonce))
+	require_NoError(t, err)
+	c.write(jwtRefreshConnectProtocol(token, base64.RawURLEncoding.EncodeToString(sig)) + "PING\r\n")
+	require_NoError(t, c.conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	seenError := false
+	for {
+		line, err := c.reader.ReadString('\n')
+		if err != nil {
+			require_Equal(t, err, io.EOF)
+			require_True(t, seenError)
+			break
+		}
+		if strings.HasPrefix(line, "-ERR ") {
+			require_Contains(t, line, "maximum subscriptions exceeded")
+			seenError = true
+		} else if strings.HasPrefix(line, "PING") {
+			c.write("PONG\r\n")
+		}
+	}
+	checkFor(t, time.Second, 10*time.Millisecond, func() error {
+		if f.server.getClient(c.info.CID) != nil || acc.NumConnections() != 0 || acc.sl.Count() != baselineSubscriptions {
+			return fmt.Errorf("zero-subscription client cleanup has not completed")
+		}
+		return nil
+	})
+}
+
+func TestJWTRefreshReplacesResponsePermissions(t *testing.T) {
+	for _, name := range []string{"remove", "replace-limit"} {
+		t.Run(name, func(t *testing.T) {
+			f := newJWTRefreshFixture(t, nil)
+			observer := f.observer()
+			sub, err := observer.SubscribeSync("reply.>")
+			require_NoError(t, err)
+			require_NoError(t, observer.Flush())
+			old := f.claims(func(uc *jwt.UserClaims) {
+				uc.Sub.Allow.Add("service")
+				uc.Resp = &jwt.ResponsePermission{MaxMsgs: 3, Expires: time.Minute}
+			})
+			c := f.connect(old)
+			c.requireNoErrors(c.command("SUB service 1\r\n"))
+			require_NoError(t, observer.PublishRequest("service", "reply.old", []byte("request")))
+			require_Equal(t, c.readFrame().op, "MSG")
+			c.requireNoErrors(c.command("PUB reply.old 1\r\nb\r\n"))
+			baseline, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, string(baseline.Data), "b")
+			candidate := f.claims(func(uc *jwt.UserClaims) {
+				uc.Sub.Allow.Add("service")
+				uc.Pub.Allow.Add("marker")
+				if name == "replace-limit" {
+					uc.Resp = &jwt.ResponsePermission{MaxMsgs: 1, Expires: time.Minute}
+				}
+			})
+			c.refresh(candidate)
+			require_JWTRefreshPermissionError(t, c.command("PUB reply.old 1\r\nx\r\n"), "Publish", "reply.old")
+			if name == "replace-limit" {
+				c.requireNoErrors(c.command("SUB service 2\r\n"))
+				require_NoError(t, observer.PublishRequest("service", "reply.new", []byte("request")))
+				require_Equal(t, c.readFrame().op, "MSG")
+				require_JWTRefreshPermissionError(t, c.command("PUB reply.new 1\r\nx\r\nPUB reply.new 1\r\ny\r\n"), "Publish", "reply.new")
+				msg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_Equal(t, string(msg.Data), "x")
+			}
+			marker, err := observer.SubscribeSync("marker")
+			require_NoError(t, err)
+			require_NoError(t, observer.Flush())
+			c.requireNoErrors(c.command("PUB marker 1\r\nm\r\n"))
+			_, err = marker.NextMsg(time.Second)
+			require_NoError(t, err)
+			_, err = sub.NextMsg(50 * time.Millisecond)
+			require_Equal(t, err, nats.ErrTimeout)
+		})
+	}
+}
+
+func TestJWTRefreshPermissionsOnSameConnection(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	permissions := func(subject string) *jwt.UserClaims {
+		return f.claims(func(claims *jwt.UserClaims) {
+			claims.Pub.Allow.Add(subject)
+			claims.Sub.Allow.Add(subject)
+		})
+	}
+	c := f.connect(permissions("chat.alpha.>"))
+	before := c.connectionInfo()
+	c.requireNoErrors(c.command("SUB chat.alpha.message old\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.alpha.message", "before")), "old", "before")
+	observer := f.observer()
+	control, err := observer.SubscribeSync("chat.alpha.message")
+	require_NoError(t, err)
+	require_NoError(t, observer.Flush())
+	c.refresh(permissions("chat.beta.>"))
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
+	require_Equal(t, after.Account, before.Account)
+	require_Equal(t, after.AuthorizedUser, before.AuthorizedUser)
+	require_Equal(t, after.NumSubs, uint32(0))
+	c.requireNoErrors(c.command("SUB chat.beta.message new\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("chat.beta.message", "after")), "new", "after")
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("chat.alpha.message", "forbidden")), "Publish", "chat.alpha.message")
+	require_JWTRefreshPermissionError(t, c.command("SUB chat.alpha.message denied\r\n"), "Subscription", "chat.alpha.message")
+	require_NoError(t, observer.Publish("chat.alpha.message", []byte("control")))
+	require_NoError(t, observer.Flush())
+	message, err := control.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(message.Data), "control")
+	if message, err := control.NextMsg(50 * time.Millisecond); err != nats.ErrTimeout {
+		t.Fatalf("forbidden publish reached observer: message=%v error=%v", message, err)
+	}
+}
+
+func TestJWTRefreshResetsSubscriptionsAndPermissionCaches(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	old := f.claims(func(claims *jwt.UserClaims) {
+		claims.Pub.Allow.Add("shared.>", "old.>")
+		claims.Sub.Allow.Add("shared.>", "old.>")
+	})
+	c := f.connect(old)
+	c.requireNoErrors(c.command("SUB shared.exact exact\r\nSUB shared.* wildcard\r\nSUB shared.queue workers queue\r\nSUB shared.auto auto\r\nUNSUB auto 5\r\n"))
+	frames := c.command(jwtRefreshPublish("shared.exact", "prime") + jwtRefreshPublish("old.allowed", "prime"))
+	c.requireNoErrors(frames)
+	require_JWTRefreshMessage(t, frames, "exact", "prime")
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("new.allowed", "denied")), "Publish", "new.allowed")
+	client := c.serverClient()
+	client.mu.Lock()
+	var previous []*subscription
+	for _, sub := range client.subs {
+		previous = append(previous, sub)
+	}
+	client.mu.Unlock()
+	require_Equal(t, len(previous), 4)
+	candidate := f.claims(func(claims *jwt.UserClaims) {
+		claims.Pub.Allow.Add("shared.>", "new.>")
+		claims.Sub.Allow.Add("shared.>", "new.>")
+		claims.Sub.Deny.Add("shared.blocked", "shared.queue forbidden")
+	})
+	c.refresh(candidate)
+	require_Equal(t, c.connectionInfo().NumSubs, uint32(0))
+	for _, sub := range previous {
+		require_True(t, sub.isClosed())
+	}
+	observer := f.observer()
+	control, err := observer.SubscribeSync("shared.exact")
+	require_NoError(t, err)
+	require_NoError(t, observer.Flush())
+	require_NoError(t, observer.Publish("shared.exact", []byte("reset")))
+	require_NoError(t, observer.Flush())
+	message, err := control.NextMsg(time.Second)
+	require_NoError(t, err)
+	require_Equal(t, string(message.Data), "reset")
+	frames = c.command("SUB new.allowed recreated\r\nSUB shared.* filtered\r\nSUB shared.queue allowed queued\r\n")
+	c.requireNoErrors(frames)
+	for _, frame := range frames {
+		if frame.op == "MSG" {
+			t.Fatalf("old subscription delivered after refresh: SID %s", frame.sid)
+		}
+	}
+	frames = c.command(jwtRefreshPublish("new.allowed", "new") + jwtRefreshPublish("shared.exact", "marker") + jwtRefreshPublish("shared.blocked", "blocked") + jwtRefreshPublish("shared.queue", "queued"))
+	c.requireNoErrors(frames)
+	require_JWTRefreshMessage(t, frames, "recreated", "new")
+	require_JWTRefreshMessage(t, frames, "filtered", "marker")
+	require_JWTRefreshMessage(t, frames, "queued", "queued")
+	for _, frame := range frames {
+		if frame.op == "MSG" && (string(frame.payload) == "blocked" || frame.sid == "exact" || frame.sid == "wildcard" || frame.sid == "queue" || frame.sid == "auto") {
+			t.Fatalf("unexpected post-refresh message: SID %s payload %q", frame.sid, frame.payload)
+		}
+	}
+	require_JWTRefreshPermissionError(t, c.command(jwtRefreshPublish("old.allowed", "forbidden")), "Publish", "old.allowed")
+	require_JWTRefreshPermissionError(t, c.command("SUB shared.queue forbidden rejected\r\n"), "Subscription", "shared.queue")
+}
+
+func TestJWTRefreshClearsExpirationMetadata(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(time.Minute).Unix() })
+	c := f.connect(initial)
+	before := c.userInfo()
+	require_True(t, before.Expires > 30*time.Second)
+	require_Equal(t, before.UserID, f.userID)
+	c.refresh(f.claims(nil))
+	after := c.userInfo()
+	require_Equal(t, after.UserID, f.userID)
+	require_Equal(t, after.Account, f.accountID)
+	if after.Expires != 0 {
+		t.Fatalf("unrestricted replacement retains public expiration %s (internal %s)", after.Expires, c.serverClient().claimExpiration())
+	}
+	require_Equal(t, c.serverClient().claimExpiration(), time.Duration(0))
+}
+
+func TestJWTRefreshRemovesOldExpiration(t *testing.T) {
+	f := newJWTRefreshFixture(t, nil)
+	initial := f.claims(func(claims *jwt.UserClaims) { claims.Expires = time.Now().Add(2 * time.Second).Unix() })
+	c := f.connect(initial)
+	before := c.connectionInfo()
+	c.refresh(f.claims(nil))
+	deadline := time.Unix(initial.Expires, 0).Add(time.Second)
+	for time.Now().Before(deadline) {
+		c.requireNoErrors(c.command(""))
+		time.Sleep(100 * time.Millisecond)
+	}
+	c.requireNoErrors(c.command("SUB alive alive\r\n"))
+	require_JWTRefreshMessage(t, c.command(jwtRefreshPublish("alive", "after-deadline")), "alive", "after-deadline")
+	after := c.connectionInfo()
+	require_Equal(t, after.Cid, before.Cid)
+	require_Equal(t, after.Start, before.Start)
 }
