@@ -6420,16 +6420,15 @@ func (o *consumer) hasSkipListPending() bool {
 // is ahead of the stream's last sequence.
 // Lock should be held.
 func (o *consumer) reconcileStateWithStream(streamLastSeq uint64) {
-	// If an ack floor is higher than stream last sequence,
-	// reset back down but keep the highest known sequences.
-	if o.asflr > streamLastSeq {
-		o.asflr = streamLastSeq
-		// Delivery floor is one below the delivered sequence,
-		// but if it is zero somehow, ensure we don't underflow.
-		o.adflr = o.dseq
-		if o.adflr > 0 {
-			o.adflr--
-		}
+	// The consumer's recorded position is ahead of the stream's last sequence.
+	// This happens when the stream rolled back after data loss (its low sequence
+	// numbers now refer to NEW messages) or when the consumer record is otherwise
+	// invalid. Reset the consumer to the beginning so those messages are
+	// delivered. Clamping to the stream's last sequence instead would resume
+	// past the end and starve the consumer (issue #8036).
+	if o.asflr > streamLastSeq || o.sseq-1 > streamLastSeq {
+		o.asflr = 0
+		o.adflr = 0
 		o.pending = nil
 		o.rdc = nil
 	}
