@@ -18413,7 +18413,7 @@ func TestJetStreamUsageSyncDeadlock(t *testing.T) {
 	jsa.usageMu.Lock()
 	st, ok := jsa.usage[_EMPTY_]
 	require_True(t, ok)
-	st.local.store = -1000
+	st.local.store.Store(-1000)
 	jsa.usageMu.Unlock()
 
 	sendStreamMsg(t, nc, "foo", "hello")
