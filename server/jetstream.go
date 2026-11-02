@@ -2919,6 +2919,11 @@ func (s *Server) resourcesExceededError(storeType StorageType) {
 	}
 }
 
+// Returns whether a domain name can't be told apart from another JetStream subject.
+func isReservedDomainName(domain string) bool {
+	return domain == "ACK" || domain == "FC" || domain == "SNAPSHOT" || domain == "EVENT"
+}
+
 // For validating options.
 func validateJetStreamOptions(o *Options) error {
 	// in non operator mode, the account names need to be configured
@@ -2961,7 +2966,7 @@ func validateJetStreamOptions(o *Options) error {
 			if d == _EMPTY_ {
 				continue
 			}
-			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) {
+			if sub := fmt.Sprintf(jsDomainAPI, d); !IsValidSubject(sub) || isReservedDomainName(d) {
 				return fmt.Errorf("default_js_domain contains account %q with invalid domain name %q", a, d)
 			}
 		}
@@ -2973,6 +2978,9 @@ func validateJetStreamOptions(o *Options) error {
 
 		if !isValidName(o.JetStreamDomain) {
 			return fmt.Errorf("invalid domain name: may not contain ., * or >")
+		}
+		if isReservedDomainName(o.JetStreamDomain) {
+			return fmt.Errorf("invalid domain name: %q is reserved", o.JetStreamDomain)
 		}
 	}
 	// If not clustered no checks needed past here.

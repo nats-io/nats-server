@@ -11596,6 +11596,10 @@ func TestJetStreamServerDomainBadConfig(t *testing.T) {
 	shouldFail(".CORE")
 	shouldFail("C.*.O. RE")
 	shouldFail("C.ORE")
+	// Can't be told apart from other JetStream subjects.
+	for _, domain := range []string{"ACK", "FC", "SNAPSHOT", "EVENT"} {
+		shouldFail(domain)
+	}
 }
 
 func TestJetStreamServerDomainConfig(t *testing.T) {
