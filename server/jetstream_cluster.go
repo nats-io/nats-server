@@ -7350,12 +7350,12 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					return err
 				}
 				o.mu.Lock()
-				o.resetLocalStartingSeq(sseq)
-				if o.store != nil {
+				recalcPending, resetErr := o.resetLocalStartingSeq(sseq)
+				if resetErr == nil && o.store != nil {
 					o.store.Reset(sseq - 1)
 				}
 				// Cleanup messages that lost interest.
-				if o.retention == InterestPolicy {
+				if resetErr == nil && o.retention == InterestPolicy {
 					if mset := o.mset; mset != nil {
 						o.mu.Unlock()
 						ss := mset.state()
@@ -7363,12 +7363,19 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 						o.mu.Lock()
 					}
 				}
+				if resetErr != nil && (!o.isLeader() || reply == _EMPTY_) {
+					o.srv.Warnf("Consumer '%s > %s > %s' reset failed: %v", o.acc.Name, o.stream, o.name, resetErr)
+				}
 				// Recalculate pending, and re-trigger message delivery.
 				if !o.isLeader() {
 					o.mu.Unlock()
 				} else {
-					o.streamNumPending()
-					o.signalNewMessages()
+					if recalcPending {
+						o.streamNumPending()
+					}
+					if resetErr == nil {
+						o.signalNewMessages()
+					}
 					s, a := o.srv, o.acc
 					if reply == _EMPTY_ {
 						o.mu.Unlock()
@@ -7384,7 +7391,10 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 							a = nil
 						}
 						var resp = JSApiConsumerResetResponse{ApiResponse: ApiResponse{Type: JSApiConsumerResetResponseType}}
-						if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.resetInfo(sseq)); resp.ConsumerInfo == nil {
+						if resetErr != nil {
+							resp.Error = NewJSConsumerInvalidResetError(resetErr)
+							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))
+						} else if resp.ConsumerInfo = setDynamicConsumerInfoMetadata(o.resetInfo(sseq)); resp.ConsumerInfo == nil {
 							// The consumer was closed before we could respond.
 							resp.Error = NewJSConsumerInvalidResetError(errConsumerClosed)
 							s.sendInternalAccountMsg(a, reply, s.jsonResponse(&resp))

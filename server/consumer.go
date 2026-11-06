@@ -1769,9 +1769,14 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 		// Setup initial num pending.
 		o.streamNumPending()
 
-		// Cleanup lss when we take over in clustered mode.
-		if o.hasSkipListPending() && o.sseq >= o.lss.resume {
-			o.lss = nil
+		// Followers don't consume the skip list as deliveries are replicated.
+		if o.hasSkipListPending() {
+			start, _ := slices.BinarySearch(o.lss.seqs, o.sseq)
+			if start == len(o.lss.seqs) {
+				o.lss = nil
+			} else if start > 0 {
+				o.lss.seqs = slices.Clone(o.lss.seqs[start:])
+			}
 		}
 
 		// Do info sub.
@@ -2935,7 +2940,13 @@ VALID:
 		}
 		return seq, false, nil
 	}
-	o.resetLocalStartingSeq(seq)
+	recalcPending, err := o.resetLocalStartingSeq(seq)
+	if err != nil {
+		if reply == _EMPTY_ {
+			o.srv.Warnf("Consumer '%s > %s > %s' reset failed: %v", o.acc.Name, o.stream, o.name, err)
+		}
+		return 0, false, err
+	}
 	if o.store != nil {
 		o.store.Reset(seq - 1)
 		// Cleanup messages that lost interest.
@@ -2949,7 +2960,9 @@ VALID:
 		}
 
 		// Recalculate pending, and re-trigger message delivery.
-		o.streamNumPending()
+		if recalcPending {
+			o.streamNumPending()
+		}
 		o.signalNewMessages()
 		return seq, true, nil
 	}
@@ -2957,13 +2970,42 @@ VALID:
 }
 
 // Lock should be held.
-func (o *consumer) resetLocalStartingSeq(seq uint64) {
+func (o *consumer) resetLocalStartingSeq(seq uint64) (bool, error) {
+	recalcPending := o.sseq != seq || len(o.pending) > 0
+	if o.cfg.DeliverPolicy == DeliverLastPerSubject && o.mset != nil {
+		// Rebuild the last-per-subject snapshot, excluding subjects below the reset point.
+		filters := o.cfg.FilterSubjects
+		if len(filters) == 0 {
+			filters = []string{o.cfg.FilterSubject}
+		}
+		seqs, err := o.mset.store.MultiLastSeqs(filters, 0, 0)
+		if err != nil {
+			return false, err
+		}
+		start, _ := slices.BinarySearch(seqs, seq)
+		if o.lss = nil; start < len(seqs) {
+			if start > 0 {
+				// Don't hold onto underlying array capacity in seqs since that
+				// could be a pretty big inaccessible range...
+				seqs = slices.Clone(seqs[start:])
+			}
+			o.lss = &lastSeqSkipList{resume: seqs[len(seqs)-1], seqs: seqs}
+		}
+		recalcPending = true
+	} else if recalcPending && seq == o.asflr+1 && o.isLeader() &&
+		(o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
+		// A reset back to the ack floor can be optimized since we know how many were pending.
+		// But only for AckAll/AckFlowControl, since those guarantee no out-of-order acks.
+		o.npc += int64(len(o.pending))
+		recalcPending = false
+	}
 	o.pending, o.rdc = nil, nil
 	o.rdq = nil
 	o.rdqi.Empty()
 	o.sseq, o.dseq = seq, 1
 	o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	o.ldt, o.lat = time.Time{}, time.Time{}
+	return recalcPending, nil
 }
 
 func (o *consumer) loopAndForwardProposals(node RaftNode, qch, pch chan struct{}, term uint64) {
