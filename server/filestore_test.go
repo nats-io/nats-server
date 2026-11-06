@@ -9197,6 +9197,67 @@ func benchmarkFileStoreLoadMsgRejectedMessages(b *testing.B, multi bool) {
 	}
 }
 
+func BenchmarkFileStoreLoadNextMsgMultiSparseHistory(b *testing.B) {
+	const keys = 100000
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 8 * 1024 * 1024},
+		StreamConfig{Name: "KV_bench", Subjects: []string{"$KV.bench.>"}, Storage: FileStorage, MaxMsgsPer: 1})
+	require_NoError(b, err)
+	defer fs.Stop()
+	// Insert 100K messages
+	for key := range keys {
+		subj := fmt.Sprintf("$KV.bench.%c.k%d", "ab"[key%2], key)
+		_, _, err := fs.StoreMsg(subj, nil, []byte("value"), 0)
+		require_NoError(b, err)
+
+	}
+	// Remove 80% of the messages
+	for seq := uint64(1); seq <= keys; seq++ {
+		if seq%5 != 0 {
+			_, err := fs.RemoveMsg(seq)
+			require_NoError(b, err)
+		}
+	}
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(b, err)
+	_, _, err = fs.StoreMsg("$KV.bench.c.match", nil, []byte("value"), 0)
+	require_NoError(b, err)
+
+	for _, test := range []struct {
+		name     string
+		prefixes string
+	}{
+		{"AllMatching", "ab"},
+		{"HalfMatching", "ac"},
+		{"NoMatching", "cd"},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			sl := gsl.NewSimpleSublist()
+			for _, prefix := range test.prefixes {
+				require_NoError(b, sl.Insert(fmt.Sprintf("$KV.bench.%c.>", prefix), struct{}{}))
+			}
+			var smv StoreMsg
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				// Skip the initial intersection in LoadNextMsgMulti.
+				start := uint64(6)
+				for {
+					_, seq, err := fs.LoadNextMsgMulti(sl, start, &smv)
+					if err != nil {
+						require_Error(b, err, ErrStoreEOF)
+						break
+					}
+					start = seq + 1
+				}
+			}
+			b.StopTimer()
+		})
+	}
+}
+
 func BenchmarkFileStoreLoadNextMsgMultiRepeatedSubjects(b *testing.B) {
 	benchmarkFileStoreLoadMsgMulti(b, false)
 }
