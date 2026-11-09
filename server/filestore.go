@@ -2979,10 +2979,14 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 
 	var scanMsg StoreMsg
 	for seq := fseq; seq <= lseq; seq++ {
-		if mb.dmap.Exists(seq) {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
 			// Optimisation to avoid calling cacheLookup which hits time.Now().
 			// Instead we will update it only once in a defer.
 			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
 			continue
 		}
 		llseq := mb.llseq
@@ -3129,10 +3133,14 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		fsm = &StoreMsg{}
 	}
 	for seq := fseq; seq <= lseq; seq++ {
-		if mb.dmap.Exists(seq) {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
 			// Optimisation to avoid calling cacheLookup which hits time.Now().
 			// Instead we will update it only once in a defer.
 			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
 			continue
 		}
 		llseq := mb.llseq
