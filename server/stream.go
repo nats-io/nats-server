@@ -1672,16 +1672,29 @@ func (mset *stream) rebuildDedupe() {
 	}
 
 	for seq := sseq; seq <= state.LastSeq; seq++ {
-		sm, err := mset.store.LoadMsg(seq, &smv)
-		if err != nil {
+		// Jump over deleted sequences instead of loading each one.
+		sm, nseq, err := mset.store.LoadNextMsg(fwcs, true, seq, &smv)
+		if err == ErrStoreEOF {
+			break
+		} else if err != nil {
 			continue
+		} else if nseq > state.LastSeq {
+			break
 		}
+		seq = nseq
 		var msgId string
 		if len(sm.hdr) > 0 {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
 				mset.storeMsgIdLocked(&ddentry{msgId, sm.seq, sm.ts})
 			}
 		}
+	}
+
+	// Purge when the oldest entry's window ends.
+	// A full window from now would keep rebuilt entries too long.
+	if mset.ddtmr != nil && mset.ddindex < len(mset.ddarr) {
+		oldest := mset.ddarr[mset.ddindex]
+		mset.ddtmr.Reset(time.Until(time.Unix(0, oldest.ts).Add(mset.ddwin)))
 	}
 }
 

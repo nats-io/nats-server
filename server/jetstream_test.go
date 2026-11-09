@@ -3078,6 +3078,108 @@ func TestJetStreamRestoreV2RebuildsDedupeState(t *testing.T) {
 	}
 }
 
+func TestJetStreamRebuildDedupeSkipsLargeGap(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Only the filestore can jump over a gap, the memstore still scans it.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo"},
+		Storage:    nats.FileStorage,
+		Duplicates: time.Minute,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil, nats.MsgId("A"))
+	require_NoError(t, err)
+
+	const gap = 500_000_000
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	err = mset.store.SkipMsgs(2, gap)
+	mset.lseq = gap + 1
+	mset.mu.Unlock()
+	require_NoError(t, err)
+
+	pa, err := js.Publish("foo", nil, nats.MsgId("B"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, gap+2)
+
+	mset.mu.Lock()
+	mset.ddMu.Lock()
+	if mset.ddtmr != nil {
+		mset.ddtmr.Stop()
+		mset.ddtmr = nil
+	}
+	mset.ddmap, mset.ddarr, mset.ddindex = nil, nil, 0
+	start := time.Now()
+	mset.rebuildDedupe()
+	elapsed := time.Since(start)
+	ddarr := mset.ddarr
+	mset.ddMu.Unlock()
+	mset.mu.Unlock()
+
+	// Loading every skipped sequence takes seconds, jumping over them is instant.
+	require_LessThan(t, elapsed, time.Second)
+	require_Len(t, len(ddarr), 2)
+	require_Equal(t, ddarr[0].seq, 1)
+	require_Equal(t, ddarr[1].seq, gap+2)
+}
+
+func TestJetStreamRebuildDedupeKeepsOriginalWindow(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	const window = time.Second
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo"},
+		Storage:    nats.FileStorage,
+		Duplicates: window,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil, nats.MsgId("A"))
+	require_NoError(t, err)
+	expires := time.Now().Add(window)
+
+	// Restarting halfway through the window rebuilds the dedupe state.
+	time.Sleep(window / 2)
+	sd := s.JetStreamConfig().StoreDir
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+	s = RunJetStreamServerOnPort(-1, sd)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	// The restart must have rebuilt the entry, otherwise there's nothing to expire.
+	require_Equal(t, mset.numMsgIds(), 1)
+	// The entry must expire at its original deadline, not a full window after the restart.
+	checkFor(t, time.Until(expires)+window/4, 10*time.Millisecond, func() error {
+		if n := mset.numMsgIds(); n != 0 {
+			return fmt.Errorf("expected no msg ids, got %d", n)
+		}
+		return nil
+	})
+
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+	pa, err := js.Publish("foo", nil, nats.MsgId("A"))
+	require_NoError(t, err)
+	require_False(t, pa.Duplicate)
+	require_Equal(t, pa.Sequence, 2)
+}
+
 func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
