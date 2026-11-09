@@ -5337,6 +5337,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Check if encryption is enabled.
 	if fs.prf != nil {
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+			_ = mb.dirtyCloseWithRemove(true)
 			return nil, err
 		}
 	}
