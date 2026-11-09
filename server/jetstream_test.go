@@ -3034,6 +3034,59 @@ func TestJetStreamRestoreLastMsgIDPastDedupeWindow(t *testing.T) {
 	require_Equal(t, pa.Sequence, 2)
 }
 
+func TestJetStreamRebuildDedupeSkipsLargeGap(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	// Only the filestore can jump over a gap, the memstore still scans it.
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:       "TEST",
+		Subjects:   []string{"foo"},
+		Storage:    nats.FileStorage,
+		Duplicates: time.Minute,
+	})
+	require_NoError(t, err)
+
+	_, err = js.Publish("foo", nil, nats.MsgId("A"))
+	require_NoError(t, err)
+
+	const gap = 500_000_000
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	err = mset.store.SkipMsgs(2, gap)
+	mset.lseq = gap + 1
+	mset.mu.Unlock()
+	require_NoError(t, err)
+
+	pa, err := js.Publish("foo", nil, nats.MsgId("B"))
+	require_NoError(t, err)
+	require_Equal(t, pa.Sequence, gap+2)
+
+	mset.mu.Lock()
+	mset.ddMu.Lock()
+	if mset.ddtmr != nil {
+		mset.ddtmr.Stop()
+		mset.ddtmr = nil
+	}
+	mset.ddmap, mset.ddarr, mset.ddindex = nil, nil, 0
+	start := time.Now()
+	mset.rebuildDedupe()
+	elapsed := time.Since(start)
+	ddarr := mset.ddarr
+	mset.ddMu.Unlock()
+	mset.mu.Unlock()
+
+	// Loading every skipped sequence takes seconds, jumping over them is instant.
+	require_LessThan(t, elapsed, time.Second)
+	require_Len(t, len(ddarr), 2)
+	require_Equal(t, ddarr[0].seq, 1)
+	require_Equal(t, ddarr[1].seq, gap+2)
+}
+
 func TestJetStreamRedeliveryAfterServerRestart(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

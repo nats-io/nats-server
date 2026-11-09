@@ -1560,10 +1560,16 @@ func (mset *stream) rebuildDedupe() {
 	}
 
 	for seq := sseq; seq <= state.LastSeq; seq++ {
-		sm, err := mset.store.LoadMsg(seq, &smv)
-		if err != nil {
+		// Jump over deleted sequences instead of loading each one.
+		sm, nseq, err := mset.store.LoadNextMsg(fwcs, true, seq, &smv)
+		if err == ErrStoreEOF {
+			break
+		} else if err != nil {
 			continue
+		} else if nseq > state.LastSeq {
+			break
 		}
+		seq = nseq
 		var msgId string
 		if len(sm.hdr) > 0 {
 			if msgId = getMsgId(sm.hdr); msgId != _EMPTY_ {
