@@ -18622,6 +18622,7 @@ func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
 		reply := nats.NewInbox()
 		sub, err := nc.SubscribeSync(reply)
 		require_NoError(t, err)
+		require_NoError(t, sub.SetPendingLimits(-1, -1))
 		defer sub.Unsubscribe()
 		err = nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req)
 		require_NoError(t, err)
@@ -19149,6 +19150,7 @@ func TestJetStreamDirectGetMultiPaging(t *testing.T) {
 		reply := nats.NewInbox()
 		sub, err := nc.SubscribeSync(reply)
 		require_NoError(t, err)
+		require_NoError(t, sub.SetPendingLimits(-1, -1))
 		err = nc.PublishRequest("$JS.API.DIRECT.GET.TEST", reply, req)
 		require_NoError(t, err)
 		return sub
