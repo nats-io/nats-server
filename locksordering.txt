@@ -11,9 +11,10 @@ This lock is independent and can be invoked under any other lock: jsAccount -> j
 
 A lock to protect the account's leafnodes list was also introduced to
 allow that lock to be held and the acquire a client lock which is not
-possible with the normal account lock.
+possible with the normal account lock. So the account lock must not be
+held while acquiring it.
 
-accountLeafList -> client
+accountLeafList -> client -> Account
 
 AccountResolver interface has various implementations, but assume: AccountResolver -> Server
 
