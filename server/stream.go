@@ -1689,6 +1689,13 @@ func (mset *stream) rebuildDedupe() {
 			}
 		}
 	}
+
+	// Purge when the oldest entry's window ends.
+	// A full window from now would keep rebuilt entries too long.
+	if mset.ddtmr != nil && mset.ddindex < len(mset.ddarr) {
+		oldest := mset.ddarr[mset.ddindex]
+		mset.ddtmr.Reset(time.Until(time.Unix(0, oldest.ts).Add(mset.ddwin)))
+	}
 }
 
 // Returns true if the underlying store should use the
