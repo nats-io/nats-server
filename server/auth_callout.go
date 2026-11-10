@@ -78,7 +78,11 @@ func (s *Server) processClientOrLeafCallout(c *client, opts *Options, proxyRequi
 	// If set grab server's xkey keypair and public key.
 	if pubAccXKey != _EMPTY_ {
 		// These are only set on creation, so lock not needed.
-		xkp, xkey = s.xkp, s.info.XKey
+		if xkp, xkey = s.xkp, s.info.XKey; xkp == nil {
+			errStr = fmt.Sprintf("auth callout not available for account %q", acc.Name)
+			s.Warnf(errStr)
+			return false, errStr
+		}
 	}
 
 	// Create a keypair for the user. We will expect this public user to be in the signed response.
