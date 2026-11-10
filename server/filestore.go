@@ -2941,7 +2941,7 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 	// then use intersection instead as likely going to be cheaper. This will
 	// often be the case with high numbers of deletes, as well as a smaller
 	// number of subjects in the block.
-	useIndex := uint64(mb.fss.Size()) < lseq-start
+	useIndex := uint64(mb.fss.Size()) < min(mb.msgs, lseq-start)
 	if useIndex {
 		// If there are no subject matches then this is effectively no-op.
 		fseq = uint64(math.MaxUint64)
@@ -2979,10 +2979,14 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 
 	var scanMsg StoreMsg
 	for seq := fseq; seq <= lseq; seq++ {
-		if mb.dmap.Exists(seq) {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
 			// Optimisation to avoid calling cacheLookup which hits time.Now().
 			// Instead we will update it only once in a defer.
 			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
 			continue
 		}
 		llseq := mb.llseq
@@ -3129,10 +3133,14 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		fsm = &StoreMsg{}
 	}
 	for seq := fseq; seq <= lseq; seq++ {
-		if mb.dmap.Exists(seq) {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
 			// Optimisation to avoid calling cacheLookup which hits time.Now().
 			// Instead we will update it only once in a defer.
 			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
 			continue
 		}
 		llseq := mb.llseq
@@ -3195,7 +3203,7 @@ func (mb *msgBlock) prevMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *S
 	// then use intersection instead as likely going to be cheaper. This will
 	// often be the case with high numbers of deletes, as well as a smaller
 	// number of subjects in the block.
-	useIndex := uint64(mb.fss.Size()) < start-lseq
+	useIndex := uint64(mb.fss.Size()) < min(mb.msgs, start-lseq)
 	if useIndex {
 		// If there are no subject matches then this is effectively no-op.
 		end = 0
@@ -3377,8 +3385,18 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	// 3. If we match and we need to do a partial, break and clear any totals and do a full scan like num pending.
 
 	var smv StoreMsg
-	for seq, lseq := sseq, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+	var updateLLTS bool
+	for seq, lseq := max(sseq, atomic.LoadUint64(&mb.first.seq)), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
+			continue
+		}
 		sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+		updateLLTS = false // cacheLookup already updated it.
 		if sm == nil {
 			continue
 		}
@@ -3391,6 +3409,9 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 				last = seq
 			}
 		}
+	}
+	if updateLLTS {
+		mb.llts = ats.AccessTime()
 	}
 	// If we loaded this block for this operation go ahead and expire it here.
 	if shouldExpire {
@@ -3909,6 +3930,9 @@ func (fs *fileStore) filterIsAll(filters []string) bool {
 func (fs *fileStore) MultiLastSeqs(filters []string, maxSeq uint64, maxAllowed int) ([]uint64, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	if fs.isClosed() {
+		return nil, ErrStoreClosed
+	}
 	return fs.multiLastSeqsLocked(filters, maxSeq, maxAllowed)
 }
 
@@ -4349,97 +4373,28 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
-	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
 	if seqStart >= (len(fs.blks) / 2) {
 		for i := max(seqStart, blkStart); i < blkEnd; i++ {
-			var shouldExpire bool
-			var updateLLTS bool
 			mb := fs.blks[i]
-			// Hold write lock in case we need to load cache.
 			mb.mu.Lock()
 			if isAll && sseq <= atomic.LoadUint64(&mb.first.seq) {
 				total += mb.msgs
 				mb.mu.Unlock()
 				continue
 			}
-			// If we are here we need to at least scan the subject fss.
-			// Make sure we have fss loaded.
-			if mb.fssNotLoaded() {
-				if err = mb.loadMsgsWithLock(); err != nil {
-					mb.mu.Unlock()
-					return 0, 0, err
-				}
-				shouldExpire = true
-			}
-			// Mark fss activity.
-			mb.lsts = ats.AccessTime()
-
-			var t uint64
-			var ierr error
-			var havePartial bool
-			mb.fss.MatchUntil(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) bool {
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-						return false
-					}
-				}
-				if sseq <= ss.First {
-					t += ss.Msgs
-				} else if sseq <= ss.Last {
-					// We matched but its a partial.
-					havePartial = true
-				}
-				return !havePartial
-			})
-			if ierr != nil {
+			shouldExpire := mb.fssNotLoaded()
+			n, _, _, err := mb.filteredPendingLocked(filter, wc, sseq)
+			if err != nil {
 				mb.mu.Unlock()
-				return 0, 0, ierr
+				return 0, 0, err
 			}
-
-			// See if we need to scan msgs here.
-			if havePartial {
-				// Make sure we have the cache loaded.
-				if mb.cacheNotLoaded() {
-					if err = mb.loadMsgsWithLock(); err != nil {
-						mb.mu.Unlock()
-						return 0, 0, err
-					}
-					shouldExpire = true
-				}
-				// Clear on partial.
-				t = 0
-				start := sseq
-				if fseq := atomic.LoadUint64(&mb.first.seq); fseq > start {
-					start = fseq
-				}
-				var smv StoreMsg
-				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
-						updateLLTS = true
-						if end >= lseq {
-							break
-						}
-						seq = end
-						continue
-					}
-					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
-						t++
-						updateLLTS = false // cacheLookup already updated it.
-					}
-				}
-			}
-			// If we loaded this block for this operation go ahead and expire it here.
 			if shouldExpire {
 				mb.tryForceExpireCacheLocked()
 			} else {
 				mb.finishedWithCache()
 			}
-			if updateLLTS {
-				mb.llts = ats.AccessTime()
-			}
 			mb.mu.Unlock()
-			total += t
+			total += n
 		}
 		return total, validThrough, nil
 	}
@@ -5141,6 +5096,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Check if encryption is enabled.
 	if fs.prf != nil {
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
+			_ = mb.dirtyCloseWithRemove(true)
 			return nil, err
 		}
 	}
@@ -8419,6 +8375,33 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 	return nil
 }
 
+var (
+	natsHeaderKeyPrefix = []byte("Nats-")
+	ttlHeaderKey        = []byte(JSMessageTTL + ":")
+	scheduleHeaderKey   = []byte(JSSchedulePattern + ":")
+)
+
+// hasTTLAndScheduleHeaders reports whether hdr has a Nats-TTL or Nats-Schedule key.
+// A key with an empty value also counts, which only overcounts the block's hints.
+func hasTTLAndScheduleHeaders(hdr []byte) (hasTTL, hasSchedule bool) {
+	for i := 0; !hasTTL || !hasSchedule; {
+		// Search for the shared prefix once, instead of a full scan per key.
+		n := bytes.Index(hdr[i:], natsHeaderKeyPrefix)
+		if n < 0 {
+			break
+		}
+		k := i + n
+		i = k + len(natsHeaderKeyPrefix)
+		// Only match at the start of a header line.
+		if k < 2 || hdr[k-2] != '\r' || hdr[k-1] != '\n' {
+			continue
+		}
+		hasTTL = hasTTL || bytes.HasPrefix(hdr[k:], ttlHeaderKey)
+		hasSchedule = hasSchedule || bytes.HasPrefix(hdr[k:], scheduleHeaderKey)
+	}
+	return hasTTL, hasSchedule
+}
+
 // Index a raw msg buffer.
 // Lock should be held.
 func (mb *msgBlock) indexCacheBuf(buf []byte) error {
@@ -8477,7 +8460,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	lbuf := uint32(len(buf))
 	var seq, ttls, schedules uint64
-	var sm StoreMsg // Used for finding headers
 
 	// To ensure the sequence keeps moving up. As well as confirming our index
 	// is aligned with the mb's first and last sequence.
@@ -8574,13 +8556,17 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 
 			// Count how many TTLs/schedules we think are in this message block.
-			// TODO(nat): Not terribly optimal...
+			// The headers follow the subject and their 4 byte length. The sanity checks
+			// above keep that length field inside the record, the length is checked here.
 			if hasHeaders {
-				if fsm, err := mb.msgFromBufNoCopy(buf[index:], &sm, nil); err == nil && fsm != nil {
-					if ttl := sliceHeader(JSMessageTTL, fsm.hdr); len(ttl) > 0 {
+				data := buf[index+msgHdrSize : index+rl-recordHashSize]
+				hdrs := data[slen+4:]
+				if hl := le.Uint32(data[slen:]); uint64(hl) <= uint64(len(hdrs)) {
+					hasTTL, hasSchedule := hasTTLAndScheduleHeaders(hdrs[:hl])
+					if hasTTL {
 						ttls++
 					}
-					if sched := sliceHeader(JSSchedulePattern, fsm.hdr); len(sched) > 0 {
+					if hasSchedule {
 						schedules++
 					}
 				}
