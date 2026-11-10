@@ -4527,97 +4527,28 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 	}
 
 	// If we would need to scan more from the beginning, revert back to calculating directly here.
-	// TODO(dlc) - Redo properly with sublists etc for subject-based filtering.
 	if seqStart >= (len(fs.blks) / 2) {
 		for i := max(seqStart, blkStart); i < blkEnd; i++ {
-			var shouldExpire bool
-			var updateLLTS bool
 			mb := fs.blks[i]
-			// Hold write lock in case we need to load cache.
 			mb.mu.Lock()
 			if isAll && sseq <= atomic.LoadUint64(&mb.first.seq) {
 				total += mb.msgs
 				mb.mu.Unlock()
 				continue
 			}
-			// If we are here we need to at least scan the subject fss.
-			// Make sure we have fss loaded.
-			if mb.fssNotLoaded() {
-				if err = mb.loadMsgsWithLock(); err != nil {
-					mb.mu.Unlock()
-					return 0, 0, err
-				}
-				shouldExpire = true
-			}
-			// Mark fss activity.
-			mb.lsts = ats.AccessTime()
-
-			var t uint64
-			var ierr error
-			var havePartial bool
-			mb.fss.MatchUntil(stringToBytes(filter), func(bsubj []byte, ss *SimpleState) bool {
-				subj := bytesToString(bsubj)
-				if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
-					if ierr = mb.recalculateForSubj(subj, ss); ierr != nil {
-						return false
-					}
-				}
-				if sseq <= ss.First {
-					t += ss.Msgs
-				} else if sseq <= ss.Last {
-					// We matched but its a partial.
-					havePartial = true
-				}
-				return !havePartial
-			})
-			if ierr != nil {
+			shouldExpire := mb.fssNotLoaded()
+			n, _, _, err := mb.filteredPendingLocked(filter, wc, sseq)
+			if err != nil {
 				mb.mu.Unlock()
-				return 0, 0, ierr
+				return 0, 0, err
 			}
-
-			// See if we need to scan msgs here.
-			if havePartial {
-				// Make sure we have the cache loaded.
-				if mb.cacheNotLoaded() {
-					if err = mb.loadMsgsWithLock(); err != nil {
-						mb.mu.Unlock()
-						return 0, 0, err
-					}
-					shouldExpire = true
-				}
-				// Clear on partial.
-				t = 0
-				start := sseq
-				if fseq := atomic.LoadUint64(&mb.first.seq); fseq > start {
-					start = fseq
-				}
-				var smv StoreMsg
-				for seq, lseq := start, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
-					if end, deleted := mb.dmap.SpanEnd(seq); deleted {
-						updateLLTS = true
-						if end >= lseq {
-							break
-						}
-						seq = end
-						continue
-					}
-					if sm, _ := mb.cacheLookupNoCopy(seq, &smv); sm != nil && isMatch(sm.subj) {
-						t++
-						updateLLTS = false // cacheLookup already updated it.
-					}
-				}
-			}
-			// If we loaded this block for this operation go ahead and expire it here.
 			if shouldExpire {
 				mb.tryForceExpireCacheLocked()
 			} else {
 				mb.finishedWithCache()
 			}
-			if updateLLTS {
-				mb.llts = ats.AccessTime()
-			}
 			mb.mu.Unlock()
-			total += t
+			total += n
 		}
 		return total, validThrough, nil
 	}
