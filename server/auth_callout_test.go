@@ -1955,6 +1955,37 @@ const (
 	curvePublic = "XAB3NANV3M6N7AHSQP2U5FRWKKUT7EG2ZXXABV4XVXYQRJGM4S2CZGHT"
 )
 
+func TestAuthCalloutEncryptionUnavailable(t *testing.T) {
+	for _, operator := range []bool{false, true} {
+		t.Run(fmt.Sprintf("operator=%t", operator), func(t *testing.T) {
+			s, err := NewServer(DefaultOptions())
+			require_NoError(t, err)
+			// Match the server identity created in FIPS mode.
+			s.xkp, s.info.XKey = nil, _EMPTY_
+			acc := NewAccount("AUTH")
+			opts := &Options{}
+			if operator {
+				s.trustedKeys = []string{ojwt}
+				acc.extAuth = &jwt.ExternalAuthorization{XKey: curvePublic}
+			} else {
+				opts.AuthCallout = &AuthCallout{XKey: curvePublic}
+			}
+			l := &captureWarnLogger{warn: make(chan string, 10)}
+			s.SetLogger(l, false, false)
+			c := &client{acc: acc}
+			ok, reason := s.processClientOrLeafCallout(c, opts, false, false, _EMPTY_)
+			require_False(t, ok)
+			require_Contains(t, reason, "auth callout not available")
+			select {
+			case warning := <-l.warn:
+				require_Equal(t, warning, reason)
+			case <-time.After(time.Second):
+				t.Fatal("Expected a warning for unavailable callout encryption")
+			}
+		})
+	}
+}
+
 func TestAuthCalloutServerConfigEncryption(t *testing.T) {
 	tmpl := `
 		listen: "127.0.0.1:-1"
