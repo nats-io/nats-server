@@ -4190,9 +4190,15 @@ func TestJetStreamConsumerMaxDeliveryAndServerRestart(t *testing.T) {
 	// Wait for client to be reconnected.
 	waitForClientReconnect()
 
+	// Wait for the third delivery of order-2.
+	checkSubPending(max * 2)
+
 	// Once we are here send third order.
 	sendStreamMsg(t, nc, mname, "order-3")
 	checkNumMsgs(3)
+
+	// Wait for the first delivery of order-3
+	checkSubPending(max*2 + 1)
 
 	// Restart.
 	restartServer()
