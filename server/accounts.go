@@ -527,19 +527,23 @@ func (a *Account) updateRemoteServer(m *AccountNumConns) []*client {
 		}
 	}
 	// Now check leafnodes.
-	mtlce := a.mleafs != jwt.NoLimit && (a.nleafs+a.nrleafs > a.mleafs)
-	if mtlce {
+	var overLeafs int
+	if a.mleafs != jwt.NoLimit && (a.nleafs+a.nrleafs > a.mleafs) {
+		overLeafs = int(a.nleafs + a.nrleafs - a.mleafs)
+	}
+	// Release before the leaf list lock, since that one is held while taking client locks.
+	a.mu.Unlock()
+
+	if overLeafs > 0 {
 		// Take ones from the end.
 		a.lmu.RLock()
 		leafs := a.lleafs
-		over := int(a.nleafs + a.nrleafs - a.mleafs)
-		if over < len(leafs) {
-			leafs = leafs[len(leafs)-over:]
+		if overLeafs < len(leafs) {
+			leafs = leafs[len(leafs)-overLeafs:]
 		}
 		clients = append(clients, leafs...)
 		a.lmu.RUnlock()
 	}
-	a.mu.Unlock()
 
 	// If we have exceeded our max clients this will be populated.
 	return clients
