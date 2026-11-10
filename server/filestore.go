@@ -8597,6 +8597,33 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 	return nil
 }
 
+var (
+	natsHeaderKeyPrefix = []byte("Nats-")
+	ttlHeaderKey        = []byte(JSMessageTTL + ":")
+	scheduleHeaderKey   = []byte(JSSchedulePattern + ":")
+)
+
+// hasTTLAndScheduleHeaders reports whether hdr has a Nats-TTL or Nats-Schedule key.
+// A key with an empty value also counts, which only overcounts the block's hints.
+func hasTTLAndScheduleHeaders(hdr []byte) (hasTTL, hasSchedule bool) {
+	for i := 0; !hasTTL || !hasSchedule; {
+		// Search for the shared prefix once, instead of a full scan per key.
+		n := bytes.Index(hdr[i:], natsHeaderKeyPrefix)
+		if n < 0 {
+			break
+		}
+		k := i + n
+		i = k + len(natsHeaderKeyPrefix)
+		// Only match at the start of a header line.
+		if k < 2 || hdr[k-2] != '\r' || hdr[k-1] != '\n' {
+			continue
+		}
+		hasTTL = hasTTL || bytes.HasPrefix(hdr[k:], ttlHeaderKey)
+		hasSchedule = hasSchedule || bytes.HasPrefix(hdr[k:], scheduleHeaderKey)
+	}
+	return hasTTL, hasSchedule
+}
+
 // Index a raw msg buffer.
 // Lock should be held.
 func (mb *msgBlock) indexCacheBuf(buf []byte) error {
@@ -8655,7 +8682,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 
 	lbuf := uint32(len(buf))
 	var seq, ttls, schedules uint64
-	var sm StoreMsg // Used for finding headers
 
 	// To ensure the sequence keeps moving up. As well as confirming our index
 	// is aligned with the mb's first and last sequence.
@@ -8752,13 +8778,17 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			}
 
 			// Count how many TTLs/schedules we think are in this message block.
-			// TODO(nat): Not terribly optimal...
+			// The headers follow the subject and their 4 byte length. The sanity checks
+			// above keep that length field inside the record, the length is checked here.
 			if hasHeaders {
-				if fsm, err := mb.msgFromBufNoCopy(buf[index:], &sm, nil); err == nil && fsm != nil {
-					if ttl := sliceHeader(JSMessageTTL, fsm.hdr); len(ttl) > 0 {
+				data := buf[index+msgHdrSize : index+rl-recordHashSize]
+				hdrs := data[slen+4:]
+				if hl := le.Uint32(data[slen:]); uint64(hl) <= uint64(len(hdrs)) {
+					hasTTL, hasSchedule := hasTTLAndScheduleHeaders(hdrs[:hl])
+					if hasTTL {
 						ttls++
 					}
-					if sched := sliceHeader(JSSchedulePattern, fsm.hdr); len(sched) > 0 {
+					if hasSchedule {
 						schedules++
 					}
 				}
