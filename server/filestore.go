@@ -3539,8 +3539,18 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	// 3. If we match and we need to do a partial, break and clear any totals and do a full scan like num pending.
 
 	var smv StoreMsg
-	for seq, lseq := sseq, atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+	var updateLLTS bool
+	for seq, lseq := max(sseq, atomic.LoadUint64(&mb.first.seq)), atomic.LoadUint64(&mb.last.seq); seq <= lseq; seq++ {
+		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
+			updateLLTS = true
+			if end >= lseq {
+				break
+			}
+			seq = end
+			continue
+		}
 		sm, _ := mb.cacheLookupNoCopy(seq, &smv)
+		updateLLTS = false // cacheLookup already updated it.
 		if sm == nil {
 			continue
 		}
@@ -3553,6 +3563,9 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 				last = seq
 			}
 		}
+	}
+	if updateLLTS {
+		mb.llts = ats.AccessTime()
 	}
 	// If we loaded this block for this operation go ahead and expire it here.
 	if shouldExpire {
