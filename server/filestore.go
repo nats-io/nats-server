@@ -1013,34 +1013,9 @@ func (fs *fileStore) recoverAEK() error {
 	return nil
 }
 
-// Lock should be held.
-func (fs *fileStore) setupAEK() error {
-	if fs.prf != nil && fs.aek == nil {
-		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
-		if err != nil {
-			return err
-		}
-		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
-		// Set our aek.
-		fs.aek = key
-	}
-	return nil
-}
-
 // Write out meta and the checksum.
 // Lock should be held.
 func (fs *fileStore) writeStreamMeta() error {
-	if err := fs.setupAEK(); err != nil {
-		return err
-	}
-
 	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -1049,15 +1024,31 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
+
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := fs.aek, false
+	if fs.prf != nil && aek == nil {
+		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
+		if err != nil {
+			return err
+		}
+		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
+			return err
+		}
+		aek, stagedKey = key, true
+	}
+
 	// Encrypt if needed.
-	if fs.aek != nil {
-		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = fs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
 	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
@@ -1076,23 +1067,49 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
-	return renameWithOptionalSync(fs.dios, tmp, meta, fs.syncAlways.Load() || fs.syncOnFlush.Load())
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	fs.aek = aek
+	return commitStagedMeta(fs.dios, fs.fcfg.StoreDir, stagedKey, fs.syncAlways.Load() || fs.syncOnFlush.Load())
 }
 
-// recoverStagedMeta finishes or discards a meta.inf staged by an interrupted meta write.
-// The staged meta.inf was complete if meta.sum was already written for it.
+// commitStagedMeta moves a staged meta.key and meta.inf into place.
+// The key goes first, so a staged key without a staged meta.inf was never committed.
+func commitStagedMeta(dios *diskIOSemaphore, dir string, stagedKey, sync bool) error {
+	if stagedKey {
+		keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+		if err := renameWithOptionalSync(dios, keyFile+metaTmpSuffix, keyFile, sync); err != nil {
+			return err
+		}
+	}
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	return renameWithOptionalSync(dios, meta+metaTmpSuffix, meta, sync)
+}
+
+// recoverStagedMeta finishes or discards a meta.key and meta.inf staged by an interrupted meta write.
+// The staged files were complete if meta.sum was already written for the staged meta.inf.
 func recoverStagedMeta(dios *diskIOSemaphore, dir string, key []byte, sync bool) error {
 	meta := filepath.Join(dir, JetStreamMetaFile)
-	tmp := meta + metaTmpSuffix
-	if _, err := os.Stat(tmp); os.IsNotExist(err) {
+	keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+	_, metaErr := os.Stat(meta + metaTmpSuffix)
+	_, keyErr := os.Stat(keyFile + metaTmpSuffix)
+	if os.IsNotExist(metaErr) && os.IsNotExist(keyErr) {
 		return nil
+	} else if keyErr != nil && !os.IsNotExist(keyErr) {
+		return keyErr
 	}
-	if match, err := metaFilesMatch(tmp, filepath.Join(dir, JetStreamMetaFileSum), key); err != nil {
+	if match, err := metaFilesMatch(meta+metaTmpSuffix, filepath.Join(dir, JetStreamMetaFileSum), key); err != nil {
 		return err
 	} else if !match {
-		return os.Remove(tmp)
+		// Never committed, so discard what was staged.
+		// The meta goes first, so a crash leaves a staged key that is discarded next time.
+		for _, f := range []string{meta + metaTmpSuffix, keyFile + metaTmpSuffix} {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
 	}
-	return renameWithOptionalSync(dios, tmp, meta, sync)
+	return commitStagedMeta(dios, dir, keyErr == nil, sync)
 }
 
 // metaFilesMatch returns whether the meta file is non-empty and matches the checksum file.
@@ -12481,7 +12498,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		// Re-acquire temporarily as write lock to set up AEK.
 		fs.mu.RUnlock()
 		fs.mu.Lock()
-		err := fs.setupAEK()
+		var err error
+		// A new key also needs meta.inf rewritten, so writeStreamMeta stages both.
+		if fs.aek == nil {
+			err = fs.writeStreamMeta()
+		}
 		fs.mu.Unlock()
 		if err != nil {
 			return err
@@ -14351,21 +14372,20 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 
-	if cfs.prf != nil && cfs.aek == nil {
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := cfs.aek, false
+	if cfs.prf != nil && aek == nil {
 		fs := cfs.fs
 		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name + tsep + cfs.name)
 		if err != nil {
 			return err
 		}
-		cfs.aek = key
 		keyFile := filepath.Join(cfs.odir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
-		err = cfs.fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
+		aek, stagedKey = key, true
 	}
 
 	b, err := json.Marshal(cfs.cfg)
@@ -14373,14 +14393,14 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 	// Encrypt if needed.
-	if cfs.aek != nil {
-		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = cfs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
 	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
@@ -14400,7 +14420,9 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	if err != nil {
 		return err
 	}
-	return renameWithOptionalSync(cfs.fs.dios, tmp, meta, cfs.fs.syncAlways.Load() || cfs.fs.syncOnFlush.Load())
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	cfs.aek = aek
+	return commitStagedMeta(cfs.fs.dios, cfs.odir, stagedKey, cfs.fs.syncAlways.Load() || cfs.fs.syncOnFlush.Load())
 }
 
 // Consumer version.
