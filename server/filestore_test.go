@@ -1808,6 +1808,36 @@ func TestFileStoreMeta(t *testing.T) {
 	}
 }
 
+func TestFileStoreRecoverRewritesMissingMetaSum(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	mconfig := StreamConfig{Name: "EVENTS", Storage: FileStorage, Subjects: []string{"foo.*"}}
+
+	fs, err := newFileStore(fcfg, mconfig)
+	require_NoError(t, err)
+
+	subj, msg := "foo.bar", []byte("hello")
+	_, _, err = fs.StoreMsg(subj, nil, msg, 0)
+	require_NoError(t, err)
+	fs.Stop()
+
+	// Simulate a crash between writing meta.inf and meta.sum by removing the
+	// checksum file while leaving meta.inf in place.
+	metasum := filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum)
+	require_NoError(t, os.Remove(metasum))
+
+	// Reopening the store must rewrite the checksum so that stream recovery does
+	// not skip the stream for a missing checksum and drop its messages.
+	fs, err = newFileStore(fcfg, mconfig)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	_, err = os.Stat(metasum)
+	require_NoError(t, err)
+
+	state := fs.State()
+	require_Equal(t, state.Msgs, 1)
+}
+
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)

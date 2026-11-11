@@ -636,10 +636,16 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}
 
-	// Write our meta data if it does not exist or is zero'd out.
+	// Write our meta data if it does not exist or is zero'd out. Also rewrite
+	// it if the checksum file is missing, which can happen if the server was
+	// interrupted between writing meta.inf and meta.sum. Without this the
+	// stream would be skipped on the next recovery for a missing checksum and
+	// all of its messages would be dropped even though the blocks are intact.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
+	sum := filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum)
 	fi, err := os.Stat(meta)
-	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
+	_, sumErr := os.Stat(sum)
+	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 || sumErr != nil && os.IsNotExist(sumErr) {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
