@@ -420,10 +420,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fcfg.SyncInterval = defaultSyncInterval
 	}
 	dios := fcfg.srv.diskIOSemaphore()
+	syncDirs := fcfg.SyncAlways
 
 	// Check the directory
 	if stat, err := os.Stat(fcfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(fcfg.StoreDir, defaultDirPerms); err != nil {
+		if err := mkdirAllWithOptionalSync(dios, fcfg.StoreDir, defaultDirPerms, syncDirs); err != nil {
 			return nil, fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -479,10 +480,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Check if this is a new setup.
 	mdir := filepath.Join(fcfg.StoreDir, msgDir)
 	odir := filepath.Join(fcfg.StoreDir, consumerDir)
-	if err := os.MkdirAll(mdir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, mdir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, odir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create consumer storage directory - %v", err)
 	}
 
@@ -13138,7 +13139,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	}
 
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(fs.dios, odir, defaultDirPerms, fs.syncAlways.Load()); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
 	csi := &FileConsumerInfo{Name: name, Created: created, ConsumerConfig: *cfg}
@@ -14466,6 +14467,42 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 	}
 	if canFsyncDirectories {
 		if err = syncDir(filepath.Dir(name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mkdirAllWithOptionalSync creates dir and any missing parents.
+// If sync is set, the parent of each new directory is synced, so the new entries survive a crash.
+func mkdirAllWithOptionalSync(dios *diskIOSemaphore, dir string, perm fs.FileMode, sync bool) error {
+	// Collect the directories MkdirAll will create, since only their parents need a sync.
+	var missing []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	dios.acquire()
+	defer dios.release()
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	if !sync || !canFsyncDirectories {
+		return nil
+	}
+	for _, d := range missing {
+		if err := syncDir(filepath.Dir(d)); err != nil {
+			// Remove the new directories, deepest first, so a retry creates and syncs them again.
+			for _, d := range missing {
+				_ = os.Remove(d)
+			}
 			return err
 		}
 	}
