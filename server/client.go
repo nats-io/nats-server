@@ -1247,8 +1247,8 @@ func (c *client) setPermissions(perms *Permissions) {
 	// way routes interpret them since this is how the soliciting server
 	// will receive these back in an update INFO.
 	if c.isHubLeafNode() {
-		c.opts.Import = perms.Subscribe
-		c.opts.Export = perms.Publish
+		c.opts.Import = perms.Subscribe.clone()
+		c.opts.Export = perms.Publish.clone()
 	}
 }
 
