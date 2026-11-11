@@ -636,10 +636,11 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}
 
-	// Write our meta data if it does not exist or is zero'd out.
+	// Write our meta data if it does not exist, is zero'd out, or doesn't match its checksum.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
-	fi, err := os.Stat(meta)
-	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
+	if match, err := metaFilesMatch(meta, filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
@@ -1070,6 +1071,32 @@ func (fs *fileStore) writeStreamMeta() error {
 		return err
 	}
 	return nil
+}
+
+// metaFilesMatch returns whether the meta file is non-empty and matches the checksum file.
+// A missing file doesn't match, any other error is returned.
+func metaFilesMatch(meta, sum string, key []byte) (bool, error) {
+	buf, err := os.ReadFile(meta)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	checksum, err := os.ReadFile(sum)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	hh, err := highwayhash.NewDigest64(key)
+	if err != nil {
+		return false, err
+	}
+	hh.Write(buf)
+	var hb [highwayhash.Size64]byte
+	return len(buf) > 0 && hex.EncodeToString(hh.Sum(hb[:0])) == string(checksum), nil
 }
 
 // Pools to recycle the blocks to help with memory pressure.
@@ -13664,6 +13691,16 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 					}
 				}
 			}
+		}
+	}
+
+	// Rewrite our meta data if it's zero'd out or doesn't match its checksum.
+	// This is done after a plaintext conversion, which relies on the key file not existing yet.
+	if match, err := metaFilesMatch(meta, filepath.Join(odir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
+		if err := o.writeConsumerMeta(); err != nil {
+			return nil, err
 		}
 	}
 
