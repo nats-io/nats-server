@@ -10617,6 +10617,36 @@ func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testin
 	require_Error(t, err, os.ErrPermission)
 }
 
+func TestFileStoreSyncsNewDirectoriesWithSyncAlways(t *testing.T) {
+	if !canFsyncDirectories || os.Geteuid() == 0 {
+		t.Skip("Requires directory syncs and permission checks")
+	}
+
+	// A parent that can't be opened makes syncing the new directory's entry fail.
+	sd := t.TempDir()
+	require_NoError(t, os.Chmod(sd, 0o300))
+	t.Cleanup(func() { os.Chmod(sd, defaultDirPerms) })
+	fcfg := FileStoreConfig{StoreDir: filepath.Join(sd, "zzz"), SyncAlways: true}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+	_, err := newFileStore(fcfg, cfg)
+	require_Error(t, err, os.ErrPermission)
+	// The new directory is removed, so a retry creates and syncs it again.
+	_, err = os.Stat(fcfg.StoreDir)
+	require_True(t, os.IsNotExist(err))
+	require_NoError(t, os.Chmod(sd, defaultDirPerms))
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	odir := filepath.Join(fcfg.StoreDir, consumerDir)
+	require_NoError(t, os.Chmod(odir, 0o300))
+	t.Cleanup(func() { os.Chmod(odir, defaultDirPerms) })
+	_, err = fs.ConsumerStore("C", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
+	require_Error(t, err, os.ErrPermission)
+	_, err = os.Stat(filepath.Join(odir, "C"))
+	require_True(t, os.IsNotExist(err))
+}
+
 func TestFileStoreWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	// Test fails in Buildkite environment. Skip it.
 	skipIfBuildkite(t)
