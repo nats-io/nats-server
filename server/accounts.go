@@ -3993,6 +3993,10 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 		}
 	}
 
+	s.mu.RLock()
+	info := s.copyInfo()
+	s.mu.RUnlock()
+
 	// client list is in chronological order (older cids at the beginning of the list).
 	count := 0
 	for _, c := range clients {
@@ -4008,7 +4012,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			count++
 		}
 		c.mu.Lock()
+		oldMpay := atomic.LoadInt32(&c.mpay)
 		c.applyAccountLimits()
+		mpayChanged := oldMpay != atomic.LoadInt32(&c.mpay)
 		// if we have an nkey user we are a callout user - save
 		// the issuedAt, and nkey user id to honor revocations
 		var nkeyUserID string
@@ -4018,6 +4024,9 @@ func (s *Server) updateAccountClaimsWithRefresh(a *Account, ac *jwt.AccountClaim
 			nkeyUserID = c.user.Nkey
 		}
 		theJWT := c.opts.JWT
+		if mpayChanged {
+			c.sendAsyncInfo(info)
+		}
 		c.mu.Unlock()
 		if defaultPermsChanged && c.updateDefaultPermissions(defaultPerms) && defaultPerms != nil {
 			c.processSubsOnConfigReload(nil)
