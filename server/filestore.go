@@ -5335,6 +5335,18 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 	mb.mfd = mfd
 
+	// Sync the new block's entry if writes are synced, otherwise the periodic sync covers it.
+	// If encrypted, writing the block's key file below already syncs the directory.
+	if fs.prf == nil && (fs.syncAlways.Load() || fs.syncOnFlush.Load()) && canFsyncDirectories {
+		fs.dios.acquire()
+		err = syncDir(filepath.Dir(mb.mfn))
+		fs.dios.release()
+		if err != nil {
+			_ = mb.dirtyCloseWithRemove(true)
+			return nil, err
+		}
+	}
+
 	// Check if encryption is enabled.
 	if fs.prf != nil {
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
