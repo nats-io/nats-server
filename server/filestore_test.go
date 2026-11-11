@@ -1806,6 +1806,48 @@ func TestFileStoreMeta(t *testing.T) {
 	if mychecksum != string(checksum) {
 		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
 	}
+
+	// A missing or mismatched checksum must be rewritten when opened again.
+	skey, okey := sha256.Sum256([]byte(mconfig.Name)), sha256.Sum256([]byte(mconfig.Name+"/"+oname))
+	for _, corrupt := range []func(sum string){
+		func(sum string) { require_NoError(t, os.Remove(sum)) },
+		func(sum string) { require_NoError(t, os.WriteFile(sum, []byte("bad"), defaultFilePerms)) },
+	} {
+		require_NoError(t, obs.Stop())
+		fs.Stop()
+		corrupt(metasum)
+		corrupt(ometasum)
+
+		fs, err = newFileStore(fcfg, mconfig)
+		require_NoError(t, err)
+		obs, err = fs.ConsumerStore(oname, time.Time{}, &oconfig)
+		require_NoError(t, err)
+		match, err := metaFilesMatch(metafile, metasum, skey[:])
+		require_NoError(t, err)
+		require_True(t, match)
+		match, err = metaFilesMatch(ometafile, ometasum, okey[:])
+		require_NoError(t, err)
+		require_True(t, match)
+	}
+
+	// A plaintext consumer with a mismatched checksum must keep its state when converted to encrypted.
+	require_NoError(t, obs.UpdateDelivered(1, 1, 1, time.Now().UnixNano()))
+	state, err := obs.State()
+	require_NoError(t, err)
+	require_NoError(t, obs.Stop())
+	fs.Stop()
+	require_NoError(t, os.WriteFile(ometasum, []byte("bad"), defaultFilePerms))
+
+	fcfg.Cipher = AES
+	fs, err = newFileStoreWithCreated(fcfg, mconfig, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	obs, err = fs.ConsumerStore(oname, time.Time{}, &oconfig)
+	require_NoError(t, err)
+	nstate, err := obs.State()
+	require_NoError(t, err)
+	require_Equal(t, nstate.Delivered, state.Delivered)
+	require_NoError(t, obs.Stop())
+	fs.Stop()
 }
 
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
@@ -10575,6 +10617,36 @@ func TestFileStoreStoreRawMessageThrowsPermissionErrorIfFSModeReadOnly(t *testin
 	require_Error(t, err, os.ErrPermission)
 }
 
+func TestFileStoreSyncsNewDirectoriesWithSyncAlways(t *testing.T) {
+	if !canFsyncDirectories || os.Geteuid() == 0 {
+		t.Skip("Requires directory syncs and permission checks")
+	}
+
+	// A parent that can't be opened makes syncing the new directory's entry fail.
+	sd := t.TempDir()
+	require_NoError(t, os.Chmod(sd, 0o300))
+	t.Cleanup(func() { os.Chmod(sd, defaultDirPerms) })
+	fcfg := FileStoreConfig{StoreDir: filepath.Join(sd, "zzz"), SyncAlways: true}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+	_, err := newFileStore(fcfg, cfg)
+	require_Error(t, err, os.ErrPermission)
+	// The new directory is removed, so a retry creates and syncs it again.
+	_, err = os.Stat(fcfg.StoreDir)
+	require_True(t, os.IsNotExist(err))
+	require_NoError(t, os.Chmod(sd, defaultDirPerms))
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	odir := filepath.Join(fcfg.StoreDir, consumerDir)
+	require_NoError(t, os.Chmod(odir, 0o300))
+	t.Cleanup(func() { os.Chmod(odir, defaultDirPerms) })
+	_, err = fs.ConsumerStore("C", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
+	require_Error(t, err, os.ErrPermission)
+	_, err = os.Stat(filepath.Join(odir, "C"))
+	require_True(t, os.IsNotExist(err))
+}
+
 func TestFileStoreWriteFullStateThrowsPermissionErrorIfFSModeReadOnly(t *testing.T) {
 	// Test fails in Buildkite environment. Skip it.
 	skipIfBuildkite(t)
@@ -16698,6 +16770,29 @@ func TestFileStoreUpdateConfigSyncAlwaysRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestFileStoreSyncsNewBlockWithSyncAlways(t *testing.T) {
+	if !canFsyncDirectories || os.Geteuid() == 0 {
+		t.Skip("Requires directory syncs and permission checks")
+	}
+
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize, fcfg.SyncAlways = 128, true
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// A directory that can't be opened makes syncing a new block's entry fail.
+		mdir := filepath.Join(fcfg.StoreDir, msgDir)
+		require_NoError(t, os.Chmod(mdir, 0o300))
+		t.Cleanup(func() { os.Chmod(mdir, defaultDirPerms) })
+		for i := 0; i < 10 && err == nil; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("ok"), 0)
+		}
+		require_Error(t, err, os.ErrPermission)
+	})
 }
 
 // Must be run with -race.

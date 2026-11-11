@@ -18,7 +18,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -29,7 +28,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
@@ -445,7 +443,7 @@ func (s *Server) enableJetStream(cfg JetStreamConfig) error {
 
 	// FIXME(dlc) - Allow memory only operation?
 	if stat, err := os.Stat(cfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.StoreDir, defaultDirPerms); err != nil {
+		if err := mkdirAllWithOptionalSync(s.diskIOSemaphore(), cfg.StoreDir, defaultDirPerms, cfg.SyncAlways); err != nil {
 			return fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else {
@@ -1257,7 +1255,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 	if _, err := os.Stat(sdir); err == nil {
 		hasState = true
 	} else if os.IsNotExist(err) {
-		if err := os.MkdirAll(sdir, defaultDirPerms); err != nil {
+		if err := mkdirAllWithOptionalSync(s.diskIOSemaphore(), sdir, defaultDirPerms, js.config.SyncAlways); err != nil {
 			js.mu.Unlock()
 			return fmt.Errorf("could not create storage streams directory - %v", err)
 		}
@@ -1320,6 +1318,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 		for _, ofi := range ofis {
 			metafile := filepath.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := filepath.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			key := sha256.Sum256([]byte(mset.name() + "/" + ofi.Name()))
+			if err := recoverStagedMeta(s.diskIOSemaphore(), filepath.Join(odir, ofi.Name()), key[:], js.config.SyncAlways); err != nil {
+				s.Warnf("    Error recovering consumer metafile %q: %v", metafile, err)
+				continue
+			}
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
 				s.Warnf("    Missing consumer metafile %q", metafile)
 				continue
@@ -1333,13 +1336,20 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 				s.Warnf("    Missing consumer checksum for %q", metasum)
 				continue
 			}
+			if match, err := metaFilesMatch(metafile, metasum, key[:]); err != nil {
+				s.Warnf("    Error checking consumer metafile checksum %q: %v", metasum, err)
+				continue
+			} else if !match {
+				s.Warnf("    Consumer metafile %q: checksums do not match", metafile)
+				continue
+			}
 
 			// Check if we are encrypted.
-			if key, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
+			if keyBuf, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
 				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
 				// Decode the buffer before proceeding.
 				ctxName := mset.name() + tsep + ofi.Name()
-				nbuf, _, err := s.decryptMeta(sc, key, buf, a.Name, ctxName)
+				nbuf, _, err := s.decryptMeta(sc, keyBuf, buf, a.Name, ctxName)
 				if err != nil {
 					s.Warnf("  Error decrypting our consumer metafile: %v", err)
 					continue
@@ -1444,12 +1454,12 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			return nil
 		}
 		key := sha256.Sum256([]byte(fi.Name()))
-		hh, err := highwayhash.NewDigest64(key[:])
-		if err != nil {
-			return err
-		}
 		metafile := filepath.Join(mdir, JetStreamMetaFile)
 		metasum := filepath.Join(mdir, JetStreamMetaFileSum)
+		if err := recoverStagedMeta(s.diskIOSemaphore(), mdir, key[:], js.config.SyncAlways); err != nil {
+			s.Warnf("  Error recovering stream metafile %q: %v", metafile, err)
+			return nil
+		}
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
 			s.Warnf("  Missing stream metafile for %q", metafile)
 			return nil
@@ -1463,16 +1473,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			s.Warnf("  Missing stream checksum file %q", metasum)
 			return nil
 		}
-		sum, err := os.ReadFile(metasum)
-		if err != nil {
-			s.Warnf("  Error reading Stream metafile checksum %q: %v", metasum, err)
+		if match, err := metaFilesMatch(metafile, metasum, key[:]); err != nil {
+			s.Warnf("  Error checking stream metafile checksum %q: %v", metasum, err)
 			return nil
-		}
-		hh.Write(buf)
-		var hb [highwayhash.Size64]byte
-		checksum := hex.EncodeToString(hh.Sum(hb[:0]))
-		if checksum != string(sum) {
-			s.Warnf("  Stream metafile %q: checksums do not match %q vs %q", metafile, sum, checksum)
+		} else if !match {
+			s.Warnf("  Stream metafile %q: checksums do not match", metafile)
 			return nil
 		}
 

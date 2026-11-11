@@ -8032,6 +8032,10 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	s.Shutdown()
 	time.Sleep(10 * time.Millisecond)
 
+	// A staged meta.inf that meta.sum wasn't written for must be discarded.
+	metafile := filepath.Join(sd, globalAccountName, streamsDir, "TEST", JetStreamMetaFile)
+	require_NoError(t, os.WriteFile(metafile+metaTmpSuffix, []byte("{}"), defaultFilePerms))
+
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
 	si, err = js.StreamInfo("TEST")
@@ -8039,13 +8043,21 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	if !si.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart, got %v", created, si.Created)
 	}
+	_, err = os.Stat(metafile + metaTmpSuffix)
+	require_True(t, os.IsNotExist(err))
 
+	meta, err := os.ReadFile(metafile)
+	require_NoError(t, err)
 	cfg := si.Config
 	cfg.MaxMsgs = 1
 	_, err = js.UpdateStream(&cfg)
 	require_NoError(t, err)
 	nc.Close()
 	s.Shutdown()
+
+	// A staged meta.inf that meta.sum was written for must be finished.
+	require_NoError(t, os.Rename(metafile, metafile+metaTmpSuffix))
+	require_NoError(t, os.WriteFile(metafile, meta, defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
@@ -8054,6 +8066,7 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	if !si.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart and update, got %v", created, si.Created)
 	}
+	require_Equal(t, si.Config.MaxMsgs, 1)
 }
 
 func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testing.T) {
@@ -8087,12 +8100,19 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 		t.Fatalf("Expected created time %v after restart, got %v", created, ci.Created)
 	}
 
+	metafile := filepath.Join(sd, globalAccountName, streamsDir, "TEST", consumerDir, "DUR", JetStreamMetaFile)
+	meta, err := os.ReadFile(metafile)
+	require_NoError(t, err)
 	cfg := ci.Config
 	cfg.AckWait = 45 * time.Second
 	_, err = js.UpdateConsumer("TEST", &cfg)
 	require_NoError(t, err)
 	nc.Close()
 	s.Shutdown()
+
+	// A staged meta.inf that meta.sum was written for must be finished.
+	require_NoError(t, os.Rename(metafile, metafile+metaTmpSuffix))
+	require_NoError(t, os.WriteFile(metafile, meta, defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
@@ -8101,6 +8121,87 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 	if !ci.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart and update, got %v", created, ci.Created)
 	}
+	require_Equal(t, ci.Config.AckWait, 45*time.Second)
+	nc.Close()
+	s.Shutdown()
+
+	// A consumer whose meta.sum doesn't match must not be recovered.
+	metasum := filepath.Join(filepath.Dir(metafile), JetStreamMetaFileSum)
+	require_NoError(t, os.WriteFile(metasum, []byte("bad"), defaultFilePerms))
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	_, err = js.ConsumerInfo("TEST", "DUR")
+	require_Error(t, err, nats.ErrConsumerNotFound)
+}
+
+func TestJetStreamEncryptedStagedMetaKeyRecovery(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {key: "s3cr3t!!", store_dir: '%s'}
+	`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer func() { s.Shutdown() }()
+	nc, js := jsClientConnect(t, s)
+	defer func() { nc.Close() }()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sdir := filepath.Join(storeDir, JetStreamStoreDir, globalAccountName, streamsDir, "TEST")
+	odir := filepath.Join(sdir, consumerDir, "DUR")
+	bogusKey := make([]byte, minMetaKeySize)
+	_, err = crand.Read(bogusKey)
+	require_NoError(t, err)
+
+	restartAndCheck := func() {
+		t.Helper()
+		nc.Close()
+		s.Shutdown()
+		s.WaitForShutdown()
+		s, _ = RunServerWithConfig(conf)
+		nc, js = jsClientConnect(t, s)
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 1)
+		_, err = js.ConsumerInfo("TEST", "DUR")
+		require_NoError(t, err)
+		for _, dir := range []string{sdir, odir} {
+			for _, f := range []string{JetStreamMetaFile, JetStreamMetaFileKey} {
+				_, err = os.Stat(filepath.Join(dir, f+metaTmpSuffix))
+				require_True(t, os.IsNotExist(err))
+			}
+		}
+	}
+
+	// A staged meta.key that meta.sum wasn't written for must be discarded.
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+	require_NoError(t, os.WriteFile(filepath.Join(sdir, JetStreamMetaFileKey+metaTmpSuffix), bogusKey, defaultFilePerms))
+	require_NoError(t, os.WriteFile(filepath.Join(sdir, JetStreamMetaFile+metaTmpSuffix), []byte("{}"), defaultFilePerms))
+	require_NoError(t, os.WriteFile(filepath.Join(odir, JetStreamMetaFileKey+metaTmpSuffix), bogusKey, defaultFilePerms))
+	restartAndCheck()
+
+	// A staged meta.key that meta.sum was written for must be finished, before its meta.inf.
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+	for _, dir := range []string{sdir, odir} {
+		for _, f := range []string{JetStreamMetaFile, JetStreamMetaFileKey} {
+			fn := filepath.Join(dir, f)
+			require_NoError(t, os.Rename(fn, fn+metaTmpSuffix))
+		}
+		require_NoError(t, os.WriteFile(filepath.Join(dir, JetStreamMetaFileKey), bogusKey, defaultFilePerms))
+		require_NoError(t, os.WriteFile(filepath.Join(dir, JetStreamMetaFile), []byte("{}"), defaultFilePerms))
+	}
+	restartAndCheck()
 }
 
 func TestJetStreamDeleteMsg(t *testing.T) {
@@ -24167,7 +24268,7 @@ func TestJetStreamOfflineConsumerWithUnknownEnumAfterDowngrade(t *testing.T) {
 
 	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Storage: FileStorage})
 	require_NoError(t, err)
-	_, err = mset.addConsumer(&ConsumerConfig{
+	o, err := mset.addConsumer(&ConsumerConfig{
 		Durable:   "CONSUMER",
 		AckPolicy: AckExplicit,
 		Metadata:  map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)},
@@ -24181,6 +24282,10 @@ func TestJetStreamOfflineConsumerWithUnknownEnumAfterDowngrade(t *testing.T) {
 	nbuf := bytes.Replace(buf, []byte(`"ack_policy":"explicit"`), []byte(`"ack_policy":"unknown"`), 1)
 	require_False(t, bytes.Equal(buf, nbuf))
 	require_NoError(t, os.WriteFile(metafile, nbuf, defaultFilePerms))
+	hh := o.store.(*consumerFileStore).hh
+	hh.Reset()
+	hh.Write(nbuf)
+	require_NoError(t, os.WriteFile(filepath.Join(filepath.Dir(metafile), JetStreamMetaFileSum), fmt.Appendf(nil, "%x", hh.Sum(nil)), defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()

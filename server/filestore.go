@@ -334,6 +334,8 @@ const (
 	consumerState = "o.dat"
 	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
 	blkTmpSuffix = ".tmp"
+	// The suffix of a meta file that is staged until its checksum is written.
+	metaTmpSuffix = ".new"
 	// default cache buffer expiration
 	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
@@ -434,10 +436,11 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		fcfg.SyncInterval = defaultSyncInterval
 	}
 	dios := fcfg.srv.diskIOSemaphore()
+	syncDirs := fcfg.SyncAlways || fcfg.SyncOnFlush
 
 	// Check the directory
 	if stat, err := os.Stat(fcfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(fcfg.StoreDir, defaultDirPerms); err != nil {
+		if err := mkdirAllWithOptionalSync(dios, fcfg.StoreDir, defaultDirPerms, syncDirs); err != nil {
 			return nil, fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -488,10 +491,10 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 	// Check if this is a new setup.
 	mdir := filepath.Join(fcfg.StoreDir, msgDir)
 	odir := filepath.Join(fcfg.StoreDir, consumerDir)
-	if err := os.MkdirAll(mdir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, mdir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, odir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create consumer storage directory - %v", err)
 	}
 
@@ -636,10 +639,11 @@ func newFileStoreWithCreatedAndMode(fcfg FileStoreConfig, cfg StreamConfig, crea
 		}
 	}
 
-	// Write our meta data if it does not exist or is zero'd out.
+	// Write our meta data if it does not exist, is zero'd out, or doesn't match its checksum.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
-	fi, err := os.Stat(meta)
-	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
+	if match, err := metaFilesMatch(meta, filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
@@ -1009,34 +1013,9 @@ func (fs *fileStore) recoverAEK() error {
 	return nil
 }
 
-// Lock should be held.
-func (fs *fileStore) setupAEK() error {
-	if fs.prf != nil && fs.aek == nil {
-		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
-		if err != nil {
-			return err
-		}
-		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
-		// Set our aek.
-		fs.aek = key
-	}
-	return nil
-}
-
 // Write out meta and the checksum.
 // Lock should be held.
 func (fs *fileStore) writeStreamMeta() error {
-	if err := fs.setupAEK(); err != nil {
-		return err
-	}
-
 	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -1045,18 +1024,37 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
+
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := fs.aek, false
+	if fs.prf != nil && aek == nil {
+		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
+		if err != nil {
+			return err
+		}
+		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
+			return err
+		}
+		aek, stagedKey = key, true
+	}
+
 	// Encrypt if needed.
-	if fs.aek != nil {
-		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = fs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -1069,7 +1067,75 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	fs.aek = aek
+	return commitStagedMeta(fs.dios, fs.fcfg.StoreDir, stagedKey, fs.syncAlways.Load() || fs.syncOnFlush.Load())
+}
+
+// commitStagedMeta moves a staged meta.key and meta.inf into place.
+// The key goes first, so a staged key without a staged meta.inf was never committed.
+func commitStagedMeta(dios *diskIOSemaphore, dir string, stagedKey, sync bool) error {
+	if stagedKey {
+		keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+		if err := renameWithOptionalSync(dios, keyFile+metaTmpSuffix, keyFile, sync); err != nil {
+			return err
+		}
+	}
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	return renameWithOptionalSync(dios, meta+metaTmpSuffix, meta, sync)
+}
+
+// recoverStagedMeta finishes or discards a meta.key and meta.inf staged by an interrupted meta write.
+// The staged files were complete if meta.sum was already written for the staged meta.inf.
+func recoverStagedMeta(dios *diskIOSemaphore, dir string, key []byte, sync bool) error {
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+	_, metaErr := os.Stat(meta + metaTmpSuffix)
+	_, keyErr := os.Stat(keyFile + metaTmpSuffix)
+	if os.IsNotExist(metaErr) && os.IsNotExist(keyErr) {
+		return nil
+	} else if keyErr != nil && !os.IsNotExist(keyErr) {
+		return keyErr
+	}
+	if match, err := metaFilesMatch(meta+metaTmpSuffix, filepath.Join(dir, JetStreamMetaFileSum), key); err != nil {
+		return err
+	} else if !match {
+		// Never committed, so discard what was staged.
+		// The meta goes first, so a crash leaves a staged key that is discarded next time.
+		for _, f := range []string{meta + metaTmpSuffix, keyFile + metaTmpSuffix} {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	return commitStagedMeta(dios, dir, keyErr == nil, sync)
+}
+
+// metaFilesMatch returns whether the meta file is non-empty and matches the checksum file.
+// A missing file doesn't match, any other error is returned.
+func metaFilesMatch(meta, sum string, key []byte) (bool, error) {
+	buf, err := os.ReadFile(meta)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	checksum, err := os.ReadFile(sum)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	hh, err := highwayhash.NewDigest64(key)
+	if err != nil {
+		return false, err
+	}
+	hh.Write(buf)
+	var hb [highwayhash.Size64]byte
+	return len(buf) > 0 && hex.EncodeToString(hh.Sum(hb[:0])) == string(checksum), nil
 }
 
 // Pools to recycle the blocks to help with memory pressure.
@@ -5285,6 +5351,18 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		return nil, fmt.Errorf("Error creating msg block file: %v", err)
 	}
 	mb.mfd = mfd
+
+	// Sync the new block's entry if writes are synced, otherwise the periodic sync covers it.
+	// If encrypted, writing the block's key file below already syncs the directory.
+	if fs.prf == nil && (fs.syncAlways.Load() || fs.syncOnFlush.Load()) && canFsyncDirectories {
+		fs.dios.acquire()
+		err = syncDir(filepath.Dir(mb.mfn))
+		fs.dios.release()
+		if err != nil {
+			_ = mb.dirtyCloseWithRemove(true)
+			return nil, err
+		}
+	}
 
 	// Check if encryption is enabled.
 	if fs.prf != nil {
@@ -12277,7 +12355,12 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 
 	// Make sure we will not try to recover if killed before removal below completes.
-	if err := os.Remove(filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)); err != nil {
+	// The staged meta goes first, otherwise recovery could still apply it.
+	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
+	if err := os.Remove(meta + metaTmpSuffix); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(meta); err != nil {
 		return err
 	}
 	// Now move into different directory with "." prefix.
@@ -12415,7 +12498,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		// Re-acquire temporarily as write lock to set up AEK.
 		fs.mu.RUnlock()
 		fs.mu.Lock()
-		err := fs.setupAEK()
+		var err error
+		// A new key also needs meta.inf rewritten, so writeStreamMeta stages both.
+		if fs.aek == nil {
+			err = fs.writeStreamMeta()
+		}
 		fs.mu.Unlock()
 		if err != nil {
 			return err
@@ -13571,7 +13658,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	}
 
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(fs.dios, odir, defaultDirPerms, fs.syncAlways.Load() || fs.syncOnFlush.Load()); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
 	csi := &FileConsumerInfo{Name: name, Created: created, ConsumerConfig: *cfg}
@@ -13664,6 +13751,16 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 					}
 				}
 			}
+		}
+	}
+
+	// Rewrite our meta data if it's zero'd out or doesn't match its checksum.
+	// This is done after a plaintext conversion, which relies on the key file not existing yet.
+	if match, err := metaFilesMatch(meta, filepath.Join(odir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
+		if err := o.writeConsumerMeta(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -14275,21 +14372,20 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 
-	if cfs.prf != nil && cfs.aek == nil {
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := cfs.aek, false
+	if cfs.prf != nil && aek == nil {
 		fs := cfs.fs
 		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name + tsep + cfs.name)
 		if err != nil {
 			return err
 		}
-		cfs.aek = key
 		keyFile := filepath.Join(cfs.odir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
-		err = cfs.fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
+		aek, stagedKey = key, true
 	}
 
 	b, err := json.Marshal(cfs.cfg)
@@ -14297,17 +14393,20 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 	// Encrypt if needed.
-	if cfs.aek != nil {
-		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = cfs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = cfs.fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = cfs.fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -14321,7 +14420,9 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	cfs.aek = aek
+	return commitStagedMeta(cfs.fs.dios, cfs.odir, stagedKey, cfs.fs.syncAlways.Load() || cfs.fs.syncOnFlush.Load())
 }
 
 // Consumer version.
@@ -14828,6 +14929,19 @@ func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs
 	return writeAtomically(fs.dios, name, data, perm, sync)
 }
 
+// renameWithOptionalSync renames from to to, and flushes the directory metadata if sync is set.
+func renameWithOptionalSync(dios *diskIOSemaphore, from, to string, sync bool) error {
+	dios.acquire()
+	defer dios.release()
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	if sync && canFsyncDirectories {
+		return syncDir(filepath.Dir(to))
+	}
+	return nil
+}
+
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
 	return writeAtomically(dios, name, data, perm, true)
 }
@@ -14895,6 +15009,42 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 	}
 	if canFsyncDirectories {
 		if err = syncDir(filepath.Dir(name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mkdirAllWithOptionalSync creates dir and any missing parents.
+// If sync is set, the parent of each new directory is synced, so the new entries survive a crash.
+func mkdirAllWithOptionalSync(dios *diskIOSemaphore, dir string, perm fs.FileMode, sync bool) error {
+	// Collect the directories MkdirAll will create, since only their parents need a sync.
+	var missing []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	dios.acquire()
+	defer dios.release()
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	if !sync || !canFsyncDirectories {
+		return nil
+	}
+	for _, d := range missing {
+		if err := syncDir(filepath.Dir(d)); err != nil {
+			// Remove the new directories, deepest first, so a retry creates and syncs them again.
+			for _, d := range missing {
+				_ = os.Remove(d)
+			}
 			return err
 		}
 	}
