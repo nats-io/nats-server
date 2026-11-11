@@ -1806,6 +1806,48 @@ func TestFileStoreMeta(t *testing.T) {
 	if mychecksum != string(checksum) {
 		t.Fatalf("Checksums do not match, got %q vs %q", mychecksum, checksum)
 	}
+
+	// A missing or mismatched checksum must be rewritten when opened again.
+	skey, okey := sha256.Sum256([]byte(mconfig.Name)), sha256.Sum256([]byte(mconfig.Name+"/"+oname))
+	for _, corrupt := range []func(sum string){
+		func(sum string) { require_NoError(t, os.Remove(sum)) },
+		func(sum string) { require_NoError(t, os.WriteFile(sum, []byte("bad"), defaultFilePerms)) },
+	} {
+		require_NoError(t, obs.Stop())
+		fs.Stop()
+		corrupt(metasum)
+		corrupt(ometasum)
+
+		fs, err = newFileStore(fcfg, mconfig)
+		require_NoError(t, err)
+		obs, err = fs.ConsumerStore(oname, time.Time{}, &oconfig)
+		require_NoError(t, err)
+		match, err := metaFilesMatch(metafile, metasum, skey[:])
+		require_NoError(t, err)
+		require_True(t, match)
+		match, err = metaFilesMatch(ometafile, ometasum, okey[:])
+		require_NoError(t, err)
+		require_True(t, match)
+	}
+
+	// A plaintext consumer with a mismatched checksum must keep its state when converted to encrypted.
+	require_NoError(t, obs.UpdateDelivered(1, 1, 1, time.Now().UnixNano()))
+	state, err := obs.State()
+	require_NoError(t, err)
+	require_NoError(t, obs.Stop())
+	fs.Stop()
+	require_NoError(t, os.WriteFile(ometasum, []byte("bad"), defaultFilePerms))
+
+	fcfg.Cipher = AES
+	fs, err = newFileStoreWithCreated(fcfg, mconfig, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	obs, err = fs.ConsumerStore(oname, time.Time{}, &oconfig)
+	require_NoError(t, err)
+	nstate, err := obs.State()
+	require_NoError(t, err)
+	require_Equal(t, nstate.Delivered, state.Delivered)
+	require_NoError(t, obs.Stop())
+	fs.Stop()
 }
 
 func TestFileStoreWriteAndReadSameBlock(t *testing.T) {
