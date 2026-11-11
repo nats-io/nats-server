@@ -8120,6 +8120,17 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 		t.Fatalf("Expected created time %v after restart and update, got %v", created, ci.Created)
 	}
 	require_Equal(t, ci.Config.AckWait, 45*time.Second)
+	nc.Close()
+	s.Shutdown()
+
+	// A consumer whose meta.sum doesn't match must not be recovered.
+	metasum := filepath.Join(filepath.Dir(metafile), JetStreamMetaFileSum)
+	require_NoError(t, os.WriteFile(metasum, []byte("bad"), defaultFilePerms))
+
+	s = RunJetStreamServerOnPort(-1, sd)
+	nc, js = jsClientConnect(t, s)
+	_, err = js.ConsumerInfo("TEST", "DUR")
+	require_Error(t, err, nats.ErrConsumerNotFound)
 }
 
 func TestJetStreamDeleteMsg(t *testing.T) {
@@ -24182,7 +24193,7 @@ func TestJetStreamOfflineConsumerWithUnknownEnumAfterDowngrade(t *testing.T) {
 
 	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Storage: FileStorage})
 	require_NoError(t, err)
-	_, err = mset.addConsumer(&ConsumerConfig{
+	o, err := mset.addConsumer(&ConsumerConfig{
 		Durable:   "CONSUMER",
 		AckPolicy: AckExplicit,
 		Metadata:  map[string]string{"_nats.req.level": strconv.Itoa(math.MaxInt)},
@@ -24196,6 +24207,10 @@ func TestJetStreamOfflineConsumerWithUnknownEnumAfterDowngrade(t *testing.T) {
 	nbuf := bytes.Replace(buf, []byte(`"ack_policy":"explicit"`), []byte(`"ack_policy":"unknown"`), 1)
 	require_False(t, bytes.Equal(buf, nbuf))
 	require_NoError(t, os.WriteFile(metafile, nbuf, defaultFilePerms))
+	hh := o.store.(*consumerFileStore).hh
+	hh.Reset()
+	hh.Write(nbuf)
+	require_NoError(t, os.WriteFile(filepath.Join(filepath.Dir(metafile), JetStreamMetaFileSum), fmt.Appendf(nil, "%x", hh.Sum(nil)), defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(port, sd)
 	defer s.Shutdown()

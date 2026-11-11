@@ -18,7 +18,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -29,7 +28,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/minio/highwayhash"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
@@ -1338,6 +1336,13 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 				s.Warnf("    Missing consumer checksum for %q", metasum)
 				continue
 			}
+			if match, err := metaFilesMatch(metafile, metasum, key[:]); err != nil {
+				s.Warnf("    Error checking consumer metafile checksum %q: %v", metasum, err)
+				continue
+			} else if !match {
+				s.Warnf("    Consumer metafile %q: checksums do not match", metafile)
+				continue
+			}
 
 			// Check if we are encrypted.
 			if keyBuf, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
@@ -1441,10 +1446,6 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			return nil
 		}
 		key := sha256.Sum256([]byte(fi.Name()))
-		hh, err := highwayhash.NewDigest64(key[:])
-		if err != nil {
-			return err
-		}
 		metafile := filepath.Join(mdir, JetStreamMetaFile)
 		metasum := filepath.Join(mdir, JetStreamMetaFileSum)
 		if err := recoverStagedMeta(s.diskIOSemaphore(), mdir, key[:], js.config.SyncAlways); err != nil {
@@ -1464,16 +1465,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			s.Warnf("  Missing stream checksum file %q", metasum)
 			return nil
 		}
-		sum, err := os.ReadFile(metasum)
-		if err != nil {
-			s.Warnf("  Error reading Stream metafile checksum %q: %v", metasum, err)
+		if match, err := metaFilesMatch(metafile, metasum, key[:]); err != nil {
+			s.Warnf("  Error checking stream metafile checksum %q: %v", metasum, err)
 			return nil
-		}
-		hh.Write(buf)
-		var hb [highwayhash.Size64]byte
-		checksum := hex.EncodeToString(hh.Sum(hb[:0]))
-		if checksum != string(sum) {
-			s.Warnf("  Stream metafile %q: checksums do not match %q vs %q", metafile, sum, checksum)
+		} else if !match {
+			s.Warnf("  Stream metafile %q: checksums do not match", metafile)
 			return nil
 		}
 
