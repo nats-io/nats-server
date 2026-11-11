@@ -16772,6 +16772,29 @@ func TestFileStoreUpdateConfigSyncAlwaysRace(t *testing.T) {
 	wg.Wait()
 }
 
+func TestFileStoreSyncsNewBlockWithSyncAlways(t *testing.T) {
+	if !canFsyncDirectories || os.Geteuid() == 0 {
+		t.Skip("Requires directory syncs and permission checks")
+	}
+
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize, fcfg.SyncAlways = 128, true
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// A directory that can't be opened makes syncing a new block's entry fail.
+		mdir := filepath.Join(fcfg.StoreDir, msgDir)
+		require_NoError(t, os.Chmod(mdir, 0o300))
+		t.Cleanup(func() { os.Chmod(mdir, defaultDirPerms) })
+		for i := 0; i < 10 && err == nil; i++ {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("ok"), 0)
+		}
+		require_Error(t, err, os.ErrPermission)
+	})
+}
+
 // Must be run with -race.
 func TestFileStoreStoreRawMsgTTLsRace(t *testing.T) {
 	sd := t.TempDir()
