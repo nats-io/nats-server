@@ -8133,6 +8133,75 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 	require_Error(t, err, nats.ErrConsumerNotFound)
 }
 
+func TestJetStreamEncryptedStagedMetaKeyRecovery(t *testing.T) {
+	storeDir := t.TempDir()
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		jetstream: {key: "s3cr3t!!", store_dir: '%s'}
+	`, storeDir)))
+
+	s, _ := RunServerWithConfig(conf)
+	defer func() { s.Shutdown() }()
+	nc, js := jsClientConnect(t, s)
+	defer func() { nc.Close() }()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "DUR", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	sdir := filepath.Join(storeDir, JetStreamStoreDir, globalAccountName, streamsDir, "TEST")
+	odir := filepath.Join(sdir, consumerDir, "DUR")
+	bogusKey := make([]byte, minMetaKeySize)
+	_, err = crand.Read(bogusKey)
+	require_NoError(t, err)
+
+	restartAndCheck := func() {
+		t.Helper()
+		nc.Close()
+		s.Shutdown()
+		s.WaitForShutdown()
+		s, _ = RunServerWithConfig(conf)
+		nc, js = jsClientConnect(t, s)
+		si, err := js.StreamInfo("TEST")
+		require_NoError(t, err)
+		require_Equal(t, si.State.Msgs, 1)
+		_, err = js.ConsumerInfo("TEST", "DUR")
+		require_NoError(t, err)
+		for _, dir := range []string{sdir, odir} {
+			for _, f := range []string{JetStreamMetaFile, JetStreamMetaFileKey} {
+				_, err = os.Stat(filepath.Join(dir, f+metaTmpSuffix))
+				require_True(t, os.IsNotExist(err))
+			}
+		}
+	}
+
+	// A staged meta.key that meta.sum wasn't written for must be discarded.
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+	require_NoError(t, os.WriteFile(filepath.Join(sdir, JetStreamMetaFileKey+metaTmpSuffix), bogusKey, defaultFilePerms))
+	require_NoError(t, os.WriteFile(filepath.Join(sdir, JetStreamMetaFile+metaTmpSuffix), []byte("{}"), defaultFilePerms))
+	require_NoError(t, os.WriteFile(filepath.Join(odir, JetStreamMetaFileKey+metaTmpSuffix), bogusKey, defaultFilePerms))
+	restartAndCheck()
+
+	// A staged meta.key that meta.sum was written for must be finished, before its meta.inf.
+	nc.Close()
+	s.Shutdown()
+	s.WaitForShutdown()
+	for _, dir := range []string{sdir, odir} {
+		for _, f := range []string{JetStreamMetaFile, JetStreamMetaFileKey} {
+			fn := filepath.Join(dir, f)
+			require_NoError(t, os.Rename(fn, fn+metaTmpSuffix))
+		}
+		require_NoError(t, os.WriteFile(filepath.Join(dir, JetStreamMetaFileKey), bogusKey, defaultFilePerms))
+		require_NoError(t, os.WriteFile(filepath.Join(dir, JetStreamMetaFile), []byte("{}"), defaultFilePerms))
+	}
+	restartAndCheck()
+}
+
 func TestJetStreamDeleteMsg(t *testing.T) {
 	cases := []struct {
 		name    string
