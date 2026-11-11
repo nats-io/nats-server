@@ -1320,6 +1320,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 		for _, ofi := range ofis {
 			metafile := filepath.Join(odir, ofi.Name(), JetStreamMetaFile)
 			metasum := filepath.Join(odir, ofi.Name(), JetStreamMetaFileSum)
+			key := sha256.Sum256([]byte(mset.name() + "/" + ofi.Name()))
+			if err := recoverStagedMeta(s.diskIOSemaphore(), filepath.Join(odir, ofi.Name()), key[:], js.config.SyncAlways); err != nil {
+				s.Warnf("    Error recovering consumer metafile %q: %v", metafile, err)
+				continue
+			}
 			if _, err := os.Stat(metafile); os.IsNotExist(err) {
 				s.Warnf("    Missing consumer metafile %q", metafile)
 				continue
@@ -1335,11 +1340,11 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 			}
 
 			// Check if we are encrypted.
-			if key, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
+			if keyBuf, err := os.ReadFile(filepath.Join(odir, ofi.Name(), JetStreamMetaFileKey)); err == nil {
 				s.Debugf("  Consumer metafile is encrypted, reading encrypted keyfile")
 				// Decode the buffer before proceeding.
 				ctxName := mset.name() + tsep + ofi.Name()
-				nbuf, _, err := s.decryptMeta(sc, key, buf, a.Name, ctxName)
+				nbuf, _, err := s.decryptMeta(sc, keyBuf, buf, a.Name, ctxName)
 				if err != nil {
 					s.Warnf("  Error decrypting our consumer metafile: %v", err)
 					continue
@@ -1442,6 +1447,10 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 		}
 		metafile := filepath.Join(mdir, JetStreamMetaFile)
 		metasum := filepath.Join(mdir, JetStreamMetaFileSum)
+		if err := recoverStagedMeta(s.diskIOSemaphore(), mdir, key[:], js.config.SyncAlways); err != nil {
+			s.Warnf("  Error recovering stream metafile %q: %v", metafile, err)
+			return nil
+		}
 		if _, err := os.Stat(metafile); os.IsNotExist(err) {
 			s.Warnf("  Missing stream metafile for %q", metafile)
 			return nil

@@ -334,6 +334,8 @@ const (
 	consumerState = "o.dat"
 	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
 	blkTmpSuffix = ".tmp"
+	// The suffix of a meta file that is staged until its checksum is written.
+	metaTmpSuffix = ".new"
 	// default cache buffer expiration
 	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
@@ -1057,7 +1059,10 @@ func (fs *fileStore) writeStreamMeta() error {
 		b = fs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -1070,7 +1075,23 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	return renameWithOptionalSync(fs.dios, tmp, meta, fs.syncAlways.Load() || fs.syncOnFlush.Load())
+}
+
+// recoverStagedMeta finishes or discards a meta.inf staged by an interrupted meta write.
+// The staged meta.inf was complete if meta.sum was already written for it.
+func recoverStagedMeta(dios *diskIOSemaphore, dir string, key []byte, sync bool) error {
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	tmp := meta + metaTmpSuffix
+	if _, err := os.Stat(tmp); os.IsNotExist(err) {
+		return nil
+	}
+	if match, err := metaFilesMatch(tmp, filepath.Join(dir, JetStreamMetaFileSum), key); err != nil {
+		return err
+	} else if !match {
+		return os.Remove(tmp)
+	}
+	return renameWithOptionalSync(dios, tmp, meta, sync)
 }
 
 // metaFilesMatch returns whether the meta file is non-empty and matches the checksum file.
@@ -12304,7 +12325,12 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 
 	// Make sure we will not try to recover if killed before removal below completes.
-	if err := os.Remove(filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)); err != nil {
+	// The staged meta goes first, otherwise recovery could still apply it.
+	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
+	if err := os.Remove(meta + metaTmpSuffix); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(meta); err != nil {
 		return err
 	}
 	// Now move into different directory with "." prefix.
@@ -14344,7 +14370,10 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		b = cfs.aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = cfs.fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = cfs.fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -14358,7 +14387,7 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	return renameWithOptionalSync(cfs.fs.dios, tmp, meta, cfs.fs.syncAlways.Load() || cfs.fs.syncOnFlush.Load())
 }
 
 // Consumer version.
@@ -14863,6 +14892,19 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
 	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
 	return writeAtomically(fs.dios, name, data, perm, sync)
+}
+
+// renameWithOptionalSync renames from to to, and flushes the directory metadata if sync is set.
+func renameWithOptionalSync(dios *diskIOSemaphore, from, to string, sync bool) error {
+	dios.acquire()
+	defer dios.release()
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	if sync && canFsyncDirectories {
+		return syncDir(filepath.Dir(to))
+	}
+	return nil
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {

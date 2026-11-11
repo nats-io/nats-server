@@ -8030,6 +8030,10 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	s.Shutdown()
 	time.Sleep(10 * time.Millisecond)
 
+	// A staged meta.inf that meta.sum wasn't written for must be discarded.
+	metafile := filepath.Join(sd, globalAccountName, streamsDir, "TEST", JetStreamMetaFile)
+	require_NoError(t, os.WriteFile(metafile+metaTmpSuffix, []byte("{}"), defaultFilePerms))
+
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
 	si, err = js.StreamInfo("TEST")
@@ -8037,13 +8041,21 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	if !si.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart, got %v", created, si.Created)
 	}
+	_, err = os.Stat(metafile + metaTmpSuffix)
+	require_True(t, os.IsNotExist(err))
 
+	meta, err := os.ReadFile(metafile)
+	require_NoError(t, err)
 	cfg := si.Config
 	cfg.MaxMsgs = 1
 	_, err = js.UpdateStream(&cfg)
 	require_NoError(t, err)
 	nc.Close()
 	s.Shutdown()
+
+	// A staged meta.inf that meta.sum was written for must be finished.
+	require_NoError(t, os.Rename(metafile, metafile+metaTmpSuffix))
+	require_NoError(t, os.WriteFile(metafile, meta, defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
@@ -8052,6 +8064,7 @@ func TestJetStreamFileStreamCreatedTimePreservedAfterRestartAndUpdate(t *testing
 	if !si.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart and update, got %v", created, si.Created)
 	}
+	require_Equal(t, si.Config.MaxMsgs, 1)
 }
 
 func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testing.T) {
@@ -8085,12 +8098,19 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 		t.Fatalf("Expected created time %v after restart, got %v", created, ci.Created)
 	}
 
+	metafile := filepath.Join(sd, globalAccountName, streamsDir, "TEST", consumerDir, "DUR", JetStreamMetaFile)
+	meta, err := os.ReadFile(metafile)
+	require_NoError(t, err)
 	cfg := ci.Config
 	cfg.AckWait = 45 * time.Second
 	_, err = js.UpdateConsumer("TEST", &cfg)
 	require_NoError(t, err)
 	nc.Close()
 	s.Shutdown()
+
+	// A staged meta.inf that meta.sum was written for must be finished.
+	require_NoError(t, os.Rename(metafile, metafile+metaTmpSuffix))
+	require_NoError(t, os.WriteFile(metafile, meta, defaultFilePerms))
 
 	s = RunJetStreamServerOnPort(-1, sd)
 	nc, js = jsClientConnect(t, s)
@@ -8099,6 +8119,7 @@ func TestJetStreamFileConsumerCreatedTimePreservedAfterRestartAndUpdate(t *testi
 	if !ci.Created.Equal(created) {
 		t.Fatalf("Expected created time %v after restart and update, got %v", created, ci.Created)
 	}
+	require_Equal(t, ci.Config.AckWait, 45*time.Second)
 }
 
 func TestJetStreamDeleteMsg(t *testing.T) {
