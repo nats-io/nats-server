@@ -1727,6 +1727,10 @@ func TestJetStreamJWTHAStorageLimitsOnScaleAndUpdate(t *testing.T) {
 	require_Equal(t, r1.ReservedStore, 2*1024*1024) // TEST7
 	require_Equal(t, r3.ReservedMemory, 22*1024)    // TEST9
 	require_Equal(t, r3.ReservedStore, 5*1024*1024) // TEST1-TEST6
+
+	// Tiered reservations don't scale by replicas, so the top-level sums the tiers.
+	require_Equal(t, stats.ReservedMemory, r1.ReservedMemory+r3.ReservedMemory)
+	require_Equal(t, stats.ReservedStore, r1.ReservedStore+r3.ReservedStore)
 }
 
 func TestJetStreamJWTClusteredTiersR3StreamWithR1ConsumersAndAccounting(t *testing.T) {
