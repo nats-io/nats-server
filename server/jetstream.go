@@ -1882,17 +1882,18 @@ func diffCheckedLimits(a, b map[string]JetStreamAccountLimits) map[string]JetStr
 
 // Return reserved bytes for memory and file store streams for this account on this server.
 // Lock should be held.
-func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
+func (jsa *jsAccount) reservedStorage(tier string, untiered bool) (mem, store uint64) {
 	for _, mset := range jsa.streams {
 		mset.cfgMu.RLock()
 		storage, replicas, maxBytes := mset.cfg.Storage, mset.cfg.Replicas, mset.cfg.MaxBytes
 		mset.cfgMu.RUnlock()
 		if (tier == _EMPTY_ || tier == tierName(replicas)) && maxBytes > 0 {
+			reserved := reportedReservation(untiered, replicas, maxBytes)
 			switch storage {
 			case FileStorage:
-				store += uint64(maxBytes)
+				store += reserved
 			case MemoryStorage:
-				mem += uint64(maxBytes)
+				mem += reserved
 			}
 		}
 	}
@@ -1901,19 +1902,29 @@ func (jsa *jsAccount) reservedStorage(tier string) (mem, store uint64) {
 
 // Return reserved bytes for memory and file store streams for this account in clustered mode.
 // js lock should be held.
-func reservedStorage(sas map[string]*streamAssignment, tier string) (mem, store uint64) {
+func reservedStorage(sas map[string]*streamAssignment, tier string, untiered bool) (mem, store uint64) {
 	for _, sa := range sas {
 		cfg := sa.Config
 		if (tier == _EMPTY_ || tier == tierName(cfg.Replicas)) && cfg.MaxBytes > 0 {
+			reserved := reportedReservation(untiered, cfg.Replicas, cfg.MaxBytes)
 			switch cfg.Storage {
 			case FileStorage:
-				store += uint64(cfg.MaxBytes)
+				store += reserved
 			case MemoryStorage:
-				mem += uint64(cfg.MaxBytes)
+				mem += reserved
 			}
 		}
 	}
 	return mem, store
+}
+
+// reportedReservation returns the reserved bytes reported for a stream.
+// Un-tiered accounts report the same footprint the account limit checks use.
+func reportedReservation(untiered bool, replicas int, maxBytes int64) uint64 {
+	if untiered {
+		return uint64(accountReservation(_EMPTY_, replicas, maxBytes))
+	}
+	return uint64(maxBytes)
 }
 
 // JetStreamUsage reports on JetStream usage and limits for an account.
@@ -1938,12 +1949,12 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 			Total:  jsa.apiTotal,
 			Errors: jsa.apiErrors,
 		}
-		if singleServer {
-			stats.ReservedMemory, stats.ReservedStore = jsa.reservedStorage(_EMPTY_)
-		} else {
-			stats.ReservedMemory, stats.ReservedStore = reservedStorage(cc.streams[aname], _EMPTY_)
-		}
 		l, defaultTier := jsa.limits[_EMPTY_]
+		if singleServer {
+			stats.ReservedMemory, stats.ReservedStore = jsa.reservedStorage(_EMPTY_, defaultTier)
+		} else {
+			stats.ReservedMemory, stats.ReservedStore = reservedStorage(cc.streams[aname], _EMPTY_, defaultTier)
+		}
 		if defaultTier {
 			stats.Limits = l
 		} else {
@@ -1961,9 +1972,9 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 						Limits: jsa.limits[t],
 					}
 					if singleServer {
-						tier.ReservedMemory, tier.ReservedStore = jsa.reservedStorage(t)
+						tier.ReservedMemory, tier.ReservedStore = jsa.reservedStorage(t, false)
 					} else {
-						tier.ReservedMemory, tier.ReservedStore = reservedStorage(cc.streams[aname], t)
+						tier.ReservedMemory, tier.ReservedStore = reservedStorage(cc.streams[aname], t, false)
 					}
 					stats.Tiers[t] = tier
 				}
@@ -1974,9 +1985,9 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 					if _, ok := stats.Tiers[t]; !ok {
 						tier := JetStreamTier{Limits: lim}
 						if singleServer {
-							tier.ReservedMemory, tier.ReservedStore = jsa.reservedStorage(t)
+							tier.ReservedMemory, tier.ReservedStore = jsa.reservedStorage(t, false)
 						} else {
-							tier.ReservedMemory, tier.ReservedStore = reservedStorage(cc.streams[aname], t)
+							tier.ReservedMemory, tier.ReservedStore = reservedStorage(cc.streams[aname], t, false)
 						}
 						stats.Tiers[t] = tier
 					}
@@ -1990,7 +2001,7 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 			sas := cc.streams[aname]
 			if defaultTier {
 				stats.Streams = len(sas)
-				stats.ReservedMemory, stats.ReservedStore = reservedStorage(sas, _EMPTY_)
+				stats.ReservedMemory, stats.ReservedStore = reservedStorage(sas, _EMPTY_, true)
 			}
 			for _, sa := range sas {
 				if defaultTier {

@@ -3321,13 +3321,15 @@ func TestJetStreamUsageReservationNegativeMaxBytes(t *testing.T) {
 
 		validateReserved := func(total uint64) {
 			t.Helper()
+			// The un-tiered account limit counts every replica, a single server only its own.
+			accTotal := total * uint64(replicas)
 			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
 				stats := acc.JetStreamUsage()
-				if stats.ReservedMemory != total {
-					return fmt.Errorf("acc stats: expected %d, got %d", total, stats.ReservedMemory)
+				if stats.ReservedMemory != accTotal {
+					return fmt.Errorf("acc stats: expected %d, got %d", accTotal, stats.ReservedMemory)
 				}
-				if stats.ReservedStore != total {
-					return fmt.Errorf("acc stats: expected %d, got %d", total, stats.ReservedStore)
+				if stats.ReservedStore != accTotal {
+					return fmt.Errorf("acc stats: expected %d, got %d", accTotal, stats.ReservedStore)
 				}
 				jstats := s.getJetStream().usageStats()
 				if jstats.ReservedMemory != total {
