@@ -8025,65 +8025,74 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 	require_True(t, ci.NumRedelivered == 0)
 }
 
-func TestJetStreamConsumerIsFiltered(t *testing.T) {
+func TestJetStreamConsumerNeedAckFallbackWithFilter(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
-	acc := s.GlobalAccount()
 
-	tests := []struct {
-		name           string
-		streamSubjects []string
-		filters        []string
-		isFiltered     bool
-	}{
-		{
-			name:           "single_subject",
-			streamSubjects: []string{"one"},
-			filters:        []string{"one"},
-			isFiltered:     false,
-		},
-		{
-			name:           "single_subject_filtered",
-			streamSubjects: []string{"one.>"},
-			filters:        []string{"one.filter"},
-			isFiltered:     true,
-		},
-		{
-			name:           "multi_subject_non_filtered",
-			streamSubjects: []string{"multi", "foo", "bar.>"},
-			filters:        []string{"multi", "bar.>", "foo"},
-			isFiltered:     false,
-		},
-		{
-			name:           "multi_subject_filtered_wc",
-			streamSubjects: []string{"events", "data"},
-			filters:        []string{"data"},
-			isFiltered:     true,
-		},
-		{
-			name:           "multi_subject_filtered",
-			streamSubjects: []string{"machines", "floors"},
-			filters:        []string{"machines"},
-			isFiltered:     true,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mset, err := acc.addStream(&StreamConfig{
-				Name:     test.name,
-				Subjects: test.streamSubjects,
-			})
-			require_NoError(t, err)
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo", "bar"},
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", FilterSubject: "foo", AckPolicy: AckExplicit})
+	require_NoError(t, err)
 
-			o, err := mset.addConsumer(&ConsumerConfig{
-				FilterSubjects: test.filters,
-				Durable:        test.name,
-			})
-			require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("bar", nil, nil, 0)
+	require_NoError(t, err)
 
-			require_True(t, o.isFiltered() == test.isFiltered)
-		})
-	}
+	// A follower whose consumer state can't be loaded falls back to its in-memory ack floor.
+	require_NoError(t, o.setLeader(false, 0))
+	require_NoError(t, o.store.Stop())
+
+	// The matching message is still needed, the other one isn't.
+	subj := _EMPTY_
+	require_True(t, o.needAck(1, &subj))
+	subj = _EMPTY_
+	require_False(t, o.needAck(2, &subj))
+}
+
+type subjectForSeqErrStore struct {
+	StreamStore
+	err error
+}
+
+func (s *subjectForSeqErrStore) SubjectForSeq(seq uint64) (string, error) {
+	return _EMPTY_, s.err
+}
+
+func TestJetStreamConsumerNeedAckSubjectLookupError(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", FilterSubject: "foo", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	es := &subjectForSeqErrStore{StreamStore: mset.store}
+	mset.mu.Lock()
+	mset.store = es
+	mset.mu.Unlock()
+
+	// The message can't be read, so we can't tell if it matches and must keep it.
+	es.err = errors.New("read failed")
+	subj := _EMPTY_
+	require_True(t, o.needAck(1, &subj))
+
+	// The message is gone, so it's not needed.
+	es.err = ErrStoreMsgNotFound
+	subj = _EMPTY_
+	require_False(t, o.needAck(1, &subj))
 }
 
 func TestJetStreamConsumerWithFormattingSymbol(t *testing.T) {

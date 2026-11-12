@@ -9303,18 +9303,6 @@ func (mset *stream) partitionUnique(name string, partitions []string) bool {
 	return true
 }
 
-// Lock should be held.
-func (mset *stream) potentialFilteredConsumers() bool {
-	numSubjects := len(mset.cfg.Subjects)
-	if len(mset.consumers) == 0 || numSubjects == 0 {
-		return false
-	}
-	if numSubjects > 1 || subjectHasWildcard(mset.cfg.Subjects[0]) {
-		return true
-	}
-	return false
-}
-
 // Check if there is no interest in this sequence number across our consumers.
 // The consumer passed is optional if we are processing the ack for that consumer.
 // Write lock should be held.
@@ -9331,23 +9319,8 @@ func (mset *stream) noInterestWithSubject(seq uint64, subj string, obs *consumer
 
 // Write lock should be held here for the stream to avoid race conditions on state.
 func (mset *stream) checkForInterest(seq uint64, obs *consumer) bool {
-	var subj string
-	if mset.potentialFilteredConsumers() {
-		pmsg := getJSPubMsgFromPool()
-		defer pmsg.returnToPool()
-		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
-		if err != nil {
-			if err == ErrStoreEOF {
-				// Register this as a preAck.
-				mset.registerPreAck(obs, seq)
-				return true
-			}
-			mset.clearAllPreAcks(seq)
-			return false
-		}
-		subj = sm.subj
-	}
-	return mset.checkForInterestWithSubject(seq, subj, obs)
+	// Filtered consumers look up the subject when needed.
+	return mset.checkForInterestWithSubject(seq, _EMPTY_, obs)
 }
 
 // Checks for interest given a sequence and subject.
@@ -9358,7 +9331,7 @@ func (mset *stream) checkForInterestWithSubject(seq uint64, subj string, obs *co
 			continue
 		}
 		// Check if we need an ack.
-		if o.needAck(seq, subj) {
+		if o.needAck(seq, &subj) {
 			return true
 		}
 	}
@@ -9766,7 +9739,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	return mset, nil
 }
 
-// This is to check for dangling messages on interest retention streams. Only called on account enable.
+// This is to check for dangling messages on interest and workqueue retention streams. Only called on account enable.
 // Issue https://github.com/nats-io/nats-server/issues/3612
 func (mset *stream) checkForOrphanMsgs() {
 	mset.mu.RLock()
@@ -9795,12 +9768,12 @@ func (mset *stream) checkForOrphanMsgs() {
 }
 
 // Check on startup to make sure that consumers replication matches us.
-// Interest retention requires replication matches.
+// Interest and workqueue retention require replication matches.
 func (mset *stream) checkConsumerReplication() {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 
-	if mset.cfg.Retention != InterestPolicy {
+	if mset.cfg.Retention == LimitsPolicy {
 		return
 	}
 
@@ -9810,8 +9783,8 @@ func (mset *stream) checkConsumerReplication() {
 		// Consumer replicas 0 can be a legit config for the replicas and we will inherit from the stream
 		// when this is the case.
 		if mset.cfg.Replicas != o.cfg.Replicas && o.cfg.Replicas != 0 {
-			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with interest policy",
-				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas)
+			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with %s policy",
+				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas, strings.ToLower(mset.cfg.Retention.String()))
 		}
 		o.mu.RUnlock()
 	}

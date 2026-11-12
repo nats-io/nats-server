@@ -11421,6 +11421,16 @@ func TestFileStoreSubjectForSeq(t *testing.T) {
 
 	_, err = fs.SubjectForSeq(2)
 	require_Error(t, err, ErrStoreMsgNotFound)
+
+	// A deleted message is not found either.
+	_, _, err = fs.StoreMsg("foo.bar", nil, nil, 0)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo.baz", nil, nil, 0)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(2)
+	require_NoError(t, err)
+	_, err = fs.SubjectForSeq(2)
+	require_Error(t, err, ErrStoreMsgNotFound)
 }
 
 func BenchmarkFileStoreSubjectAccesses(b *testing.B) {
