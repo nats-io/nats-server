@@ -19,9 +19,19 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+
+      # This is NOT what enforces the lock file, GitHub Actions does that for us. This
+      # ensures that if we push a branch or PR that changes the lock file, that we are
+      # committing something valid and not broken.
+      - name: Verify actions lock
+        run: gh extension install github/gh-actions-lock && gh actions-lock --verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Go
         uses: actions/setup-go@v7.0.0
