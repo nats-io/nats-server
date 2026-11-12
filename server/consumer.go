@@ -4010,7 +4010,7 @@ func (o *consumer) moveAckFloor(dseq, sseq uint64) {
 }
 
 // Check if we need an ack for this store seq.
-// This is called for interest based retention streams to remove messages.
+// This is called for interest and workqueue retention streams to remove messages.
 // An empty subj is looked up if needed and stored, so callers can share it across consumers.
 func (o *consumer) needAck(sseq uint64, subj *string) bool {
 	var needAck bool
