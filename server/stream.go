@@ -9303,18 +9303,6 @@ func (mset *stream) partitionUnique(name string, partitions []string) bool {
 	return true
 }
 
-// Lock should be held.
-func (mset *stream) potentialFilteredConsumers() bool {
-	numSubjects := len(mset.cfg.Subjects)
-	if len(mset.consumers) == 0 || numSubjects == 0 {
-		return false
-	}
-	if numSubjects > 1 || subjectHasWildcard(mset.cfg.Subjects[0]) {
-		return true
-	}
-	return false
-}
-
 // Check if there is no interest in this sequence number across our consumers.
 // The consumer passed is optional if we are processing the ack for that consumer.
 // Write lock should be held.
@@ -9331,23 +9319,8 @@ func (mset *stream) noInterestWithSubject(seq uint64, subj string, obs *consumer
 
 // Write lock should be held here for the stream to avoid race conditions on state.
 func (mset *stream) checkForInterest(seq uint64, obs *consumer) bool {
-	var subj string
-	if mset.potentialFilteredConsumers() {
-		pmsg := getJSPubMsgFromPool()
-		defer pmsg.returnToPool()
-		sm, err := mset.store.LoadMsg(seq, &pmsg.StoreMsg)
-		if err != nil {
-			if err == ErrStoreEOF {
-				// Register this as a preAck.
-				mset.registerPreAck(obs, seq)
-				return true
-			}
-			mset.clearAllPreAcks(seq)
-			return false
-		}
-		subj = sm.subj
-	}
-	return mset.checkForInterestWithSubject(seq, subj, obs)
+	// Filtered consumers look up the subject when needed.
+	return mset.checkForInterestWithSubject(seq, _EMPTY_, obs)
 }
 
 // Checks for interest given a sequence and subject.
@@ -9358,7 +9331,7 @@ func (mset *stream) checkForInterestWithSubject(seq uint64, subj string, obs *co
 			continue
 		}
 		// Check if we need an ack.
-		if o.needAck(seq, subj) {
+		if o.needAck(seq, &subj) {
 			return true
 		}
 	}
