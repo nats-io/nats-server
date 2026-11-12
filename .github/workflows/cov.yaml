@@ -18,12 +18,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: src/github.com/nats-io/nats-server
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version: stable
           cache-dependency-path: src/github.com/nats-io/nats-server/go.sum
@@ -37,17 +37,13 @@ jobs:
           set +e
 
       - name: Convert coverage.out to coverage.lcov
-        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit e4612787670fc5b5f49026b8c29c5569921de1db = tag v1.2.0
-        uses: jandelgado/gcov2lcov-action@e4612787670fc5b5f49026b8c29c5569921de1db
+        uses: jandelgado/gcov2lcov-action@v1.2.0
         with:
           infile: acc.out
           working-directory: src/github.com/nats-io/nats-server
 
       - name: Coveralls
-        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 8d6379e14d29928660c4ba802d8e85393440b329 = tag v2.3.8
-        uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329
+        uses: coverallsapp/github-action@v2.3.8
         with:
           github-token: ${{ secrets.github_token }}
           file: src/github.com/nats-io/nats-server/coverage.lcov
