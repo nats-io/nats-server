@@ -21531,6 +21531,62 @@ func TestJetStreamWQMaxDeliveryReached(t *testing.T) {
 	require_Equal(t, sm.subj, "foo")
 }
 
+func TestJetStreamInterestAndWorkQueueSubjectsOutsideStream(t *testing.T) {
+	for _, retention := range []nats.RetentionPolicy{nats.InterestPolicy, nats.WorkQueuePolicy} {
+		for _, title := range []string{"transform", "sources", "subject-update"} {
+			t.Run(fmt.Sprintf("%s/%s", retention, title), func(t *testing.T) {
+				s := RunBasicJetStreamServer(t)
+				defer s.Shutdown()
+
+				nc, js := jsClientConnect(t, s)
+				defer nc.Close()
+
+				// The stream has subject "foo", but stores a message under "bar".
+				cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Retention: retention}
+				pubSubj := "bar"
+				switch title {
+				case "transform":
+					cfg.SubjectTransform = &nats.SubjectTransformConfig{Source: "foo", Destination: "bar"}
+					pubSubj = "foo"
+				case "sources":
+					_, err := js.AddStream(&nats.StreamConfig{Name: "SOURCE", Subjects: []string{"bar"}})
+					require_NoError(t, err)
+					cfg.Sources = []*nats.StreamSource{{Name: "SOURCE"}}
+				case "subject-update":
+					cfg.Subjects = []string{"foo", "bar"}
+				}
+				_, err := js.AddStream(cfg)
+				require_NoError(t, err)
+
+				// The filter equals the stream's subjects, so this consumer never receives "bar".
+				_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C1", FilterSubject: "foo", AckPolicy: nats.AckExplicitPolicy})
+				require_NoError(t, err)
+				sub, err := js.PullSubscribe("bar", "C2", nats.BindStream("TEST"))
+				require_NoError(t, err)
+
+				_, err = js.Publish(pubSubj, nil)
+				require_NoError(t, err)
+				if title == "subject-update" {
+					cfg.Subjects = []string{"foo"}
+					_, err = js.UpdateStream(cfg)
+					require_NoError(t, err)
+				}
+
+				msgs, err := sub.Fetch(1, nats.MaxWait(time.Second))
+				require_NoError(t, err)
+				require_Len(t, len(msgs), 1)
+				require_Equal(t, msgs[0].Subject, "bar")
+				require_NoError(t, msgs[0].AckSync())
+
+				// The only consumer interested in "bar" acked it, so it must be removed.
+				si, err := js.StreamInfo("TEST")
+				require_NoError(t, err)
+				require_Equal(t, si.State.Msgs, 0)
+			})
+		}
+	}
+}
+
 // https://github.com/nats-io/nats-server/issues/6874
 func TestJetStreamMaxDeliveryRedeliveredReporting(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
