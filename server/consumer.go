@@ -4011,7 +4011,8 @@ func (o *consumer) moveAckFloor(dseq, sseq uint64) {
 
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
-func (o *consumer) needAck(sseq uint64, subj string) bool {
+// An empty subj is looked up if needed and stored, so callers can share it across consumers.
+func (o *consumer) needAck(sseq uint64, subj *string) bool {
 	var needAck bool
 	var asflr, osseq uint64
 	var pending map[uint64]*Pending
@@ -4027,13 +4028,13 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 
 	// Check if we are filtered, and if so check if this is even applicable to us.
 	if isFiltered {
-		if subj == _EMPTY_ {
+		if *subj == _EMPTY_ {
 			var err error
-			if subj, err = o.mset.store.SubjectForSeq(sseq); err != nil {
+			if *subj, err = o.mset.store.SubjectForSeq(sseq); err != nil {
 				return false
 			}
 		}
-		if !o.isFilteredMatch(subj) {
+		if !o.isFilteredMatch(*subj) {
 			return false
 		}
 	}
