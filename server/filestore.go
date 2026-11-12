@@ -9649,7 +9649,7 @@ func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
 	fs.mu.RUnlock()
 	if mb != nil {
 		mb.mu.Lock()
-		sm, _, _ := mb.fetchMsgNoCopyLocked(seq, &smv)
+		sm, _, err := mb.fetchMsgNoCopyLocked(seq, &smv)
 		var subj string
 		if sm != nil {
 			// Copy the subject, as it's used elsewhere, and the backing cache could be reused in the meantime.
@@ -9659,6 +9659,10 @@ func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
 		mb.mu.Unlock()
 		if sm != nil {
 			return subj, nil
+		}
+		// A deleted message is not found, other errors mean we couldn't read it.
+		if err != nil && err != errDeletedMsg {
+			return _EMPTY_, err
 		}
 	}
 	return _EMPTY_, ErrStoreMsgNotFound
