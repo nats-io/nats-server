@@ -4009,54 +4009,6 @@ func (o *consumer) moveAckFloor(dseq, sseq uint64) {
 	}
 }
 
-// Determine if this is a truly filtered consumer. Modern clients will place filtered subjects
-// even if the stream only has a single non-wildcard subject designation.
-// Read lock should be held.
-func (o *consumer) isFiltered() bool {
-	if o.subjf == nil {
-		return false
-	}
-	// If we are here we want to check if the filtered subject is
-	// a direct match for our only listed subject.
-	mset := o.mset
-	if mset == nil {
-		return true
-	}
-
-	// Protect access to mset.cfg with the cfgMu mutex.
-	mset.cfgMu.RLock()
-	msetSubjects := mset.cfg.Subjects
-	mset.cfgMu.RUnlock()
-
-	// `isFiltered` need to be performant, so we do
-	// as any checks as possible to avoid unnecessary work.
-	// Here we avoid iteration over slices if there is only one subject in stream
-	// and one filter for the consumer.
-	if len(msetSubjects) == 1 && len(o.subjf) == 1 {
-		return msetSubjects[0] != o.subjf[0].subject
-	}
-
-	// if the list is not equal length, we can return early, as this is filtered.
-	if len(msetSubjects) != len(o.subjf) {
-		return true
-	}
-
-	// if in rare case scenario that user passed all stream subjects as consumer filters,
-	// we need to do a more expensive operation.
-	// reflect.DeepEqual would return false if the filters are the same, but in different order
-	// so it can't be used here.
-	cfilters := make(map[string]struct{}, len(o.subjf))
-	for _, val := range o.subjf {
-		cfilters[val.subject] = struct{}{}
-	}
-	for _, val := range msetSubjects {
-		if _, ok := cfilters[val]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
 // Check if we need an ack for this store seq.
 // This is called for interest based retention streams to remove messages.
 func (o *consumer) needAck(sseq uint64, subj string) bool {
@@ -4068,7 +4020,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	isFiltered := o.isFiltered()
+	isFiltered := o.subjf != nil
 	if isFiltered && o.mset == nil {
 		return false
 	}
@@ -4095,7 +4047,7 @@ func (o *consumer) needAck(sseq uint64, subj string) bool {
 		state, err := o.store.BorrowState()
 		if err != nil || state == nil {
 			// Fall back to what we track internally for now.
-			return sseq > o.asflr && !o.isFiltered()
+			return sseq > o.asflr && o.subjf == nil
 		}
 		// If loading state as here, the osseq is +1.
 		asflr, osseq, pending, rdc = state.AckFloor.Stream, state.Delivered.Stream+1, state.Pending, state.Redelivered
