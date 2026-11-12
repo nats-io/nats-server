@@ -9739,7 +9739,7 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 	return mset, nil
 }
 
-// This is to check for dangling messages on interest retention streams. Only called on account enable.
+// This is to check for dangling messages on interest and workqueue retention streams. Only called on account enable.
 // Issue https://github.com/nats-io/nats-server/issues/3612
 func (mset *stream) checkForOrphanMsgs() {
 	mset.mu.RLock()
@@ -9768,12 +9768,12 @@ func (mset *stream) checkForOrphanMsgs() {
 }
 
 // Check on startup to make sure that consumers replication matches us.
-// Interest retention requires replication matches.
+// Interest and workqueue retention require replication matches.
 func (mset *stream) checkConsumerReplication() {
 	mset.mu.RLock()
 	defer mset.mu.RUnlock()
 
-	if mset.cfg.Retention != InterestPolicy {
+	if mset.cfg.Retention == LimitsPolicy {
 		return
 	}
 
@@ -9783,8 +9783,8 @@ func (mset *stream) checkConsumerReplication() {
 		// Consumer replicas 0 can be a legit config for the replicas and we will inherit from the stream
 		// when this is the case.
 		if mset.cfg.Replicas != o.cfg.Replicas && o.cfg.Replicas != 0 {
-			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with interest policy",
-				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas)
+			s.Errorf("consumer '%s > %s > %s' MUST match replication (%d vs %d) of stream with %s policy",
+				acc, mset.cfg.Name, o.cfg.Name, mset.cfg.Replicas, o.cfg.Replicas, strings.ToLower(mset.cfg.Retention.String()))
 		}
 		o.mu.RUnlock()
 	}

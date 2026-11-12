@@ -1698,7 +1698,7 @@ func (a *Account) EnableJetStream(limits map[string]JetStreamAccountLimits, tq c
 
 		// Collect to check for dangling messages.
 		// TODO(dlc) - Can be removed eventually.
-		if cfg.StreamConfig.Retention == InterestPolicy {
+		if cfg.StreamConfig.Retention != LimitsPolicy {
 			mset.checkForOrphanMsgs()
 			mset.checkConsumerReplication()
 		}
