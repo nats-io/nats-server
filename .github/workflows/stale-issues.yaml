@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/stale@v10
+      - uses: actions/stale@v10.4.0
         with:
           stale-issue-label: stale
           stale-pr-label: stale
@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Close PRs with uncorrected sign-offs or no recent activity
-        uses: actions/github-script@v8
+        uses: actions/github-script@v8.0.0
         env:
           SIGNOFF_DAYS: ${{ vars.PR_SIGNOFF_DAYS || '7' }}
           DRAFT_DAYS: ${{ vars.PR_DRAFT_DAYS || '14' }}

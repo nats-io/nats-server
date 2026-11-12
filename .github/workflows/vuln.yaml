@@ -18,9 +18,7 @@ jobs:
 
     steps:
       - name: Run govulncheck
-        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 032d45514ae346b1db93c04b0c90b841c370344f = tag v1.1.0
-        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f
+        uses: golang/govulncheck-action@v1.1.0
         with:
           go-package: ./...
           output-format: sarif
@@ -28,6 +26,6 @@ jobs:
 
       - name: Upload SARIF results
         if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v4.39.3
         with:
           sarif_file: govulncheck.sarif
