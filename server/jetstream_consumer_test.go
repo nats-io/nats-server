@@ -8025,6 +8025,35 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 	require_True(t, ci.NumRedelivered == 0)
 }
 
+func TestJetStreamConsumerNeedAckFallbackWithFilter(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo", "bar"},
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", FilterSubject: "foo", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("bar", nil, nil, 0)
+	require_NoError(t, err)
+
+	// A follower whose consumer state can't be loaded falls back to its in-memory ack floor.
+	require_NoError(t, o.setLeader(false, 0))
+	require_NoError(t, o.store.Stop())
+
+	// The matching message is still needed, the other one isn't.
+	subj := _EMPTY_
+	require_True(t, o.needAck(1, &subj))
+	subj = _EMPTY_
+	require_False(t, o.needAck(2, &subj))
+}
+
 func TestJetStreamConsumerWithFormattingSymbol(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

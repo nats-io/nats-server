@@ -4048,7 +4048,7 @@ func (o *consumer) needAck(sseq uint64, subj *string) bool {
 		state, err := o.store.BorrowState()
 		if err != nil || state == nil {
 			// Fall back to what we track internally for now.
-			return sseq > o.asflr && o.subjf == nil
+			return sseq > o.asflr
 		}
 		// If loading state as here, the osseq is +1.
 		asflr, osseq, pending, rdc = state.AckFloor.Stream, state.Delivered.Stream+1, state.Pending, state.Redelivered
