@@ -4030,8 +4030,11 @@ func (o *consumer) needAck(sseq uint64, subj *string) bool {
 	if isFiltered {
 		if *subj == _EMPTY_ {
 			var err error
-			if *subj, err = o.mset.store.SubjectForSeq(sseq); err != nil {
+			if *subj, err = o.mset.store.SubjectForSeq(sseq); err == ErrStoreMsgNotFound {
 				return false
+			} else if err != nil {
+				// We can't tell if the message matches, so keep it.
+				return true
 			}
 		}
 		if !o.isFilteredMatch(*subj) {
