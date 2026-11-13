@@ -2281,11 +2281,13 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 	}
 	defer jsa.sync.Store(false)
 
-	// Take the usage lock for the tier map and the cluster update below. It
-	// does not freeze the counters: streams update them with atomics outside
-	// this lock, so the total is a racing snapshot. The repair adds a delta
-	// rather than overwriting, so a concurrent update is never lost and any
-	// transient mismatch is corrected at the next check.
+	// The counters are atomics that streams update without jsa.usageMu, so
+	// the usage lock alone does not freeze them. While jsa.sync is set,
+	// updateUsageCounters does its update under the usage read lock, which
+	// keeps updates out between sampling the stores and the repair below. An
+	// update that read jsa.sync just before it was set can still slip in, so
+	// the sample is retried if the counter moved. A message that is in its
+	// store but whose storage update has not been called yet is not covered.
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 	js := jsa.js
@@ -2314,36 +2316,42 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 		return
 	}
 
-	// Collect current total for all stream stores that matched.
-	var total int64
+	local, total, used, kind := &usage.local.store, &usage.total.store, &js.storeUsed, "FileStore"
+	if storeType == MemoryStorage {
+		local, total, used, kind = &usage.local.mem, &usage.total.mem, &js.memUsed, "MemStore"
+	}
+
+	// Collect current total for all stream stores that matched. Only trust a
+	// sample during which the counter did not move.
+	var stored, counted int64
+	var settled bool
 	var state StreamState
-	for _, store := range stores {
-		store.FastState(&state)
-		total += int64(state.Bytes)
+	for range 3 {
+		before := local.Load()
+		stored = 0
+		for _, store := range stores {
+			store.FastState(&state)
+			stored += int64(state.Bytes)
+		}
+		if counted = local.Load(); counted == before {
+			settled = true
+			break
+		}
+	}
+	if !settled {
+		return
 	}
 
 	var needClusterUpdate bool
 	// If we do not match on our calculations compute delta and adjust.
-	if storeType == MemoryStorage {
-		if local := usage.local.mem.Load(); total != local {
-			s.Warnf("MemStore usage drift of %v vs %v detected for account %q",
-				friendlyBytes(total), friendlyBytes(local), jsa.account.GetName())
-			delta := total - local
-			usage.local.mem.Add(delta)
-			usage.total.mem.Add(delta)
-			atomic.AddInt64(&js.memUsed, delta)
-			needClusterUpdate = true
-		}
-	} else {
-		if local := usage.local.store.Load(); total != local {
-			s.Warnf("FileStore usage drift of %v vs %v detected for account %q",
-				friendlyBytes(total), friendlyBytes(local), jsa.account.GetName())
-			delta := total - local
-			usage.local.store.Add(delta)
-			usage.total.store.Add(delta)
-			atomic.AddInt64(&js.storeUsed, delta)
-			needClusterUpdate = true
-		}
+	if stored != counted {
+		s.Warnf("%s usage drift of %v vs %v detected for account %q",
+			kind, friendlyBytes(stored), friendlyBytes(counted), jsa.account.GetName())
+		delta := stored - counted
+		local.Add(delta)
+		total.Add(delta)
+		atomic.AddInt64(used, delta)
+		needClusterUpdate = true
 	}
 
 	// Publish our local updates if in clustered mode.
@@ -2381,11 +2389,19 @@ func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta 
 }
 
 // updateUsageCounters is updateUsage for a tier entry the caller already holds
-// (streams cache theirs), so the message path needs no lock at all.
+// (streams cache theirs), so the message path needs no lock unless a drift
+// repair is running.
 func (jsa *jsAccount) updateUsageCounters(s *jsaStorage, tierName string, storeType StorageType, delta int64) {
 	// jsa.js is immutable and cannot be nil, so ok w/o lock.
 	js := jsa.js
 
+	// A running drift repair (checkAndSyncUsage) holds jsa.usageMu while it
+	// compares the counters with the stores, so wait for it here, otherwise
+	// the repair would cancel this update. No lock is taken at any other time.
+	syncing := jsa.sync.Load()
+	if syncing {
+		jsa.usageMu.RLock()
+	}
 	var needsCheck bool
 	if storeType == MemoryStorage {
 		needsCheck = s.local.mem.Add(delta) < 0
@@ -2395,6 +2411,9 @@ func (jsa *jsAccount) updateUsageCounters(s *jsaStorage, tierName string, storeT
 		needsCheck = s.local.store.Add(delta) < 0
 		s.total.store.Add(delta)
 		atomic.AddInt64(&js.storeUsed, delta)
+	}
+	if syncing {
+		jsa.usageMu.RUnlock()
 	}
 	// Publish our local updates if in clustered mode. The updates are rate
 	// limited to one per minUsageUpdateWindow, so only take the lock when one
