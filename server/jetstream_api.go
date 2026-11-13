@@ -5616,6 +5616,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 
 		js.mu.RLock()
 		isLeader, sa, ca := cc.isLeader(), js.streamAssignment(acc.Name, streamName), js.consumerAssignment(acc.Name, streamName, consumerName)
+		// An inflight assignment isn't applied yet, so capture this before falling back to it.
+		applied := ca != nil
 		if sa == nil {
 			// Fallback for a stream that's being created.
 			sa = js.streamAssignmentOrInflight(acc.Name, streamName)
@@ -5713,7 +5715,8 @@ func (s *Server) jsConsumerInfoRequest(sub *subscription, c *client, _ *Account,
 			// Check if we should ignore all together.
 			if node == nil {
 				// We have been assigned but have not created a node yet.
-				if isMember {
+				// Applied consumers may still be recovering, so let their leader respond.
+				if isMember && !applied {
 					resp.Error = NewJSConsumerNotFoundError()
 					s.sendDelayedAPIErrResponse(ci, acc, subject, reply, string(msg), s.jsonResponse(&resp), nil, errRespDelay)
 				}
