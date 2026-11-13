@@ -6303,6 +6303,17 @@ const (
 	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
 )
 
+// appendDirectGetHeader adds the direct get headers in format (dg or dgb) to a
+// message's existing header in a single append.
+func appendDirectGetHeader(hdr []byte, format string, args ...any) []byte {
+	if len(hdr) <= LEN_CR_LF {
+		return fmt.Appendf(nil, format, args...)
+	}
+	// Drop the trailing CRLF, and skip the status line of the format.
+	hdr = hdr[:len(hdr)-LEN_CR_LF]
+	return fmt.Appendf(append(make([]byte, 0, len(hdr)+128), hdr...), format[len(hdrLine):], args...)
+}
+
 // Handle a multi request.
 func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// TODO(dlc) - Make configurable?
@@ -6355,13 +6366,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 		if len(hdr) == 0 {
 			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		} else {
-			hdr = copyBytes(hdr)
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, sm.subj)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+			hdr = appendDirectGetHeader(hdr, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		}
 		// Track our lseq
 		lseq = sm.seq
@@ -6499,23 +6504,13 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
+					hdr = appendDirectGetHeader(hdr, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 				}
 			} else {
 				if len(hdr) == 0 {
 					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
 				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
+					hdr = appendDirectGetHeader(hdr, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
 				}
 			}
 		}
