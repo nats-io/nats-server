@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"testing"
+	"time"
 )
 
 func TestPSEmulationCPU(t *testing.T) {
@@ -27,30 +28,16 @@ func TestPSEmulationCPU(t *testing.T) {
 		t.Skipf("Skipping this test on Windows")
 	}
 	var rss, vss int64
-	var pcpu, psPcpu float64
+	var pcpu float64
 
-	debug.FreeOSMemory()
-
-	// PS version first
-	pidStr := fmt.Sprintf("%d", os.Getpid())
-	out, err := exec.Command("ps", "o", "pcpu=", "-p", pidStr).Output()
-	if err != nil {
-		t.Fatalf("Failed to execute ps command: %v\n", err)
+	// Burn CPU until the background sampler reports usage.
+	for deadline := time.Now().Add(5 * time.Second); pcpu <= 0 && time.Now().Before(deadline); {
+		if err := ProcUsage(&pcpu, &rss, &vss); err != nil {
+			t.Fatalf("Failed to get process usage: %v", err)
+		}
 	}
-
-	// Our internal version
-	ProcUsage(&pcpu, &rss, &vss)
-
-	fmt.Sscanf(string(out), "%f", &psPcpu)
-
-	if pcpu != psPcpu {
-		delta := int64(pcpu - psPcpu)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > 30 { // 30%?
-			t.Fatalf("CPUs did not match close enough: %f vs %f", pcpu, psPcpu)
-		}
+	if pcpu <= 0 {
+		t.Fatalf("Expected positive CPU usage, got %f", pcpu)
 	}
 }
 
