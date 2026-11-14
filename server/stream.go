@@ -576,30 +576,31 @@ type stream struct {
 	// which reads the raft node's current state, this tracks our own processed leadership.
 	leader atomic.Bool
 
-	pubAck    []byte                  // The template (prefix) to generate the pubAck responses for this stream quickly.
-	outq      *jsOutQ                 // Queue of *jsPubMsg for sending messages.
-	msgs      *ipQueue[*inMsg]        // Intra-process queue for the ingress of messages.
-	gets      *ipQueue[*directGetReq] // Intra-process queue for the direct get requests.
-	store     StreamStore             // The storage for this stream.
-	ackq      *ipQueue[uint64]        // Intra-process queue for acks.
-	lseq      uint64                  // The sequence number of the last message stored in the stream.
-	term      uint64                  // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
-	lmsgId    string                  // The de-duplication message ID of the last message stored in the stream.
-	consumers map[string]*consumer    // The consumers for this stream.
-	cfg       StreamConfig            // The stream's config.
-	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
-	created   time.Time               // Time the stream was created.
-	stype     StorageType             // The storage type.
-	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
-	ddMu      sync.Mutex              // Lock for dedupe state.
-	ddwin     time.Duration           // The dedupe window, mirrors cfg.Duplicates.
-	ddmap     map[string]*ddentry     // The dedupe map.
-	ddarr     []*ddentry              // The dedupe array.
-	ddindex   int                     // The dedupe index.
-	ddtmr     *time.Timer             // The dedupe timer.
-	qch       chan struct{}           // The quit channel.
-	mqch      chan struct{}           // The monitor's quit channel.
-	active    bool                    // Indicates that there are active internal subscriptions (for the subject filters)
+	pubAck    []byte                          // The template (prefix) to generate the pubAck responses for this stream quickly.
+	outq      *jsOutQ                         // Queue of *jsPubMsg for sending messages.
+	msgs      *ipQueue[*inMsg]                // Intra-process queue for the ingress of messages.
+	gets      *ipQueue[*directGetReq]         // Intra-process queue for the direct get requests.
+	store     StreamStore                     // The storage for this stream.
+	ackq      *ipQueue[uint64]                // Intra-process queue for acks.
+	lseq      uint64                          // The sequence number of the last message stored in the stream.
+	term      uint64                          // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
+	lmsgId    string                          // The de-duplication message ID of the last message stored in the stream.
+	consumers map[string]*consumer            // The consumers for this stream.
+	cfg       StreamConfig                    // The stream's config.
+	cfgMu     sync.RWMutex                    // Config mutex used to solve some races with consumer code
+	created   time.Time                       // Time the stream was created.
+	stype     StorageType                     // The storage type.
+	tier      string                          // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
+	tierCache atomic.Pointer[streamTierCache] // Snapshot of the account's limits and usage counters for this stream's tier
+	ddMu      sync.Mutex                      // Lock for dedupe state.
+	ddwin     time.Duration                   // The dedupe window, mirrors cfg.Duplicates.
+	ddmap     map[string]*ddentry             // The dedupe map.
+	ddarr     []*ddentry                      // The dedupe array.
+	ddindex   int                             // The dedupe index.
+	ddtmr     *time.Timer                     // The dedupe timer.
+	qch       chan struct{}                   // The quit channel.
+	mqch      chan struct{}                   // The monitor's quit channel.
+	active    bool                            // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	closed        atomic.Bool // Set to true when stop() is called on the stream.
 	cisrun        atomic.Bool // Indicates one checkInterestState is already running.
@@ -2980,6 +2981,8 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 			jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
 			jsa.updateUsage(targetTier, mset.stype, int64(reported))
 			mset.tier = targetTier
+			// The cached limits and usage belong to the old tier.
+			mset.tierCache.Store(nil)
 		}
 		// else in case the new tier does not exist (say on move), keep the old tier around
 		// a subsequent update to an existing tier will then move from existing past tier to existing new tier
@@ -5662,7 +5665,15 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	}
 
 	if mset.jsa != nil {
-		mset.jsa.updateUsage(mset.tier, mset.stype, bd)
+		// Use the usage counters cached by the limits check when the snapshot
+		// is for the stream's current tier. A snapshot left behind by a tier
+		// change falls through to the lookup.
+		tier := mset.tier
+		if c := mset.tierCache.Load(); c != nil && c.tier == tier {
+			mset.jsa.updateUsageCounters(c.usage, tier, mset.stype, bd)
+		} else {
+			mset.jsa.updateUsage(tier, mset.stype, bd)
+		}
 	}
 }
 
@@ -6662,6 +6673,11 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		batchId  string
 		batchSeq uint64
 	)
+	// When called from processJetStreamFastBatchMsg the account limits were
+	// already checked for this exact message, so do not check them again below.
+	// (A second check could also reject a message after the batch counted it as
+	// pending, leaving the batch waiting for a persist that never comes.)
+	limitsChecked := fastBatch != nil
 	// Populate batch details.
 	if fastBatch != nil {
 		// For R1 we can reuse without regenerating.
@@ -7413,8 +7429,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
 	// Don't error and log if we're tracing when clustered.
-	if !isClustered {
-		if exceeded, err := jsa.wouldExceedLimits(stype, mset.tier, mset.cfg.Replicas, subject, hdr, msg); exceeded {
+	if !isClustered && !limitsChecked {
+		if exceeded, err := mset.wouldExceedAccountLimits(jsa, stype, mset.tier, mset.cfg.Replicas, subject, hdr, msg); exceeded {
 			if err == nil {
 				err = NewJSAccountResourcesExceededError()
 			}
@@ -8120,6 +8136,54 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	return err
 }
 
+// streamTierCache is an immutable snapshot of the account limits and usage
+// counters for a stream's tier, taken at limits generation `gen`. It is only
+// used while gen matches jsa.limitsGen and tier matches the stream's tier,
+// otherwise it is replaced.
+// refreshTierCache reads gen before the limits and UpdateJetStreamLimits bumps
+// it after changing them, so a snapshot can look older than it is but never
+// newer, and concurrent refreshes need no coordination.
+type streamTierCache struct {
+	gen    uint64
+	tier   string
+	limits JetStreamAccountLimits
+	usage  *jsaStorage // Never nil in an installed snapshot.
+}
+
+// refreshTierCache snapshots the tier's limits and usage counters and installs
+// the snapshot. Returns nil if the account has no limits for the tier. If the
+// tier has no usage counters yet (nothing stored), the snapshot is returned
+// but not installed, so the next check looks again.
+func (mset *stream) refreshTierCache(jsa *jsAccount, tier string) *streamTierCache {
+	// Load the generation before the maps so a concurrent limits update can
+	// only make the snapshot look older than it is, never newer.
+	gen := jsa.limitsGen.Load()
+	jsa.usageMu.RLock()
+	l, ok := jsa.limits[tier]
+	u := jsa.usage[tier]
+	jsa.usageMu.RUnlock()
+	if !ok {
+		return nil
+	}
+	c := &streamTierCache{gen: gen, tier: tier, limits: l, usage: u}
+	if u != nil {
+		mset.tierCache.Store(c)
+	}
+	return c
+}
+
+// wouldExceedAccountLimits is jsa.wouldExceedLimits for this stream's tier,
+// using the stream's cached snapshot so the message path avoids jsa.usageMu.
+func (mset *stream) wouldExceedAccountLimits(jsa *jsAccount, storeType StorageType, tier string, replicas int, subj string, hdr, msg []byte) (bool, *ApiError) {
+	c := mset.tierCache.Load()
+	if c == nil || c.tier != tier || c.gen != jsa.limitsGen.Load() {
+		if c = mset.refreshTierCache(jsa, tier); c == nil {
+			return true, NewJSNoLimitsError()
+		}
+	}
+	return wouldExceedTierLimits(&c.limits, c.usage, storeType, tier, replicas, subj, hdr, msg), nil
+}
+
 // processJetStreamFastBatchMsg processes a JetStream message that's part of an atomic batch publish.
 // Handles constraints around the batch, storing messages, doing consistency checks, and performing the commit.
 func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, reply string, hdr, msg []byte, mt *msgTrace) (retErr error) {
@@ -8186,7 +8250,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	}
 
 	// Check here pre-emptively if we have exceeded our account limits.
-	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, csubject, hdr, msg); exceeded {
+	if exceeded, err := mset.wouldExceedAccountLimits(jsa, st, tierName, r, csubject, hdr, msg); exceeded {
 		if err == nil {
 			err = NewJSAccountResourcesExceededError()
 		}
@@ -8390,7 +8454,21 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+	osz := len(hdr) + len(msg)
+	hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes)
+	// The account limits were checked above for the message as received. If it
+	// was rewritten into a larger one (counter value, rollup header), check
+	// what will be stored, before the batch counts the message as pending.
+	if err == nil && len(hdr)+len(msg) > osz {
+		if exceeded, lerr := mset.wouldExceedAccountLimits(jsa, st, tierName, r, csubject, hdr, msg); exceeded {
+			if lerr == nil {
+				lerr = NewJSAccountResourcesExceededError()
+			}
+			s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), lerr.Error())
+			apiErr, err = lerr, lerr
+		}
+	}
+	if err != nil {
 		mset.clMu.Unlock()
 
 		// If the message is a duplicate, and we have no pending messages, we should check if we need to

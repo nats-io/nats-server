@@ -5714,3 +5714,265 @@ func TestJetStreamFastBatchPublishLimits(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+// Fast batch publishes must respect the account's storage limits: the check
+// runs once per message in processJetStreamFastBatchMsg (the per-message path
+// does not repeat it), the rejection carries the account resources error, and
+// the stream keeps accepting batches afterwards.
+func TestJetStreamFastBatchPublishAccountLimits(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+		_EMPTY_: {MaxMemory: 4 * 1024, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}))
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           MemoryStorage,
+		Retention:         LimitsPolicy,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// Single-message batches, each committed, until the account limit rejects one.
+	payload := make([]byte, 256)
+	var pubAck JSPubAckResponse
+	var rejected bool
+	for i := 0; i < 64 && !rejected; i++ {
+		m := nats.NewMsg("foo")
+		m.Data = payload
+		m.Reply = generateFastBatchReply(inbox, fmt.Sprintf("b%d", i), 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		pubAck = JSPubAckResponse{}
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		if pubAck.Error != nil {
+			require_Error(t, pubAck.Error, NewJSAccountResourcesExceededError())
+			rejected = true
+		}
+	}
+	require_True(t, rejected)
+
+	// Free the space; a new batch must then be accepted (nothing left pending from the rejection).
+	_, err = nc.Request("$JS.API.STREAM.PURGE.TEST", nil, time.Second)
+	require_NoError(t, err)
+	m := nats.NewMsg("foo")
+	m.Data = payload
+	m.Reply = generateFastBatchReply(inbox, "after", 1, 0, FastBatchGapFail, FastBatchOpCommit)
+	require_NoError(t, nc.PublishMsg(m))
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	pubAck = JSPubAckResponse{}
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_True(t, pubAck.Sequence > 0)
+
+	// A counter increment has no payload, the stored message carries the counter value.
+	// One that fits the limit as received but not as stored must be rejected as well.
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "COUNTER",
+		Subjects:          []string{"bar"},
+		Storage:           MemoryStorage,
+		AllowMsgCounter:   true,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	increment := func(batchId string) *ApiError {
+		t.Helper()
+		m := nats.NewMsg("bar")
+		m.Header.Set(JSMessageIncr, "1")
+		m.Reply = generateFastBatchReply(inbox, batchId, 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		return pubAck.Error
+	}
+	memoryUsed := func() int64 {
+		return int64(acc.JetStreamUsage().Memory)
+	}
+	setMaxMemory := func(maxMemory int64) {
+		t.Helper()
+		require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+			_EMPTY_: {MaxMemory: maxMemory, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+		}))
+	}
+
+	used := memoryUsed()
+	require_True(t, increment("c1") == nil)
+	stored := memoryUsed() - used
+	used += stored
+
+	setMaxMemory(used + stored - 1)
+	require_Error(t, increment("c2"), NewJSAccountResourcesExceededError())
+	require_Equal(t, memoryUsed(), used)
+
+	// Nothing is left pending from the rejection either.
+	setMaxMemory(used + stored)
+	require_True(t, increment("c3") == nil)
+	require_Equal(t, memoryUsed(), used+stored)
+}
+
+// TestJetStreamTierCacheSurvivesLimitsUpdates stresses the per-stream snapshot
+// of the account tier's limits and usage (streamTierCache). Two background
+// publishers, one plain and one committing single-message fast batches (that
+// path checks the limits without the stream lock), run while the account
+// limits flip between unlimited and 4 KiB.
+func TestJetStreamTierCacheSurvivesLimitsUpdates(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	acc := s.GlobalAccount()
+	unlimited := map[string]JetStreamAccountLimits{
+		_EMPTY_: {MaxMemory: -1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}
+	limited := map[string]JetStreamAccountLimits{
+		_EMPTY_: {MaxMemory: 4 * 1024, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}
+	require_NoError(t, acc.UpdateJetStreamLimits(unlimited))
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo"},
+		Storage:           MemoryStorage,
+		Retention:         LimitsPolicy,
+		MaxBytes:          64 * 1024,
+		Discard:           DiscardOld,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	payload := make([]byte, 256)
+	exceeded := NewJSAccountResourcesExceededError()
+
+	type publisher struct {
+		nc    *nats.Conn
+		sub   *nats.Subscription
+		inbox string
+		n     int
+	}
+	newPublisher := func() *publisher {
+		pnc := clientConnectToServer(t, s)
+		inbox := nats.NewInbox()
+		sub, err := pnc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		return &publisher{nc: pnc, sub: sub, inbox: inbox}
+	}
+	// send publishes one message, plain or as a committed single-message fast
+	// batch, and reports whether the account limits rejected it.
+	send := func(p *publisher, fast bool) (bool, error) {
+		var data []byte
+		if fast {
+			p.n++
+			m := nats.NewMsg("foo")
+			m.Data = payload
+			m.Reply = generateFastBatchReply(p.inbox, fmt.Sprintf("b%d", p.n), 1, 0, FastBatchGapFail, FastBatchOpCommit)
+			if err := p.nc.PublishMsg(m); err != nil {
+				return false, err
+			}
+			rmsg, err := p.sub.NextMsg(2 * time.Second)
+			if err != nil {
+				return false, err
+			}
+			data = rmsg.Data
+		} else {
+			rmsg, err := p.nc.Request("foo", payload, 2*time.Second)
+			if err != nil {
+				return false, err
+			}
+			data = rmsg.Data
+		}
+		var pubAck JSPubAckResponse
+		if err := json.Unmarshal(data, &pubAck); err != nil {
+			return false, err
+		}
+		if pubAck.Error == nil {
+			return false, nil
+		}
+		if pubAck.Error.ErrCode != exceeded.ErrCode {
+			return false, fmt.Errorf("unexpected publish error: %v", pubAck.Error)
+		}
+		return true, nil
+	}
+
+	// Fill the stream well past the small limit while unlimited.
+	probes := map[bool]*publisher{false: newPublisher(), true: newPublisher()}
+	defer probes[false].nc.Close()
+	defer probes[true].nc.Close()
+	for i := 0; i < 32; i++ {
+		rejected, err := send(probes[false], false)
+		require_NoError(t, err)
+		require_False(t, rejected)
+	}
+
+	// Background load: concurrent limit checks and cache refreshes from both
+	// publish paths.
+	stop := make(chan struct{})
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, fast := range []bool{false, true} {
+		p := newPublisher()
+		defer p.nc.Close()
+		wg.Add(1)
+		go func(p *publisher, fast bool) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := send(p, fast); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(p, fast)
+	}
+
+	for i := 0; i < 200; i++ {
+		// Tighten: the stream already holds more than 4 KiB, so the first
+		// publish of each kind after the update must be rejected.
+		require_NoError(t, acc.UpdateJetStreamLimits(limited))
+		for _, fast := range []bool{false, true} {
+			rejected, err := send(probes[fast], fast)
+			require_NoError(t, err)
+			if !rejected {
+				t.Fatalf("iteration %d: publish (fast batch: %v) accepted after the limits were tightened", i, fast)
+			}
+		}
+		// Relax: the first publish of each kind must be accepted.
+		require_NoError(t, acc.UpdateJetStreamLimits(unlimited))
+		for _, fast := range []bool{false, true} {
+			rejected, err := send(probes[fast], fast)
+			require_NoError(t, err)
+			if rejected {
+				t.Fatalf("iteration %d: publish (fast batch: %v) rejected after the limits were relaxed", i, fast)
+			}
+		}
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+}

@@ -154,9 +154,21 @@ type remoteUsage struct {
 	err   uint64
 }
 
+// Per-tier usage counters of an account.
+type jsaCounters struct {
+	mem   atomic.Int64
+	store atomic.Int64
+}
+
 type jsaStorage struct {
-	total jsaUsage
-	local jsaUsage
+	total jsaCounters // usage of this tier across the cluster: local + all remote nodes
+	local jsaCounters // usage of this tier on this server
+}
+
+// isZero reports whether nothing has been recorded for this tier.
+func (s *jsaStorage) isZero() bool {
+	return s.total.mem.Load() == 0 && s.total.store.Load() == 0 &&
+		s.local.mem.Load() == 0 && s.local.store.Load() == 0
 }
 
 // This represents a jetstream enabled account.
@@ -179,7 +191,10 @@ type jsAccount struct {
 	sync atomic.Bool
 
 	// Usage/limits related fields that will be protected by usageMu
-	usageMu    sync.RWMutex
+	usageMu sync.RWMutex
+	// Bumped whenever limits is replaced, so streams can cache their tier's
+	// limits and usage pointer and check them without taking usageMu.
+	limitsGen  atomic.Uint64
 	limits     map[string]JetStreamAccountLimits // indexed by tierName
 	usage      map[string]*jsaStorage            // indexed by tierName
 	rusage     map[string]*remoteUsage           // indexed by node id
@@ -191,6 +206,9 @@ type jsAccount struct {
 	updatesSub *subscription
 	lupdate    time.Time
 	utimer     *time.Timer
+	// Unix nanos of lupdate, readable without usageMu so the message path can
+	// tell whether a cluster usage update is due before taking the lock.
+	lupdateNanos atomic.Int64
 }
 
 // Track general usage for this account.
@@ -1866,6 +1884,7 @@ func (a *Account) UpdateJetStreamLimits(limits map[string]JetStreamAccountLimits
 	// Update
 	jsa.usageMu.Lock()
 	jsa.limits = limits
+	jsa.limitsGen.Add(1)
 	jsa.usageMu.Unlock()
 
 	return nil
@@ -1974,14 +1993,14 @@ func (a *Account) JetStreamUsage() JetStreamAccountStats {
 			skipped := 0
 			stats.Tiers = make(map[string]JetStreamTier)
 			for t, total := range jsa.usage {
-				if _, ok := jsa.limits[t]; !ok && (*total) == (jsaStorage{}) {
+				if _, ok := jsa.limits[t]; !ok && total.isZero() {
 					// skip tiers not present that don't contain a count
 					// In case this shows an empty stream, that tier will be added when iterating over streams
 					skipped++
 				} else {
 					tier := JetStreamTier{
-						Memory: uint64(total.total.mem),
-						Store:  uint64(total.total.store),
+						Memory: uint64(total.total.mem.Load()),
+						Store:  uint64(total.total.store.Load()),
 						Limits: jsa.limits[t],
 					}
 					if singleServer {
@@ -2138,8 +2157,8 @@ func (jsa *jsAccount) removeRemoteUsage(rnode string) {
 	}
 	for tierName, usage := range rUsage.tiers {
 		if total := jsa.usage[tierName]; total != nil {
-			total.total.mem -= usage.mem
-			total.total.store -= usage.store
+			total.total.mem.Add(-usage.mem)
+			total.total.store.Add(-usage.store)
 		}
 	}
 	jsa.apiTotal -= rUsage.api
@@ -2198,17 +2217,17 @@ func (jsa *jsAccount) remoteUpdateUsage(sub *subscription, c *client, _ *Account
 			total = &jsaStorage{}
 			jsa.usage[tierName] = total
 		}
-		// Update the usage for this remote.
+		// Update the usage for this remote and move the tier total by the
+		// change against the previous snapshot from this node.
+		var prevMem, prevStore int64
 		if usage := rUsage.tiers[tierName]; usage != nil {
-			// Decrement our old values.
-			total.total.mem -= usage.mem
-			total.total.store -= usage.store
+			prevMem, prevStore = usage.mem, usage.store
 			usage.mem, usage.store = memUsed, storeUsed
 		} else {
 			rUsage.tiers[tierName] = &jsaUsage{memUsed, storeUsed}
 		}
-		total.total.mem += memUsed
-		total.total.store += storeUsed
+		total.total.mem.Add(memUsed - prevMem)
+		total.total.store.Add(storeUsed - prevStore)
 	}
 
 	var le = binary.LittleEndian
@@ -2259,10 +2278,12 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 	}
 	defer jsa.sync.Store(false)
 
-	// Hold the account read lock and the usage lock while we calculate.
+	// Hold the account read lock while we calculate.
 	// We scope by tier and storage type, but if R3 File has 200 streams etc. could
 	// show a pause. I did test with > 100 non-active streams and was 80-200ns or so.
 	// Should be rare this gets called as well.
+	// Streams update the counters with atomics, but while jsa.sync is set they take
+	// the usage read lock first, so they wait for the repair.
 	jsa.mu.RLock()
 	defer jsa.mu.RUnlock()
 	js := jsa.js
@@ -2291,36 +2312,32 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 		return
 	}
 
+	local, total, used, kind := &usage.local.store, &usage.total.store, &js.storeUsed, "FileStore"
+	if storeType == MemoryStorage {
+		local, total, used, kind = &usage.local.mem, &usage.total.mem, &js.memUsed, "MemStore"
+	}
+
 	// Collect current total for all stream stores that matched.
-	var total int64
+	var stored int64
 	var state StreamState
 	for _, store := range stores {
 		store.FastState(&state)
-		total += int64(state.Bytes)
+		stored += int64(state.Bytes)
 	}
+	// The counter must be read after the stores: an update that lands while
+	// they are sampled is for bytes they already hold, see above.
+	counted := local.Load()
 
 	var needClusterUpdate bool
 	// If we do not match on our calculations compute delta and adjust.
-	if storeType == MemoryStorage {
-		if total != usage.local.mem {
-			s.Warnf("MemStore usage drift of %v vs %v detected for account %q",
-				friendlyBytes(total), friendlyBytes(usage.local.mem), jsa.account.GetName())
-			delta := total - usage.local.mem
-			usage.local.mem += delta
-			usage.total.mem += delta
-			atomic.AddInt64(&js.memUsed, delta)
-			needClusterUpdate = true
-		}
-	} else {
-		if total != usage.local.store {
-			s.Warnf("FileStore usage drift of %v vs %v detected for account %q",
-				friendlyBytes(total), friendlyBytes(usage.local.store), jsa.account.GetName())
-			delta := total - usage.local.store
-			usage.local.store += delta
-			usage.total.store += delta
-			atomic.AddInt64(&js.storeUsed, delta)
-			needClusterUpdate = true
-		}
+	if stored != counted {
+		s.Warnf("%s usage drift of %v vs %v detected for account %q",
+			kind, friendlyBytes(stored), friendlyBytes(counted), jsa.account.GetName())
+		delta := stored - counted
+		local.Add(delta)
+		total.Add(delta)
+		atomic.AddInt64(used, delta)
+		needClusterUpdate = true
 	}
 
 	// Publish our local updates if in clustered mode.
@@ -2329,39 +2346,66 @@ func (jsa *jsAccount) checkAndSyncUsage(tierName string, storeType StorageType) 
 	}
 }
 
-// Updates accounting on in use memory and storage. This is called from locally
-// by the lower storage layers.
-func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta int64) {
-	// jsa.js is immutable and cannot be nil, so ok w/o lock.
-	js := jsa.js
-	// updateUsage() may be invoked under the mset's lock, so we can't get
-	// the js' lock to check if clustered. So use this function that make
-	// use of an atomic to do the check without having data race reports.
-	isClustered := js.isClusteredNoLock()
-
-	var needsCheck bool
+// tierUsage returns the usage counters for a tier, creating them on first use.
+// The returned pointer is stable for the life of the account, so callers can
+// keep it and update the counters without jsa.usageMu.
+func (jsa *jsAccount) tierUsage(tierName string) *jsaStorage {
+	jsa.usageMu.RLock()
+	s := jsa.usage[tierName]
+	jsa.usageMu.RUnlock()
+	if s != nil {
+		return s
+	}
 	jsa.usageMu.Lock()
-	s, ok := jsa.usage[tierName]
-	if !ok {
+	if s = jsa.usage[tierName]; s == nil {
 		s = &jsaStorage{}
 		jsa.usage[tierName] = s
 	}
-	if storeType == MemoryStorage {
-		s.local.mem += delta
-		s.total.mem += delta
-		atomic.AddInt64(&js.memUsed, delta)
-		needsCheck = s.local.mem < 0
-	} else {
-		s.local.store += delta
-		s.total.store += delta
-		atomic.AddInt64(&js.storeUsed, delta)
-		needsCheck = s.local.store < 0
-	}
-	// Publish our local updates if in clustered mode.
-	if isClustered {
-		jsa.sendClusterUsageUpdate()
-	}
 	jsa.usageMu.Unlock()
+	return s
+}
+
+// Updates accounting on in use memory and storage. This is called from locally
+// by the lower storage layers, concurrently by every stream of the account.
+// The counters are atomics; usageMu is only read-locked here to look the tier up.
+func (jsa *jsAccount) updateUsage(tierName string, storeType StorageType, delta int64) {
+	jsa.updateUsageCounters(jsa.tierUsage(tierName), tierName, storeType, delta)
+}
+
+// updateUsageCounters is updateUsage for a tier entry the caller already holds
+// (streams cache theirs), so the message path needs no lock unless a drift
+// repair is running.
+func (jsa *jsAccount) updateUsageCounters(s *jsaStorage, tierName string, storeType StorageType, delta int64) {
+	// jsa.js is immutable and cannot be nil, so ok w/o lock.
+	js := jsa.js
+
+	// If a drift repair (checkAndSyncUsage) is running, wait for it by taking
+	// usageMu, otherwise its correction could undo this update.
+	syncing := jsa.sync.Load()
+	if syncing {
+		jsa.usageMu.RLock()
+	}
+	var needsCheck bool
+	if storeType == MemoryStorage {
+		needsCheck = s.local.mem.Add(delta) < 0
+		s.total.mem.Add(delta)
+		atomic.AddInt64(&js.memUsed, delta)
+	} else {
+		needsCheck = s.local.store.Add(delta) < 0
+		s.total.store.Add(delta)
+		atomic.AddInt64(&js.storeUsed, delta)
+	}
+	if syncing {
+		jsa.usageMu.RUnlock()
+	}
+	// Publish our local updates if in clustered mode. The updates are rate
+	// limited to one per minUsageUpdateWindow, so only take the lock when
+	// one is due.
+	if js.isClusteredNoLock() && jsa.clusterUsageUpdateDue() {
+		jsa.usageMu.Lock()
+		jsa.sendClusterUsageUpdate()
+		jsa.usageMu.Unlock()
+	}
 
 	if needsCheck {
 		// We could be holding the stream lock from up in the stack, and this
@@ -2392,6 +2436,12 @@ const (
 	minUsageUpdateWindow = 250 * time.Millisecond
 )
 
+// clusterUsageUpdateDue reports whether minUsageUpdateWindow has passed since
+// the last cluster usage update.
+func (jsa *jsAccount) clusterUsageUpdateDue() bool {
+	return time.Now().UnixNano()-jsa.lupdateNanos.Load() >= int64(minUsageUpdateWindow)
+}
+
 // Send updates to our account usage for this server.
 // jsa.usageMu lock should be held.
 func (jsa *jsAccount) sendClusterUsageUpdate() {
@@ -2401,6 +2451,7 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 		return
 	}
 	jsa.lupdate = now
+	jsa.lupdateNanos.Store(now.UnixNano())
 
 	lenUsage := len(jsa.usage)
 	if lenUsage == 0 {
@@ -2425,8 +2476,8 @@ func (jsa *jsAccount) sendClusterUsageUpdate() {
 	var i int
 	var le = binary.LittleEndian
 	for tier, usage := range jsa.usage {
-		le.PutUint64(b[i+0:], uint64(usage.local.mem))
-		le.PutUint64(b[i+8:], uint64(usage.local.store))
+		le.PutUint64(b[i+0:], uint64(usage.local.mem.Load()))
+		le.PutUint64(b[i+8:], uint64(usage.local.store.Load()))
 		if i == 0 {
 			le.PutUint64(b[16:], jsa.usageApi)
 			le.PutUint64(b[24:], jsa.usageErr)
@@ -2513,8 +2564,8 @@ func (jsa *jsAccount) storageTotals() (uint64, uint64) {
 	mem := uint64(0)
 	store := uint64(0)
 	for _, sa := range jsa.usage {
-		mem += uint64(sa.total.mem)
-		store += uint64(sa.total.store)
+		mem += uint64(sa.total.mem.Load())
+		store += uint64(sa.total.store.Load())
 	}
 	return mem, store
 }
@@ -2525,16 +2576,23 @@ func (jsa *jsAccount) limitsExceeded(storeType StorageType, tierName string, rep
 
 func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, replicas int, subj string, hdr, msg []byte) (bool, *ApiError) {
 	jsa.usageMu.RLock()
-	defer jsa.usageMu.RUnlock()
-
 	selectedLimits, ok := jsa.limits[tierName]
+	inUse := jsa.usage[tierName]
+	jsa.usageMu.RUnlock()
+
 	if !ok {
 		return true, NewJSNoLimitsError()
 	}
-	inUse := jsa.usage[tierName]
+	return wouldExceedTierLimits(&selectedLimits, inUse, storeType, tierName, replicas, subj, hdr, msg), nil
+}
+
+// wouldExceedTierLimits is the lock free part of the account limits check: it
+// reads the tier's usage counters atomically and compares them with the given
+// limits. inUse may be nil, which means nothing has been stored yet.
+func wouldExceedTierLimits(selectedLimits *JetStreamAccountLimits, inUse *jsaStorage, storeType StorageType, tierName string, replicas int, subj string, hdr, msg []byte) bool {
 	if inUse == nil {
 		// Imply totals of 0
-		return false, nil
+		return false
 	}
 	r := int64(replicas)
 	// Make sure replicas is correct.
@@ -2549,18 +2607,18 @@ func (jsa *jsAccount) wouldExceedLimits(storeType StorageType, tierName string, 
 
 	// Since tiers are flat we need to scale limit up by replicas when checking.
 	if storeType == MemoryStorage {
-		totalMem := inUse.total.mem + (int64(memStoreMsgSize(subj, hdr, msg)) * r)
+		totalMem := inUse.total.mem.Load() + (int64(memStoreMsgSize(subj, hdr, msg)) * r)
 		if selectedLimits.MaxMemory >= 0 && totalMem > selectedLimits.MaxMemory*lr {
-			return true, nil
+			return true
 		}
 	} else {
-		totalStore := inUse.total.store + (int64(fileStoreMsgSize(subj, hdr, msg)) * r)
+		totalStore := inUse.total.store.Load() + (int64(fileStoreMsgSize(subj, hdr, msg)) * r)
 		if selectedLimits.MaxStore >= 0 && totalStore > selectedLimits.MaxStore*lr {
-			return true, nil
+			return true
 		}
 	}
 
-	return false, nil
+	return false
 }
 
 // Check account limits.

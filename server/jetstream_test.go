@@ -18413,7 +18413,7 @@ func TestJetStreamUsageSyncDeadlock(t *testing.T) {
 	jsa.usageMu.Lock()
 	st, ok := jsa.usage[_EMPTY_]
 	require_True(t, ok)
-	st.local.store = -1000
+	st.local.store.Store(-1000)
 	jsa.usageMu.Unlock()
 
 	sendStreamMsg(t, nc, "foo", "hello")
@@ -29278,4 +29278,62 @@ func TestJetStreamStoredReservedDeliverSubjectRejected(t *testing.T) {
 	_, err = s.GlobalAccount().RestoreStreamV2(&scfg, bytes.NewReader(snapshot))
 	require_Error(t, err)
 	require_Contains(t, err.Error(), NewJSConsumerInvalidDeliverSubjectError().Error())
+}
+
+func TestJetStreamUsageSyncKeepsUpdateDuringSample(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Storage: nats.MemoryStorage})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", []byte("msg"))
+	require_NoError(t, err)
+
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	jsa := mset.jsa
+	usage := jsa.tierUsage(mset.tier)
+	stored := usage.local.mem.Load()
+	require_True(t, stored > 0)
+
+	// The counters have drifted, and an update for bytes that are already in
+	// the store has not reached them yet.
+	const drift, pending = 1000, 100
+	usage.local.mem.Add(-drift - pending)
+	usage.total.mem.Add(-drift - pending)
+
+	// Hold the usage sync while it samples the store.
+	ms := mset.store.(*memStore)
+	ms.mu.Lock()
+	unlockStore := sync.OnceFunc(ms.mu.Unlock)
+	defer unlockStore()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		jsa.checkAndSyncUsage(mset.tier, MemoryStorage)
+	}()
+	checkFor(t, 2*time.Second, 5*time.Millisecond, func() error {
+		if jsa.usageMu.TryLock() {
+			jsa.usageMu.Unlock()
+			return errors.New("usage sync is not sampling yet")
+		}
+		return nil
+	})
+
+	// The pending update lands during the sample. It must not be counted twice.
+	usage.local.mem.Add(pending)
+	usage.total.mem.Add(pending)
+	unlockStore()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Usage sync did not complete")
+	}
+	require_Equal(t, usage.local.mem.Load(), stored)
+	require_Equal(t, usage.total.mem.Load(), stored)
 }
