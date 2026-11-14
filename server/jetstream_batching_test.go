@@ -5778,6 +5778,53 @@ func TestJetStreamFastBatchPublishAccountLimits(t *testing.T) {
 	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 	require_True(t, pubAck.Error == nil)
 	require_True(t, pubAck.Sequence > 0)
+
+	// A counter increment has no payload, the stored message carries the counter value.
+	// One that fits the limit as received but not as stored must be rejected as well.
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "COUNTER",
+		Subjects:          []string{"bar"},
+		Storage:           MemoryStorage,
+		AllowMsgCounter:   true,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+
+	increment := func(batchId string) *ApiError {
+		t.Helper()
+		m := nats.NewMsg("bar")
+		m.Header.Set(JSMessageIncr, "1")
+		m.Reply = generateFastBatchReply(inbox, batchId, 1, 0, FastBatchGapFail, FastBatchOpCommit)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		return pubAck.Error
+	}
+	memoryUsed := func() int64 {
+		return int64(acc.JetStreamUsage().Memory)
+	}
+	setMaxMemory := func(maxMemory int64) {
+		t.Helper()
+		require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+			_EMPTY_: {MaxMemory: maxMemory, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+		}))
+	}
+
+	used := memoryUsed()
+	require_True(t, increment("c1") == nil)
+	stored := memoryUsed() - used
+	used += stored
+
+	setMaxMemory(used + stored - 1)
+	require_Error(t, increment("c2"), NewJSAccountResourcesExceededError())
+	require_Equal(t, memoryUsed(), used)
+
+	// Nothing is left pending from the rejection either.
+	setMaxMemory(used + stored)
+	require_True(t, increment("c3") == nil)
+	require_Equal(t, memoryUsed(), used+stored)
 }
 
 // TestJetStreamTierCacheSurvivesLimitsUpdates stresses the per-stream snapshot

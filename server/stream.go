@@ -576,35 +576,31 @@ type stream struct {
 	// which reads the raft node's current state, this tracks our own processed leadership.
 	leader atomic.Bool
 
-	pubAck    []byte                  // The template (prefix) to generate the pubAck responses for this stream quickly.
-	outq      *jsOutQ                 // Queue of *jsPubMsg for sending messages.
-	msgs      *ipQueue[*inMsg]        // Intra-process queue for the ingress of messages.
-	gets      *ipQueue[*directGetReq] // Intra-process queue for the direct get requests.
-	store     StreamStore             // The storage for this stream.
-	ackq      *ipQueue[uint64]        // Intra-process queue for acks.
-	lseq      uint64                  // The sequence number of the last message stored in the stream.
-	term      uint64                  // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
-	lmsgId    string                  // The de-duplication message ID of the last message stored in the stream.
-	consumers map[string]*consumer    // The consumers for this stream.
-	cfg       StreamConfig            // The stream's config.
-	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
-	created   time.Time               // Time the stream was created.
-	stype     StorageType             // The storage type.
-	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
-	// Snapshot of the account's limits and usage counters for this stream's
-	// tier, so the per-message limits check and the store callback do not
-	// take jsa.usageMu; see streamTierCache. Atomic because the fast batch
-	// path checks limits without holding the stream lock.
-	tierCache atomic.Pointer[streamTierCache]
-	ddMu      sync.Mutex          // Lock for dedupe state.
-	ddwin     time.Duration       // The dedupe window, mirrors cfg.Duplicates.
-	ddmap     map[string]*ddentry // The dedupe map.
-	ddarr     []*ddentry          // The dedupe array.
-	ddindex   int                 // The dedupe index.
-	ddtmr     *time.Timer         // The dedupe timer.
-	qch       chan struct{}       // The quit channel.
-	mqch      chan struct{}       // The monitor's quit channel.
-	active    bool                // Indicates that there are active internal subscriptions (for the subject filters)
+	pubAck    []byte                          // The template (prefix) to generate the pubAck responses for this stream quickly.
+	outq      *jsOutQ                         // Queue of *jsPubMsg for sending messages.
+	msgs      *ipQueue[*inMsg]                // Intra-process queue for the ingress of messages.
+	gets      *ipQueue[*directGetReq]         // Intra-process queue for the direct get requests.
+	store     StreamStore                     // The storage for this stream.
+	ackq      *ipQueue[uint64]                // Intra-process queue for acks.
+	lseq      uint64                          // The sequence number of the last message stored in the stream.
+	term      uint64                          // Raft term, used to determine if we are still the leader for the current term (if applicable, 0 otherwise).
+	lmsgId    string                          // The de-duplication message ID of the last message stored in the stream.
+	consumers map[string]*consumer            // The consumers for this stream.
+	cfg       StreamConfig                    // The stream's config.
+	cfgMu     sync.RWMutex                    // Config mutex used to solve some races with consumer code
+	created   time.Time                       // Time the stream was created.
+	stype     StorageType                     // The storage type.
+	tier      string                          // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
+	tierCache atomic.Pointer[streamTierCache] // Snapshot of the account's limits and usage counters for this stream's tier
+	ddMu      sync.Mutex                      // Lock for dedupe state.
+	ddwin     time.Duration                   // The dedupe window, mirrors cfg.Duplicates.
+	ddmap     map[string]*ddentry             // The dedupe map.
+	ddarr     []*ddentry                      // The dedupe array.
+	ddindex   int                             // The dedupe index.
+	ddtmr     *time.Timer                     // The dedupe timer.
+	qch       chan struct{}                   // The quit channel.
+	mqch      chan struct{}                   // The monitor's quit channel.
+	active    bool                            // Indicates that there are active internal subscriptions (for the subject filters)
 	// and/or mirror/sources consumers are scheduled to be established or already started.
 	closed        atomic.Bool // Set to true when stop() is called on the stream.
 	cisrun        atomic.Bool // Indicates one checkInterestState is already running.
@@ -5670,9 +5666,8 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 
 	if mset.jsa != nil {
 		// Use the usage counters cached by the limits check when the snapshot
-		// is for the stream's current tier, so the common path does not take
-		// jsa.usageMu at all; a snapshot left behind by a tier change falls
-		// through to the lookup.
+		// is for the stream's current tier. A snapshot left behind by a tier
+		// change falls through to the lookup.
 		tier := mset.tier
 		if c := mset.tierCache.Load(); c != nil && c.tier == tier {
 			mset.jsa.updateUsageCounters(c.usage, tier, mset.stype, bd)
@@ -8141,16 +8136,13 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 	return err
 }
 
-// streamTierCache is an immutable snapshot of a stream's account tier: the
-// limits and the usage counters of tier `tier` as of limits generation `gen`.
-// Readers load the snapshot once, so its fields are always consistent with
-// each other, and validate gen against jsa.limitsGen and tier against the
-// stream's tier before using it; a stale snapshot is replaced, never used.
-// Because refreshTierCache reads gen before the maps and UpdateJetStreamLimits
-// installs the new limits before bumping gen (both under jsa.usageMu), a
-// snapshot can only look older than it is, never newer, so concurrent
-// refreshes need no coordination: whichever lands last is either current or
-// rejected by the next check.
+// streamTierCache is an immutable snapshot of the account limits and usage
+// counters for a stream's tier, taken at limits generation `gen`. It is only
+// used while gen matches jsa.limitsGen and tier matches the stream's tier,
+// otherwise it is replaced.
+// refreshTierCache reads gen before the limits and UpdateJetStreamLimits bumps
+// it after changing them, so a snapshot can look older than it is but never
+// newer, and concurrent refreshes need no coordination.
 type streamTierCache struct {
 	gen    uint64
 	tier   string
@@ -8158,11 +8150,10 @@ type streamTierCache struct {
 	usage  *jsaStorage // Never nil in an installed snapshot.
 }
 
-// refreshTierCache builds a fresh snapshot of the tier's limits and usage
-// counters from the account, under jsa.usageMu, and installs it. Returns nil
-// when the account has no limits for the tier. When nothing has been stored
-// in the tier yet there are no usage counters; the snapshot is then returned
-// for this check only and not installed, so the next check looks again.
+// refreshTierCache snapshots the tier's limits and usage counters and installs
+// the snapshot. Returns nil if the account has no limits for the tier. If the
+// tier has no usage counters yet (nothing stored), the snapshot is returned
+// but not installed, so the next check looks again.
 func (mset *stream) refreshTierCache(jsa *jsAccount, tier string) *streamTierCache {
 	// Load the generation before the maps so a concurrent limits update can
 	// only make the snapshot look older than it is, never newer.
@@ -8182,9 +8173,7 @@ func (mset *stream) refreshTierCache(jsa *jsAccount, tier string) *streamTierCac
 }
 
 // wouldExceedAccountLimits is jsa.wouldExceedLimits for this stream's tier,
-// served from the per-stream snapshot so the message path does not take
-// jsa.usageMu: one atomic load of the snapshot and one of the limits
-// generation, then atomic reads of the tier's usage counters.
+// using the stream's cached snapshot so the message path avoids jsa.usageMu.
 func (mset *stream) wouldExceedAccountLimits(jsa *jsAccount, storeType StorageType, tier string, replicas int, subj string, hdr, msg []byte) (bool, *ApiError) {
 	c := mset.tierCache.Load()
 	if c == nil || c.tier != tier || c.gen != jsa.limitsGen.Load() {
