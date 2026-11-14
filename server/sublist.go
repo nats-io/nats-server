@@ -847,23 +847,31 @@ func matchLevel(l *level, toks []string, results *SublistResult) {
 }
 
 func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
+	// When counting, keep going after a match so every matching
+	// subscription is counted, not just those on the first match found.
+	counting := np != nil && nq != nil
+	var matched bool
 	var pwc, n *node
 	for i, t := range toks {
 		if l == nil {
-			return false
+			return matched
 		}
 		if l.fwc != nil {
-			if np != nil && nq != nil {
-				*np += len(l.fwc.psubs)
-				for _, qsub := range l.fwc.qsubs {
-					*nq += len(qsub)
-				}
+			if !counting {
+				return true
 			}
-			return true
+			*np += len(l.fwc.psubs)
+			for _, qsub := range l.fwc.qsubs {
+				*nq += len(qsub)
+			}
+			matched = true
 		}
 		if pwc = l.pwc; pwc != nil {
 			if match := matchLevelForAny(pwc.next, toks[i+1:], np, nq); match {
-				return true
+				if !counting {
+					return true
+				}
+				matched = true
 			}
 		}
 		n = l.nodes[t]
@@ -874,26 +882,29 @@ func matchLevelForAny(l *level, toks []string, np, nq *int) bool {
 		}
 	}
 	if n != nil {
-		if np != nil && nq != nil {
+		if counting {
 			*np += len(n.psubs)
 			for _, qsub := range n.qsubs {
 				*nq += len(qsub)
 			}
 		}
 		if len(n.plist) > 0 || len(n.psubs) > 0 || len(n.qsubs) > 0 {
-			return true
+			if !counting {
+				return true
+			}
+			matched = true
 		}
 	}
 	if pwc != nil {
-		if np != nil && nq != nil {
+		if counting {
 			*np += len(pwc.psubs)
 			for _, qsub := range pwc.qsubs {
 				*nq += len(qsub)
 			}
 		}
-		return len(pwc.plist) > 0 || len(pwc.psubs) > 0 || len(pwc.qsubs) > 0
+		matched = matched || len(pwc.plist) > 0 || len(pwc.psubs) > 0 || len(pwc.qsubs) > 0
 	}
-	return false
+	return matched
 }
 
 // lnt is used to track descent into levels for a removal for pruning.
