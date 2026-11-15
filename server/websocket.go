@@ -1334,6 +1334,9 @@ func (s *Server) startWebsocketServer() {
 	}
 	hasLeaf := sopts.LeafNode.Port != 0
 	mux := http.NewServeMux()
+	if o.Healthz {
+		mux.HandleFunc(HealthzPath, s.HandleHealthz)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		res, err := s.wsUpgrade(w, r)
 		if err != nil {

@@ -695,6 +695,9 @@ type WebsocketOpts struct {
 	// SameOrigin is false, any origin is accepted.
 	AllowedOrigins []string
 
+	// If true, serve the /healthz endpoint on the websocket listener.
+	Healthz bool
+
 	// If set to true, the server will negotiate with clients
 	// if compression can be used. If this is false, no compression
 	// will be used (both in server and clients) since it has to
@@ -5673,6 +5676,8 @@ func parseWebsocket(v any, o *Options, errors *[]error, warnings *[]error) error
 			o.Websocket.tlsConfigOpts = tc
 		case "same_origin":
 			o.Websocket.SameOrigin = mv.(bool)
+		case "healthz":
+			o.Websocket.Healthz = mv.(bool)
 		case "allowed_origins", "allowed_origin", "allow_origins", "allow_origin", "origins", "origin":
 			o.Websocket.AllowedOrigins, _ = parseStringArray("allowed origins", tk, &lt, mv, errors)
 		case "handshake_timeout":
