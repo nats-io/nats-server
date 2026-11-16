@@ -17,6 +17,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1169,6 +1170,41 @@ func TestStoreGetSeqFromTimeWithTrailingDeletes(t *testing.T) {
 			require_Equal(t, fs.GetSeqFromTime(ts), 2)
 		},
 	)
+}
+
+func TestStoreSkipMsgsSequenceLimits(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		seq     uint64
+		num     uint64
+		wantErr bool
+	}{
+		{"zero count", 2, 0, true},
+		{"zero count zero sequence", 0, 0, true},
+		{"overflow", 2, math.MaxUint64, true},
+		{"overflow zero sequence", 0, math.MaxUint64, true},
+		{"last sequence exhausted", 2, math.MaxUint64 - 1, true},
+		{"normal skip", 2, 100, false},
+		{"zero sequence", 0, 100, false},
+		{"largest valid skip", 2, math.MaxUint64 - 2, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testAllStoreAllPermutations(t, false, StreamConfig{Name: "T"}, func(t *testing.T, store StreamStore) {
+				require_NoError(t, store.SkipMsgs(1, 1))
+				before := store.State()
+				err := store.SkipMsgs(test.seq, test.num)
+				if test.wantErr {
+					require_Error(t, err, ErrSequenceMismatch)
+					require_True(t, reflect.DeepEqual(store.State(), before))
+				} else {
+					require_NoError(t, err)
+					state := store.State()
+					require_Equal(t, state.LastSeq, before.LastSeq+test.num)
+					require_Equal(t, state.FirstSeq, state.LastSeq+1)
+				}
+			})
+		})
+	}
 }
 
 func TestStoreSkipMsgsCarryForwardLastTime(t *testing.T) {
