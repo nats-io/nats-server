@@ -247,7 +247,7 @@ type LeafNodeOpts struct {
 	// Not exported, for tests.
 	resolver  netResolver
 	connDelay time.Duration
-	dialer    leafNodeDialer
+	dialer    netDialer
 
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
@@ -819,6 +819,13 @@ type MQTTOpts struct {
 type netResolver interface {
 	LookupHost(ctx context.Context, host string) ([]string, error)
 }
+
+// netDialer establishes the TCP connection to a remote server.
+// It has the same signature as natsDialTimeout(), which is what is used in
+// production. Tests can substitute their own implementation in order to
+// observe the resolved dial timeout, simulate a slow/unreachable remote, or
+// fail writes, without needing to manipulate the network stack.
+type netDialer func(network, address string, timeout time.Duration) (net.Conn, error)
 
 // Clone performs a deep copy of the Options struct, returning a new clone
 // with all values copied.
