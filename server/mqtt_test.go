@@ -3824,7 +3824,7 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	// Leaders on server 1 put mp's requests on the route that carries "bar" to mc.
 	nc := natsConnect(t, cl.servers[0].ClientURL())
 	defer nc.Close()
-	for _, sn := range []string{mqttRetainedMsgsStreamName, mqttSessStreamName, mqttOutStreamName, mqttStreamName} {
+	for _, sn := range []string{mqttRetainedMsgsStreamName, mqttSessStreamName, mqttOutStreamName, mqttStreamName, mqttQoS2IncomingMsgsStreamName} {
 		cl.stepDownStreamLeader(nc, globalAccountName, sn, cl.servers[0])
 	}
 	s2 := cl.servers[1]
@@ -3932,6 +3932,27 @@ func TestMQTTClusterRetainedMsg(t *testing.T) {
 	checkInTime(start)
 	testMQTTCheckPubMsg(t, mc2, rc2, "bar", 0, []byte("slow"))
 	testMQTTCheckPubMsg(t, mc2, rc2, "bar", mqttPubQos1, []byte("will"))
+
+	// A full in-flight window. Its oldest entry is a QoS2 store behind the pending route.
+	// Grow mp's read buffer first, so that all packets arrive in a single read.
+	w = newMQTTWriter(0)
+	for range 200 {
+		testMQTTWritePublishPacket(t, w, 0, false, false, "junk", 0, make([]byte, 1000))
+	}
+	if _, err := testMQTTWrite(mp, w.Bytes()); err != nil {
+		t.Fatalf("Error writing: %v", err)
+	}
+	testMQTTFlush(t, mp, nil, rp)
+	w = newMQTTWriter(0)
+	testMQTTWritePublishPacket(t, w, 2, false, false, "q2w", 9, []byte("q"))
+	// Retransmits need no store, but each takes a slot in the window.
+	for range mqttMaxPipelined + 10 {
+		testMQTTWritePublishPacket(t, w, 2, true, false, "q2w", 9, []byte("q"))
+	}
+	start = testMQTTWriteBehindSlowConn(t, sc, mp, "bar", w.Bytes())
+	testMQTTReadPIPacket(mqttPacketPubRec, t, rp, 9)
+	checkInTime(start)
+	checkBar()
 }
 
 // testMQTTSlowConn wraps rc's connection so that its writes can be slowed down.
