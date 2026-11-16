@@ -3384,6 +3384,13 @@ func TestResolverPinnedAccountsFail(t *testing.T) {
 	require_Contains(t, "parsing resolver_pinned_accounts: unsupported type")
 }
 
+func TestResolverCacheNegativeTTL(t *testing.T) {
+	conf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: cache, dir: '%s', ttl: \"-1s\"}", t.TempDir()))
+	_, err := ProcessConfigFile(conf)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "CACHE does not accept a negative ttl")
+}
+
 func TestMaxSubTokens(t *testing.T) {
 	conf := createConfFile(t, []byte(`
 		listen: 127.0.0.1:-1
