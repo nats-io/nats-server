@@ -7422,7 +7422,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
 	// Don't error and log if we're tracing when clustered.
-	if !isClustered {
+	// A fast batch already checked before counting the message as pending, rejecting it here would stall the batch.
+	if !isClustered && fastBatch == nil {
 		if exceeded, err := jsa.wouldExceedLimits(stype, mset.tier, mset.cfg.Replicas, subject, hdr, msg); exceeded {
 			if err == nil {
 				err = NewJSAccountResourcesExceededError()
@@ -8399,7 +8400,20 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+	osz := len(hdr) + len(msg)
+	hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, false, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes)
+	// The account limits were checked for the message as received.
+	// Check again if it grew, e.g. by a counter value, before it counts as pending.
+	if err == nil && len(hdr)+len(msg) > osz {
+		if exceeded, lerr := jsa.wouldExceedLimits(st, tierName, r, csubject, hdr, msg); exceeded {
+			if lerr == nil {
+				lerr = NewJSAccountResourcesExceededError()
+			}
+			s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), lerr.Error())
+			apiErr, err = lerr, lerr
+		}
+	}
+	if err != nil {
 		mset.clMu.Unlock()
 
 		// If the message is a duplicate, and we have no pending messages, we should check if we need to
