@@ -1913,6 +1913,33 @@ func TestSublistHasInterestOverlapping(t *testing.T) {
 	require_True(t, sl.HasInterest("stream.A"))
 }
 
+func TestSublistNumInterestOverlappingSubs(t *testing.T) {
+	ref, nc, wc := NewSublistNoCache(), NewSublistNoCache(), NewSublistWithCache()
+	for _, subj := range []string{">", "foo.>", "*.>", "foo.*", "*.bar", "foo.bar", "foo.bar.baz", "*.*.baz"} {
+		for _, sub := range []*subscription{newSub(subj), newQSub(subj, "q1"), newQSub(subj, "q2")} {
+			for _, sl := range []*Sublist{ref, nc, wc} {
+				sl.Insert(sub)
+			}
+		}
+	}
+	for _, subj := range []string{"foo", "bar", "foo.bar", "foo.baz", "bar.bar", "foo.bar.baz", "foo.bar.baz.qux"} {
+		r := ref.Match(subj)
+		wnq := 0
+		for _, qsub := range r.qsubs {
+			wnq += len(qsub)
+		}
+		// Check both before and after Match caches the result.
+		for _, sl := range []*Sublist{nc, wc} {
+			for range 2 {
+				np, nq := sl.NumInterest(subj)
+				require_Equal(t, np, len(r.psubs))
+				require_Equal(t, nq, wnq)
+				sl.Match(subj)
+			}
+		}
+	}
+}
+
 func TestSublistNumInterest(t *testing.T) {
 	sl := NewSublistWithCache()
 	fooSub := newSub("foo")
