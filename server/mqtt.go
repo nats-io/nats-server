@@ -4938,6 +4938,11 @@ func (s *Server) mqttPipelinePush(c *client, jsa *mqttJSA, p *mqttPipelined) err
 		c.mqtt.pipe = pipe
 	}
 
+	// A full window waits for the oldest ack. Its store may need a connection we left pending.
+	// Only the readLoop pushes, so a window that isn't full here won't block in push.
+	if len(pipe.q) == cap(pipe.q) {
+		c.flushClients(0)
+	}
 	return pipe.push(p)
 }
 
