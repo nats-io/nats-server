@@ -5038,9 +5038,9 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish, heldSeq uin
 		return nil
 	}
 
-	// We need to call flushClients now since this we may have called c.addToPCD
+	// We need to call flushClients now since we may have called c.addToPCD
 	// with destination clients (possibly a route). Without calling flushClients
-	// the following call may then be stuck waiting for a reply that may never
+	// the synchronous will store below may then be stuck waiting for a reply that may never
 	// come because the destination is not flushed (due to c.out.fsp > 0,
 	// see addToPCD and writeLoop for details).
 	c.flushClients(0)
@@ -5107,6 +5107,8 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16) error {
 	}
 	if pp == nil {
 		var err error
+		// Flush first. The load may need a connection we left pending.
+		c.flushClients(0)
 		if pp, heldSeq, err = c.mqttLoadHeldQoS2Msg(pi); err != nil {
 			return err
 		}
@@ -5370,6 +5372,9 @@ func (c *client) mqttHandlePubRetain() {
 	// $sparkplug subject for sparkB.
 	rm.Subject = key
 	rmBytes, hdr := mqttEncodeRetainedMessage(rm) // will copy the payload bytes
+	// Earlier messages from this read may have left a connection in c.pcd.
+	// It won't flush the store request until we flush it.
+	c.flushClients(0)
 	_, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
 	if err != nil {
 		c.mu.Lock()
@@ -5603,6 +5608,8 @@ func (c *client) mqttProcessPublishReceived(pi uint16, isPubRec bool) (err error
 
 	if isPubRec {
 		natsMsg, headerLen := mqttNewDeliverablePubRel(pi)
+		// Flush first. The store may need a connection we left pending.
+		c.flushClients(0)
 		_, err = sess.jsa.storeMsg(sess.pubRelSubject, headerLen, natsMsg)
 		if err != nil {
 			// Failure to send out PUBREL will terminate the connection.
@@ -6147,6 +6154,8 @@ func (c *client) mqttProcessSubs(filters []*mqttFilter) ([]*subscription, error)
 	trace := c.trace
 	c.mu.Unlock()
 
+	// Flush first. The JetStream requests below may need a connection we left pending.
+	c.flushClients(0)
 	if err := asm.lockSession(sess, c); err != nil {
 		return nil, err
 	}
@@ -6446,6 +6455,8 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 	sess := c.mqtt.sess
 	c.mu.Unlock()
 
+	// Flush first. The session save may need a connection we left pending.
+	c.flushClients(0)
 	if err := asm.lockSession(sess, c); err != nil {
 		return err
 	}
