@@ -89,7 +89,9 @@ type ClusterOpts struct {
 	WriteTimeout      WriteTimeoutPolicy `json:"-"`
 
 	// Not exported (used in tests)
-	resolver netResolver
+	resolver       netResolver
+	dialer         netDialer
+	writeLoopDelay time.Duration
 	// Snapshot of configured TLS options.
 	tlsConfigOpts *TLSConfigOpts
 }
