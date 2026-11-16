@@ -16176,6 +16176,53 @@ func TestFileStoreNoDirectoryNotEmptyError(t *testing.T) {
 	}
 }
 
+func TestFileStoreConsumerStoreUpdateConfigRace(t *testing.T) {
+	for _, cipher := range []StoreCipher{NoCipher, AES} {
+		t.Run(cipher.String(), func(t *testing.T) {
+			fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: cipher}
+			cfg := StreamConfig{Name: "TEST", Storage: FileStorage}
+			fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := 1; ; i++ {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					cfg.MaxMsgs = int64(i)
+					require_NoError(t, fs.UpdateConfig(&cfg))
+				}
+			}()
+			defer func() {
+				close(done)
+				wg.Wait()
+			}()
+
+			for i := range 100 {
+				name := fmt.Sprintf("C%d", i)
+				ccfg := ConsumerConfig{Durable: name, AckPolicy: AckExplicit}
+				o, err := fs.ConsumerStore(name, time.Time{}, &ccfg)
+				require_NoError(t, err)
+				require_NoError(t, o.SetStarting(10))
+				require_NoError(t, o.Stop())
+				o, err = fs.ConsumerStore(name, time.Time{}, &ccfg)
+				require_NoError(t, err)
+				state, err := o.State()
+				require_NoError(t, err)
+				require_Equal(t, state.Delivered.Stream, uint64(10))
+				require_NoError(t, o.Delete())
+			}
+		})
+	}
+}
+
 func TestFileStoreConsumerNoMetaWriteAfterClose(t *testing.T) {
 	for _, op := range []string{"Stop", "Delete"} {
 		t.Run(op, func(t *testing.T) {
