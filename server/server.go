@@ -224,6 +224,7 @@ type Server struct {
 	routeListenerErr    error
 	routeInfo           Info
 	routeResolver       netResolver
+	routeDialer         netDialer
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
 	leafNodeListener    net.Listener
@@ -234,7 +235,7 @@ type Server struct {
 	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
-		dialer      leafNodeDialer
+		dialer      netDialer
 	}
 	leafRemoteCfgs     map[*leafNodeCfg]struct{}
 	rmLeafRemoteCfgs   map[string]*leafNodeCfg
@@ -854,6 +855,10 @@ func NewServer(opts *Options) (*Server, error) {
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
 		s.routeResolver = net.DefaultResolver
+	}
+	s.routeDialer = opts.Cluster.dialer
+	if s.routeDialer == nil {
+		s.routeDialer = natsDialTimeout
 	}
 
 	// Used internally for quick look-ups.
