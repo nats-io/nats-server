@@ -10263,6 +10263,20 @@ func TestMQTTRetainedMessageWithDelSubjectIsNotRestored(t *testing.T) {
 	mc, r = testMQTTConnectRetry(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port, 5)
 	defer mc.Close()
 	testMQTTCheckConnAck(t, r, mqttConnAckRCConnectionAccepted, false)
+	// Retained messages are restored asynchronously.
+	sm := &s.mqtt.sessmgr
+	sm.mu.Lock()
+	asm := sm.sessions[globalAccountName]
+	sm.mu.Unlock()
+	require_NotNil(t, asm)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		asm.mu.RLock()
+		defer asm.mu.RUnlock()
+		if _, ok := asm.retmsgs.Find([]byte("foo.ok")); !ok {
+			return errors.New("retained message not restored yet")
+		}
+		return nil
+	})
 	testMQTTSub(t, 1, mc, r, []*mqttFilter{{filter: "foo/+", qos: 0}}, []byte{0})
 	testMQTTCheckPubMsg(t, mc, r, "foo/ok", mqttPubFlagRetain, []byte("ok"))
 	testMQTTExpectNothing(t, r)
