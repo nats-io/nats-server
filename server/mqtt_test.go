@@ -5308,6 +5308,20 @@ func TestMQTTWillRetain(t *testing.T) {
 			// Wait for the server to process the connection close, which will
 			// cause the "will" message to be published (and retained).
 			checkClientsCount(t, s, 1)
+			// The will is retained after the client is removed.
+			sm := &s.mqtt.sessmgr
+			sm.mu.Lock()
+			asm := sm.sessions[globalAccountName]
+			sm.mu.Unlock()
+			require_NotNil(t, asm)
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				asm.mu.RLock()
+				defer asm.mu.RUnlock()
+				if _, ok := asm.retmsgs.Find([]byte("will.topic")); !ok {
+					return errors.New("will not retained yet")
+				}
+				return nil
+			})
 
 			// Create subscription on will topic and expect will message.
 			mcs, rs := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
