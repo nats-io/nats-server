@@ -1585,7 +1585,6 @@ func TestWSParseOptions(t *testing.T) {
 		{"bad advertise type", `websocket: { advertise: 123 }`, nil, "not string"},
 		{"bad tls", `websocket: { tls: 123 }`, nil, "not map[string]interface {}"},
 		{"bad same origin", `websocket: { same_origin: "abc" }`, nil, "not bool"},
-		{"bad healthz", `websocket: { healthz: "abc" }`, nil, "not bool"},
 		{"bad allowed origins type", `websocket: { allowed_origins: {} }`, nil, "unsupported type"},
 		{"bad allowed origins values", `websocket: { allowed_origins: [ {} ] }`, nil, "unsupported type in array"},
 		{"bad handshake timeout type", `websocket: { handshake_timeout: [] }`, nil, "unsupported type"},
@@ -1628,12 +1627,6 @@ func TestWSParseOptions(t *testing.T) {
 		{"same origin", `websocket { same_origin: true }`, func(wo *WebsocketOpts) error {
 			if !wo.SameOrigin {
 				return fmt.Errorf("expected same_origin==true, got %v", wo.SameOrigin)
-			}
-			return nil
-		}, ""},
-		{"healthz", `websocket { healthz: true }`, func(wo *WebsocketOpts) error {
-			if !wo.Healthz {
-				return fmt.Errorf("expected healthz==true, got %v", wo.Healthz)
 			}
 			return nil
 		}, ""},
@@ -1784,35 +1777,6 @@ func TestWSParseOptions(t *testing.T) {
 			}
 			if err := test.checkOpt(&o.Websocket); err != nil {
 				t.Fatalf("Incorrect option for content %q: %v", test.content, err.Error())
-			}
-		})
-	}
-}
-
-func TestWSHealthz(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
-			o := testWSOptions()
-			o.Websocket.Healthz = enabled
-			o.Websocket.TLSConfig = nil
-			o.Websocket.NoTLS = true
-			s := RunServer(o)
-			defer s.Shutdown()
-
-			wsOpts := s.getOpts().Websocket
-			addr := net.JoinHostPort(wsOpts.Host, fmt.Sprint(wsOpts.Port))
-			resp, err := http.Get(fmt.Sprintf("http://%s%s", addr, HealthzPath))
-			if err != nil {
-				t.Fatalf("Error requesting healthz: %v", err)
-			}
-			defer resp.Body.Close()
-
-			expectedStatus := http.StatusBadRequest
-			if enabled {
-				expectedStatus = http.StatusOK
-			}
-			if resp.StatusCode != expectedStatus {
-				t.Fatalf("Expected status %d, got %d", expectedStatus, resp.StatusCode)
 			}
 		})
 	}

@@ -457,6 +457,13 @@ func TestDynamicPortOnListen(t *testing.T) {
 	}
 }
 
+func TestHealthzListenConfig(t *testing.T) {
+	opts := DefaultOptions()
+	require_NoError(t, opts.ProcessConfigString(`healthz: "127.0.0.1:8123"`))
+	require_Equal(t, opts.HealthzHost, "127.0.0.1")
+	require_Equal(t, opts.HealthzPort, 8123)
+}
+
 func TestListenConfig(t *testing.T) {
 	opts, err := ProcessConfigFile("./configs/listen.conf")
 	if err != nil {
