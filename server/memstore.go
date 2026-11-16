@@ -407,6 +407,10 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 		}
 		seq = ms.state.LastSeq + 1
 	}
+	// Make sure the last sequence leaves room for the next message.
+	if num == 0 || seq == 0 || num > math.MaxUint64-seq {
+		return ErrSequenceMismatch
+	}
 	lseq := seq + num - 1
 
 	ms.state.LastSeq = lseq
