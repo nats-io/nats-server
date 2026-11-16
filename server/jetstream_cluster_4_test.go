@@ -10443,6 +10443,98 @@ func TestJetStreamClusterConsumerInfoWithUncommittedCreate(t *testing.T) {
 	require_NoError(t, msgs[0].AckSync())
 }
 
+func TestJetStreamClusterConsumerInfoAppliedWithoutRaftNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	// The consumer leader is moved to a meta follower, so both the meta leader and a follower are tested.
+	ml := c.leader()
+	var cl, mf *Server
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		if cl == nil {
+			cl = s
+		} else {
+			mf = s
+		}
+	}
+	c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "C", cl)
+
+	for _, s := range []*Server{ml, mf} {
+		t.Run(s.Name(), func(t *testing.T) {
+			sjs := s.getJetStream()
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			var ca *consumerAssignment
+			checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+				if o := mset.lookupConsumer("C"); o == nil || o.raftNode() == nil || !o.isMonitorRunning() {
+					return errors.New("consumer not running")
+				}
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				if ca = sjs.consumerAssignment(globalAccountName, "TEST", "C"); ca == nil || ca.Group == nil || ca.Group.node == nil {
+					return errors.New("consumer assignment or node not ready")
+				}
+				return nil
+			})
+
+			// Simulate the consumer's node not being created yet, like when recovering.
+			sjs.mu.Lock()
+			node := ca.Group.node
+			ca.Group.node = nil
+			sjs.mu.Unlock()
+			defer func() {
+				sjs.mu.Lock()
+				ca.Group.node = node
+				sjs.mu.Unlock()
+			}()
+
+			snc, sjsc := jsClientConnect(t, s)
+			defer snc.Close()
+
+			// Audit advisories contain all responses, while the client only gets the first.
+			auditSub, err := snc.SubscribeSync(JSAuditAdvisory)
+			require_NoError(t, err)
+			defer auditSub.Drain()
+			require_NoError(t, snc.Flush())
+
+			ci, err := sjsc.ConsumerInfo("TEST", "C")
+			require_NoError(t, err)
+			require_Equal(t, ci.Name, "C")
+
+			// The consumer exists, so the server without its node must not report it as not found.
+			for {
+				msg, err := auditSub.NextMsg(3 * errRespDelay)
+				if err == nats.ErrTimeout {
+					break
+				}
+				require_NoError(t, err)
+				var audit JSAPIAudit
+				require_NoError(t, json.Unmarshal(msg.Data, &audit))
+				if audit.Server != s.Name() || audit.Subject != fmt.Sprintf(JSApiConsumerInfoT, "TEST", "C") {
+					continue
+				}
+				var resp JSApiConsumerInfoResponse
+				require_NoError(t, json.Unmarshal([]byte(audit.Response), &resp))
+				if resp.Error != nil {
+					require_NotEqual(t, resp.Error.ErrCode, uint16(JSConsumerNotFoundErr))
+				}
+			}
+		})
+	}
+}
+
 func TestJetStreamClusterConsumerInfoWithInflightConsumerDelete(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
