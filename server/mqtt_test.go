@@ -5501,6 +5501,31 @@ func TestMQTTPublishRetain(t *testing.T) {
 			testMQTTPublish(t, mc1, rs1, 0, false, test.retained, "foo", 0, []byte(test.sentValue))
 			testMQTTFlush(t, mc1, nil, rs1)
 
+			// Subscriptions only see a retained message once it's processed from the stream.
+			if test.retained {
+				sm := &s.mqtt.sessmgr
+				sm.mu.Lock()
+				asm := sm.sessions[globalAccountName]
+				sm.mu.Unlock()
+				require_NotNil(t, asm)
+				mset, err := s.globalAccount().lookupStream(mqttRetainedMsgsStreamName)
+				require_NoError(t, err)
+				checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+					lseq := mset.lastSeq()
+					asm.mu.RLock()
+					defer asm.mu.RUnlock()
+					rm, ok := asm.retmsgs.Find([]byte("foo"))
+					if test.sentValue == _EMPTY_ {
+						if ok {
+							return errors.New("retained message not removed yet")
+						}
+					} else if !ok || rm.sseq != lseq {
+						return errors.New("retained message not processed yet")
+					}
+					return nil
+				})
+			}
+
 			mc2, rs2 := testMQTTConnect(t, &mqttConnInfo{cleanSess: true}, o.MQTT.Host, o.MQTT.Port)
 			defer mc2.Close()
 			testMQTTCheckConnAck(t, rs2, mqttConnAckRCConnectionAccepted, false)
