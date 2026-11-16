@@ -13180,6 +13180,9 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
 	csi := &FileConsumerInfo{Name: name, Created: created, ConsumerConfig: *cfg}
+	fs.mu.RLock()
+	sname := fs.cfg.Name
+	fs.mu.RUnlock()
 	o := &consumerFileStore{
 		fs:   fs,
 		cfg:  csi,
@@ -13188,7 +13191,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		odir: odir,
 		ifn:  filepath.Join(odir, consumerState),
 	}
-	key := sha256.Sum256([]byte(fs.cfg.Name + "/" + name))
+	key := sha256.Sum256([]byte(sname + "/" + name))
 	hh, err := highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
@@ -13202,7 +13205,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 				return nil, errBadKeySize
 			}
 			// Recover key encryption key.
-			rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+			rb, err := fs.prf([]byte(sname + tsep + o.name))
 			if err != nil {
 				return nil, err
 			}
@@ -13312,7 +13315,10 @@ func (o *consumerFileStore) convertCipher() error {
 		return errBadKeySize
 	}
 	// Recover key encryption key.
-	rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+	fs.mu.RLock()
+	sname := fs.cfg.Name
+	fs.mu.RUnlock()
+	rb, err := fs.prf([]byte(sname + tsep + o.name))
 	if err != nil {
 		return err
 	}
@@ -13887,7 +13893,10 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	aek, stagedKey := cfs.aek, false
 	if cfs.prf != nil && aek == nil {
 		fs := cfs.fs
-		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name + tsep + cfs.name)
+		fs.mu.RLock()
+		sname := fs.cfg.Name
+		fs.mu.RUnlock()
+		key, _, _, encrypted, err := fs.genEncryptionKeys(sname + tsep + cfs.name)
 		if err != nil {
 			return err
 		}
