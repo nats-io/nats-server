@@ -531,6 +531,78 @@ func TestJetStreamAtomicBatchPublishLimits(t *testing.T) {
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
+func TestJetStreamAtomicBatchPublishAccountLimits(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo", "bar"},
+			Storage:            MemoryStorage,
+			Replicas:           replicas,
+			AllowMsgCounter:    true,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+
+		increment := func(subject, batchId string, seq int, commit bool) *nats.Msg {
+			m := nats.NewMsg(subject)
+			m.Header.Set(JSMessageIncr, "1")
+			m.Header.Set(JSBatchId, batchId)
+			m.Header.Set(JSBatchSeq, strconv.Itoa(seq))
+			if commit {
+				m.Header.Set(JSBatchCommit, "1")
+			}
+			return m
+		}
+		commit := func(m *nats.Msg) *JSPubAckResponse {
+			t.Helper()
+			rmsg, err := nc.RequestMsg(m, time.Second)
+			require_NoError(t, err)
+			var pubAck JSPubAckResponse
+			require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+			return &pubAck
+		}
+
+		// Measure what one stored increment uses.
+		pubAck := commit(increment("foo", "a", 1, true))
+		require_True(t, pubAck.Error == nil)
+		sl := c.streamLeader(globalAccountName, "TEST")
+		acc := sl.GlobalAccount()
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		stored, r := int64(mset.state().Bytes), int64(replicas)
+
+		// The leader checks the limits against the usage of all replicas, which they report periodically.
+		checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+			if used := int64(acc.JetStreamUsage().Memory); used != r*stored {
+				return fmt.Errorf("expected usage %d, got %d", r*stored, used)
+			}
+			return nil
+		})
+
+		// Room for one more increment, not two.
+		for _, s := range c.servers {
+			require_NoError(t, s.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+				_EMPTY_: {MaxMemory: 2 * r * stored, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+			}))
+		}
+
+		// Each increment fits on its own, but the batch doesn't, so none of it must be stored.
+		require_NoError(t, nc.PublishMsg(increment("foo", "b", 1, false)))
+		pubAck = commit(increment("bar", "b", 2, true))
+		require_Error(t, pubAck.Error, NewJSAccountResourcesExceededError())
+		require_Equal(t, mset.state().Msgs, 1)
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
 func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 	test := func(
 		t *testing.T,
