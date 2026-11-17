@@ -4430,6 +4430,89 @@ func TestSystemAccountAccConnsUpdateDuringShutdown(t *testing.T) {
 	}
 }
 
+// A leafnode connection is counted in its account like a client, and its
+// removal during shutdown calls accConnsUpdate too. Same checks as above, with
+// leafnodes connected to the hub that is shutting down.
+func TestSystemAccountAccConnsUpdateLeafNodeShutdown(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		t.Run(fmt.Sprintf("iteration=%d", i), func(t *testing.T) {
+			hub, ho := RunServerWithConfig(createConfFile(t, []byte(`
+				host: 127.0.0.1
+				port: -1
+				system_account: SYS
+				leafnodes { listen: 127.0.0.1:-1 }
+				accounts: {
+					SYS: {users: [{user: s, password: s}]}
+					A: {users: [{user: u, password: p}]}
+					B: {users: [{user: v, password: p}]}
+				}
+			`)))
+
+			var spokes []*Server
+			for _, user := range []string{"u", "v"} {
+				spoke, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
+					host: 127.0.0.1
+					port: -1
+					leafnodes {
+						remotes: [{url: "nats://%s:p@127.0.0.1:%d"}]
+					}
+				`, user, ho.LeafNode.Port))))
+				spokes = append(spokes, spoke)
+				checkLeafNodeConnected(t, spoke)
+			}
+			defer func() {
+				for _, spoke := range spokes {
+					spoke.Shutdown()
+				}
+			}()
+
+			var accs []*Account
+			for _, name := range []string{"A", "B"} {
+				a, err := hub.LookupAccount(name)
+				require_NoError(t, err)
+				require_True(t, a.NumLeafNodes() > 0)
+				accs = append(accs, a)
+			}
+
+			var wg sync.WaitGroup
+			stop := make(chan struct{})
+			for _, a := range accs {
+				for k := 0; k < 2; k++ {
+					wg.Add(1)
+					go func(a *Account) {
+						defer wg.Done()
+						for {
+							select {
+							case <-stop:
+								return
+							default:
+								hub.accConnsUpdate(a)
+							}
+						}
+					}(a)
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			hub.Shutdown()
+			time.Sleep(10 * time.Millisecond)
+			close(stop)
+			wg.Wait()
+			for _, a := range accs {
+				hub.accConnsUpdate(a)
+			}
+			for _, a := range accs {
+				a.mu.RLock()
+				armed := a.ctmr != nil
+				a.mu.RUnlock()
+				if armed {
+					t.Fatalf("Account %q still has its connections timer after shutdown", a.Name)
+				}
+			}
+			hub.WaitForShutdown()
+		})
+	}
+}
+
 func BenchmarkConnectCloseParallel(b *testing.B) {
 	for _, accounts := range []int{1, 16} {
 		b.Run(fmt.Sprintf("accounts=%d", accounts), func(b *testing.B) {
