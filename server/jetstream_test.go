@@ -18413,7 +18413,7 @@ func TestJetStreamUsageSyncDeadlock(t *testing.T) {
 	jsa.usageMu.Lock()
 	st, ok := jsa.usage[_EMPTY_]
 	require_True(t, ok)
-	st.local.store = -1000
+	st.local.store.Store(-1000)
 	jsa.usageMu.Unlock()
 
 	sendStreamMsg(t, nc, "foo", "hello")
@@ -29278,4 +29278,49 @@ func TestJetStreamStoredReservedDeliverSubjectRejected(t *testing.T) {
 	_, err = s.GlobalAccount().RestoreStreamV2(&scfg, bytes.NewReader(snapshot))
 	require_Error(t, err)
 	require_Contains(t, err.Error(), NewJSConsumerInvalidDeliverSubjectError().Error())
+}
+
+func TestJetStreamAccountUsageConcurrentStreams(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	const numStreams, numMsgs = 8, 1000
+	acc := s.GlobalAccount()
+	msets := make([]*stream, numStreams)
+	for i := range msets {
+		mset, err := acc.addStream(&StreamConfig{
+			Name:     fmt.Sprintf("S%d", i),
+			Subjects: []string{fmt.Sprintf("s.%d", i)},
+			Storage:  MemoryStorage,
+			// Also removes messages, so usage goes both up and down.
+			MaxMsgs: numMsgs / 2,
+		})
+		require_NoError(t, err)
+		msets[i] = mset
+	}
+
+	// Store from one goroutine per stream, so all streams update the account usage concurrently.
+	payload := make([]byte, 128)
+	var wg sync.WaitGroup
+	for i, mset := range msets {
+		wg.Add(1)
+		go func(subj string, mset *stream) {
+			defer wg.Done()
+			for range numMsgs {
+				if err := mset.processJetStreamMsg(subj, _EMPTY_, nil, payload, 0, 0, nil, false, true); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(fmt.Sprintf("s.%d", i), mset)
+	}
+	wg.Wait()
+
+	var stored uint64
+	for _, mset := range msets {
+		state := mset.state()
+		require_Equal(t, state.Msgs, numMsgs/2)
+		stored += state.Bytes
+	}
+	require_Equal(t, acc.JetStreamUsage().Memory, stored)
 }
