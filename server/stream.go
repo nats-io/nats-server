@@ -7428,7 +7428,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 
 	// If clustered this was already checked and we do not want to check here and possibly introduce skew.
 	// Don't error and log if we're tracing when clustered.
-	if !isClustered {
+	// Batches were already checked. Rejecting an atomic batch message here would partially commit it.
+	// Sourced messages, e.g. scheduled ones, can still carry batch headers but aren't part of a batch.
+	if !isClustered && (batchId == _EMPTY_ || sourced) {
 		if exceeded, err := jsa.wouldExceedLimits(stype, mset.tier, mset.cfg.Replicas, subject, hdr, msg); exceeded {
 			if err == nil {
 				err = NewJSAccountResourcesExceededError()
