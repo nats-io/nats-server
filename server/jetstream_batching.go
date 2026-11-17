@@ -590,12 +590,6 @@ func checkMsgHeadersPreClusteredProposal(
 	var incr *big.Int
 	var hasSchedule bool
 
-	// Do this before staging any proposal state. All clustered publish paths,
-	// including atomic and fast batches, use this helper.
-	if mset.store.Type() == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
-		return hdr, msg, 0, NewJSStreamStoreFailedError(ErrMsgTooLarge), ErrMsgTooLarge
-	}
-
 	// Some header checks must be checked pre proposal.
 	if len(hdr) > 0 {
 		// Since we encode header len as u16 make sure we do not exceed.
@@ -995,6 +989,12 @@ func checkMsgHeadersPreClusteredProposal(
 				return hdr, msg, 0, NewJSStreamRollupFailedError(err), err
 			}
 		}
+	}
+
+	// Check the message as it will be stored, since the headers above can make it grow.
+	// All clustered publish paths, including atomic and fast batches, use this helper.
+	if mset.store.Type() == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		return hdr, msg, 0, NewJSStreamStoreFailedError(ErrMsgTooLarge), ErrMsgTooLarge
 	}
 
 	// Track inflight.
