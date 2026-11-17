@@ -6588,6 +6588,7 @@ var (
 	errInvalidMsgHandler = errors.New("undefined message handler")
 	errStreamMismatch    = errors.New("expected stream does not match")
 	errMsgTTLDisabled    = errors.New("message TTL disabled")
+	errBatchTraceOnly    = errors.New("batch publish does not support trace-only messages")
 )
 
 // processJetStreamMsg is where we try to actually process the stream msg.
@@ -7668,6 +7669,11 @@ func (mset *stream) processJetStreamAtomicBatchMsg(batchId, subject, reply strin
 		}()
 	}
 
+	// Trace-only messages are dropped, so the batch fails on the missing sequence.
+	if mt.traceOnly() {
+		return errBatchTraceOnly
+	}
+
 	// Check that we are the leader. This can be false if we have scaled up from an R1 that had inbound queued messages.
 	if !isLeader {
 		return NewJSClusterNotLeaderError()
@@ -8167,6 +8173,11 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 				mt.sendEventFromJetStream(retErr)
 			}
 		}()
+	}
+
+	// Trace-only messages are dropped, so the batch detects the missing sequence as a gap.
+	if mt.traceOnly() {
+		return errBatchTraceOnly
 	}
 
 	// Check that we are the leader. This can be false if we have scaled up from an R1 that had inbound queued messages.

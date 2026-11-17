@@ -2562,7 +2562,7 @@ func TestJetStreamAtomicBatchPublishTraceOnlyNoAck(t *testing.T) {
 	require_NoError(t, json.Unmarshal(traceMsg.Data, &traceEvent))
 	jsTrace := traceEvent.JetStream()
 	require_NotNil(t, jsTrace)
-	require_Equal(t, jsTrace.Error, _EMPTY_)
+	require_Equal(t, jsTrace.Error, errBatchTraceOnly.Error())
 
 	_, err = replySub.NextMsg(250 * time.Millisecond)
 	require_Error(t, err, nats.ErrTimeout)
@@ -6153,4 +6153,196 @@ func TestJetStreamFastBatchPublishMsgTooLargeSingleReply(t *testing.T) {
 		t.Fatalf("Unexpected second reply: %s", rmsg.Data)
 	}
 	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestJetStreamFastBatchPublishTraceOnly(t *testing.T) {
+	test := func(t *testing.T, replicas int, gapMode string) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+		traceSub := natsSubSync(t, nc, "trace.dest")
+		for _, s := range c.servers {
+			checkSubInterest(t, s, globalAccountName, "trace.dest", time.Second)
+		}
+
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, gapMode, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var batchFlowAck BatchFlowAck
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+
+		// A trace-only message is dropped without a reply.
+		trace := nats.NewMsg("foo")
+		trace.Header.Set(MsgTraceDest, "trace.dest")
+		trace.Header.Set(MsgTraceOnly, "true")
+		trace.Reply = generateFastBatchReply(inbox, "uuid", 2, 0, gapMode, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(trace))
+
+		// Servers that only route the message send an event without a JetStream event.
+		var jsTrace *MsgTraceJetStream
+		for jsTrace == nil {
+			var traceEvent MsgTraceEvent
+			require_NoError(t, json.Unmarshal(natsNexMsg(t, traceSub, time.Second).Data, &traceEvent))
+			jsTrace = traceEvent.JetStream()
+		}
+		require_Equal(t, jsTrace.Stream, "TEST")
+		require_Equal(t, jsTrace.Error, errBatchTraceOnly.Error())
+
+		// The next message detects the dropped message as a gap.
+		m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, gapMode, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"gap\","))
+		var batchFlowGap BatchFlowGap
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowGap))
+		require_Equal(t, batchFlowGap.ExpectedLastSequence, 2)
+		require_Equal(t, batchFlowGap.CurrentSequence, 3)
+
+		var expectedMsgs uint64
+		switch gapMode {
+		case FastBatchGapFail:
+			// The batch commits up to the gap.
+			expectedMsgs = 1
+		case FastBatchGapOk:
+			// The batch continues, so commit it.
+			expectedMsgs = 2
+			m.Reply = generateFastBatchReply(inbox, "uuid", 4, 0, gapMode, FastBatchOpCommitEob)
+			require_NoError(t, nc.PublishMsg(m))
+		default:
+			t.Fatalf("Unexpected gap mode: %q", gapMode)
+		}
+
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, expectedMsgs)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		if gapMode == FastBatchGapFail {
+			require_Equal(t, pubAck.BatchSize, 1)
+		} else {
+			require_Equal(t, pubAck.BatchSize, 3)
+		}
+
+		// All replicas must hold the same messages, without the trace-only message.
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			for _, s := range c.servers {
+				mset, err := s.globalAccount().lookupStream("TEST")
+				if err != nil {
+					continue
+				}
+				if state := mset.state(); state.Msgs != expectedMsgs || state.LastSeq != expectedMsgs {
+					return fmt.Errorf("expected %d messages on %s, got %d (last seq %d)", expectedMsgs, s.Name(), state.Msgs, state.LastSeq)
+				}
+			}
+			return nil
+		})
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			t.Run(FastBatchGapFail, func(t *testing.T) { test(t, replicas, FastBatchGapFail) })
+			t.Run(FastBatchGapOk, func(t *testing.T) { test(t, replicas, FastBatchGapOk) })
+		})
+	}
+}
+
+func TestJetStreamAtomicBatchPublishTraceOnly(t *testing.T) {
+	test := func(t *testing.T, replicas int, traceSeq int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:               "TEST",
+			Subjects:           []string{"foo"},
+			Storage:            FileStorage,
+			Replicas:           replicas,
+			AllowAtomicPublish: true,
+		})
+		require_NoError(t, err)
+		traceSub := natsSubSync(t, nc, "trace.dest")
+		for _, s := range c.servers {
+			checkSubInterest(t, s, globalAccountName, "trace.dest", time.Second)
+		}
+
+		// A trace-only message is dropped, so the batch fails on the missing sequence.
+		var rmsg *nats.Msg
+		for seq := 1; seq <= 3; seq++ {
+			m := nats.NewMsg("foo")
+			m.Header.Set(JSBatchId, "uuid")
+			m.Header.Set(JSBatchSeq, strconv.Itoa(seq))
+			if seq == traceSeq {
+				m.Header.Set(MsgTraceDest, "trace.dest")
+				m.Header.Set(MsgTraceOnly, "true")
+			}
+			if seq < 3 {
+				require_NoError(t, nc.PublishMsg(m))
+				continue
+			}
+			m.Header.Set(JSBatchCommit, "1")
+			if seq == traceSeq {
+				// The dropped commit doesn't reply, and the batch is abandoned later.
+				_, err = nc.RequestMsg(m, 500*time.Millisecond)
+				require_Error(t, err, nats.ErrTimeout)
+			} else {
+				rmsg, err = nc.RequestMsg(m, time.Second)
+				require_NoError(t, err)
+				var pubAck JSPubAckResponse
+				require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+				require_Error(t, pubAck.Error, NewJSAtomicPublishIncompleteBatchError())
+			}
+		}
+
+		// Servers that only route the message send an event without a JetStream event.
+		var jsTrace *MsgTraceJetStream
+		for jsTrace == nil {
+			var traceEvent MsgTraceEvent
+			require_NoError(t, json.Unmarshal(natsNexMsg(t, traceSub, time.Second).Data, &traceEvent))
+			jsTrace = traceEvent.JetStream()
+		}
+		require_Equal(t, jsTrace.Stream, "TEST")
+		require_Equal(t, jsTrace.Error, errBatchTraceOnly.Error())
+
+		// No replica may hold any of the batch's messages.
+		for _, s := range c.servers {
+			mset, err := s.globalAccount().lookupStream("TEST")
+			if err != nil {
+				continue
+			}
+			state := mset.state()
+			require_Equal(t, state.Msgs, 0)
+			require_Equal(t, state.LastSeq, 0)
+		}
+	}
+
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
+			t.Run("Start", func(t *testing.T) { test(t, replicas, 1) })
+			t.Run("Append", func(t *testing.T) { test(t, replicas, 2) })
+			t.Run("Commit", func(t *testing.T) { test(t, replicas, 3) })
+		})
+	}
 }
