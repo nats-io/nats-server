@@ -603,6 +603,116 @@ func TestJetStreamAtomicBatchPublishAccountLimits(t *testing.T) {
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
+func TestJetStreamAtomicBatchPublishScheduleAccountLimits(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo.>"},
+		Storage:            MemoryStorage,
+		AllowAtomicPublish: true,
+		AllowMsgSchedules:  true,
+	})
+	require_NoError(t, err)
+
+	// The scheduled message copies the batch headers of the schedule, but isn't part of a batch.
+	at := time.Now().Add(500 * time.Millisecond)
+	m := nats.NewMsg("foo.schedule")
+	m.Header.Set(JSSchedulePattern, fmt.Sprintf("@at %s", at.Format(time.RFC3339Nano)))
+	m.Header.Set(JSScheduleTarget, "foo.target")
+	m.Header.Set(JSBatchId, "uuid")
+	m.Header.Set(JSBatchSeq, "1")
+	m.Header.Set(JSBatchCommit, "1")
+	rmsg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+
+	// No room for the scheduled message.
+	acc := s.GlobalAccount()
+	used := int64(acc.JetStreamUsage().Memory)
+	require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+		_EMPTY_: {MaxMemory: used + 1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}))
+
+	// After the schedule fired, the scheduled message must not have been stored.
+	time.Sleep(time.Until(at) + time.Second)
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	_, err = mset.store.LoadLastMsg("foo.target", nil)
+	require_Error(t, err, ErrStoreMsgNotFound)
+	require_Equal(t, int64(acc.JetStreamUsage().Memory), used)
+}
+
+// Grows the account usage on the next stored message, as if another stream used it up.
+// Protected by the stream lock.
+type atomicBatchUsageStore struct {
+	StreamStore
+	jsa  *jsAccount
+	grow int64
+}
+
+func (s *atomicBatchUsageStore) StoreMsg(subject string, hdr, msg []byte, ttl int64) (uint64, int64, error) {
+	if s.grow > 0 {
+		s.jsa.usageMu.Lock()
+		if s.jsa.usage[_EMPTY_] == nil {
+			s.jsa.usage[_EMPTY_] = &jsaStorage{}
+		}
+		s.jsa.usage[_EMPTY_].total.mem.Add(s.grow)
+		s.jsa.usageMu.Unlock()
+		s.grow = 0
+	}
+	return s.StreamStore.StoreMsg(subject, hdr, msg, ttl)
+}
+
+func TestJetStreamAtomicBatchPublishAccountLimitsDuringCommit(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:               "TEST",
+		Subjects:           []string{"foo"},
+		Storage:            MemoryStorage,
+		AllowAtomicPublish: true,
+	})
+	require_NoError(t, err)
+
+	// Room for the batch, until the account usage grows while the batch is being stored.
+	acc := s.GlobalAccount()
+	require_NoError(t, acc.UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+		_EMPTY_: {MaxMemory: 1024, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+	}))
+	mset, err := acc.lookupStream("TEST")
+	require_NoError(t, err)
+	mset.mu.Lock()
+	mset.store = &atomicBatchUsageStore{StreamStore: mset.store, jsa: mset.jsa, grow: 1024}
+	mset.mu.Unlock()
+
+	m := nats.NewMsg("foo")
+	m.Header.Set(JSBatchId, "uuid")
+	m.Header.Set(JSBatchSeq, "1")
+	require_NoError(t, nc.PublishMsg(m))
+	m.Header.Set(JSBatchSeq, "2")
+	m.Header.Set(JSBatchCommit, "1")
+	rmsg, err := nc.RequestMsg(m, time.Second)
+	require_NoError(t, err)
+
+	// The batch was checked as a whole before committing, so it must be stored as a whole.
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_True(t, pubAck.Error == nil)
+	require_Equal(t, pubAck.BatchSize, 2)
+	require_Equal(t, mset.state().Msgs, 2)
+}
+
 func TestJetStreamAtomicBatchPublishDedupeNotAllowed(t *testing.T) {
 	test := func(
 		t *testing.T,
