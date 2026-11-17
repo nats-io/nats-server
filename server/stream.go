@@ -576,6 +576,11 @@ type stream struct {
 	// which reads the raft node's current state, this tracks our own processed leadership.
 	leader atomic.Bool
 
+	// The tier is the number of replicas for the stream (e.g. "R1" or "R3"), with its account usage counters.
+	// Both are set on creation, and again when a replicas change moves the stream to another tier.
+	tier  string
+	usage atomic.Pointer[jsaStorage]
+
 	pubAck    []byte                  // The template (prefix) to generate the pubAck responses for this stream quickly.
 	outq      *jsOutQ                 // Queue of *jsPubMsg for sending messages.
 	msgs      *ipQueue[*inMsg]        // Intra-process queue for the ingress of messages.
@@ -590,7 +595,6 @@ type stream struct {
 	cfgMu     sync.RWMutex            // Config mutex used to solve some races with consumer code
 	created   time.Time               // Time the stream was created.
 	stype     StorageType             // The storage type.
-	tier      string                  // The tier is the number of replicas for the stream (e.g. "R1" or "R3").
 	ddMu      sync.Mutex              // Lock for dedupe state.
 	ddwin     time.Duration           // The dedupe window, mirrors cfg.Duplicates.
 	ddmap     map[string]*ddentry     // The dedupe map.
@@ -1053,6 +1057,7 @@ func (a *Account) addStreamWithAssignmentAndMode(config *StreamConfig, fsConfig 
 		created:   time.Now().UTC(),
 		restoring: restoring,
 	}
+	mset.usage.Store(jsa.tierUsage(tier))
 
 	// Add created timestamp used for the store, must match that of the stream assignment if it exists.
 	if sa != nil {
@@ -2981,6 +2986,7 @@ func (mset *stream) updateWithAdvisory(config *StreamConfig, sendAdvisory bool, 
 			jsa.updateUsage(mset.tier, mset.stype, -int64(reported))
 			jsa.updateUsage(targetTier, mset.stype, int64(reported))
 			mset.tier = targetTier
+			mset.usage.Store(jsa.tierUsage(targetTier))
 		}
 		// else in case the new tier does not exist (say on move), keep the old tier around
 		// a subsequent update to an existing tier will then move from existing past tier to existing new tier
@@ -5694,7 +5700,7 @@ func (mset *stream) storeUpdates(md, bd int64, seq uint64, subj string) {
 	}
 
 	if mset.jsa != nil {
-		mset.jsa.updateUsage(mset.tier, mset.stype, bd)
+		mset.jsa.updateUsageCounters(mset.usage.Load(), mset.tier, mset.stype, bd)
 	}
 }
 
