@@ -583,7 +583,7 @@ func (batch *batchApply) rejectBatchState(mset *stream) {
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject, rsubject string, hdr []byte, msg []byte, sourced bool, name string,
-	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
+	jsa *jsAccount, tierName string, replicas int, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
@@ -1020,6 +1020,18 @@ func checkMsgHeadersPreClusteredProposal(
 	} else {
 		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1, schedule: hasSchedule}
 		diff.inflight[subject] = i
+	}
+
+	// Check the account limits for the message as it will be stored.
+	// It could have grown since the earlier check, e.g. by a counter value.
+	if jsa != nil {
+		if exceeded, apiErr := jsa.wouldExceedLimits(mset.store.Type(), tierName, replicas, subject, hdr, msg); exceeded {
+			if apiErr == nil {
+				apiErr = NewJSAccountResourcesExceededError()
+			}
+			mset.srv.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), apiErr.Error())
+			return hdr, msg, 0, apiErr, apiErr
+		}
 	}
 
 	// Subject transform.

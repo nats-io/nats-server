@@ -1689,7 +1689,7 @@ func TestJetStreamAtomicBatchPublishStageAndCommit(t *testing.T) {
 				if m.rsubject != _EMPTY_ {
 					rsubject = m.rsubject
 				}
-				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, rsubject, hdr, m.msg, false, "TEST", nil, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
+				_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, m.subject, rsubject, hdr, m.msg, false, "TEST", nil, _EMPTY_, 1, test.allowRollup, test.denyPurge, test.allowTTL, test.allowMsgCounter, test.allowMsgSchedules, discard, discardNewPer, -1, maxMsgs, maxMsgsPer, maxBytes)
 				if m.err != nil {
 					require_Error(t, err, m.err)
 				} else if err != nil {
@@ -1762,7 +1762,7 @@ func TestJetStreamCounterNullSourcesHeaderDoesNotPanic(t *testing.T) {
 	hdr = genHeader(hdr, JSStreamSource, "O1 1 > > foo.1")
 	diff := &batchStagedDiff{}
 	mset.clMu.Lock()
-	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, []byte(`{"val":"5"}`), true, "M", nil, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
+	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, []byte(`{"val":"5"}`), true, "M", nil, _EMPTY_, 1, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
 	mset.clMu.Unlock()
 	require_NoError(t, err)
 	require_Equal(t, diff.counter["foo"].sources["O1"]["foo.1"], "5")
@@ -1837,7 +1837,7 @@ func TestJetStreamCounterStagingDoesNotCorruptCommittedTotal(t *testing.T) {
 	msg := []byte(`{"val":"5"}`)
 	diff := &batchStagedDiff{}
 	mset.clMu.Lock()
-	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, msg, true, "TEST", nil, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
+	_, _, _, _, err = checkMsgHeadersPreClusteredProposal(diff, mset, "foo", "foo", hdr, msg, true, "TEST", nil, _EMPTY_, 1, false, false, false, true, false, DiscardOld, false, -1, -1, -1, -1)
 	mset.clMu.Unlock()
 	require_NoError(t, err)
 
@@ -5709,6 +5709,98 @@ func TestJetStreamFastBatchPublishLimits(t *testing.T) {
 		pubAck = JSPubAckResponse{}
 		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
 		require_Error(t, pubAck.Error, NewJSBatchPublishUnknownBatchIDError())
+	}
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
+}
+
+func TestJetStreamFastBatchPublishAccountLimitsCounter(t *testing.T) {
+	test := func(t *testing.T, replicas int) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo"},
+			Storage:           MemoryStorage,
+			Replicas:          replicas,
+			AllowMsgCounter:   true,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		increment := func(batchId string, seq uint64, op int) {
+			t.Helper()
+			m := nats.NewMsg("foo")
+			m.Header.Set(JSMessageIncr, "1")
+			m.Reply = generateFastBatchReply(inbox, batchId, seq, 0, FastBatchGapFail, op)
+			require_NoError(t, nc.PublishMsg(m))
+		}
+		// Waits for the batch's PubAck, and returns it with the errors received before it.
+		pubAck := func(batchId string) (*PubAck, []*ApiError) {
+			t.Helper()
+			var errs []*ApiError
+			for {
+				rmsg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				var resp JSPubAckResponse
+				require_NoError(t, json.Unmarshal(rmsg.Data, &resp))
+				if resp.Error != nil {
+					errs = append(errs, resp.Error)
+				} else if resp.PubAck != nil && resp.BatchId == batchId {
+					return resp.PubAck, errs
+				}
+			}
+		}
+
+		// The leader checks the limits against the usage of all replicas, which they report periodically.
+		sl := c.streamLeader(globalAccountName, "TEST")
+		acc := sl.GlobalAccount()
+		waitForUsage := func(expected int64) {
+			t.Helper()
+			checkFor(t, 5*time.Second, 50*time.Millisecond, func() error {
+				if used := int64(acc.JetStreamUsage().Memory); used != expected {
+					return fmt.Errorf("expected usage %d, got %d", expected, used)
+				}
+				return nil
+			})
+		}
+
+		// Measure what one stored increment uses.
+		increment("c", 1, FastBatchOpCommit)
+		_, errs := pubAck("c")
+		require_Len(t, len(errs), 0)
+		mset, err := acc.lookupStream("TEST")
+		require_NoError(t, err)
+		stored, r := int64(mset.state().Bytes), int64(replicas)
+		waitForUsage(r * stored)
+
+		// Room for one more increment, not two. Both fit as received, without the counter value.
+		for _, s := range c.servers {
+			require_NoError(t, s.GlobalAccount().UpdateJetStreamLimits(map[string]JetStreamAccountLimits{
+				_EMPTY_: {MaxMemory: 3*r*stored - 1, MaxStore: -1, MaxStreams: -1, MaxConsumers: -1},
+			}))
+		}
+
+		// The second increment must be rejected, and the batch must still be acked up to the first.
+		increment("b", 1, FastBatchOpStart)
+		waitForUsage(2 * r * stored)
+		increment("b", 2, FastBatchOpAppend)
+		ack, errs := pubAck("b")
+		require_Len(t, len(errs), 1)
+		require_Error(t, errs[0], NewJSAccountResourcesExceededError())
+		require_Equal(t, ack.Sequence, 2)
+		require_Equal(t, ack.BatchSize, 1)
+		require_Equal(t, int64(acc.JetStreamUsage().Memory), 2*r*stored)
 	}
 
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
