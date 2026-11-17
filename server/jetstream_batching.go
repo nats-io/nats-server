@@ -1025,7 +1025,6 @@ func checkMsgHeadersPreClusteredProposal(
 	diff.inflightBytes += sz
 
 	// Check the account limits for the whole batch so far, as it will be stored.
-	// The message could have grown since the earlier check, e.g. by a counter value.
 	if jsa != nil {
 		if exceeded, apiErr := jsa.wouldExceedLimitsWithSize(mset.store.Type(), tierName, replicas, diff.inflightBytes); exceeded {
 			if apiErr == nil {

@@ -13602,7 +13602,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
-	s, js, jsa, st, r, tierName, outq, node, term := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.clusteredNode(), mset.term
+	s, js, jsa, r, tierName, outq, node, term := mset.srv, mset.js, mset.jsa, mset.cfg.Replicas, mset.tier, mset.outq, mset.clusteredNode(), mset.term
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
 
@@ -13662,21 +13662,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 			node.StepDown()
 		}
 		return NewJSInsufficientResourcesError()
-	}
-
-	// Check here pre-emptively if we have exceeded our account limits.
-	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, csubject, hdr, msg); exceeded {
-		if err == nil {
-			err = NewJSAccountResourcesExceededError()
-		}
-		s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), err.Error())
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = err
-			response, _ = json.Marshal(resp)
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
-		return err
 	}
 
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
