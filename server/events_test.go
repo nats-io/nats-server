@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4300,5 +4301,76 @@ func TestEventsRemoteLatencyUpdateNilLatency(t *testing.T) {
 
 	if recovered != nil {
 		t.Fatalf("remoteLatencyUpdate panicked on nil si.latency: %v", recovered)
+	}
+}
+
+// runServerWithAccounts runs a server with a system account and n other accounts,
+// each with one user named "u<i>" with the password "p".
+func runServerWithAccounts(b testing.TB, n int) *Server {
+	b.Helper()
+	var conf strings.Builder
+	conf.WriteString("host: 127.0.0.1\nport: -1\nsystem_account: SYS\naccounts: {\n  SYS: {users: [{user: s, password: s}]}\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&conf, "  A%d: {users: [{user: u%d, password: p}]}\n", i, i)
+	}
+	conf.WriteString("}\n")
+	s, _ := RunServerWithConfig(createConfFile(b, []byte(conf.String())))
+	return s
+}
+
+// benchConnectClose connects, authenticates and closes clients from many
+// goroutines, each as the user "u<i>" of one of the given number of accounts.
+// The clients are in memory (net.Pipe), so a long run does not use up the
+// ephemeral ports, but they go through the same CONNECT, authentication and
+// account registration as any other client. Besides the time per connection,
+// it reports the median and 99th percentile of the time from CONNECT to PONG.
+func benchConnectClose(b *testing.B, s *Server, accounts int) {
+	var (
+		next atomic.Uint32
+		mu   sync.Mutex
+		lats []time.Duration
+	)
+	b.SetParallelism(4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		user := fmt.Sprintf("u%d", int(next.Add(1)-1)%accounts)
+		connect := []byte(fmt.Sprintf("CONNECT {\"user\":%q,\"pass\":\"p\"}\r\nPING\r\n", user))
+		var local []time.Duration
+		defer func() {
+			mu.Lock()
+			lats = append(lats, local...)
+			mu.Unlock()
+		}()
+		for pb.Next() {
+			c, cr, _ := newClientForServer(s)
+			start := time.Now()
+			if err := c.parse(connect); err != nil {
+				b.Errorf("Error on connect: %v", err)
+				return
+			}
+			if l, err := cr.ReadString('\n'); err != nil || l != "PONG\r\n" {
+				b.Errorf("Expected PONG, got %q, %v", l, err)
+				return
+			}
+			local = append(local, time.Since(start))
+			c.close()
+		}
+	})
+	b.StopTimer()
+	if len(lats) > 0 {
+		slices.Sort(lats)
+		b.ReportMetric(float64(lats[len(lats)/2].Nanoseconds()), "p50-ns/connect")
+		b.ReportMetric(float64(lats[len(lats)*99/100].Nanoseconds()), "p99-ns/connect")
+	}
+}
+
+func BenchmarkConnectCloseParallel(b *testing.B) {
+	for _, accounts := range []int{1, 16} {
+		b.Run(fmt.Sprintf("accounts=%d", accounts), func(b *testing.B) {
+			s := runServerWithAccounts(b, accounts)
+			defer s.Shutdown()
+			benchConnectClose(b, s, accounts)
+		})
 	}
 }

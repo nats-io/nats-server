@@ -2478,7 +2478,7 @@ func (s *Server) sendLeafNodeConnectMsg(accName string) {
 
 // sendAccConnsUpdate is called to send out our information on the
 // account's local connections.
-// Lock should be held on entry.
+// Server lock should be held on entry (read or write, it is not modified).
 func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	if !s.eventsEnabled() || a == nil {
 		return
@@ -2579,8 +2579,14 @@ func (a *Account) statz() *AccountStat {
 // number of active connections, or during a heartbeat.
 // We will not send for $G.
 func (s *Server) accConnsUpdate(a *Account) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// A read lock is enough: this only reads s.sys (to check that events are
+	// enabled and to get the send queue) and s.gacc (to skip $G). The account's
+	// own state is guarded by a.mu, event ids by eventIdsMu, and the queue by
+	// its own lock.
+	// This is called for every client added to or removed from an account, so
+	// holding the server lock exclusively here made concurrent connects queue up.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if !s.eventsEnabled() || a == nil || a == s.gacc {
 		return
 	}
