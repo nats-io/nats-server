@@ -6658,7 +6658,9 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	isLeader, isSealed := mset.isLeaderNodeState(), mset.cfg.Sealed
 	isClustered, isMirror := mset.isClustered(), mset.cfg.Mirror != nil
 	canConsistencyCheck := !isClustered || traceOnly
-	canRespond := doAck && len(reply) > 0 && isLeader
+	// Errors for an R1 fast batch are reported by the caller as part of the batch.
+	canAck := doAck && len(reply) > 0 && isLeader
+	canRespond := canAck && fastBatch == nil
 	outq := mset.outq
 
 	var resp = &JSPubAckResponse{}
@@ -7388,10 +7390,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 			// Check full leader state so we only send the client an update once we're caught up.
 			commit := mset.batches.fastBatchRegisterSequences(mset, reply, mset.lseq, mset.isLeader(), fastBatch)
 			mset.batches.mu.Unlock()
-			if !commit {
-				reply = _EMPTY_
-				canRespond = false
-			}
+			// Only respond with the PubAck if the batch commits now, even if errors are reported by the caller.
+			canRespond = commit && canAck
 		}
 		if canRespond {
 			response = append(pubAck, strconv.FormatUint(mset.lseq, 10)...)
@@ -7588,10 +7588,8 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 		// Check full leader state so we only send the client an update once we're caught up.
 		commit := mset.batches.fastBatchRegisterSequences(mset, reply, mset.lseq, mset.isLeader(), fastBatch)
 		mset.batches.mu.Unlock()
-		if !commit {
-			reply = _EMPTY_
-			canRespond = false
-		}
+		// Only respond with the PubAck if the batch commits now, even if errors are reported by the caller.
+		canRespond = commit && canAck
 	}
 
 	// Send response here.
@@ -8421,49 +8419,7 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 				return err
 			}
 		}
-
-		// If a batch immediately errors, we send the same response as we would a normal publish.
-		if !batch.gapOk && b.lseq == 1 {
-			var response []byte
-			if err == errMsgIdDuplicate && dseq > 0 {
-				var buf [256]byte
-				response = append(buf[:0], mset.pubAck...)
-				response = append(response, strconv.FormatUint(dseq, 10)...)
-				response = append(response, fmt.Sprintf(",\"duplicate\": true,\"batch\":%q,\"count\":%d}", batch.id, batch.seq)...)
-			} else {
-				response, _ = json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
-			}
-			b.cleanupLocked(batch.id, batches)
-			batches.mu.Unlock()
-			outq.sendMsg(reply, response)
-			return err
-		}
-
-		// We always return the error to the client, unless it's a duplicate.
-		if err != errMsgIdDuplicate {
-			buf, _ := BatchFlowErr{Sequence: batch.seq, Error: apiErr}.MarshalJSON()
-			outq.sendMsg(reply, buf)
-		}
-
-		// If gaps are okay, we just allow them to continue.
-		// Unless this is the commit message, in which case we must still complete it below.
-		if batch.gapOk && !batch.commit {
-			batches.mu.Unlock()
-			return err
-		}
-
-		// Revert the last sequence, we might be able to immediately return the PubAck as part of the commit.
-		// Otherwise, the batch is cleaned up automatically later.
-		if err != errMsgIdDuplicate {
-			b.lseq--
-			// If there is none pending, correct the persisted sequence as we need to commit below.
-			if b.pending == 0 {
-				b.pseq = b.lseq
-			}
-		}
-		if cleanup = batches.fastBatchCommit(b, batch.id, mset, reply); cleanup {
-			b.cleanupLocked(batch.id, batches)
-		}
+		batches.fastBatchMsgFailed(b, batch, mset, reply, name, apiErr, err, dseq)
 		batches.mu.Unlock()
 		return err
 	}
@@ -8471,7 +8427,22 @@ func (mset *stream) processJetStreamFastBatchMsg(batch *FastBatch, subject, repl
 	batches.mu.Unlock()
 	if !isClustered {
 		mset.clMu.Unlock()
-		return mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, true, batch, false)
+		if err = mset.processJetStreamMsgWithBatch(subject, reply, hdr, msg, 0, 0, mt, false, true, batch, false); err != nil {
+			if !errors.As(err, &apiErr) {
+				apiErr = NewJSStreamStoreFailedError(err, Unless(err))
+			}
+			batches.mu.Lock()
+			// The batch could have been cleaned up while storing.
+			if batches.fast[batch.id] == b {
+				// The message counted as pending. The batch must still continue or commit.
+				if b.pending > 0 {
+					b.pending--
+				}
+				batches.fastBatchMsgFailed(b, batch, mset, reply, name, apiErr, err, 0)
+			}
+			batches.mu.Unlock()
+		}
+		return err
 	}
 	err = commitSingleMsg(diff, mset, subject, reply, hdr, msg, name, jsa, mt, node, term, r, lseq)
 	mset.clMu.Unlock()
