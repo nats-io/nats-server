@@ -465,6 +465,7 @@ type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
 	inflight           map[string]*inflightSubjectRunningTotal
+	inflightBytes      uint64 // Total bytes of the staged messages, as stored.
 	inflightTransform  map[uint64]string
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
@@ -1021,11 +1022,12 @@ func checkMsgHeadersPreClusteredProposal(
 		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1, schedule: hasSchedule}
 		diff.inflight[subject] = i
 	}
+	diff.inflightBytes += sz
 
-	// Check the account limits for the message as it will be stored.
-	// It could have grown since the earlier check, e.g. by a counter value.
+	// Check the account limits for the whole batch so far, as it will be stored.
+	// The message could have grown since the earlier check, e.g. by a counter value.
 	if jsa != nil {
-		if exceeded, apiErr := jsa.wouldExceedLimits(mset.store.Type(), tierName, replicas, subject, hdr, msg); exceeded {
+		if exceeded, apiErr := jsa.wouldExceedLimitsWithSize(mset.store.Type(), tierName, replicas, diff.inflightBytes); exceeded {
 			if apiErr == nil {
 				apiErr = NewJSAccountResourcesExceededError()
 			}
