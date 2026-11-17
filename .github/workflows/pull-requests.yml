@@ -53,7 +53,7 @@ jobs:
           done < <(git rev-list --no-merges "$range")
 
           if [ "$missing" -ne 0 ]; then
-            body="$(printf 'Please review the `CONTRIBUTING.md` guide as some commits are missing the `Signed-off-by:` declaration in their commit messages.\n\nTo correct, please amend the commit messages of the following commits and force-push:\n\n%s\n\nWe can't merge your PR until this is done. If not corrected, this PR will be automatically closed soon.' "$missing_list")"
+            body="$(printf 'Please review the `CONTRIBUTING.md` guide as some commits are missing the `Signed-off-by:` declaration in their commit messages.\n\nTo correct, please amend the commit messages of the following commits and force-push:\n\n%s\n\nWe cannot merge your PR until this is done. If not corrected, this PR will be automatically closed soon.' "$missing_list")"
             gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$body"
             exit 1
           fi
