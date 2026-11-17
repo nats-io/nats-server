@@ -6093,66 +6093,86 @@ func TestJetStreamFastBatchPublishStoreError(t *testing.T) {
 }
 
 func TestJetStreamFastBatchPublishMsgTooLargeSingleReply(t *testing.T) {
-	conf := createConfFile(t, []byte(fmt.Sprintf(`
-		listen: 127.0.0.1:-1
-		max_payload: %d
-		jetstream: {store_dir: %q}
-	`, 40*1024*1024, t.TempDir())))
-	s, _ := RunServerWithConfig(conf)
-	defer s.Shutdown()
+	test := func(t *testing.T, replicas int) {
+		tmpl := strings.Replace(jsClusterTempl, "server_name: %s", fmt.Sprintf("server_name: %%s\n\tmax_payload: %d", 40*1024*1024), 1)
+		c := createJetStreamClusterWithTemplate(t, tmpl, "R3S", 3)
+		defer c.shutdown()
 
-	nc := clientConnectToServer(t, s)
-	defer nc.Close()
+		nc := clientConnectToServer(t, c.randomServer())
+		defer nc.Close()
 
-	_, err := jsStreamCreate(t, nc, &StreamConfig{
-		Name:              "TEST",
-		Subjects:          []string{"foo.>"},
-		Storage:           FileStorage,
-		AllowMsgSchedules: true,
-		AllowBatchPublish: true,
-	})
-	require_NoError(t, err)
-	mset, err := s.globalAccount().lookupStream("TEST")
-	require_NoError(t, err)
+		_, err := jsStreamCreate(t, nc, &StreamConfig{
+			Name:              "TEST",
+			Subjects:          []string{"foo.>"},
+			Storage:           FileStorage,
+			Replicas:          replicas,
+			AllowMsgSchedules: true,
+			AllowBatchPublish: true,
+		})
+		require_NoError(t, err)
+		c.waitOnStreamLeader(globalAccountName, "TEST")
+		sl := c.streamLeader(globalAccountName, "TEST")
+		mset, err := sl.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
 
-	inbox := nats.NewInbox()
-	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
-	require_NoError(t, err)
-	defer sub.Drain()
+		// Subscribe on the stream leader, so the replies don't depend on interest propagation.
+		nc.Close()
+		nc = clientConnectToServer(t, sl)
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+		require_NoError(t, nc.Flush())
 
-	// The message fits the file store record limit as received, but not after the schedule's rollup header is added.
-	schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
-	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
-	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
-	msg := make([]byte, rlBadThresh-5-fileStoreMsgSize("foo.schedule", hdr, nil))
-	require_Equal(t, fileStoreMsgSize("foo.schedule", hdr, msg), rlBadThresh-5)
-	require_True(t, isFileStoreMsgTooLarge(fileStoreMsgSize("foo.schedule", genHeader(hdr, JSMsgRollup, JSMsgRollupSubject), msg)))
+		// The message fits the file store record limit as received, but not after the schedule's rollup header is added.
+		schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+		hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+		hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+		msg := make([]byte, rlBadThresh-5-fileStoreMsgSize("foo.schedule", hdr, nil))
+		require_Equal(t, fileStoreMsgSize("foo.schedule", hdr, msg), rlBadThresh-5)
+		require_True(t, isFileStoreMsgTooLarge(fileStoreMsgSize("foo.schedule", genHeader(hdr, JSMsgRollup, JSMsgRollupSubject), msg)))
 
-	reply := generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpStart)
-	batch, _ := getFastBatch(reply, hdr)
-	require_NotNil(t, batch)
-	defer batch.returnToPool()
-	require_Error(t, mset.processJetStreamFastBatchMsg(batch, "foo.schedule", reply, hdr, msg, nil), ErrMsgTooLarge)
+		reply := generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpStart)
+		batch, _ := getFastBatch(reply, hdr)
+		require_NotNil(t, batch)
+		defer batch.returnToPool()
+		err = mset.processJetStreamFastBatchMsg(batch, "foo.schedule", reply, hdr, msg, nil)
 
-	// The first message gets the initial flow control message.
-	rmsg, err := sub.NextMsg(time.Second)
-	require_NoError(t, err)
-	var batchFlowAck BatchFlowAck
-	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
-	require_Equal(t, batchFlowAck.Type, "ack")
+		// The first message gets the initial flow control message.
+		rmsg, rerr := sub.NextMsg(time.Second)
+		require_NoError(t, rerr)
+		var batchFlowAck BatchFlowAck
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Type, "ack")
 
-	// The error must be replied to only once.
-	rmsg, err = sub.NextMsg(time.Second)
-	require_NoError(t, err)
-	var pubAck JSPubAckResponse
-	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
-	require_NotNil(t, pubAck.Error)
-	require_Error(t, pubAck.Error, NewJSStreamStoreFailedError(ErrMsgTooLarge))
-	rmsg, err = sub.NextMsg(250 * time.Millisecond)
-	if err == nil {
-		t.Fatalf("Unexpected second reply: %s", rmsg.Data)
+		// The error must be replied to only once.
+		rmsg, rerr = sub.NextMsg(time.Second)
+		require_NoError(t, rerr)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_NotNil(t, pubAck.Error)
+		require_Error(t, pubAck.Error, NewJSStreamStoreFailedError(ErrMsgTooLarge))
+		rmsg, rerr = sub.NextMsg(250 * time.Millisecond)
+		if rerr == nil {
+			t.Fatalf("Unexpected second reply: %s", rmsg.Data)
+		}
+		require_Error(t, rerr, nats.ErrTimeout)
+
+		// The batch must be cleaned up immediately, not stall until it times out.
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		batches.mu.Lock()
+		inflight := len(batches.fast)
+		batches.mu.Unlock()
+		require_Equal(t, inflight, 0)
+
+		// The message must be rejected before it's stored or proposed.
+		require_Error(t, err, ErrMsgTooLarge)
 	}
-	require_Error(t, err, nats.ErrTimeout)
+
+	t.Run("R1", func(t *testing.T) { test(t, 1) })
+	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
 
 func TestJetStreamFastBatchPublishTraceOnly(t *testing.T) {
