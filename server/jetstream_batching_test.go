@@ -5714,3 +5714,169 @@ func TestJetStreamFastBatchPublishLimits(t *testing.T) {
 	t.Run("R1", func(t *testing.T) { test(t, 1) })
 	t.Run("R3", func(t *testing.T) { test(t, 3) })
 }
+
+func TestJetStreamFastBatchPublishStoreError(t *testing.T) {
+	test := func(t *testing.T, gapMode string) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc := clientConnectToServer(t, s)
+		defer nc.Close()
+
+		cfg := &StreamConfig{
+			Name:                   "TEST",
+			Subjects:               []string{"foo"},
+			Storage:                MemoryStorage,
+			Discard:                DiscardNew,
+			MaxBytes:               1024,
+			AllowMsgTTL:            true,
+			SubjectDeleteMarkerTTL: time.Hour,
+			AllowBatchPublish:      true,
+		}
+		_, err := jsStreamCreate(t, nc, cfg)
+		require_NoError(t, err)
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+
+		// A TTL below the subject delete marker TTL is raised to 3600 when stored, growing the message.
+		ttl := nats.NewMsg("foo")
+		ttl.Header.Set(JSMessageTTL, "1")
+		_, err = nc.RequestMsg(ttl, time.Second)
+		require_NoError(t, err)
+		grown := mset.state().Bytes
+		received := grown - uint64(len("3600")-len("1"))
+
+		// Room for the batch's first message and the TTL message as received, but not as stored.
+		cfg.MaxBytes = int64(grown + memStoreMsgSize("foo", nil, nil) + received)
+		_, err = jsStreamUpdate(t, nc, cfg)
+		require_NoError(t, err)
+
+		inbox := nats.NewInbox()
+		sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+		require_NoError(t, err)
+		defer sub.Drain()
+
+		// The first message is stored and triggers the initial flow control message.
+		m := nats.NewMsg("foo")
+		m.Reply = generateFastBatchReply(inbox, "uuid", 1, 0, gapMode, FastBatchOpStart)
+		require_NoError(t, nc.PublishMsg(m))
+		rmsg, err := sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var batchFlowAck BatchFlowAck
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+		require_Equal(t, batchFlowAck.Messages, 10)
+
+		// The second message passes all checks, but fails to be stored since it grew.
+		ttl.Reply = generateFastBatchReply(inbox, "uuid", 2, 0, gapMode, FastBatchOpAppend)
+		require_NoError(t, nc.PublishMsg(ttl))
+
+		// The error must be reported as part of the batch, on that sequence.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(string(rmsg.Data), "{\"type\":\"err\","))
+		var batchFlowErr BatchFlowErr
+		require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowErr))
+		require_Equal(t, batchFlowErr.Sequence, 2)
+		require_Error(t, batchFlowErr.Error, NewJSStreamStoreFailedError(ErrMaxBytes))
+
+		switch gapMode {
+		case FastBatchGapFail:
+			// The batch commits up to the failed message.
+		case FastBatchGapOk:
+			// The batch continues, so commit it.
+			m.Reply = generateFastBatchReply(inbox, "uuid", 3, 0, gapMode, FastBatchOpCommitEob)
+			require_NoError(t, nc.PublishMsg(m))
+		default:
+			t.Fatalf("Unexpected gap mode: %q", gapMode)
+		}
+
+		// We always expect a PubAck containing the last persisted message data.
+		rmsg, err = sub.NextMsg(time.Second)
+		require_NoError(t, err)
+		var pubAck JSPubAckResponse
+		require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+		require_True(t, pubAck.Error == nil)
+		require_Equal(t, pubAck.Sequence, 2)
+		require_Equal(t, pubAck.BatchId, "uuid")
+		if gapMode == FastBatchGapFail {
+			require_Equal(t, pubAck.BatchSize, 1)
+		} else {
+			require_Equal(t, pubAck.BatchSize, 2)
+		}
+
+		// The batch must be cleaned up.
+		mset.mu.RLock()
+		batches := mset.batches
+		mset.mu.RUnlock()
+		batches.mu.Lock()
+		inflight := len(batches.fast)
+		batches.mu.Unlock()
+		require_Equal(t, inflight, 0)
+	}
+
+	t.Run(FastBatchGapFail, func(t *testing.T) { test(t, FastBatchGapFail) })
+	t.Run(FastBatchGapOk, func(t *testing.T) { test(t, FastBatchGapOk) })
+}
+
+func TestJetStreamFastBatchPublishMsgTooLargeSingleReply(t *testing.T) {
+	conf := createConfFile(t, []byte(fmt.Sprintf(`
+		listen: 127.0.0.1:-1
+		max_payload: %d
+		jetstream: {store_dir: %q}
+	`, 40*1024*1024, t.TempDir())))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc := clientConnectToServer(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{
+		Name:              "TEST",
+		Subjects:          []string{"foo.>"},
+		Storage:           FileStorage,
+		AllowMsgSchedules: true,
+		AllowBatchPublish: true,
+	})
+	require_NoError(t, err)
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(fmt.Sprintf("%s.>", inbox))
+	require_NoError(t, err)
+	defer sub.Drain()
+
+	// The message fits the file store record limit as received, but not after the schedule's rollup header is added.
+	schedule := time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	msg := make([]byte, rlBadThresh-5-fileStoreMsgSize("foo.schedule", hdr, nil))
+	require_Equal(t, fileStoreMsgSize("foo.schedule", hdr, msg), rlBadThresh-5)
+	require_True(t, isFileStoreMsgTooLarge(fileStoreMsgSize("foo.schedule", genHeader(hdr, JSMsgRollup, JSMsgRollupSubject), msg)))
+
+	reply := generateFastBatchReply(inbox, "uuid", 1, 0, FastBatchGapFail, FastBatchOpStart)
+	batch, _ := getFastBatch(reply, hdr)
+	require_NotNil(t, batch)
+	defer batch.returnToPool()
+	require_Error(t, mset.processJetStreamFastBatchMsg(batch, "foo.schedule", reply, hdr, msg, nil), ErrMsgTooLarge)
+
+	// The first message gets the initial flow control message.
+	rmsg, err := sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var batchFlowAck BatchFlowAck
+	require_NoError(t, json.Unmarshal(rmsg.Data, &batchFlowAck))
+	require_Equal(t, batchFlowAck.Type, "ack")
+
+	// The error must be replied to only once.
+	rmsg, err = sub.NextMsg(time.Second)
+	require_NoError(t, err)
+	var pubAck JSPubAckResponse
+	require_NoError(t, json.Unmarshal(rmsg.Data, &pubAck))
+	require_NotNil(t, pubAck.Error)
+	require_Error(t, pubAck.Error, NewJSStreamStoreFailedError(ErrMsgTooLarge))
+	rmsg, err = sub.NextMsg(250 * time.Millisecond)
+	if err == nil {
+		t.Fatalf("Unexpected second reply: %s", rmsg.Data)
+	}
+	require_Error(t, err, nats.ErrTimeout)
+}
