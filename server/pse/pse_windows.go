@@ -234,7 +234,7 @@ func initCounters(imageName string) (err error) {
 	if err = pdhCollectQueryData(pcHandle); err != nil {
 		return err
 	}
-	time.Sleep(50)
+	time.Sleep(50 * time.Millisecond)
 
 	return nil
 }
