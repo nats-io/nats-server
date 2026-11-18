@@ -7120,6 +7120,162 @@ func TestFileStoreNumPendingCanSkipStartingBlock(t *testing.T) {
 	}
 }
 
+func TestFileStoreNumPendingExactLastDoesNotLoadBlock(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for i := range 100 {
+		_, _, err := fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, bytes.Repeat([]byte("A"), 128), 0)
+		require_NoError(t, err)
+	}
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	require_NoError(t, mb.flushPendingMsgs())
+	mb.mu.Lock()
+	mb.clearCacheAndOffset()
+	unloaded, indexed, loads := mb.cacheNotLoaded(), mb.fss != nil, mb.cloads
+	mb.mu.Unlock()
+	require_True(t, unloaded)
+	require_True(t, indexed)
+
+	for _, start := range []uint64{3, 4} {
+		total, through, err := fs.NumPending(start, "foo.2", false)
+		require_NoError(t, err)
+		require_Equal(t, total, uint64(4)-start)
+		require_Equal(t, through, uint64(100))
+		mb.mu.RLock()
+		unloaded, currentLoads := mb.cacheNotLoaded(), mb.cloads
+		mb.mu.RUnlock()
+		require_Equal(t, currentLoads, loads)
+		require_True(t, unloaded)
+	}
+}
+
+func TestFileStoreNumPendingExactLastDeleted(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 1024 * 1024},
+		StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	for _, subj := range []string{"foo.other", "foo.key", "foo.key", "foo.key", "foo.other"} {
+		_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+		require_NoError(t, err)
+	}
+	ok, err := fs.RemoveMsg(4)
+	require_NoError(t, err)
+	require_True(t, ok)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	mb.mu.RLock()
+	ss, _ := mb.fss.Find([]byte("foo.key"))
+	dirty := ss.lastNeedsUpdate
+	mb.mu.RUnlock()
+	fs.mu.RUnlock()
+	require_True(t, dirty)
+
+	total, through, err := fs.NumPending(4, "foo.key", false)
+	require_NoError(t, err)
+	require_Equal(t, total, uint64(0))
+	require_Equal(t, through, uint64(5))
+	total, through, err = fs.NumPending(3, "foo.key", false)
+	require_NoError(t, err)
+	require_Equal(t, total, uint64(1))
+	require_Equal(t, through, uint64(5))
+}
+
+func TestFileStoreNumPendingExactLastHistory(t *testing.T) {
+	for _, blockSize := range []uint64{1024, 1024 * 1024} {
+		t.Run(fmt.Sprint(blockSize), func(t *testing.T) {
+			fcfg := FileStoreConfig{StoreDir: t.TempDir(), BlockSize: blockSize}
+			cfg := StreamConfig{Name: "TEST", Subjects: []string{"key.*"}, Storage: FileStorage}
+			fs, err := newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			defer func() { fs.Stop() }()
+
+			held := make(map[uint64]string)
+			add := func(i int) {
+				t.Helper()
+				subj := fmt.Sprintf("key.%d", i%7)
+				seq, _, err := fs.StoreMsg(subj, nil, bytes.Repeat([]byte("A"), 128), 0)
+				require_NoError(t, err)
+				held[seq] = subj
+			}
+			verify := func() {
+				t.Helper()
+				through := fs.State().LastSeq
+				for _, filter := range []string{"key.0", "key.1", "key.6", "missing", "key.*", ">", ""} {
+					for start := uint64(0); start <= through+1; start++ {
+						var want uint64
+						for seq, subj := range held {
+							if seq >= start && (filter == "" || subjectIsSubsetMatch(subj, filter)) {
+								want++
+							}
+						}
+						total, validThrough, err := fs.NumPending(start, filter, false)
+						require_NoError(t, err)
+						require_Equal(t, total, want)
+						require_Equal(t, validThrough, through)
+					}
+				}
+			}
+			for i := range 100 {
+				add(i)
+			}
+			verify()
+			for seq := uint64(1); seq <= 100; seq++ {
+				if seq%5 == 0 || seq <= 7 || seq >= 94 {
+					ok, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+					require_True(t, ok)
+					delete(held, seq)
+				}
+			}
+			verify()
+			for i := 100; i < 120; i++ {
+				add(i)
+			}
+			verify()
+
+			fs.mu.RLock()
+			for _, mb := range fs.blks {
+				require_NoError(t, mb.flushPendingMsgs())
+				mb.mu.Lock()
+				mb.fss = nil
+				mb.clearCacheAndOffset()
+				mb.mu.Unlock()
+			}
+			fs.mu.RUnlock()
+			verify()
+			require_NoError(t, fs.Stop())
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			verify()
+
+			_, err = fs.PurgeEx("key.1", 0, 0)
+			require_NoError(t, err)
+			for seq, subj := range held {
+				if subj == "key.1" {
+					delete(held, seq)
+				}
+			}
+			verify()
+			require_NoError(t, fs.Truncate(110))
+			for seq := range held {
+				if seq > 110 {
+					delete(held, seq)
+				}
+			}
+			verify()
+		})
+	}
+}
+
 // Since 2.10 we no longer have fss, and the approach for calculating NumPending would branch
 // based on the old fss metadata being present. This meant that calculating NumPending in >= 2.10.x
 // would load all blocks to complete. This test makes sure we do not do that anymore.
@@ -9579,6 +9735,52 @@ func Benchmark_FileStoreSubjectStateConsistencyOptimizationPerf(b *testing.B) {
 			subject := fmt.Sprintf("foo.%d", d)
 			_, _, err = fs.StoreMsg(subject, nil, nil, 0)
 			require_NoError(b, err)
+		}
+	}
+}
+
+func Benchmark_FileStoreNumPendingExactLast(b *testing.B) {
+	for _, history := range []int{1, 4} {
+		for _, start := range []string{"last", "after", "history"} {
+			b.Run(fmt.Sprintf("history=%d/start=%s", history, start), func(b *testing.B) {
+				fs, err := newFileStore(
+					FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 64 * 1024},
+					StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage})
+				require_NoError(b, err)
+				defer fs.Stop()
+				const subjects = 10_000
+				var seq uint64
+				for i := range subjects {
+					for range history {
+						n, _, err := fs.StoreMsg(fmt.Sprintf("foo.%d", i), nil, nil, 0)
+						require_NoError(b, err)
+						if i == subjects/4 {
+							seq = n
+						}
+					}
+				}
+				filter := fmt.Sprintf("foo.%d", subjects/4)
+				last, err := fs.LoadLastMsg(filter, nil)
+				require_NoError(b, err)
+				require_Equal(b, last.seq, seq)
+				want := uint64(1)
+				switch start {
+				case "after":
+					seq++
+					want = 0
+				case "history":
+					seq -= uint64(history - 1)
+					want = uint64(history)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					total, through, err := fs.NumPending(seq, filter, false)
+					require_NoError(b, err)
+					require_Equal(b, total, want)
+					require_Equal(b, through, uint64(subjects*history))
+				}
+			})
 		}
 	}
 }

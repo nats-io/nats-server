@@ -4447,6 +4447,24 @@ func (fs *fileStore) NumPending(sseq uint64, filter string, lastPerSubject bool)
 		return total, validThrough, nil
 	}
 
+	// An exact filter starting at its latest retained message has at most one
+	// pending message. Reuse the loaded subject index before scanning blocks.
+	if !lastPerSubject && info != nil {
+		if mb := fs.bim[info.lblk]; mb != nil {
+			mb.mu.Lock()
+			if mb.fss != nil {
+				if ss, ok := mb.fss.Find(stringToBytes(filter)); ok && ss != nil && !ss.lastNeedsUpdate && sseq >= ss.Last {
+					if sseq == ss.Last {
+						total = 1
+					}
+					mb.mu.Unlock()
+					return total, validThrough, nil
+				}
+			}
+			mb.mu.Unlock()
+		}
+	}
+
 	// See if filter was provided but its the only subject.
 	if !isAll && !wc && fs.psim.Size() == 1 {
 		isAll = true
