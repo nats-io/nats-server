@@ -27360,3 +27360,28 @@ func TestJetStreamAccountUsageConcurrentStreams(t *testing.T) {
 	}
 	require_Equal(t, acc.JetStreamUsage().Memory, stored)
 }
+
+func TestJetStreamDirectGetGenHeader(t *testing.T) {
+	ts := time.Unix(0, 1731200000123456789).UTC().Format(time.RFC3339Nano)
+	for _, hdr := range [][]byte{
+		[]byte("NATS/1.0\r\nNats-Msg-Id: abcdef\r\n\r\n"),
+		[]byte("NATS/1.0\r\nNats-TTL: 1h\r\nX: a b  c\r\n\r\n"),
+		[]byte("NATS/1.0 408 Request Timeout\r\n\r\n"),
+		[]byte("NATS/1.0\r\n\r\n"),
+		[]byte("\r\n"),
+	} {
+		orig := copyBytes(hdr)
+		// What chaining genHeader per key produces.
+		want := copyBytes(hdr)
+		want = genHeader(want, JSStream, "S")
+		want = genHeader(want, JSSubject, "foo.bar")
+		want = genHeader(want, JSSequence, "22")
+		want = genHeader(want, JSTimeStamp, ts)
+		require_Equal(t, string(genDirectGetHeader(hdr, dg, "S", "foo.bar", uint64(22), ts)), string(want))
+		want = genHeader(want, JSNumPending, "10")
+		want = genHeader(want, JSLastSequence, "21")
+		require_Equal(t, string(genDirectGetHeader(hdr, dgb, "S", "foo.bar", uint64(22), ts, uint64(10), uint64(21))), string(want))
+		// The stored header must not be modified.
+		require_Equal(t, string(hdr), string(orig))
+	}
+}

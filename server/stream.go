@@ -6120,6 +6120,17 @@ const (
 	eobm = "NATS/1.0 204 EOB\r\nNats-Num-Pending: %d\r\nNats-Last-Sequence: %d\r\nNats-UpTo-Sequence: %d\r\n\r\n"
 )
 
+// genDirectGetHeader generates the direct get headers in format (dg or dgb),
+// adding them to a message's existing header in a single append if it has one.
+func genDirectGetHeader(hdr []byte, format string, args ...any) []byte {
+	if len(hdr) <= LEN_CR_LF {
+		return fmt.Appendf(nil, format, args...)
+	}
+	// Drop the trailing CRLF, and skip the status line of the format.
+	hdr = hdr[:len(hdr)-LEN_CR_LF]
+	return fmt.Appendf(append(make([]byte, 0, len(hdr)+128), hdr...), format[len(hdrLine):], args...)
+}
+
 // Handle a multi request.
 func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	// TODO(dlc) - Make configurable?
@@ -6166,20 +6177,8 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	var lseq uint64
 	var sentBytes, sent int
 	total, np, err := store.MultiLastMsgs(req.MultiLastFor, req.Seq, upToSeq, maxAllowedResponses, func(sm *StoreMsg, np uint64) bool {
-		hdr := sm.hdr
 		ts := time.Unix(0, sm.ts).UTC()
-
-		if len(hdr) == 0 {
-			hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
-		} else {
-			hdr = copyBytes(hdr)
-			hdr = genHeader(hdr, JSStream, name)
-			hdr = genHeader(hdr, JSSubject, sm.subj)
-			hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-			hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-			hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-			hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-		}
+		hdr := genDirectGetHeader(sm.hdr, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 		// Track our lseq
 		lseq = sm.seq
 		// Send out our message.
@@ -6307,33 +6306,14 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 		ts := time.Unix(0, sm.ts).UTC()
 		var hdr []byte
 		if !req.NoHeaders {
-			hdr = sm.hdr
 			if isBatchRequest {
 				// Decrement num pending. This is an optimization, and we do not continue to look it up for these operations.
 				if np > 0 {
 					np--
 				}
-				if len(hdr) == 0 {
-					hdr = fmt.Appendf(nil, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
-				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-					hdr = genHeader(hdr, JSNumPending, strconv.FormatUint(np, 10))
-					hdr = genHeader(hdr, JSLastSequence, strconv.FormatUint(lseq, 10))
-				}
+				hdr = genDirectGetHeader(sm.hdr, dgb, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano), np, lseq)
 			} else {
-				if len(hdr) == 0 {
-					hdr = fmt.Appendf(nil, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
-				} else {
-					hdr = copyBytes(hdr)
-					hdr = genHeader(hdr, JSStream, name)
-					hdr = genHeader(hdr, JSSubject, sm.subj)
-					hdr = genHeader(hdr, JSSequence, strconv.FormatUint(sm.seq, 10))
-					hdr = genHeader(hdr, JSTimeStamp, ts.Format(time.RFC3339Nano))
-				}
+				hdr = genDirectGetHeader(sm.hdr, dg, name, sm.subj, sm.seq, ts.Format(time.RFC3339Nano))
 			}
 		}
 		// Track our lseq
