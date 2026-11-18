@@ -357,12 +357,12 @@ func (a *Account) RestoreStreamV2(ncfg *StreamConfig, r io.Reader) (retMset *str
 		if cfg.Storage == MemoryStorage {
 			limit = selected.MaxMemory
 			if usage != nil {
-				used = usage.total.mem
+				used = usage.total.mem.Load()
 			}
 		} else {
 			limit = selected.MaxStore
 			if usage != nil {
-				used = usage.total.store
+				used = usage.total.store.Load()
 			}
 		}
 		jsa.usageMu.RUnlock()
