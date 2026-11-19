@@ -1207,6 +1207,79 @@ func TestFileStoreStreamTruncateDeletedSequence(t *testing.T) {
 	})
 }
 
+func TestFileStoreStreamTruncateKeepsPriorTombstones(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		before   int
+		remove   []uint64
+		after    int
+		truncate uint64
+	}{
+		{"AtLastRemoved", 3, []uint64{1, 3}, 0, 3},
+		{"BelowLast", 3, []uint64{1}, 0, 2},
+		{"TombstoneKeptInBlock", 2, []uint64{1}, 2, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				storeMsgs := func(n int) {
+					for range n {
+						_, _, err := fs.StoreMsg("foo", nil, []byte("ok"), 0)
+						require_NoError(t, err)
+					}
+				}
+
+				// The tombstones are stored after the messages stored before.
+				storeMsgs(test.before)
+				for _, seq := range test.remove {
+					removed, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+					require_True(t, removed)
+				}
+				storeMsgs(test.after)
+
+				// The block is cut after the last message up to the truncated sequence.
+				// Tombstones stored after it are lost, the ones before it are kept in the block.
+				require_NoError(t, fs.Truncate(test.truncate))
+				expected := fs.State()
+				require_Equal(t, expected.Msgs, test.truncate-uint64(len(test.remove)))
+				require_Equal(t, expected.FirstSeq, 2)
+				require_Equal(t, expected.LastSeq, test.truncate)
+
+				// Only the lost tombstones are stored again, the kept ones must not be duplicated.
+				var tombs []uint64
+				fs.mu.RLock()
+				for _, mb := range fs.blks {
+					for _, tomb := range mb.tombs() {
+						tombs = append(tombs, tomb.seq)
+					}
+				}
+				fs.mu.RUnlock()
+				slices.Sort(tombs)
+				for i := 1; i < len(tombs); i++ {
+					require_NotEqual(t, tombs[i], tombs[i-1])
+				}
+
+				// Recover without index.db to verify the first message stays removed.
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+				if state := fs.State(); !reflect.DeepEqual(state, expected) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", expected, state)
+				}
+			})
+		})
+	}
+}
+
 func TestFileStoreStreamTruncateDeletedWithCompactedPrefix(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 120

@@ -11557,6 +11557,13 @@ func (mb *msgBlock) tombs() []msgId {
 // Return all active tombstones in this msgBlock.
 // Write lock should be held.
 func (mb *msgBlock) tombsLocked() []msgId {
+	return mb.tombsAfterLocked(0)
+}
+
+// Return the active tombstones in this msgBlock stored after the message with the given sequence.
+// Returns all if the sequence is zero.
+// Write lock should be held.
+func (mb *msgBlock) tombsAfterLocked(after uint64) []msgId {
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil
@@ -11567,6 +11574,7 @@ func (mb *msgBlock) tombsLocked() []msgId {
 	var tombs []msgId
 	var le = binary.LittleEndian
 	buf := mb.cache.buf
+	found := after == 0
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
@@ -11578,8 +11586,12 @@ func (mb *msgBlock) tombsLocked() []msgId {
 		rl &^= hbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
-			ts := int64(le.Uint64(hdr[12:]))
-			tombs = append(tombs, msgId{seq &^ tbit, ts})
+			if found {
+				ts := int64(le.Uint64(hdr[12:]))
+				tombs = append(tombs, msgId{seq &^ tbit, ts})
+			}
+		} else if seq == after {
+			found = true
 		}
 		// Advance to next record.
 		index += rl
@@ -11764,6 +11776,22 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 		if err != nil {
 			fs.mu.Unlock()
 			return err
+		}
+	}
+
+	// The selected block is cut after its last message, losing the tombstones stored after it.
+	// Need to store those as well if they're for messages before the truncated sequence.
+	if smb != nil && !removeSmb {
+		smb.mu.Lock()
+		tombs := smb.tombsAfterLocked(lsm.seq)
+		smb.mu.Unlock()
+		for _, tomb := range tombs {
+			if tomb.seq < seq {
+				if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+					fs.mu.Unlock()
+					return err
+				}
+			}
 		}
 	}
 
