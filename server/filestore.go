@@ -2265,13 +2265,11 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			// still exists on disk and report it as lost if not.
 			mb.closed = true
 
-			// Only add in if not empty or the lmb.
+			// Always add, an empty block can still contain tombstones for prior blocks.
+			fs.addMsgBlock(mb)
+			// An empty block holds no messages, so it can't contribute to the tracking state, unless it's the lmb.
 			if mb.msgs > 0 || i == lastIndex {
-				fs.addMsgBlock(mb)
 				updateTrackingState(&mstate, mb)
-			} else {
-				// Mark dirty to cleanup.
-				fs.dirty++
 			}
 		}
 	}
@@ -2346,8 +2344,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 
 	var rebuild bool
+	var removed []*msgBlock
 	for _, mb := range fs.blks {
 		if mb.closed {
+			// An empty block that was already removed has nothing to recover, so only drop it.
+			if mb.msgs == 0 && mb != fs.lmb {
+				removed = append(removed, mb)
+				continue
+			}
 			rebuild = true
 			if ld, _, _ := mb.rebuildState(); ld != nil {
 				fs.addLostData(ld)
@@ -2357,6 +2361,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 	if rebuild {
 		return errPriorState
+	}
+	// Also marks dirty, so the next full state no longer contains them.
+	for _, mb := range removed {
+		fs.removeMsgBlockFromList(mb)
 	}
 
 	// We check first and last seq and number of msgs and bytes. If there is a difference,
