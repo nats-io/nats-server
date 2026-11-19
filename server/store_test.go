@@ -927,6 +927,63 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 	}
 }
 
+func TestStoreStateNoDeletedWithoutMsgs(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		compact  uint64
+		truncate uint64
+		first    uint64
+	}{
+		{"New", 0, 0, 0},
+		{"Truncated", 0, 6, 7},
+		{"CompactedAndTruncated", 24, 24, 25},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}}
+			testAllStoreAllPermutations(t, true, cfg, func(t *testing.T, s StreamStore) {
+				// Both move the sequences up, but nothing was ever stored.
+				if test.compact > 0 {
+					_, err := s.Compact(test.compact)
+					require_NoError(t, err)
+				}
+				if test.truncate > 0 {
+					require_NoError(t, s.Truncate(test.truncate))
+				}
+
+				// Without messages the first sequence comes after the last, so nothing is deleted.
+				before := s.State()
+				require_Equal(t, before.Msgs, 0)
+				require_Equal(t, before.FirstSeq, test.first)
+				require_Equal(t, before.LastSeq, test.truncate)
+				require_Equal(t, before.NumDeleted, 0)
+				require_Len(t, len(before.Deleted), 0)
+
+				var fstate StreamState
+				s.FastState(&fstate)
+				require_Equal(t, fstate.NumDeleted, 0)
+
+				// Only a file store recovers, and only if it was written to.
+				fs, ok := s.(*fileStore)
+				if !ok || test.truncate == 0 {
+					return
+				}
+				// Otherwise it must be the same after a restart.
+				cfg.Storage = FileStorage
+				fcfg := fs.fcfg
+				require_NoError(t, fs.Stop())
+				fs, err := newFileStore(fcfg, cfg)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				state := fs.State()
+				require_Equal(t, state.FirstSeq, before.FirstSeq)
+				require_Equal(t, state.LastSeq, before.LastSeq)
+				require_Equal(t, state.NumDeleted, 0)
+			})
+		})
+	}
+}
+
 func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
 	testAllStoreAllPermutations(
 		t, false,

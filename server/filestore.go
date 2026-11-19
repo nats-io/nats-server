@@ -10060,7 +10060,7 @@ func (fs *fileStore) State() StreamState {
 	state.NumSubjects = fs.numSubjects()
 	state.Deleted = nil // make sure.
 
-	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 && state.FirstSeq > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
 		cur := fs.state.FirstSeq
 
@@ -11464,6 +11464,10 @@ SKIP:
 		bytes = fs.state.Bytes
 	}
 	fs.state.Bytes -= bytes
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
+	}
 
 	// Reset our subject lookup info.
 	if err = fs.resetGlobalPerSubjectInfo(); err != nil {
