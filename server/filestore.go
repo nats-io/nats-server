@@ -1537,7 +1537,15 @@ func (mb *msgBlock) convertCipher() error {
 			return err
 		}
 
-		buf, _ := mb.loadBlock(nil)
+		buf, err := mb.loadBlock(nil)
+		if err != nil {
+			return err
+		}
+		// An empty block has nothing to convert, it only needs new keys.
+		if len(buf) == 0 {
+			recycleMsgBlockBuf(buf)
+			return fs.genEncryptionKeysForBlock(mb)
+		}
 		bek.XORKeyStream(buf, buf)
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
@@ -1580,6 +1588,11 @@ func (mb *msgBlock) convertToEncrypted() error {
 	buf, err := mb.loadBlock(nil)
 	if err != nil {
 		return err
+	}
+	// An empty block has nothing to convert.
+	if len(buf) == 0 {
+		recycleMsgBlockBuf(buf)
+		return nil
 	}
 	// Check for compression.
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
