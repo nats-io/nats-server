@@ -23,7 +23,7 @@ runs:
       run: docker login -u "${{ inputs.hub_username }}" -p "${{ inputs.hub_password }}"
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v3.12.0
 
     - name: Generate build metadata
       shell: sh
@@ -33,7 +33,7 @@ runs:
         echo "BUILD_NAME=$(echo ${{ inputs.name }} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g')" >> $GITHUB_ENV
 
     - name: Build and push Docker images
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@v6.19.2
       with:
         context: "${{ github.workspace }}/src/github.com/nats-io"
         file: "${{ github.workspace }}/src/github.com/nats-io/nats-server/docker/Dockerfile.nightly"
