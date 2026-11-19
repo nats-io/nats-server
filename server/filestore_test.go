@@ -15907,6 +15907,68 @@ func TestFileStoreTruncateCompressedBlockAfterRestart(t *testing.T) {
 	})
 }
 
+func TestFileStoreRecoverCompressedLastBlockNotWrittenTo(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		for range 2 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		// 2.blk
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Make sure 1.blk is compressed on disk, instead of waiting for the async compression.
+		smb := fs.getFirstBlock()
+		smb.mu.Lock()
+		err = smb.recompressOnDiskIfNeeded()
+		smb.mu.Unlock()
+		require_NoError(t, err)
+
+		// Simulate a crash right after rolling over, nothing was flushed to 2.blk yet.
+		// The index.db would be from before that, so can't be used either.
+		fs.Stop()
+		mdir := filepath.Join(fcfg.StoreDir, msgDir)
+		require_NoError(t, os.Truncate(filepath.Join(mdir, fmt.Sprintf(blkScan, 2)), 0))
+		require_NoError(t, os.Remove(filepath.Join(mdir, streamStreamStateFile)))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		require_Equal(t, fs.State().Msgs, 2)
+
+		// The empty 2.blk is gone, but new messages must not be appended to the compressed 1.blk.
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		before := fs.State()
+		require_Equal(t, before.Msgs, 3)
+
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+		}
+		for seq := uint64(1); seq <= 3; seq++ {
+			_, err = fs.LoadMsg(seq, nil)
+			require_NoError(t, err)
+		}
+	})
+}
+
 func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		created := time.Now()
