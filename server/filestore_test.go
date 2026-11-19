@@ -5464,6 +5464,91 @@ func TestFileStoreRebuildStateFirstSeqWithLeftoverEmptyBlocks(t *testing.T) {
 	})
 }
 
+func TestFileStoreMaxMsgsPerStaleSubjectStateAfterBlockCompact(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxMsgsPer: 3}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 3 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		// Move on to a new block, since the last block is never compacted.
+		fs.mu.Lock()
+		mb := fs.lmb
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+
+		// Removing the last and first leaves both to be lazily recalculated.
+		_, err = fs.RemoveMsg(3)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		// Syncing compacts the block, so the stale first and last are now outside of it.
+		fs.syncBlocks()
+		mb.mu.RLock()
+		fseq, lseq := mb.first.seq, mb.last.seq
+		mb.mu.RUnlock()
+		require_Equal(t, fseq, 2)
+		require_Equal(t, lseq, 2)
+
+		// The stale first must not stop MaxMsgsPer from being enforced.
+		for range 3 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		require_Equal(t, fs.SubjectsState("foo")["foo"], SimpleState{Msgs: 3, First: 4, Last: 6})
+	})
+}
+
+func TestFileStoreRecalculateForSubjAfterBlockCompact(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		remove   []uint64
+		expected SimpleState
+	}{
+		{"Last", []uint64{4}, SimpleState{Msgs: 3, First: 1, Last: 3}},
+		{"FirstAndLast", []uint64{4, 1}, SimpleState{Msgs: 2, First: 2, Last: 3}},
+		{"FirstAndLastOneLeft", []uint64{4, 3, 1}, SimpleState{Msgs: 1, First: 2, Last: 2}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, cfg)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			for range 4 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			// Move on to a new block, since the last block must not be compacted.
+			fs.mu.Lock()
+			mb := fs.lmb
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+
+			for _, seq := range test.remove {
+				_, err = fs.RemoveMsg(seq)
+				require_NoError(t, err)
+			}
+
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			// Compacting drops the removed messages, so the stale last is now outside the block.
+			require_NoError(t, mb.compact())
+			ss, ok := mb.fss.Find([]byte("foo"))
+			require_True(t, ok)
+			require_NoError(t, mb.recalculateForSubj("foo", ss))
+			require_Equal(t, *ss, test.expected)
+		})
+	}
+}
+
 func TestFileStoreStateWithBlkFirstDeleted(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 4096
