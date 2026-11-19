@@ -5464,6 +5464,46 @@ func TestFileStoreRebuildStateFirstSeqWithLeftoverEmptyBlocks(t *testing.T) {
 	})
 }
 
+func TestFileStoreMaxMsgsPerNoProgressDoesNotSpin(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar"}, Storage: FileStorage, MaxMsgsPer: 1}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		_, _, err = fs.StoreMsg("bar", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(1)
+		require_NoError(t, err)
+
+		// Corrupt the per-subject state, pointing below the first sequence.
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.Lock()
+		ss, ok := lmb.fss.Find([]byte("foo"))
+		require_True(t, ok)
+		ss.First, ss.firstNeedsUpdate = 1, false
+		lmb.mu.Unlock()
+
+		// Enforcing MaxMsgsPer can't make progress, but must not spin forever.
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+			done <- err
+		}()
+		select {
+		case err = <-done:
+			require_NoError(t, err)
+		case <-time.After(5 * time.Second):
+			fs.Stop()
+			t.Fatal("Storing message did not return")
+		}
+	})
+}
+
 func TestFileStoreMaxMsgsPerStaleSubjectStateAfterBlockCompact(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage, MaxMsgsPer: 3}
