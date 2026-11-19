@@ -5291,11 +5291,30 @@ func (mb *msgBlock) finishedWithCache() {
 	}
 }
 
+// compressRolledBlock compresses a block on disk, after we rolled to a new block.
+// Lock should not be held.
+func (fs *fileStore) compressRolledBlock(mb *msgBlock) {
+	// The last block can't be compressed, new records are appended to it uncompressed.
+	// A truncate makes it the last block again, if it didn't need the new block after all.
+	fs.mu.RLock()
+	if mb == fs.lmb {
+		fs.mu.RUnlock()
+		return
+	}
+	mb.mu.Lock()
+	fs.mu.RUnlock()
+	defer mb.mu.Unlock()
+	// Might error, but we can't handle it here anyway.
+	_ = mb.recompressOnDiskIfNeeded()
+}
+
 // This rolls to a new append msg block.
 // Lock should be held.
 func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	index := uint32(1)
 	var rbuf []byte
+	// The previous block, if it should be compressed.
+	var pmb *msgBlock
 
 	if lmb := fs.lmb; lmb != nil {
 		lmb.mu.Lock()
@@ -5327,12 +5346,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		if fs.fcfg.Compression != NoCompression {
 			// We've now reached the end of this message block, if we want
 			// to compress blocks then now's the time to do it.
-			go func() {
-				lmb.mu.Lock()
-				defer lmb.mu.Unlock()
-				// Might error, but we can't handle it here anyway.
-				_ = lmb.recompressOnDiskIfNeeded()
-			}()
+			pmb = lmb
 		}
 	}
 
@@ -5400,6 +5414,11 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Add to our list of blocks and mark as last.
 	fs.addMsgBlock(mb)
+
+	// Only start compressing once the previous block is no longer the last block.
+	if pmb != nil {
+		go fs.compressRolledBlock(pmb)
+	}
 
 	return mb, nil
 }
