@@ -5416,11 +5416,18 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		if _, err = fs.removeMsgViaLimits(fseq); err != nil && err != ErrStoreMsgNotFound {
 			return err
 		}
+		pseq, prev := fseq, psmc
 		fseq = 0
 		// fs.removeMsgViaLimits releases and re-acquires the lock, need to fetch the state again.
 		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
 			psmc = info.total
 		} else {
+			break
+		}
+		// If nothing was removed, the per-subject state doesn't match what's stored.
+		if psmc >= prev {
+			// Stop here, retrying would never make progress.
+			fs.rateLimitWarn("Could not enforce max messages per subject for %q, subject count unchanged after removing seq %d", subj, pseq)
 			break
 		}
 	}
