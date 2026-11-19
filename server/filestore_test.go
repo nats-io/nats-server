@@ -15853,6 +15853,60 @@ func TestFileStoreCorrectChecksumAfterTruncate(t *testing.T) {
 	})
 }
 
+func TestFileStoreTruncateCompressedBlockAfterRestart(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		for range 2 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		// 2.blk
+		_, err = fs.newMsgBlockForWrite()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// Make sure 1.blk is compressed on disk, instead of waiting for the async compression.
+		smb := fs.getFirstBlock()
+		smb.mu.Lock()
+		err = smb.recompressOnDiskIfNeeded()
+		smb.mu.Unlock()
+		require_NoError(t, err)
+
+		// After a restart, the block must still be known to be compressed.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// Truncating must not cut the compressed block at an uncompressed offset.
+		require_NoError(t, fs.Truncate(1))
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.LastSeq, 1)
+		_, err = fs.LoadMsg(1, nil)
+		require_NoError(t, err)
+
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+		}
+		_, err = fs.LoadMsg(1, nil)
+		require_NoError(t, err)
+	})
+}
+
 func TestFileStoreRecoverTTLAndScheduleStateAndCounters(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		created := time.Now()
