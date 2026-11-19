@@ -3,9 +3,6 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
-    '.github/actions/nightly-release/action.yaml':
-        - 'docker/build-push-action@v6.19.2'
-        - 'docker/setup-buildx-action@v3.12.0'
     '.github/workflows/claude.yml': []
     '.github/workflows/cov.yaml':
         - 'actions/checkout@v7.0.1'
@@ -20,6 +17,8 @@ workflows:
         - 'actions/setup-go@v7.0.0'
     '.github/workflows/nightly.yaml':
         - 'actions/checkout@v7.0.1'
+        - 'docker/build-push-action@v6.19.2'
+        - 'docker/setup-buildx-action@v3.12.0'
     '.github/workflows/pull-requests.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/release.yaml':

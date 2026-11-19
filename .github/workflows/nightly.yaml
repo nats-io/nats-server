@@ -43,9 +43,30 @@ jobs:
           fetch-depth: 1
           fetch-tags: true
 
-      - name: Build Docker nightly
-        uses: ./src/github.com/nats-io/nats-server/.github/actions/nightly-release
+      - name: Log in to Docker Hub
+        shell: bash
+        run: docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Generate build metadata
+        shell: sh
+        run: |
+          echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          echo "GIT_COMMIT=$(git -C "${{ github.workspace }}/src/github.com/nats-io/nats-server" rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "BUILD_NAME=$(echo ${{ inputs.target || 'nightly' }} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g')" >> $GITHUB_ENV
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v6.19.2
         with:
-          name: ${{ inputs.target || 'nightly' }}
-          hub_username: "${{ secrets.DOCKER_USERNAME }}"
-          hub_password: "${{ secrets.DOCKER_PASSWORD }}"
+          context: "${{ github.workspace }}/src/github.com/nats-io"
+          file: "${{ github.workspace }}/src/github.com/nats-io/nats-server/docker/Dockerfile.nightly"
+          build-args: |
+            VERSION=nightly-${{ env.BUILD_DATE }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            synadia/nats-server:${{ env.BUILD_NAME }}
+            synadia/nats-server:${{ env.BUILD_NAME }}-${{ env.BUILD_DATE }}
