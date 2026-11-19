@@ -2718,7 +2718,7 @@ func (c *client) sendMsgToGatewaysVia(acc *Account, msg, subject, reply []byte, 
 		sub.nm, sub.max = 0, 0
 		sub.client = gwc
 		sub.subject = subject
-		if c.deliverMsg(prodIsMQTT, sub, acc, subject, mreply, mh, dmsg, false) {
+		if c.deliverMsg(prodIsMQTT, sub, acc, subject, mreply, mh, dmsg, false, dontCheckSubClose) {
 			// We don't count internal deliveries so count only if sub.icb is nil
 			if sub.icb == nil {
 				dlvMsgs++
