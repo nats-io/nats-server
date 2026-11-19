@@ -8526,6 +8526,71 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateNextBlock(t *testing.T) {
 	})
 }
 
+func TestFileStoreFilteredPendingPSIMFirstBlockUpdateAfterTruncate(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar"}, Storage: FileStorage, MaxMsgsPer: 2})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	store := func(subj string) {
+		_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+		require_NoError(t, err)
+	}
+	fetch := func(subj string) psi {
+		fs.mu.RLock()
+		defer fs.mu.RUnlock()
+		info, ok := fs.psim.Find([]byte(subj))
+		require_True(t, ok)
+		return *info
+	}
+
+	// 1.blk
+	store("foo")
+	store("bar")
+	// 2.blk
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	store("bar")
+	// 3.blk, the limit removes the first "foo" but leaves fblk as is.
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	store("foo")
+	store("foo")
+	info := fetch("foo")
+	require_Equal(t, info.total, 2)
+	require_Equal(t, info.fblk, 1)
+	require_Equal(t, info.lblk, 3)
+
+	// A filtered scan would now find the first "foo" in 3.blk, and defer moving fblk there.
+	fs.mu.RLock()
+	mb := fs.bim[3]
+	fs.mu.RUnlock()
+	require_NotNil(t, mb)
+
+	// Truncating removes 3.blk, new messages go into 2.blk and a new 3.blk.
+	require_NoError(t, fs.Truncate(3))
+	store("foo")
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	store("bar")
+	info = fetch("foo")
+	require_Equal(t, info.total, 1)
+	require_Equal(t, info.fblk, 2)
+	require_Equal(t, info.lblk, 2)
+
+	// The deferred update arriving only now must not skip past 2.blk.
+	fs.updateFirstBlock("foo", false, 3, mb)
+	require_Equal(t, fetch("foo").fblk, 2)
+	require_Equal(t, fs.SubjectsState("foo")["foo"], SimpleState{Msgs: 1, First: 4, Last: 4})
+}
+
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(

@@ -3806,6 +3806,7 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 
 		// Hold this outside loop for psim fblk updates when done.
 		i := start + 1
+		var fmb *msgBlock
 		for ; i <= stop; i++ {
 			mb := fs.bim[i]
 			if mb == nil {
@@ -3815,29 +3816,16 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 				return err
 			} else if f > 0 {
 				ss.First = f
+				fmb = mb
 				break
 			}
 		}
 		// Update fblk since fblk was outdated.
 		// We only require read lock here as that is desirable,
 		// so we need to do this in a go routine to acquire write lock.
-		go func() {
-			fs.mu.Lock()
-			defer fs.mu.Unlock()
-			if !wc {
-				if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-					if i > info.fblk {
-						info.fblk = i
-					}
-				}
-			} else {
-				fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-					if i > psi.fblk {
-						psi.fblk = i
-					}
-				})
-			}
-		}()
+		if fmb != nil {
+			go fs.updateFirstBlock(filter, wc, i, fmb)
+		}
 	}
 	// Now gather last sequence if asked to do so.
 	if last {
@@ -3850,6 +3838,31 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 		}
 	}
 	return nil
+}
+
+// updateFirstBlock moves fblk up to index i for subjects matching the filter.
+// mb is the block at index i that holds the first match.
+func (fs *fileStore) updateFirstBlock(filter string, wc bool, i uint32, mb *msgBlock) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	// After a truncate, a new block can reuse index i while an earlier block holds the first match.
+	if fs.bim[i] != mb {
+		return
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+			if i > info.fblk {
+				info.fblk = i
+			}
+		}
+	} else {
+		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+			if i > psi.fblk {
+				psi.fblk = i
+			}
+		})
+	}
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
