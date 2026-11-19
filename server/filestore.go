@@ -11988,7 +11988,13 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) error {
 	// Only delete message block after (potentially) writing a tombstone.
 	// But only if it doesn't contain any tombstones for prior blocks.
 	if mb.numPriorTombsLocked() > 0 {
-		return nil
+		// The block is kept, but callers assume it's removed and don't write tombstones for its messages.
+		// Mark it empty and compact, so only the tombstones remain on disk.
+		mb.msgs, mb.bytes = 0, 0
+		mb.dmap.Empty()
+		atomic.StoreUint64(&mb.first.seq, lseq+1)
+		mb.first.ts = 0
+		return mb.compact()
 	}
 	return fs.forceRemoveMsgBlock(mb)
 }
