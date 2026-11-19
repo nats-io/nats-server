@@ -1666,9 +1666,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		return nil, nil, err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return nil, nil, err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 	return mb.rebuildStateFromBufLocked(buf, true)
 }
 
@@ -8985,9 +8988,12 @@ checkCache:
 		return err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
