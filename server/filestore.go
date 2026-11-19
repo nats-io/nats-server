@@ -2245,6 +2245,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			if version >= 3 {
 				schedules = readU64()
 			}
+			var rfseq uint64
+			if version >= 5 {
+				rfseq = readU64()
+			}
 			if bi < 0 {
 				_ = os.Remove(fn)
 				return errCorruptState
@@ -2252,6 +2256,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			mb := fs.initMsgBlock(index)
 			atomic.StoreUint64(&mb.first.seq, fseq)
 			atomic.StoreUint64(&mb.last.seq, lseq)
+			atomic.StoreUint64(&mb.rfseq, rfseq)
 			mb.msgs, mb.bytes = lseq-fseq+1, nbytes
 			mb.first.ts, mb.last.ts = fts+baseTime, lts+baseTime
 			mb.ttls = ttls
@@ -8528,11 +8533,34 @@ func (fs *fileStore) syncBlocks() {
 
 	var markDirty bool
 	var needDirSync bool
+	var prevLast uint64
 	for _, mb := range blks {
 		// Do actual sync. Hold lock for consistency.
 		mb.mu.Lock()
 		if mb.closed {
 			mb.mu.Unlock()
+			continue
+		}
+		// Later blocks rely on the lowest stored sequence to know which tombstones to keep when compacting.
+		// It's unknown after recovering from an older index.db.
+		var err error
+		if atomic.LoadUint64(&mb.rfseq) == 0 {
+			if first := atomic.LoadUint64(&mb.first.seq); prevLast+1 == first {
+				// Directly following the previous block, nothing can be stored below our first.
+				atomic.StoreUint64(&mb.rfseq, first)
+			} else if mb.cacheNotLoaded() {
+				// Otherwise loading the block sets it.
+				needsCleanup := mb.cache == nil
+				err = mb.loadMsgsWithLock()
+				if needsCleanup {
+					mb.finishedWithCache()
+				}
+			}
+		}
+		prevLast = atomic.LoadUint64(&mb.last.seq)
+		if err != nil {
+			mb.mu.Unlock()
+			storeFsWerr(err)
 			continue
 		}
 		// Bubble up an individual block error into the broader filestore.
@@ -12665,7 +12693,7 @@ func (fs *fileStore) cancelSyncTimer() {
 const (
 	fullStateMagic      = uint8(11)
 	fullStateMinVersion = uint8(1) // What is the minimum version we know how to parse?
-	fullStateVersion    = uint8(4) // What is the current version written out to index.db?
+	fullStateVersion    = uint8(5) // What is the current version written out to index.db?
 )
 
 // This go routine periodically writes out our full stream state index.
@@ -12860,8 +12888,9 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 		numDeleted := mb.dmap.Size()
 		buf = binary.AppendUvarint(buf, uint64(numDeleted))
-		buf = binary.AppendUvarint(buf, mb.ttls)      // Field is new in version 2
-		buf = binary.AppendUvarint(buf, mb.schedules) // Field is new in version 3
+		buf = binary.AppendUvarint(buf, mb.ttls)                      // Field is new in version 2
+		buf = binary.AppendUvarint(buf, mb.schedules)                 // Field is new in version 3
+		buf = binary.AppendUvarint(buf, atomic.LoadUint64(&mb.rfseq)) // Field is new in version 5
 		if numDeleted > 0 {
 			dmap := mb.dmap.Encode(scratch[:0])
 			dmapTotalLen += len(dmap)

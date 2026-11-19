@@ -15173,6 +15173,91 @@ func TestFileStoreKeepsTombstoneForMsgStoredInPriorBlock(t *testing.T) {
 	}
 }
 
+func TestFileStoreRecoverFullStateStoredBelowFirst(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		unknown bool // Recover from an older index.db, where the lowest stored sequence is unknown.
+	}{
+		{name: "Known"},
+		{name: "Unknown", unknown: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// 1.blk to 4.blk, with two messages each except the last.
+				for i := range 4 {
+					if i > 0 {
+						fs.mu.Lock()
+						_, err = fs.newMsgBlockForWrite()
+						fs.mu.Unlock()
+						require_NoError(t, err)
+					}
+					for range min(2, 4-i) {
+						_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+				}
+
+				// Simulate an older index.db, where this is unknown.
+				if test.unknown {
+					fs.mu.RLock()
+					for _, mb := range fs.blks {
+						atomic.StoreUint64(&mb.rfseq, 0)
+					}
+					fs.mu.RUnlock()
+				}
+
+				// Recover from index.db, without loading any of the blocks after.
+				fs.Stop()
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// What's stored on disk below the first must still be known for 3.blk, unless it was unknown.
+				fs.mu.RLock()
+				mb1, mb3 := fs.bim[1], fs.bim[3]
+				fs.mu.RUnlock()
+				if test.unknown {
+					require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 0)
+				} else {
+					require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 5)
+				}
+
+				// Remove all of 2.blk, the tombstones go into 4.blk.
+				_, err = fs.RemoveMsg(3)
+				require_NoError(t, err)
+				_, err = fs.RemoveMsg(4)
+				require_NoError(t, err)
+
+				// 5.blk
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				// 4.blk now only contains the tombstones for 2.blk, which are no longer needed.
+				_, err = fs.RemoveMsg(7)
+				require_NoError(t, err)
+
+				// Syncing resolves what's unknown before compacting.
+				fs.syncBlocks()
+				fs.mu.RLock()
+				_, ok := fs.bim[4]
+				fs.mu.RUnlock()
+				require_Equal(t, atomic.LoadUint64(&mb1.rfseq), 1)
+				require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 5)
+				require_False(t, ok)
+			})
+		})
+	}
+}
+
 func TestFileStoreCompactTombstonesBelowFirstSeq(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
