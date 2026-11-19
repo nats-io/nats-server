@@ -11017,6 +11017,10 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		} else {
 			// Make sure to sync changes.
 			smb.needSync = true
+			// Move past the removed messages, otherwise they're seen as live when the block is reloaded.
+			smb.dmap.Empty()
+			atomic.StoreUint64(&smb.first.seq, atomic.LoadUint64(&smb.last.seq)+1)
+			smb.first.ts = 0
 		}
 		// Update fs first here as well.
 		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1

@@ -5142,6 +5142,62 @@ func TestFileStoreCompactAllWithDanglingLMB(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompactEmptyLastBlockMaxMsgsPer(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar"}, Storage: FileStorage, MaxMsgsPer: 2}
+		fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for _, subj := range []string{"foo", "foo", "bar"} {
+			_, _, err = fs.StoreMsg(subj, nil, nil, 0)
+			require_NoError(t, err)
+		}
+		_, err = fs.PurgeEx("bar", 0, 0)
+		require_NoError(t, err)
+
+		// Compacting empties the last block, but it must not hold on to the removed messages.
+		purged, err := fs.Compact(3)
+		require_NoError(t, err)
+		require_Equal(t, purged, 2)
+		fs.mu.RLock()
+		lmb := fs.lmb
+		fs.mu.RUnlock()
+		lmb.mu.RLock()
+		fseq, lseq := lmb.first.seq, lmb.last.seq
+		lmb.mu.RUnlock()
+		require_Equal(t, fseq, 4)
+		require_Equal(t, lseq, 3)
+
+		for range 2 {
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+
+		// Reloading the subject state must not bring back the removed messages.
+		lmb.mu.Lock()
+		lmb.fss = nil
+		lmb.clearCacheAndOffset()
+		lmb.mu.Unlock()
+		require_Equal(t, fs.SubjectsState("foo")["foo"], SimpleState{Msgs: 2, First: 4, Last: 5})
+
+		// Enforcing MaxMsgsPer used to spin forever on the removed messages.
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+			done <- err
+		}()
+		select {
+		case err = <-done:
+			require_NoError(t, err)
+		case <-time.After(5 * time.Second):
+			fs.Stop()
+			t.Fatal("Storing message did not return")
+		}
+		require_Equal(t, fs.SubjectsState("foo")["foo"], SimpleState{Msgs: 2, First: 5, Last: 6})
+	})
+}
+
 func TestFileStoreStateWithBlkFirstDeleted(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 4096
