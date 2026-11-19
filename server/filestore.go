@@ -11847,7 +11847,12 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 	if endSlot < 0 {
 		endSlot = 0
 	}
-	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
+	// The last can be beyond what's indexed, so only scan up to there.
+	// Compacting drops removed messages at the end of the block.
+	if endSlot >= len(mb.cache.idx) {
+		endSlot = len(mb.cache.idx) - 1
+	}
+	if startSlot > endSlot {
 		return nil
 	}
 
