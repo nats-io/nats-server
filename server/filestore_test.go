@@ -16833,6 +16833,58 @@ func TestFileStoreConvertToEncryptedDoesNotResurrectXoredCache(t *testing.T) {
 	require_NotEqual(t, len(mb.cache.buf), 0)
 }
 
+func TestFileStoreEmptyBlockNotConverted(t *testing.T) {
+	for _, test := range []struct {
+		title     string
+		from, to  StoreCipher
+		removeKey bool
+	}{
+		// A kill during rollover leaves the new block without its key.
+		{title: "MissingKey", from: AES, to: AES, removeKey: true},
+		{title: "PlaintextToEncrypted", from: NoCipher, to: AES},
+		{title: "CipherChange", from: AES, to: ChaCha},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: test.from}
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+			created := time.Now()
+			fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			_, _, err = fs.StoreMsg("foo", nil, []byte("msg"), 0)
+			require_NoError(t, err)
+
+			// Roll over to a new block that's never written to.
+			fs.mu.Lock()
+			mb, err := fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			require_NoError(t, fs.Stop())
+
+			if test.removeKey {
+				require_NoError(t, os.Remove(mb.kfn))
+			}
+			// The server removes the meta key on a cipher change, so it gets regenerated.
+			if test.from != NoCipher && test.from != test.to {
+				require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, JetStreamMetaFileKey)))
+			}
+			// Without the index every block is recovered from disk.
+			require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+
+			fcfg.Cipher = test.to
+			fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			require_Equal(t, fs.State().Msgs, 1)
+			sm, err := fs.LoadMsg(1, nil)
+			require_NoError(t, err)
+			require_Equal(t, string(sm.msg), "msg")
+		})
+	}
+}
+
 func TestFileStoreRemoveMsgViaLimitsCallbackAliasedSubj(t *testing.T) {
 	fs, err := newFileStore(
 		FileStoreConfig{StoreDir: t.TempDir()},
