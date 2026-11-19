@@ -3846,9 +3846,14 @@ func (c *client) stalledWait(producer *client) {
 // Used to treat maps as efficient set
 var needFlush = struct{}{}
 
+const (
+	checkSubClose     = true
+	dontCheckSubClose = false
+)
+
 // deliverMsg will deliver a message to a matching subscription and its underlying client.
 // We process all connection/client types. mh is the part that will be protocol/client specific.
-func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply bool) bool {
+func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, subject, reply, mh, msg []byte, gwrply, checkSub bool) bool {
 	// Check if message tracing is enabled.
 	mt, traceOnly := c.isMsgTraceEnabled()
 
@@ -3874,7 +3879,7 @@ func (c *client) deliverMsg(prodIsMQTT bool, sub *subscription, acc *Account, su
 	}
 
 	// New race detector forces this now.
-	if sub.isClosed() {
+	if checkSub && sub.isClosed() {
 		mt.addEgressEvent(client, sub, errMsgTraceSubClosed)
 		client.mu.Unlock()
 		return false
@@ -5664,7 +5669,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 
 		// Normal delivery
 		mh := c.msgHeader(dsubj, creply, sub)
-		if c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix) {
+		if c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix, checkSubClose) {
 			// We don't count internal deliveries, so do only when sub.icb is nil.
 			if sub.icb == nil {
 				dlvMsgs++
@@ -5899,7 +5904,7 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 			var delivered bool
 			if !skipDelivery {
 				mh := c.msgHeader(dsubj, creply, sub)
-				delivered = c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix)
+				delivered = c.deliverMsg(prodIsMQTT, sub, acc, dsubj, creply, mh, msg, rplyHasGWPrefix, checkSubClose)
 				if restorePaTrace {
 					c.pa.trace = mt
 				}
@@ -5994,7 +5999,7 @@ sendToRoutesOrLeafs:
 		}
 
 		mh := c.msgHeaderForRouteOrLeaf(subject, reply, rt, acc, importedFromService)
-		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false) {
+		if c.deliverMsg(prodIsMQTT, rt.sub, acc, subject, reply, mh, dmsg, false, dontCheckSubClose) {
 			if flags&pmrCollectQueueNames != 0 {
 				for _, qsub := range rt.qsubs {
 					queues = append(queues, qsub.queue)
