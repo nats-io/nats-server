@@ -13433,6 +13433,57 @@ func TestFileStoreTombstonesNoFirstSeqRollback(t *testing.T) {
 	})
 }
 
+func TestFileStoreTombstonesRemoveBlockKeepsLastMsg(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		remove uint64
+	}{
+		{"LastStored", 29},
+		{"LastRemoved", 30},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				fcfg.BlockSize = 10 * 33 // 10 messages per block.
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				for range 30 {
+					_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+					require_NoError(t, err)
+				}
+
+				// The tombstones spill over into multiple blocks after the last message.
+				for seq := uint64(1); seq <= test.remove; seq++ {
+					_, err = fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+
+				// Syncing removes the blocks only holding tombstones that are no longer needed.
+				fs.syncBlocks()
+
+				before := fs.State()
+				require_Equal(t, before.Msgs, 30-test.remove)
+				require_Equal(t, before.LastSeq, 30)
+
+				// Make sure we can recover properly with no index.db present.
+				fs.Stop()
+				os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+				}
+			})
+		})
+	}
+}
+
 func TestFileStoreTombstonesSelectNextFirstCleanup(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 10 * 33 // 10 messages per block.
