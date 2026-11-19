@@ -230,8 +230,11 @@ type fileStore struct {
 // Represents a message store block and its data.
 type msgBlock struct {
 	// Here for 32bit systems and atomic.
-	first       msgId
-	last        msgId
+	first msgId
+	last  msgId
+	// Lowest sequence of a message still stored on disk, or zero if unknown.
+	// Can be below first, since removing the first message doesn't rewrite the block.
+	rfseq       uint64
 	mu          sync.RWMutex
 	fs          *fileStore
 	aek         cipher.AEAD
@@ -1772,6 +1775,9 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		maxTombstoneTs  int64
 	)
 
+	// Lowest message stored, can be below our first.
+	rfseq := uint64(math.MaxUint64)
+
 	defer func() {
 		// For empty msg blocks make sure we recover last seq correctly based off of first.
 		// Or if we seem to have no messages but had a tombstone, which we use to remember
@@ -1789,6 +1795,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 				}
 			}
 		}
+		atomic.StoreUint64(&mb.rfseq, min(rfseq, atomic.LoadUint64(&mb.first.seq)))
 	}()
 
 	var le = binary.LittleEndian
@@ -1930,6 +1937,10 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 			}
 			index += rl
 			continue
+		}
+
+		if seq != 0 && seq&ebit == 0 {
+			rfseq = min(rfseq, seq)
 		}
 
 		fseq := atomic.LoadUint64(&mb.first.seq)
@@ -5402,6 +5413,8 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	// Remember our last sequence number.
 	atomic.StoreUint64(&mb.first.seq, fs.state.LastSeq+1)
 	atomic.StoreUint64(&mb.last.seq, fs.state.LastSeq)
+	// A new block doesn't store anything below its first sequence.
+	atomic.StoreUint64(&mb.rfseq, fs.state.LastSeq+1)
 	mb.mu.Unlock()
 
 	// Now do local hash.
@@ -6793,12 +6806,10 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 			// Check for tombstones.
 			if seq&tbit != 0 {
 				seq = seq &^ tbit
-				// If this entry is for a lower seq than ours then keep around.
-				// We also check that it is greater than our floor. Floor is zero on normal
-				// calls to compact.
-				// If the global delete map is set, check if a tombstone is still
-				// referencing a message in another block. If not, it can be removed.
-				if seq < fseq && seq >= floor && (fsDmap == nil || fsDmap.Exists(seq)) {
+				// Keep tombstones for messages of prior blocks that could still be stored.
+				// Those are interior deletes at or above the floor, or messages below a prior block's first seq.
+				// Normal compacts have no floor or delete map, so keep all of them.
+				if seq < fseq && ((seq >= floor && (fsDmap == nil || fsDmap.Exists(seq))) || mb.storedInPriorBlock(seq)) {
 					nbuf = append(nbuf, buf[index:index+rl]...)
 				}
 			} else {
@@ -6870,6 +6881,8 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		mb.rbytes = rbytes
 	}
 	mb.cbytes = mb.bytes
+	// Messages below our first are no longer stored.
+	atomic.StoreUint64(&mb.rfseq, atomic.LoadUint64(&mb.first.seq))
 
 	// Remove any seqs from the beginning of the blk.
 	for seq, nfseq := fseq, atomic.LoadUint64(&mb.first.seq); seq < nfseq; seq++ {
@@ -8849,6 +8862,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	// is aligned with the mb's first and last sequence.
 	var first uint64
 	var last uint64
+	// Lowest message stored, can be below our first.
+	rfseq := mbFirstSeq
 
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
@@ -8883,6 +8898,10 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		// Clear any erase bits.
 		erased := seq&ebit != 0
 		seq = seq &^ ebit
+
+		if !erased && seq != 0 {
+			rfseq = min(rfseq, seq)
+		}
 
 		// The sequence needs to only ever move up.
 		if seq <= last {
@@ -8969,6 +8988,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	mb.cache.idx = idx
 	mb.cache.fseq = mbFirstSeq
 	mb.cache.wp = int(lbuf)
+	atomic.StoreUint64(&mb.rfseq, rfseq)
 	mb.ttls = ttls
 	mb.schedules = schedules
 	mb.cache.registerRecycle()
@@ -11433,6 +11453,8 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			smb.fss = nil
 			smb.clearCacheAndOffset()
 			smb.rbytes = uint64(len(nbuf))
+			// Messages below our first are no longer stored.
+			atomic.StoreUint64(&smb.rfseq, atomic.LoadUint64(&smb.first.seq))
 			// Make sure we don't write any additional tombstones.
 			tombs = nil
 		}
@@ -11610,6 +11632,28 @@ func (mb *msgBlock) tombsAfterLocked(after uint64) []msgId {
 	return tombs
 }
 
+// storedInPriorBlock returns whether a prior block still stores the removed message on disk.
+// Removing a block's first messages doesn't rewrite it, so they stay stored below its first seq.
+// The tombstone needs to be kept, otherwise rebuilding that block brings the message back.
+// fs lock should be held.
+func (mb *msgBlock) storedInPriorBlock(seq uint64) bool {
+	fs := mb.fs
+	// The first block with a last sequence at or above is the only one that could store it.
+	i, _ := slices.BinarySearchFunc(fs.blks, seq, func(omb *msgBlock, seq uint64) int {
+		return cmp.Compare(atomic.LoadUint64(&omb.last.seq), seq)
+	})
+	if i == len(fs.blks) || fs.blks[i] == mb {
+		return false
+	}
+	pmb := fs.blks[i]
+	if seq >= atomic.LoadUint64(&pmb.first.seq) {
+		return false
+	}
+	// If unknown (zero), it could still store anything below its first.
+	rfseq := atomic.LoadUint64(&pmb.rfseq)
+	return rfseq == 0 || seq >= rfseq
+}
+
 // fs lock should be held.
 func (mb *msgBlock) numPriorTombs() int {
 	mb.mu.Lock()
@@ -11644,9 +11688,9 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			seq = seq &^ tbit
-			// Tombstones below the global first seq are irrelevant.
-			// And we only count tombstones below this block's first seq.
-			if seq >= mb.fs.state.FirstSeq && (fseq == 0 || seq < fseq) {
+			// We only count tombstones below this block's first seq.
+			// Tombstones below the global first seq are irrelevant, unless the message is still stored.
+			if (fseq == 0 || seq < fseq) && (seq >= mb.fs.state.FirstSeq || mb.storedInPriorBlock(seq)) {
 				tombs++
 			}
 			index += rl
