@@ -11980,9 +11980,23 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) error {
 		}
 		mb.mu.Lock()
 	} else if lseq == fs.state.LastSeq {
+		// An empty block also ends at the last sequence, but the message can still be stored before it.
+		// The first block ending at the last sequence is the only one that could store it.
+		var stored bool
+		i, _ := slices.BinarySearchFunc(fs.blks, lseq, func(omb *msgBlock, seq uint64) int {
+			return cmp.Compare(atomic.LoadUint64(&omb.last.seq), seq)
+		})
+		if i < len(fs.blks) && fs.blks[i] != mb {
+			pmb := fs.blks[i]
+			pmb.mu.RLock()
+			stored = lseq >= atomic.LoadUint64(&pmb.first.seq) && !pmb.dmap.Exists(lseq)
+			pmb.mu.RUnlock()
+		}
 		// Need to write a tombstone for the last sequence if we're removing the block containing it.
-		if err := fs.writeTombstone(lseq, lts); err != nil {
-			return err
+		if !stored {
+			if err := fs.writeTombstone(lseq, lts); err != nil {
+				return err
+			}
 		}
 	}
 	// Only delete message block after (potentially) writing a tombstone.
