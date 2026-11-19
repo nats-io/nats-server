@@ -6498,11 +6498,10 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		ttl, _ = getMessageTTL(sm.hdr)
 	}
 
-	// Check if we need to write a deleted record tombstone.
-	// This is for user initiated removes or to hold the first seq
-	// when the last block is empty.
-	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
-	if !viaLimits && !isEmpty && sm != nil {
+	// Write a tombstone for user initiated removes.
+	// An emptied block is removed instead, which writes a tombstone if needed.
+	// Unless it's kept for its prior tombstones, then the tombstone ensures an outdated index.db is detected.
+	if !viaLimits && sm != nil && (!isEmpty || mb.numPriorTombsLocked() > 0) {
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
@@ -10896,7 +10895,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					mb.selectNextFirst()
 					if mb.isEmpty() {
 						// Since we are removing this block don't need to write tombstones.
-						tombs = tombs[:te]
+						// Unless it's kept for its prior tombstones, then they ensure an outdated index.db is detected.
+						if mb.numPriorTombsLocked() == 0 {
+							tombs = tombs[:te]
+						}
 						if err = fs.removeMsgBlock(mb); err != nil {
 							mb.mu.Unlock()
 							fs.mu.Unlock()
