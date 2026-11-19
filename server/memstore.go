@@ -1848,6 +1848,10 @@ func (ms *memStore) Truncate(seq uint64) error {
 		bytes = ms.state.Bytes
 	}
 	ms.state.Bytes -= bytes
+	if ms.state.Msgs == 0 {
+		ms.state.FirstSeq = ms.state.LastSeq + 1
+		ms.state.FirstTime = time.Time{}
+	}
 
 	cb := ms.scb
 	ms.mu.Unlock()
@@ -2504,7 +2508,7 @@ func (ms *memStore) State() StreamState {
 	state.Deleted = nil
 
 	// Calculate interior delete details.
-	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 && state.FirstSeq > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
 		fseq, lseq := state.FirstSeq, state.LastSeq
 		ms.dmap.Range(func(seq uint64) bool {
