@@ -14112,14 +14112,17 @@ func TestFileStoreEmptyBlockContainsPriorTombstones(t *testing.T) {
 
 func TestFileStoreEmptyBlockContainsPriorTombstonesRemovedMsgs(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		purge bool
-		last  bool
+		name     string
+		purge    bool
+		last     bool
+		outdated bool
 	}{
-		{"RemoveMsg", false, false},
-		{"RemoveMsgLastBlock", false, true},
-		{"PurgeEx", true, false},
-		{"PurgeExLastBlock", true, true},
+		{"RemoveMsg", false, false, false},
+		{"RemoveMsgLastBlock", false, true, false},
+		{"RemoveMsgOutdatedIndex", false, false, true},
+		{"PurgeEx", true, false, false},
+		{"PurgeExLastBlock", true, true, false},
+		{"PurgeExOutdatedIndex", true, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
@@ -14157,30 +14160,48 @@ func TestFileStoreEmptyBlockContainsPriorTombstonesRemovedMsgs(t *testing.T) {
 					require_NoError(t, err)
 				}
 
+				// Leave only a single message in 2.blk.
+				if !test.purge {
+					_, err = fs.RemoveMsg(4)
+					require_NoError(t, err)
+				}
+
+				// Keep the index.db as of now, it's outdated once 2.blk is emptied.
+				ifn := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+				var index []byte
+				if test.outdated {
+					require_NoError(t, fs.forceWriteFullState())
+					index, err = os.ReadFile(ifn)
+					require_NoError(t, err)
+				}
+
 				// Emptying 2.blk doesn't remove it, since it holds a prior tombstone.
 				if test.purge {
 					purged, err := fs.PurgeEx("bar", 0, 0)
 					require_NoError(t, err)
 					require_Equal(t, purged, 2)
 				} else {
-					_, err = fs.RemoveMsg(4)
-					require_NoError(t, err)
 					_, err = fs.RemoveMsg(3)
 					require_NoError(t, err)
 				}
 				before := fs.State()
 				require_True(t, slices.Equal(before.Deleted, []uint64{2, 3, 4}))
 
-				// The removed messages must not come back when recovering with no index.db present.
 				fs.Stop()
-				os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+				if test.outdated {
+					// Simulate a crash before the index.db was written again, it must not be used as is.
+					require_NoError(t, os.WriteFile(ifn, index, defaultFilePerms))
+				} else {
+					// The removed messages must not come back when recovering with no index.db present.
+					os.Remove(ifn)
+				}
 
 				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 				require_NoError(t, err)
 				defer fs.Stop()
 
 				if state := fs.State(); !reflect.DeepEqual(state, before) {
-					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+					t.Fatalf("Expected state\n of %+v, \ngot %+v after recovery", before, state)
 				}
 			})
 		})
@@ -16243,7 +16264,7 @@ func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
 
 	checkBlock(fs.blks[0], 1, 4, nil)
 	checkBlock(fs.blks[1], 13, 12, []uint64{4, 3, 2, 10})
-	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 17})
+	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 12, 17})
 
 	// Remove everything (past the last sequence)
 	fs.removeMsgsInRange(1, 100, false, nil)
