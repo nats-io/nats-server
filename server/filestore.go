@@ -2644,6 +2644,16 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if len(fs.blks) > 0 {
 		fs.lmb = fs.blks[len(fs.blks)-1]
+		// A compressed block can't be appended to, new records would be written uncompressed.
+		// It ends up as the last block if the one after it was empty and got removed above.
+		fs.lmb.mu.RLock()
+		compressed := fs.lmb.cmp != NoCompression
+		fs.lmb.mu.RUnlock()
+		if compressed {
+			if _, err = fs.newMsgBlockForWrite(); err != nil {
+				return err
+			}
+		}
 	} else if _, err = fs.newMsgBlockForWrite(); err != nil {
 		return err
 	}
