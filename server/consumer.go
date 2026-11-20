@@ -2449,10 +2449,10 @@ func (o *consumer) hasMaxDeliveries(seq uint64) bool {
 	if o.maxdc == 0 {
 		return false
 	}
-	if dc := o.deliveryCount(seq); dc >= o.maxdc {
+	if dc := o.rdc[seq] + 1; dc >= o.maxdc {
 		// We have hit our max deliveries for this sequence.
 		// Only send the advisory once.
-		o.notifyDeliveryExceeded(seq, o.rdc[seq]+1)
+		o.notifyDeliveryExceeded(seq, dc)
 		// Determine if we signal to start flow of messages again.
 		if o.maxp > 0 && len(o.pending) >= o.maxp {
 			o.signalNewMessages()

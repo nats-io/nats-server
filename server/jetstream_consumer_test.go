@@ -11360,6 +11360,34 @@ func TestJetStreamConsumerMaxDeliverUnderflow(t *testing.T) {
 	require_Equal(t, maxdc, 0)
 }
 
+func TestJetStreamConsumerMaxDeliverAdvisoryWithoutAnotherPull(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	const maxDeliver = 3
+	sub, err := js.PullSubscribe("foo", "C", nats.BindStream("TEST"), nats.MaxDeliver(maxDeliver), nats.AckWait(50*time.Millisecond))
+	require_NoError(t, err)
+	advisories := natsSubSync(t, nc, JSAdvisoryConsumerMaxDeliveryExceedPre+".TEST.C")
+
+	fetchMsgs(t, sub, maxDeliver, 2*time.Second)
+	msg := natsNexMsg(t, advisories, 2*time.Second)
+	var adv JSConsumerDeliveryExceededAdvisory
+	require_NoError(t, json.Unmarshal(msg.Data, &adv))
+	require_Equal(t, adv.Deliveries, uint64(maxDeliver))
+
+	info, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+	require_Equal(t, info.NumAckPending, 0)
+}
+
 func TestJetStreamConsumerMaxDeliverAdvisoryCount(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
