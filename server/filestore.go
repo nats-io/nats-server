@@ -12567,7 +12567,10 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			mb.ensureLastChecksumLoaded()
 			copy(lchk[0:], mb.lchk[:])
 		}
-		updateTrackingState(&mstate, mb)
+		// An empty block holds no messages, so it can't contribute to the tracking state, unless it's the lmb.
+		if mb.msgs > 0 || mb == fs.lmb {
+			updateTrackingState(&mstate, mb)
+		}
 		mb.mu.RUnlock()
 	}
 	if dmapTotalLen > 0 {
