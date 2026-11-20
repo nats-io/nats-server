@@ -1650,6 +1650,127 @@ func TestStoreNumPendingLastPerSubjectExcludeOvercount(t *testing.T) {
 	)
 }
 
+func TestStoreFilteredStateFirstAndLast(t *testing.T) {
+	put := func(t *testing.T, fs StreamStore, subjs ...string) {
+		for _, subj := range subjs {
+			_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+			require_NoError(t, err)
+		}
+	}
+	// Only the file store has blocks.
+	newBlock := func(t *testing.T, fs StreamStore) {
+		if fs, ok := fs.(*fileStore); ok {
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			_, err := fs.newMsgBlockForWrite()
+			require_NoError(t, err)
+		}
+	}
+	for _, test := range []struct {
+		title             string
+		setup             func(t *testing.T, fs StreamStore)
+		sseq              uint64
+		filter            string
+		msgs, first, last uint64
+	}{
+		{
+			// Starting at "bar", the only "foo" left is the last message.
+			title: "FirstIsLastMatch",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "bar", "foo")
+			},
+			sseq: 2, filter: "foo", msgs: 1, first: 3, last: 3,
+		},
+		{
+			// With many skipped sequences the memory store goes over its messages instead of the sequence range.
+			title: "FirstIsLastMatchSparse",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "bar")
+				require_NoError(t, fs.SkipMsgs(3, 1000))
+				put(t, fs, "foo")
+			},
+			sseq: 2, filter: "foo", msgs: 1, first: 1003, last: 1003,
+		},
+		{
+			title: "FirstIsLowestMatch",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo")
+				require_NoError(t, fs.SkipMsgs(2, 1000))
+				put(t, fs, "foo")
+				require_NoError(t, fs.SkipMsgs(1003, 10))
+				put(t, fs, "foo", "foo")
+			},
+			sseq: 1002, filter: "foo", msgs: 3, first: 1002, last: 1014,
+		},
+		{
+			// When matching all messages the last is the stream's, even if that message is removed.
+			title: "FullWildcardLast",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo", "foo", "foo")
+				for seq := uint64(4); seq <= 5; seq++ {
+					_, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+			},
+			sseq: 2, filter: ">", msgs: 2, first: 2, last: 5,
+		},
+		{
+			// The file store keeps the emptied second block for its tombstone, the first isn't taken from it.
+			title: "FullWildcardFirstAfterEmptyBlock",
+			setup: func(t *testing.T, fs StreamStore) {
+				remove := func(seq uint64) {
+					_, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+				put(t, fs, "foo", "foo")
+				newBlock(t, fs)
+				put(t, fs, "foo")
+				remove(1)
+				newBlock(t, fs)
+				put(t, fs, "foo", "foo")
+				remove(3)
+				remove(4)
+			},
+			sseq: 3, filter: ">", msgs: 1, first: 5, last: 5,
+		},
+		{
+			// Without messages at or after the start, the sequences are the stream's.
+			title: "StartPastLast",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo")
+			},
+			sseq: 10, filter: "foo", msgs: 0, first: 1, last: 3,
+		},
+		{
+			title: "StartPastLastAfterPurge",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo")
+				_, err := fs.Purge()
+				require_NoError(t, err)
+			},
+			sseq: 1, filter: "foo", msgs: 0, first: 4, last: 3,
+		},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false,
+				StreamConfig{Name: "zzz", Subjects: []string{"*"}},
+				func(t *testing.T, fs StreamStore) {
+					test.setup(t, fs)
+					// Repeated, since the memory store's map of messages has no fixed iteration order.
+					for range 30 {
+						ss, err := fs.FilteredState(test.sseq, test.filter)
+						require_NoError(t, err)
+						require_Equal(t, ss.Msgs, test.msgs)
+						require_Equal(t, ss.First, test.first)
+						require_Equal(t, ss.Last, test.last)
+					}
+				},
+			)
+		})
+	}
+}
+
 // Resolving last sequences for many subjects whose last messages are spread
 // over the whole stream. For the filestore a small block size spreads them
 // across many blocks: WholeStream can resolve via each subject's last block,
