@@ -14,6 +14,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -108,6 +110,149 @@ type proxyConn struct {
 // RemoteAddr returns the original client address extracted from PROXY protocol
 func (pc *proxyConn) RemoteAddr() net.Addr {
 	return pc.remoteAddr
+}
+
+// proxyProtoListener wraps a net.Listener so that the optional PROXY protocol
+// header of each accepted connection is consumed before the connection is
+// returned by Accept(). It is used for listeners served by an http.Server
+// (websocket), where the connection is handed to the HTTP (and possibly TLS)
+// layer as soon as Accept() returns, so the header cannot be read the way
+// createClientEx() does it.
+//
+// The header is not read in Accept() itself, since that would block the
+// accept loop of the http.Server for the duration of the read. Instead, the
+// listener runs its own accept loop and reads the header of each connection
+// in a dedicated goroutine, bounded by proxyProtoReadTimeout. Accept() only
+// returns connections whose header has been consumed, so the http.Server
+// never sees a connection with a header in front of it, and the deadlines
+// it sets are not affected by the time it took to read the header.
+type proxyProtoListener struct {
+	net.Listener
+	s     *Server
+	conns chan net.Conn // Connections whose header has been consumed.
+	errs  chan error    // Errors returned by the underlying Accept().
+	done  chan struct{}
+
+	mu      sync.Mutex
+	closed  bool
+	pending map[net.Conn]struct{} // Connections whose header is being read.
+}
+
+func newProxyProtoListener(l net.Listener, s *Server) *proxyProtoListener {
+	pl := &proxyProtoListener{
+		Listener: l,
+		s:        s,
+		conns:    make(chan net.Conn),
+		errs:     make(chan error, 1),
+		done:     make(chan struct{}),
+		pending:  make(map[net.Conn]struct{}),
+	}
+	go pl.acceptLoop()
+	return pl
+}
+
+// acceptLoop accepts connections from the underlying listener and starts
+// reading their PROXY protocol header without waiting for it.
+func (l *proxyProtoListener) acceptLoop() {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			select {
+			case l.errs <- err:
+			case <-l.done:
+				return
+			}
+			// The http.Server retries Accept() after a temporary error,
+			// so keep going. Any other error is final.
+			//lint:ignore SA1019 Same check as http.Server and acceptError().
+			if ne, ok := err.(net.Error); ok && ne.Temporary() { // nolint:staticcheck
+				continue
+			}
+			return
+		}
+		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			conn.Close()
+			return
+		}
+		l.pending[conn] = struct{}{}
+		l.mu.Unlock()
+		go l.readHeader(conn)
+	}
+}
+
+// readHeader consumes the PROXY protocol header of conn, if any, and makes
+// the connection available to Accept(). Connections with an invalid header
+// are closed here and never reach the http.Server.
+func (l *proxyProtoListener) readHeader(conn net.Conn) {
+	// This sets its own read deadline and clears it before returning.
+	addr, pre, err := readProxyProtoHeader(conn)
+	l.mu.Lock()
+	delete(l.pending, conn)
+	l.mu.Unlock()
+	if err != nil && err != errProxyProtoUnrecognized {
+		// Do not warn for connections closed before sending anything, which
+		// is what load balancer TCP health checks do, nor for connections
+		// that we closed ourselves in Close().
+		if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			l.s.Warnf("Error reading PROXY protocol header from %s: %v", conn.RemoteAddr(), err)
+		}
+		conn.Close()
+		return
+	}
+	// On errProxyProtoUnrecognized, pre holds the bytes consumed while
+	// trying to detect the header, they are replayed to the next layer.
+	c := conn
+	if len(pre) > 0 {
+		c = &tlsMixConn{Conn: c, pre: bytes.NewBuffer(pre)}
+	}
+	// If addr is nil, it was a LOCAL/UNKNOWN command (health check), so we
+	// keep the original remote address.
+	if addr != nil {
+		c = &proxyConn{Conn: c, remoteAddr: addr}
+	}
+	select {
+	case l.conns <- c:
+	case <-l.done:
+		conn.Close()
+	}
+}
+
+// Accept returns the next connection whose PROXY protocol header has been
+// consumed, or the error returned by the underlying listener.
+func (l *proxyProtoListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case err := <-l.errs:
+		return nil, err
+	case <-l.done:
+		// Prefer the error from the underlying listener if there is one.
+		select {
+		case err := <-l.errs:
+			return nil, err
+		default:
+			return nil, net.ErrClosed
+		}
+	}
+}
+
+// Close closes the underlying listener as well as the connections whose
+// header is still being read.
+func (l *proxyProtoListener) Close() error {
+	l.mu.Lock()
+	closed := l.closed
+	l.closed = true
+	for conn := range l.pending {
+		conn.Close()
+	}
+	l.pending = nil
+	l.mu.Unlock()
+	if !closed {
+		close(l.done)
+	}
+	return l.Listener.Close()
 }
 
 // detectProxyProtoVersion reads the first bytes and determines protocol version.
