@@ -9840,10 +9840,65 @@ func (fs *fileStore) lastSeqLocked(subj string) (*msgBlock, uint64, error) {
 		}
 		mb.mu.Unlock()
 		if l > 0 {
+			// The last match is below lblk, since lblk isn't moved down when messages are removed.
+			// We may only hold the read lock, so update in a go routine to acquire the write lock.
+			if i < start {
+				go fs.updateLastBlock(subj, wc, i, mb, fs.lmb.index)
+			}
 			return mb, l, nil
 		}
 	}
 	return nil, 0, nil
+}
+
+// updateLastBlock moves lblk down to index i for subjects matching the filter.
+// mb is the block at index i that holds the last match, and lmbi was the last block's index then.
+func (fs *fileStore) updateLastBlock(filter string, wc bool, i uint32, mb *msgBlock, lmbi uint32) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	if fs.bim[i] != mb || fs.lmb == nil {
+		return
+	}
+	// Only the last block receives messages, so only it can hold matches stored since.
+	// A truncate can make an earlier block the last one, so check from the lowest of both.
+	bfilter := stringToBytes(filter)
+	for idx := max(min(lmbi, fs.lmb.index), i+1); idx <= fs.lmb.index; idx++ {
+		lmb := fs.bim[idx]
+		if lmb == nil {
+			continue
+		}
+		lmb.mu.Lock()
+		// Don't load subject state while holding the write lock.
+		if lmb.fss == nil {
+			lmb.mu.Unlock()
+			return
+		}
+		var found bool
+		if !wc {
+			_, found = lmb.fss.Find(bfilter)
+		} else {
+			lmb.fss.MatchUntil(bfilter, func(_ []byte, _ *SimpleState) bool {
+				found = true
+				return false
+			})
+		}
+		lmb.mu.Unlock()
+		if found {
+			return
+		}
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(bfilter); ok && info.lblk > i {
+			info.lblk = i
+		}
+	} else {
+		fs.psim.Match(bfilter, func(_ []byte, psi *psi) {
+			if psi.lblk > i {
+				psi.lblk = i
+			}
+		})
+	}
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
