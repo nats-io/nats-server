@@ -10956,6 +10956,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 	var smv StoreMsg
 	var tombs []msgId
+	var isEmpty bool
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -11006,7 +11007,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 	}
 
 	// Check if empty after processing, could happen if tail of messages are all deleted.
-	if isEmpty := smb.msgs == 0; isEmpty {
+	if isEmpty = smb.msgs == 0; isEmpty {
 		// Only remove if not the last block.
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
@@ -11022,10 +11023,6 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			atomic.StoreUint64(&smb.first.seq, atomic.LoadUint64(&smb.last.seq)+1)
 			smb.first.ts = 0
 		}
-		// Update fs first here as well.
-		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
-		fs.state.FirstTime = time.Time{}
-
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
@@ -11135,6 +11132,13 @@ SKIP:
 			fs.lmb = nil
 		} else {
 			fs.lmb = fs.blks[lb-1]
+		}
+	}
+
+	// The selected block has no messages left, so the first message is in a later block.
+	if isEmpty {
+		if err = fs.selectNextFirst(); err != nil {
+			return purged, bytes, err
 		}
 	}
 
