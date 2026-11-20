@@ -1507,10 +1507,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
+		firstWithMsgs := fs.state.Msgs == 0 && mb.msgs > 0
 		fs.state.Msgs += mb.msgs
 		fs.state.Bytes += mb.bytes
 		fseq := atomic.LoadUint64(&mb.first.seq)
-		if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
+		if fs.state.FirstSeq == 0 || firstWithMsgs || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
 			fs.state.FirstSeq = fseq
 			if mb.first.ts == 0 {
 				fs.state.FirstTime = time.Time{}
@@ -1520,7 +1521,7 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		}
 		// Preserve last time, could have erased the last message in one block, and then
 		// have a tombstone with the proper timestamp afterward in another block
-		if lseq := atomic.LoadUint64(&mb.last.seq); lseq >= fs.state.LastSeq {
+		if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq || (lseq == fs.state.LastSeq && mb.last.ts != 0) {
 			fs.state.LastSeq = lseq
 			if mb.last.ts == 0 {
 				fs.state.LastTime = time.Time{}
@@ -1529,6 +1530,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 			}
 		}
 		mb.mu.RUnlock()
+	}
+	// Without messages the first sequence comes after the last, not where an empty block starts.
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
 	}
 }
 
@@ -1588,7 +1594,15 @@ func (mb *msgBlock) convertCipher() error {
 			return err
 		}
 
-		buf, _ := mb.loadBlock(nil)
+		buf, err := mb.loadBlock(nil)
+		if err != nil {
+			return err
+		}
+		// An empty block has nothing to convert, it only needs new keys.
+		if len(buf) == 0 {
+			recycleMsgBlockBuf(buf)
+			return fs.genEncryptionKeysForBlock(mb)
+		}
 		bek.XORKeyStream(buf, buf)
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
@@ -1631,6 +1645,11 @@ func (mb *msgBlock) convertToEncrypted() error {
 	buf, err := mb.loadBlock(nil)
 	if err != nil {
 		return err
+	}
+	// An empty block has nothing to convert.
+	if len(buf) == 0 {
+		recycleMsgBlockBuf(buf)
+		return nil
 	}
 	// Check for compression.
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
@@ -1717,9 +1736,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		return nil, nil, err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return nil, nil, err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 	return mb.rebuildStateFromBufLocked(buf, true)
 }
 
@@ -2795,6 +2817,16 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if len(fs.blks) > 0 {
 		fs.lmb = fs.blks[len(fs.blks)-1]
+		// A compressed block can't be appended to, new records would be written uncompressed.
+		// It ends up as the last block if the one after it was empty and got removed above.
+		fs.lmb.mu.RLock()
+		compressed := fs.lmb.cmp != NoCompression
+		fs.lmb.mu.RUnlock()
+		if compressed {
+			if _, err = fs.newMsgBlockForWrite(); err != nil {
+				return err
+			}
+		}
 	} else if _, err = fs.newMsgBlockForWrite(); err != nil {
 		return err
 	}
@@ -3928,6 +3960,7 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 
 		// Hold this outside loop for psim fblk updates when done.
 		i := start + 1
+		var fmb *msgBlock
 		for ; i <= stop; i++ {
 			mb := fs.bim[i]
 			if mb == nil {
@@ -3937,41 +3970,51 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 				return err
 			} else if f > 0 {
 				ss.First = f
+				fmb = mb
 				break
 			}
 		}
 		// Update fblk since fblk was outdated.
 		// We only require read lock here as that is desirable,
 		// so we need to do this in a go routine to acquire write lock.
-		go func() {
-			fs.mu.Lock()
-			defer fs.mu.Unlock()
-			if !wc {
-				if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-					if i > info.fblk {
-						info.fblk = i
-					}
-				}
-			} else {
-				fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-					if i > psi.fblk {
-						psi.fblk = i
-					}
-				})
-			}
-		}()
+		if fmb != nil {
+			go fs.updateFirstBlock(filter, wc, i, fmb)
+		}
 	}
 	// Now gather last sequence if asked to do so.
 	if last {
-		if mb = fs.bim[stop]; mb != nil {
-			_, _, l, err := mb.filteredPending(filter, wc, 0)
-			if err != nil {
-				return err
-			}
-			ss.Last = l
+		_, l, err := fs.lastSeqLocked(filter)
+		if err != nil {
+			return err
 		}
+		ss.Last = l
 	}
 	return nil
+}
+
+// updateFirstBlock moves fblk up to index i for subjects matching the filter.
+// mb is the block at index i that holds the first match.
+func (fs *fileStore) updateFirstBlock(filter string, wc bool, i uint32, mb *msgBlock) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	// After a truncate, a new block can reuse index i while an earlier block holds the first match.
+	if fs.bim[i] != mb {
+		return
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+			if i > info.fblk {
+				info.fblk = i
+			}
+		}
+	} else {
+		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+			if i > psi.fblk {
+				psi.fblk = i
+			}
+		})
+	}
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
@@ -5278,11 +5321,30 @@ func (mb *msgBlock) finishedWithCache() {
 	}
 }
 
+// compressRolledBlock compresses a block on disk, after we rolled to a new block.
+// Lock should not be held.
+func (fs *fileStore) compressRolledBlock(mb *msgBlock) {
+	// The last block can't be compressed, new records are appended to it uncompressed.
+	// A truncate makes it the last block again, if it didn't need the new block after all.
+	fs.mu.RLock()
+	if mb == fs.lmb {
+		fs.mu.RUnlock()
+		return
+	}
+	mb.mu.Lock()
+	fs.mu.RUnlock()
+	defer mb.mu.Unlock()
+	// Might error, but we can't handle it here anyway.
+	_ = mb.recompressOnDiskIfNeeded()
+}
+
 // This rolls to a new append msg block.
 // Lock should be held.
 func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	index := uint32(1)
 	var rbuf []byte
+	// The previous block, if it should be compressed.
+	var pmb *msgBlock
 
 	if lmb := fs.lmb; lmb != nil {
 		lmb.mu.Lock()
@@ -5314,12 +5376,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		if fs.fcfg.Compression != NoCompression {
 			// We've now reached the end of this message block, if we want
 			// to compress blocks then now's the time to do it.
-			go func() {
-				lmb.mu.Lock()
-				defer lmb.mu.Unlock()
-				// Might error, but we can't handle it here anyway.
-				_ = lmb.recompressOnDiskIfNeeded()
-			}()
+			pmb = lmb
 		}
 	}
 
@@ -5387,6 +5444,11 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Add to our list of blocks and mark as last.
 	fs.addMsgBlock(mb)
+
+	// Only start compressing once the previous block is no longer the last block.
+	if pmb != nil {
+		go fs.compressRolledBlock(pmb)
+	}
 
 	return mb, nil
 }
@@ -5547,11 +5609,18 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		if _, err = fs.removeMsgViaLimits(fseq); err != nil && err != ErrStoreMsgNotFound {
 			return err
 		}
+		pseq, prev := fseq, psmc
 		fseq = 0
 		// fs.removeMsgViaLimits releases and re-acquires the lock, need to fetch the state again.
 		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
 			psmc = info.total
 		} else {
+			break
+		}
+		// If nothing was removed, the per-subject state doesn't match what's stored.
+		if psmc >= prev {
+			// Stop here, retrying would never make progress.
+			fs.rateLimitWarn("Could not enforce max messages per subject for %q, subject count unchanged after removing seq %d", subj, pseq)
 			break
 		}
 	}
@@ -9207,9 +9276,12 @@ checkCache:
 		return err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
@@ -9775,10 +9847,65 @@ func (fs *fileStore) lastSeqLocked(subj string) (*msgBlock, uint64, error) {
 		}
 		mb.mu.Unlock()
 		if l > 0 {
+			// The last match is below lblk, since lblk isn't moved down when messages are removed.
+			// We may only hold the read lock, so update in a go routine to acquire the write lock.
+			if i < start {
+				go fs.updateLastBlock(subj, wc, i, mb, fs.lmb.index)
+			}
 			return mb, l, nil
 		}
 	}
 	return nil, 0, nil
+}
+
+// updateLastBlock moves lblk down to index i for subjects matching the filter.
+// mb is the block at index i that holds the last match, and lmbi was the last block's index then.
+func (fs *fileStore) updateLastBlock(filter string, wc bool, i uint32, mb *msgBlock, lmbi uint32) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	if fs.bim[i] != mb || fs.lmb == nil {
+		return
+	}
+	// Only the last block receives messages, so only it can hold matches stored since.
+	// A truncate can make an earlier block the last one, so check from the lowest of both.
+	bfilter := stringToBytes(filter)
+	for idx := max(min(lmbi, fs.lmb.index), i+1); idx <= fs.lmb.index; idx++ {
+		lmb := fs.bim[idx]
+		if lmb == nil {
+			continue
+		}
+		lmb.mu.Lock()
+		// Don't load subject state while holding the write lock.
+		if lmb.fss == nil {
+			lmb.mu.Unlock()
+			return
+		}
+		var found bool
+		if !wc {
+			_, found = lmb.fss.Find(bfilter)
+		} else {
+			lmb.fss.MatchUntil(bfilter, func(_ []byte, _ *SimpleState) bool {
+				found = true
+				return false
+			})
+		}
+		lmb.mu.Unlock()
+		if found {
+			return
+		}
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(bfilter); ok && info.lblk > i {
+			info.lblk = i
+		}
+	} else {
+		fs.psim.Match(bfilter, func(_ []byte, psi *psi) {
+			if psi.lblk > i {
+				psi.lblk = i
+			}
+		})
+	}
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
@@ -11157,6 +11284,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 	var smv StoreMsg
 	var tombs []msgId
+	var isEmpty bool
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -11207,7 +11335,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 	}
 
 	// Check if empty after processing, could happen if tail of messages are all deleted.
-	if isEmpty := smb.msgs == 0; isEmpty {
+	if isEmpty = smb.msgs == 0; isEmpty {
 		// Only remove if not the last block.
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
@@ -11218,11 +11346,11 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		} else {
 			// Make sure to sync changes.
 			smb.needSync = true
+			// Move past the removed messages, otherwise they're seen as live when the block is reloaded.
+			smb.dmap.Empty()
+			atomic.StoreUint64(&smb.first.seq, atomic.LoadUint64(&smb.last.seq)+1)
+			smb.first.ts = 0
 		}
-		// Update fs first here as well.
-		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
-		fs.state.FirstTime = time.Time{}
-
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
@@ -11332,6 +11460,13 @@ SKIP:
 			fs.lmb = nil
 		} else {
 			fs.lmb = fs.blks[lb-1]
+		}
+	}
+
+	// The selected block has no messages left, so the first message is in a later block.
+	if isEmpty {
+		if err = fs.selectNextFirst(); err != nil {
+			return purged, bytes, err
 		}
 	}
 
@@ -12032,7 +12167,12 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 	if endSlot < 0 {
 		endSlot = 0
 	}
-	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
+	// The last can be beyond what's indexed, so only scan up to there.
+	// Compacting drops removed messages at the end of the block.
+	if endSlot >= len(mb.cache.idx) {
+		endSlot = len(mb.cache.idx) - 1
+	}
+	if startSlot > endSlot {
 		return nil
 	}
 
@@ -13936,14 +14076,15 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				return
 			}
 			buf, err := o.encodeState()
-			o.mu.Unlock()
 			if err != nil {
+				o.mu.Unlock()
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeState(buf); err == nil {
+			if err := o.writeStateLocked(buf, true); err == nil {
 				lastWrite = time.Now()
 			}
+			o.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -13953,11 +14094,11 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 // SetStarting sets our starting stream sequence.
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
 	buf := encodeConsumerState(&o.state)
-	o.mu.Unlock()
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // UpdateStarting updates our starting stream sequence.
@@ -14306,16 +14447,16 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 
 	// Replace our state.
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
 	buf, err := o.encodeState()
-	o.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
@@ -14336,14 +14477,23 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.writeStateLocked(buf, false)
+}
+
+// If current, buf is the state as of now.
+// Lock should be held, it's released while writing the file.
+func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
 	if o.closed {
-		o.mu.Unlock()
 		return ErrStoreClosed
 	}
 	// Check if we have the index file open.
 	if o.writing || len(buf) == 0 {
-		o.mu.Unlock()
+		// Skipped because of another write. Kick the flusher so this state still gets written.
+		if len(buf) > 0 {
+			o.kickFlusher()
+		}
 		return nil
 	}
 
@@ -14351,13 +14501,16 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	if o.aek != nil {
 		var err error
 		if buf, err = o.encryptState(buf); err != nil {
-			o.mu.Unlock()
 			return err
 		}
 	}
 
 	o.writing = true
-	o.dirty = false
+	// Only the current state leaves nothing more to write.
+	// An older one could miss an update made since it was encoded.
+	if current {
+		o.dirty = false
+	}
 	ifn := o.ifn
 	o.mu.Unlock()
 
@@ -14369,8 +14522,6 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 		o.dirty = true
 	}
 	o.writing = false
-	o.mu.Unlock()
-
 	return err
 }
 
