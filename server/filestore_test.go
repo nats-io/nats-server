@@ -8746,6 +8746,149 @@ func TestFileStoreFilteredStateLastWithOutdatedPSIMLastBlock(t *testing.T) {
 	}
 }
 
+func TestFileStoreLastSeqPSIMLastBlockUpdate(t *testing.T) {
+	for _, filter := range []string{"foo.a", "foo.*"} {
+		t.Run(filter, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir()},
+				StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			store := func(subj string) uint64 {
+				seq, _, err := fs.StoreMsg(subj, nil, nil, 0)
+				require_NoError(t, err)
+				return seq
+			}
+			lblk := func() uint32 {
+				fs.mu.RLock()
+				defer fs.mu.RUnlock()
+				info, ok := fs.psim.Find([]byte("foo.a"))
+				require_True(t, ok)
+				return info.lblk
+			}
+
+			// 1.blk
+			store("foo.a")
+			// 2.blk
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			store("bar")
+			// 3.blk, removing the last "foo.a" leaves lblk as is.
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			_, err = fs.RemoveMsg(store("foo.a"))
+			require_NoError(t, err)
+			require_Equal(t, lblk(), 3)
+
+			// Finding the last message in 1.blk moves lblk down to it.
+			seq, err := fs.LoadLastSeq(filter)
+			require_NoError(t, err)
+			require_Equal(t, seq, 1)
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				if l := lblk(); l != 1 {
+					return fmt.Errorf("expected lblk 1, got %d", l)
+				}
+				return nil
+			})
+		})
+	}
+}
+
+func TestFileStoreLastSeqPSIMLastBlockUpdateAfterStore(t *testing.T) {
+	for _, filter := range []string{"foo.a", "foo.*"} {
+		for _, test := range []struct {
+			name     string
+			truncate bool
+			grow     bool
+			unload   bool
+			lblk     uint32
+		}{
+			{"Store", false, false, false, 4},
+			{"StoreAndGrow", false, true, false, 4},
+			{"StoreAndGrowUnloaded", false, true, true, 4},
+			{"Truncate", true, false, false, 2},
+		} {
+			t.Run(filter+"/"+test.name, func(t *testing.T) {
+				fs, err := newFileStore(
+					FileStoreConfig{StoreDir: t.TempDir()},
+					StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar"}, Storage: FileStorage})
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				store := func(subj string) uint64 {
+					seq, _, err := fs.StoreMsg(subj, nil, nil, 0)
+					require_NoError(t, err)
+					return seq
+				}
+
+				// 1.blk
+				store("foo.a")
+				// 2.blk
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				store("bar")
+				// 3.blk, removing the last "foo.a" leaves lblk as is.
+				// Its tombstone goes into 4.blk, as 3.blk was emptied.
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, err = fs.RemoveMsg(store("foo.a"))
+				require_NoError(t, err)
+
+				// A scan would now find the last "foo.a" in 1.blk, and defer moving lblk there.
+				fs.mu.RLock()
+				mb, lmbi := fs.bim[1], fs.lmb.index
+				fs.mu.RUnlock()
+				require_NotNil(t, mb)
+				require_Equal(t, lmbi, 4)
+
+				// A new "foo.a" goes into the last block before the deferred update.
+				if test.truncate {
+					// Truncating makes 2.blk the last block again.
+					require_NoError(t, fs.Truncate(2))
+				}
+				seq := store("foo.a")
+				if test.grow {
+					// 5.blk, the last block moves past the one holding the new message.
+					fs.mu.Lock()
+					_, err = fs.newMsgBlockForWrite()
+					fs.mu.Unlock()
+					require_NoError(t, err)
+					store("bar")
+				}
+				if test.unload {
+					// The block holding the new message has its subject state unloaded.
+					fs.mu.RLock()
+					nmb := fs.bim[4]
+					fs.mu.RUnlock()
+					nmb.mu.Lock()
+					nmb.fss = nil
+					nmb.mu.Unlock()
+				}
+
+				// The deferred update must not move lblk below the new message.
+				fs.updateLastBlock(filter, subjectHasWildcard(filter), 1, mb, lmbi)
+				fs.mu.RLock()
+				info, ok := fs.psim.Find([]byte("foo.a"))
+				fs.mu.RUnlock()
+				require_True(t, ok)
+				require_Equal(t, info.lblk, test.lblk)
+				lseq, err := fs.LoadLastSeq(filter)
+				require_NoError(t, err)
+				require_Equal(t, lseq, seq)
+			})
+		}
+	}
+}
+
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(
