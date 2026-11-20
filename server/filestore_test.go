@@ -5306,6 +5306,63 @@ func TestFileStoreCompactEmptyLastBlockMaxMsgsPer(t *testing.T) {
 	})
 }
 
+func TestFileStoreCompactFirstSeqNotFromEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		store := func() {
+			_, _, err := fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+		}
+		remove := func(seq uint64) {
+			removed, err := fs.RemoveMsg(seq)
+			require_NoError(t, err)
+			require_True(t, removed)
+		}
+
+		// 1.blk
+		store()
+		store()
+		// 2.blk only holds a tombstone.
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		remove(2)
+		// 3.blk has its first message removed.
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		store()
+		store()
+		remove(3)
+		purged, err := fs.Compact(2)
+		require_NoError(t, err)
+		require_Equal(t, purged, 1)
+
+		// The first sequence must be the first message, not where an empty block starts.
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 4)
+		require_Len(t, len(before.Deleted), 0)
+
+		// And it must not change after a restart either.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+		}
+	})
+}
+
 func TestFileStoreStateWithBlkFirstDeleted(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 4096
