@@ -3501,6 +3501,10 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	// This means we want all and the starting sequence was before this block.
 	if isAll {
 		if fseq := atomic.LoadUint64(&mb.first.seq); sseq <= fseq {
+			// An empty block has no first or last message.
+			if mb.msgs == 0 {
+				return 0, 0, 0, nil
+			}
 			return mb.msgs, fseq, atomic.LoadUint64(&mb.last.seq), nil
 		}
 	}
@@ -3689,6 +3693,10 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) (SimpleState, error
 			if l > ss.Last {
 				ss.Last = l
 			}
+		}
+		// When matching all messages the last is the stream's, like when starting from the first sequence.
+		if ss.Msgs > 0 && (subj == _EMPTY_ || subj == fwcs) {
+			ss.Last = lseq
 		}
 	}
 
@@ -10287,7 +10295,7 @@ func (fs *fileStore) State() StreamState {
 	state.NumSubjects = fs.numSubjects()
 	state.Deleted = nil // make sure.
 
-	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 && state.FirstSeq > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
 		cur := fs.state.FirstSeq
 
@@ -11711,6 +11719,10 @@ SKIP:
 		bytes = fs.state.Bytes
 	}
 	fs.state.Bytes -= bytes
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
+	}
 
 	// Reset our subject lookup info.
 	if err = fs.resetGlobalPerSubjectInfo(); err != nil {
