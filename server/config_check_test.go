@@ -15,7 +15,11 @@ package server
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -2633,4 +2637,67 @@ func TestConfigCheckMultipleErrors(t *testing.T) {
 			t.Fatalf("Expected to find error %q (%s)", extra, errMsg)
 		}
 	}
+}
+
+func TestConfigCheckDoesNotCreateResolverDir(t *testing.T) {
+	defer func() { FlagSnapshot = nil }()
+	for _, resType := range []string{"full", "cache"} {
+		t.Run(resType, func(t *testing.T) {
+			curDir := filepath.Join(t.TempDir(), "jwt")
+			reloadDir := filepath.Join(t.TempDir(), "jwt")
+			curConf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: %s, dir: '%s'}", resType, curDir))
+			reloadConf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: %s, dir: '%s'}", resType, reloadDir))
+
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			_, err := ConfigureOptions(fs, []string{"-t", "-c", curConf, "--test_reload", reloadConf}, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
+			require_NoError(t, err)
+
+			for _, dir := range []string{curDir, reloadDir} {
+				_, err = os.Stat(dir)
+				require_True(t, os.IsNotExist(err))
+			}
+		})
+	}
+}
+
+func TestConfigCheckResolverErrors(t *testing.T) {
+	defer func() { FlagSnapshot = nil }()
+	for _, test := range []struct {
+		name   string
+		config string
+		err    string
+	}{
+		{"full fetch timeout", "resolver: {type: full, dir: '%s', timeout: \"0s\"}", "Fetch timeout 0s"},
+		{"cache fetch timeout", "resolver: {type: cache, dir: '%s', timeout: \"0s\"}", "Fetch timeout 0s"},
+		{"cache negative ttl", "resolver: {type: cache, dir: '%s', ttl: \"-1s\"}", "CACHE does not accept a negative ttl"},
+		{"full without system account", "operator: " + ojwt + "\nresolver: {type: full, dir: '%s'}", "the system account needs to be specified"},
+		{"cache without system account", "operator: " + ojwt + "\nresolver: {type: cache, dir: '%s'}", "the system account needs to be specified"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "jwt")
+			conf := createConfFile(t, fmt.Appendf(nil, test.config, dir))
+
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			_, err := ConfigureOptions(fs, []string{"-t", "-c", conf}, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
+			require_Error(t, err)
+			require_Contains(t, err.Error(), test.err)
+
+			_, err = os.Stat(dir)
+			require_True(t, os.IsNotExist(err))
+		})
+	}
+}
+
+func TestConfigCheckResolverDirUnderFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.SkipNow()
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	require_NoError(t, os.WriteFile(file, nil, 0600))
+	conf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: full, dir: '%s'}", filepath.Join(file, "jwt")))
+
+	opts := &Options{CheckConfig: true}
+	err := opts.ProcessConfigFile(conf)
+	require_Error(t, err)
+	require_Contains(t, err.Error(), "not a directory")
 }
