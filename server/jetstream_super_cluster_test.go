@@ -6990,3 +6990,58 @@ func TestJetStreamSuperClusterConsumerPullCrossAccountLostInterest(t *testing.T)
 		})
 	}
 }
+
+func TestJetStreamSuperClusterPushConsumerDidNotDeliverRedeliversOnGatewayInterest(t *testing.T) {
+	sc := createJetStreamSuperCluster(t, 3, 2)
+	defer sc.shutdown()
+
+	c1 := sc.clusterForName("C1")
+	nc, js := jsClientConnect(t, c1.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Placement: &nats.Placement{Cluster: "C1"},
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable:        "CONSUMER",
+		DeliverSubject: "deliver",
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        time.Minute,
+		MaxAckPending:  1,
+	})
+	require_NoError(t, err)
+
+	sl := c1.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	// Simulate the last subscriber leaving right before the message is delivered.
+	o.mu.Lock()
+	o.active = true
+	o.mu.Unlock()
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if !o.udi.Exists(1) {
+			return errors.New("not marked undelivered")
+		}
+		return nil
+	})
+
+	// Interest only returns across the gateway, should be redelivered then, not only after AckWait.
+	nc2 := natsConnect(t, sc.clusterForName("C2").randomServer().ClientURL())
+	defer nc2.Close()
+	sub := natsSubSync(t, nc2, "deliver")
+	msg, err := sub.NextMsg(5 * time.Second)
+	require_NoError(t, err)
+	meta, err := msg.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.Sequence.Stream, 1)
+}

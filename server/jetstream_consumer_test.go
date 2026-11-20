@@ -14819,3 +14819,240 @@ func BenchmarkJetStreamConsumerRedeliveryQueue(b *testing.B) {
 		})
 	}
 }
+
+func TestJetStreamConsumerPushDidNotDeliverRedeliversOnInterest(t *testing.T) {
+	test := func(t *testing.T, disconnect bool) {
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc := natsConnect(t, s.ClientURL())
+		defer nc.Close()
+
+		mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+		require_NoError(t, err)
+
+		sl := s.globalAccount().sl
+		var ssub *subscription
+		if disconnect {
+			sub := natsSubSync(t, nc, "deliver")
+			defer sub.Unsubscribe()
+			natsFlush(t, nc)
+			r := sl.Match("deliver")
+			require_Len(t, len(r.psubs), 1)
+			ssub = r.psubs[0]
+		}
+
+		o, err := mset.addConsumer(&ConsumerConfig{
+			Durable:        "CONSUMER",
+			DeliverSubject: "deliver",
+			AckPolicy:      AckExplicit,
+			AckWait:        time.Minute,
+		})
+		require_NoError(t, err)
+
+		if disconnect {
+			// On disconnect the subscription is closed before it's removed from the sublist.
+			ssub.close()
+		} else {
+			// Simulate the last subscriber leaving right before the message is delivered.
+			o.mu.Lock()
+			o.active = true
+			o.mu.Unlock()
+		}
+		natsPub(t, nc, "foo", nil)
+
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			defer o.mu.RUnlock()
+			if !o.udi.Exists(1) {
+				return errors.New("not marked undelivered")
+			}
+			return nil
+		})
+		if disconnect {
+			require_NoError(t, sl.Remove(ssub))
+		}
+
+		// Should be redelivered when interest returns, not only after AckWait.
+		nc2 := natsConnect(t, s.ClientURL())
+		defer nc2.Close()
+		sub := natsSubSync(t, nc2, "deliver")
+		msg, err := sub.NextMsg(2 * time.Second)
+		require_NoError(t, err)
+		meta, err := msg.Metadata()
+		require_NoError(t, err)
+		require_Equal(t, meta.Sequence.Stream, 1)
+	}
+
+	t.Run("NoInterest", func(t *testing.T) { test(t, false) })
+	t.Run("Disconnect", func(t *testing.T) { test(t, true) })
+}
+
+func TestJetStreamConsumerPushDidNotDeliverAfterInterestReturned(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	natsPub(t, nc, "foo", nil)
+	natsPub(t, nc, "foo", nil)
+
+	sub := natsSubSync(t, nc, "deliver")
+	defer sub.Unsubscribe()
+	natsFlush(t, nc)
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:        "CONSUMER",
+		DeliverSubject: "deliver",
+		AckPolicy:      AckExplicit,
+		AckWait:        time.Minute,
+		MaxAckPending:  1,
+	})
+	require_NoError(t, err)
+	_, err = sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+
+	// Interest returned, but the earlier delivery only fails afterward.
+	o.mu.RLock()
+	inch := o.inch
+	o.mu.RUnlock()
+	inch <- true
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if !o.irnd {
+			return errors.New("interest not returned yet")
+		}
+		return nil
+	})
+	o.didNotDeliver(1, "deliver")
+
+	// Should be redelivered right away, not stall on MaxAckPending until AckWait.
+	msg, err := sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+	meta, err := msg.Metadata()
+	require_NoError(t, err)
+	require_Equal(t, meta.Sequence.Stream, 1)
+
+	// Retried only once.
+	o.didNotDeliver(1, "deliver")
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestJetStreamConsumerPushDidNotDeliverNoRetryWithInterest(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	natsPub(t, nc, "foo", nil)
+
+	sub := natsSubSync(t, nc, "deliver")
+	defer sub.Unsubscribe()
+	natsFlush(t, nc)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", DeliverSubject: "deliver", AckPolicy: AckExplicit, AckWait: time.Minute})
+	require_NoError(t, err)
+	_, err = sub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+
+	// With interest the delivery failed for another reason, must not be retried in a loop.
+	o.didNotDeliver(1, "deliver")
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
+
+func TestJetStreamConsumerPushDidNotDeliverUndeliveredOnlyPending(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", DeliverSubject: "deliver", AckPolicy: AckNone})
+	require_NoError(t, err)
+
+	// AckNone has nothing pending to redeliver.
+	o.didNotDeliver(1, "deliver")
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	require_True(t, o.udi.IsEmpty())
+
+	// Acked messages are dropped, so it stays bounded while interest doesn't return.
+	o.pending = map[uint64]*Pending{100: {}}
+	for seq := uint64(1); seq <= 100; seq++ {
+		o.addUndelivered(seq)
+	}
+	require_True(t, o.udi.Size() <= 3)
+	require_True(t, o.udi.Exists(100))
+
+	// Only what's still pending is redelivered when interest returns.
+	o.pending[101] = &Pending{}
+	o.addUndelivered(101)
+	delete(o.pending, 101)
+	o.redeliverUndelivered()
+	require_True(t, o.udi.IsEmpty())
+	require_Len(t, len(o.rdq), 1)
+	require_Equal(t, o.rdq[0], 100)
+
+	// Cleared when resetting the starting sequence.
+	o.addUndelivered(100)
+	_, err = o.resetLocalStartingSeq(1)
+	require_NoError(t, err)
+	require_True(t, o.udi.IsEmpty())
+}
+
+func TestJetStreamConsumerPushDidNotDeliverResentNotRedelivered(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc := natsConnect(t, s.ClientURL())
+	defer nc.Close()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{
+		Durable:        "CONSUMER",
+		DeliverSubject: "deliver.x",
+		AckPolicy:      AckExplicit,
+		AckWait:        time.Minute,
+	})
+	require_NoError(t, err)
+
+	o.mu.Lock()
+	o.active = true
+	o.mu.Unlock()
+	natsPub(t, nc, "foo", nil)
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		o.mu.RLock()
+		defer o.mu.RUnlock()
+		if !o.udi.Exists(1) {
+			return errors.New("not marked undelivered")
+		}
+		return nil
+	})
+
+	// A wildcard subscription doesn't signal interest, like interest over a gateway.
+	wsub := natsSubSync(t, nc, "deliver.*")
+	defer wsub.Unsubscribe()
+	natsFlush(t, nc)
+	o.mu.Lock()
+	o.active = true
+	o.addToRedeliverQueue(1)
+	o.signalNewMessages()
+	o.mu.Unlock()
+	_, err = wsub.NextMsg(2 * time.Second)
+	require_NoError(t, err)
+
+	// It was resent, so it must not be redelivered again once interest returns.
+	sub := natsSubSync(t, nc, "deliver.x")
+	defer sub.Unsubscribe()
+	_, err = sub.NextMsg(250 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+	_, err = wsub.NextMsg(100 * time.Millisecond)
+	require_Error(t, err, nats.ErrTimeout)
+}
