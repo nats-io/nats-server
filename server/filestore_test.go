@@ -8591,6 +8591,53 @@ func TestFileStoreFilteredPendingPSIMFirstBlockUpdateAfterTruncate(t *testing.T)
 	require_Equal(t, fs.SubjectsState("foo")["foo"], SimpleState{Msgs: 1, First: 4, Last: 4})
 }
 
+func TestFileStoreFilteredStateLastWithOutdatedPSIMLastBlock(t *testing.T) {
+	fs, err := newFileStore(
+		FileStoreConfig{StoreDir: t.TempDir()},
+		StreamConfig{Name: "zzz", Subjects: []string{"foo.*", "bar"}, Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	store := func(subj string) {
+		_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+		require_NoError(t, err)
+	}
+
+	// 1.blk
+	store("foo.a")
+	store("bar")
+	// 2.blk
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	store("bar")
+	// 3.blk
+	fs.mu.Lock()
+	_, err = fs.newMsgBlockForWrite()
+	fs.mu.Unlock()
+	require_NoError(t, err)
+	store("foo.a")
+	store("bar")
+
+	// Removing the last "foo.a" leaves lblk as is.
+	_, err = fs.RemoveMsg(4)
+	require_NoError(t, err)
+	fs.mu.RLock()
+	info, ok := fs.psim.Find([]byte("foo.a"))
+	fs.mu.RUnlock()
+	require_True(t, ok)
+	require_Equal(t, info.total, 1)
+	require_Equal(t, info.lblk, 3)
+
+	// The last sequence is in 1.blk, not in 3.blk.
+	for _, filter := range []string{"foo.a", "foo.*"} {
+		ss, err := fs.FilteredState(1, filter)
+		require_NoError(t, err)
+		require_Equal(t, ss, SimpleState{Msgs: 1, First: 1, Last: 1})
+	}
+}
+
 func TestFileStoreLargeSparseMsgsDoNotLoadAfterLast(t *testing.T) {
 	sd := t.TempDir()
 	fs, err := newFileStore(

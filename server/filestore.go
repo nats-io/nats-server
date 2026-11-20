@@ -3829,13 +3829,11 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 	}
 	// Now gather last sequence if asked to do so.
 	if last {
-		if mb = fs.bim[stop]; mb != nil {
-			_, _, l, err := mb.filteredPending(filter, wc, 0)
-			if err != nil {
-				return err
-			}
-			ss.Last = l
+		_, l, err := fs.lastSeqLocked(filter)
+		if err != nil {
+			return err
 		}
+		ss.Last = l
 	}
 	return nil
 }
