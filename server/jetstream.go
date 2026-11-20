@@ -40,7 +40,7 @@ import (
 type JetStreamConfig struct {
 	MaxMemory    int64         `json:"max_memory"`              // MaxMemory is the maximum size of memory type streams
 	MaxStore     int64         `json:"max_storage"`             // MaxStore is the maximum size of file store type streams
-	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored
+	StoreDir     string        `json:"store_dir,omitempty"`     // StoreDir is where storage files are stored; empty with a nil config means the shared os.TempDir()/nats/jetstream
 	SyncInterval time.Duration `json:"sync_interval,omitempty"` // SyncInterval is how frequently we sync to disk in the background by calling fsync
 	SyncAlways   bool          `json:"sync_always,omitempty"`   // SyncAlways indicates flushes are done after every write
 	Domain       string        `json:"domain,omitempty"`        // Domain is the JetStream domain
@@ -212,7 +212,14 @@ type jsaUsage struct {
 }
 
 // EnableJetStream will enable JetStream support on this server with the given configuration.
-// A nil configuration will dynamically choose the limits and temporary file storage directory.
+// A nil configuration will dynamically choose the limits and use the temporary storage
+// directory filepath.Join(os.TempDir(), "nats", "jetstream").
+//
+// That directory is fixed, not per-server: every server in the process enabled with a
+// nil configuration reads and writes the same files, because the store is deliberately
+// kept stable across restarts. Two such servers therefore share streams, consumers and
+// pending messages, which is rarely what a test wants. Pass an explicit StoreDir — for
+// tests, t.TempDir() — to keep servers isolated.
 func (s *Server) EnableJetStream(config *JetStreamConfig) error {
 	if s.JetStreamEnabled() {
 		return fmt.Errorf("jetstream already enabled")
