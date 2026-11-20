@@ -5512,6 +5512,49 @@ func TestFileStoreCompactFirstSeqNotFromEmptyBlock(t *testing.T) {
 	})
 }
 
+func TestFileStoreWriteFullStateWithLeftoverEmptyBlocks(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk only holds a skipped sequence.
+		_, err = fs.SkipMsg(0)
+		require_NoError(t, err)
+		// 2.blk has its first message removed.
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 3)
+		require_Equal(t, before.LastSeq, 3)
+
+		// The empty block must not be seen as an inconsistency.
+		require_NoError(t, fs.forceWriteFullState())
+
+		// And recovering from the written state must not change it.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+		}
+	})
+}
+
 func TestFileStoreRebuildStateFirstSeqWithLeftoverEmptyBlocks(t *testing.T) {
 	t.Run("NoMessages", func(t *testing.T) {
 		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
