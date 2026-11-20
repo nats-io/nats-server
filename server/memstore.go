@@ -606,7 +606,12 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) (SimpleState, error)
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	return ms.filteredStateLocked(sseq, subj, false), nil
+	ss := ms.filteredStateLocked(sseq, subj, false)
+	// When matching all messages the last is the stream's, like when starting from the first sequence.
+	if ss.Msgs > 0 && (subj == _EMPTY_ || subj == fwcs) {
+		ss.Last = ms.state.LastSeq
+	}
+	return ss, nil
 }
 
 func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
@@ -616,7 +621,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 	// If past the end no results.
 	if sseq > ms.state.LastSeq {
-		return SimpleState{}
+		// Make sure we track sequences
+		return SimpleState{First: ms.state.FirstSeq, Last: ms.state.LastSeq}
 	}
 
 	if filter == _EMPTY_ {
@@ -721,7 +727,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 		update := func(sm *StoreMsg) {
 			ss.Msgs++
-			if ss.First == 0 {
+			// Keep the lowest, since the map of messages has no fixed iteration order.
+			if ss.First == 0 || sm.seq < ss.First {
 				ss.First = sm.seq
 			}
 			if seen != nil {
@@ -793,19 +800,16 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 			// Since we will need to scan all of the msgs vs below where we break on the first match,
 			// we will only do so if a few orders of magnitude lower.
 			if last-first > 100*uint64(len(ms.msgs)) {
-				low := ms.state.LastSeq
+				// The message at last always matches, so it's the first if nothing before it does.
+				low := last
 				for _, sm := range ms.msgs {
-					if sm.seq >= first && sm.seq < last && isMatch(sm.subj) {
-						if sm.seq < low {
-							low = sm.seq
-						}
+					if sm.seq >= first && sm.seq < low && isMatch(sm.subj) {
+						low = sm.seq
 					}
 				}
-				if low < ms.state.LastSeq {
-					ss.First = low
-				}
+				ss.First = low
 			} else {
-				for seq := first; seq < last; seq++ {
+				for seq := first; seq <= last; seq++ {
 					if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
 						ss.First = seq
 						break
