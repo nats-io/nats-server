@@ -1207,6 +1207,79 @@ func TestFileStoreStreamTruncateDeletedSequence(t *testing.T) {
 	})
 }
 
+func TestFileStoreStreamTruncateKeepsPriorTombstones(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		before   int
+		remove   []uint64
+		after    int
+		truncate uint64
+	}{
+		{"AtLastRemoved", 3, []uint64{1, 3}, 0, 3},
+		{"BelowLast", 3, []uint64{1}, 0, 2},
+		{"TombstoneKeptInBlock", 2, []uint64{1}, 2, 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				storeMsgs := func(n int) {
+					for range n {
+						_, _, err := fs.StoreMsg("foo", nil, []byte("ok"), 0)
+						require_NoError(t, err)
+					}
+				}
+
+				// The tombstones are stored after the messages stored before.
+				storeMsgs(test.before)
+				for _, seq := range test.remove {
+					removed, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+					require_True(t, removed)
+				}
+				storeMsgs(test.after)
+
+				// The block is cut after the last message up to the truncated sequence.
+				// Tombstones stored after it are lost, the ones before it are kept in the block.
+				require_NoError(t, fs.Truncate(test.truncate))
+				expected := fs.State()
+				require_Equal(t, expected.Msgs, test.truncate-uint64(len(test.remove)))
+				require_Equal(t, expected.FirstSeq, 2)
+				require_Equal(t, expected.LastSeq, test.truncate)
+
+				// Only the lost tombstones are stored again, the kept ones must not be duplicated.
+				var tombs []uint64
+				fs.mu.RLock()
+				for _, mb := range fs.blks {
+					for _, tomb := range mb.tombs() {
+						tombs = append(tombs, tomb.seq)
+					}
+				}
+				fs.mu.RUnlock()
+				slices.Sort(tombs)
+				for i := 1; i < len(tombs); i++ {
+					require_NotEqual(t, tombs[i], tombs[i-1])
+				}
+
+				// Recover without index.db to verify the first message stays removed.
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+				if state := fs.State(); !reflect.DeepEqual(state, expected) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", expected, state)
+				}
+			})
+		})
+	}
+}
+
 func TestFileStoreStreamTruncateDeletedWithCompactedPrefix(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 120
@@ -5428,6 +5501,49 @@ func TestFileStoreCompactFirstSeqNotFromEmptyBlock(t *testing.T) {
 		require_Len(t, len(before.Deleted), 0)
 
 		// And it must not change after a restart either.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+		}
+	})
+}
+
+func TestFileStoreWriteFullStateWithLeftoverEmptyBlocks(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk only holds a skipped sequence.
+		_, err = fs.SkipMsg(0)
+		require_NoError(t, err)
+		// 2.blk has its first message removed.
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 3)
+		require_Equal(t, before.LastSeq, 3)
+
+		// The empty block must not be seen as an inconsistency.
+		require_NoError(t, fs.forceWriteFullState())
+
+		// And recovering from the written state must not change it.
 		fs.Stop()
 		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
 		require_NoError(t, err)
@@ -14016,6 +14132,57 @@ func TestFileStoreTombstonesNoFirstSeqRollback(t *testing.T) {
 	})
 }
 
+func TestFileStoreTombstonesRemoveBlockKeepsLastMsg(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		remove uint64
+	}{
+		{"LastStored", 29},
+		{"LastRemoved", 30},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				fcfg.BlockSize = 10 * 33 // 10 messages per block.
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				for range 30 {
+					_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+					require_NoError(t, err)
+				}
+
+				// The tombstones spill over into multiple blocks after the last message.
+				for seq := uint64(1); seq <= test.remove; seq++ {
+					_, err = fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+
+				// Syncing removes the blocks only holding tombstones that are no longer needed.
+				fs.syncBlocks()
+
+				before := fs.State()
+				require_Equal(t, before.Msgs, 30-test.remove)
+				require_Equal(t, before.LastSeq, 30)
+
+				// Make sure we can recover properly with no index.db present.
+				fs.Stop()
+				os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+				}
+			})
+		})
+	}
+}
+
 func TestFileStoreTombstonesSelectNextFirstCleanup(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 10 * 33 // 10 messages per block.
@@ -14640,6 +14807,455 @@ func TestFileStoreEmptyBlockContainsPriorTombstones(t *testing.T) {
 		fs.mu.RUnlock()
 		require_Equal(t, lblks, 1)
 	})
+}
+
+func TestFileStoreEmptyBlockContainsPriorTombstonesRemovedMsgs(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		purge    bool
+		last     bool
+		outdated bool
+	}{
+		{"RemoveMsg", false, false, false},
+		{"RemoveMsgLastBlock", false, true, false},
+		{"RemoveMsgOutdatedIndex", false, false, true},
+		{"PurgeEx", true, false, false},
+		{"PurgeExLastBlock", true, true, false},
+		{"PurgeExOutdatedIndex", true, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo", "bar"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// 1.blk
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				// 2.blk, also holds the tombstone for a message in 1.blk.
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("bar", nil, nil, 0)
+				require_NoError(t, err)
+				_, err = fs.RemoveMsg(2)
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("bar", nil, nil, 0)
+				require_NoError(t, err)
+
+				// 3.blk
+				if !test.last {
+					fs.mu.Lock()
+					_, err = fs.newMsgBlockForWrite()
+					fs.mu.Unlock()
+					require_NoError(t, err)
+					_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+					require_NoError(t, err)
+				}
+
+				// Leave only a single message in 2.blk.
+				if !test.purge {
+					_, err = fs.RemoveMsg(4)
+					require_NoError(t, err)
+				}
+
+				// Keep the index.db as of now, it's outdated once 2.blk is emptied.
+				ifn := filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)
+				var index []byte
+				if test.outdated {
+					require_NoError(t, fs.forceWriteFullState())
+					index, err = os.ReadFile(ifn)
+					require_NoError(t, err)
+				}
+
+				// Emptying 2.blk doesn't remove it, since it holds a prior tombstone.
+				if test.purge {
+					purged, err := fs.PurgeEx("bar", 0, 0)
+					require_NoError(t, err)
+					require_Equal(t, purged, 2)
+				} else {
+					_, err = fs.RemoveMsg(3)
+					require_NoError(t, err)
+				}
+				before := fs.State()
+				require_True(t, slices.Equal(before.Deleted, []uint64{2, 3, 4}))
+
+				fs.Stop()
+				if test.outdated {
+					// Simulate a crash before the index.db was written again, it must not be used as is.
+					require_NoError(t, os.WriteFile(ifn, index, defaultFilePerms))
+				} else {
+					// The removed messages must not come back when recovering with no index.db present.
+					os.Remove(ifn)
+				}
+
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v after recovery", before, state)
+				}
+			})
+		})
+	}
+}
+
+func TestFileStoreEmptyBlockContainsPriorTombstonesRecoverFullState(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// 2.blk
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(3) // Will create a new lmb with this as tombstone.
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_Equal(t, before.Msgs, 1)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 3)
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		fs.mu.RLock()
+		lblks := len(fs.blks)
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 3)
+
+		// Recover from index.db, the empty 2.blk must still be tracked as it contains a prior tombstone.
+		fs.Stop()
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v with index.db state", before, state)
+		}
+
+		// Truncating must also remove 2.blk, otherwise its tombstone and messages linger on disk.
+		require_NoError(t, fs.Truncate(1))
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		before = fs.State()
+		require_Equal(t, before.Msgs, 2)
+		require_Equal(t, before.FirstSeq, 1)
+		require_Equal(t, before.LastSeq, 2)
+
+		// Make sure we can recover properly with no index.db present.
+		fs.Stop()
+		os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+		}
+
+		// The new message must not be removed by the old tombstone.
+		_, err = fs.LoadMsg(2, nil)
+		require_NoError(t, err)
+		_, err = fs.LoadMsg(3, nil)
+		require_Error(t, err, ErrStoreEOF)
+	})
+}
+
+func TestFileStoreRecoverFullStateMissingEmptyBlock(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		created := time.Now()
+		fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		// 1.blk
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+
+		// 2.blk
+		fs.mu.Lock()
+		_, err = fs.newMsgBlockForWrite()
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(2)
+		require_NoError(t, err)
+		_, err = fs.RemoveMsg(3) // Will create a new lmb with this as tombstone.
+		require_NoError(t, err)
+
+		before := fs.State()
+		require_True(t, slices.Equal(before.Deleted, []uint64{2, 3}))
+
+		// Simulate the empty block being removed after index.db was written.
+		fs.Stop()
+		require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, fmt.Sprintf(blkScan, 2))))
+
+		// The empty block should be dropped, instead of rebuilding without index.db.
+		// A rebuild would bring back the second message, since the tombstone is gone.
+		fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		if state := fs.State(); !reflect.DeepEqual(state, before) {
+			t.Fatalf("Expected state\n of %+v, \ngot %+v with index.db state", before, state)
+		}
+
+		fs.mu.RLock()
+		lblks, dirty := len(fs.blks), fs.dirty
+		fs.mu.RUnlock()
+		require_Equal(t, lblks, 2)
+		require_True(t, dirty > 0)
+	})
+}
+
+func TestFileStoreKeepsTombstoneForMsgStoredInPriorBlock(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		ownBlock   bool // The first message is removed while 1.blk is the last block, storing its tombstone itself.
+		compact    bool // 1.blk is compacted, so the first message is no longer stored.
+		restart    bool // Restart before emptying 2.blk, so the stored range of 1.blk is unknown.
+		load       bool // Load 1.blk after restarting, so its stored range is known again.
+		syncBlocks bool // Compact the block holding the tombstone like syncBlocks does.
+	}{
+		{name: "RemoveMsg"},
+		{name: "SyncBlocks", syncBlocks: true},
+		{name: "Restart", restart: true},
+		{name: "RestartLoaded", restart: true, load: true},
+		{name: "Compacted", compact: true},
+		{name: "CompactedRestartLoaded", compact: true, restart: true, load: true},
+		{name: "OwnBlock", ownBlock: true, syncBlocks: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer func() { fs.Stop() }()
+
+				restart := func(rebuild bool) {
+					fs.Stop()
+					if rebuild {
+						os.Remove(filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile))
+					}
+					fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+					require_NoError(t, err)
+				}
+
+				// Compacting directly, since syncBlocks only compacts depending on the compressed size.
+				compact := func(index uint32, withFloor bool) {
+					fs.mu.RLock()
+					defer fs.mu.RUnlock()
+					var floor uint64
+					var fsDmap *interiorDeletes
+					if withFloor {
+						floor, fsDmap = fs.state.FirstSeq, deleteMap(fs.blks)
+					}
+					mb := fs.bim[index]
+					require_NotNil(t, mb)
+					mb.mu.Lock()
+					defer mb.mu.Unlock()
+					require_NoError(t, mb.compactWithFloor(floor, fsDmap))
+				}
+
+				// 1.blk
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				// Removing the first message only moves the first seq up, it stays in 1.blk on disk.
+				removeFirst := func() {
+					_, err = fs.RemoveMsg(1)
+					require_NoError(t, err)
+				}
+				if test.ownBlock {
+					removeFirst()
+				}
+
+				// 2.blk
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				if !test.ownBlock {
+					removeFirst()
+				}
+
+				// 3.blk
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+
+				if test.compact {
+					compact(1, false)
+				}
+				if test.restart {
+					restart(false)
+				}
+				if test.load {
+					_, err = fs.LoadMsg(2, nil)
+					require_NoError(t, err)
+				}
+
+				// Emptying 2.blk must keep it if it holds the tombstone for a stored message.
+				_, err = fs.RemoveMsg(3)
+				require_NoError(t, err)
+
+				// Compacting must not drop that tombstone either.
+				if test.syncBlocks {
+					if test.ownBlock {
+						compact(1, true)
+					} else {
+						compact(2, true)
+					}
+				}
+
+				// The tombstone must only be kept while the first message is still stored.
+				var kept bool
+				fs.mu.RLock()
+				for _, mb := range fs.blks {
+					for _, tomb := range mb.tombs() {
+						kept = kept || tomb.seq == 1
+					}
+				}
+				fs.mu.RUnlock()
+				require_Equal(t, kept, !test.ownBlock && !test.compact)
+
+				before := fs.State()
+				require_Equal(t, before.Msgs, 2)
+				require_Equal(t, before.FirstSeq, 2)
+				require_True(t, slices.Equal(before.Deleted, []uint64{3}))
+
+				// Make sure we can recover properly with no index.db present.
+				restart(true)
+
+				if state := fs.State(); !reflect.DeepEqual(state, before) {
+					t.Fatalf("Expected state\n of %+v, \ngot %+v without index.db state", before, state)
+				}
+
+				// The first message must not come back.
+				_, err = fs.LoadMsg(1, nil)
+				require_Error(t, err, ErrStoreMsgNotFound, errDeletedMsg)
+			})
+		})
+	}
+}
+
+func TestFileStoreRecoverFullStateStoredBelowFirst(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		unknown bool // Recover from an older index.db, where the lowest stored sequence is unknown.
+	}{
+		{name: "Known"},
+		{name: "Unknown", unknown: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+				cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+				created := time.Now()
+				fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// 1.blk to 4.blk, with two messages each except the last.
+				for i := range 4 {
+					if i > 0 {
+						fs.mu.Lock()
+						_, err = fs.newMsgBlockForWrite()
+						fs.mu.Unlock()
+						require_NoError(t, err)
+					}
+					for range min(2, 4-i) {
+						_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+						require_NoError(t, err)
+					}
+				}
+
+				// Simulate an older index.db, where this is unknown.
+				if test.unknown {
+					fs.mu.RLock()
+					for _, mb := range fs.blks {
+						atomic.StoreUint64(&mb.rfseq, 0)
+					}
+					fs.mu.RUnlock()
+				}
+
+				// Recover from index.db, without loading any of the blocks after.
+				fs.Stop()
+				fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				// What's stored on disk below the first must still be known for 3.blk, unless it was unknown.
+				fs.mu.RLock()
+				mb1, mb3 := fs.bim[1], fs.bim[3]
+				fs.mu.RUnlock()
+				if test.unknown {
+					require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 0)
+				} else {
+					require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 5)
+				}
+
+				// Remove all of 2.blk, the tombstones go into 4.blk.
+				_, err = fs.RemoveMsg(3)
+				require_NoError(t, err)
+				_, err = fs.RemoveMsg(4)
+				require_NoError(t, err)
+
+				// 5.blk
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				// 4.blk now only contains the tombstones for 2.blk, which are no longer needed.
+				_, err = fs.RemoveMsg(7)
+				require_NoError(t, err)
+
+				// Syncing resolves what's unknown before compacting.
+				fs.syncBlocks()
+				fs.mu.RLock()
+				_, ok := fs.bim[4]
+				fs.mu.RUnlock()
+				require_Equal(t, atomic.LoadUint64(&mb1.rfseq), 1)
+				require_Equal(t, atomic.LoadUint64(&mb3.rfseq), 5)
+				require_False(t, ok)
+			})
+		})
+	}
 }
 
 func TestFileStoreCompactTombstonesBelowFirstSeq(t *testing.T) {
@@ -16570,7 +17186,7 @@ func TestFileStoreRemoveMsgsInRangeWithTombstones(t *testing.T) {
 
 	checkBlock(fs.blks[0], 1, 4, nil)
 	checkBlock(fs.blks[1], 13, 12, []uint64{4, 3, 2, 10})
-	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 17})
+	checkBlock(fs.blks[2], 18, 20, []uint64{9, 11, 12, 17})
 
 	// Remove everything (past the last sequence)
 	fs.removeMsgsInRange(1, 100, false, nil)
