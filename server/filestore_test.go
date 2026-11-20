@@ -5255,6 +5255,107 @@ func TestFileStoreCompactFirstSeqNotFromEmptyBlock(t *testing.T) {
 	})
 }
 
+func TestFileStoreRebuildStateFirstSeqWithLeftoverEmptyBlocks(t *testing.T) {
+	t.Run("NoMessages", func(t *testing.T) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+			created := time.Now()
+			fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// 1.blk
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			// 2.blk only holds a tombstone.
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			_, err = fs.RemoveMsg(2)
+			require_NoError(t, err)
+			// 3.blk, removing its only message leaves a block for its tombstone instead.
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			_, err = fs.RemoveMsg(3)
+			require_NoError(t, err)
+
+			// Older servers compacted 1.blk away but left 2.blk on disk, without messages left.
+			fs.Stop()
+			mdir := filepath.Join(fcfg.StoreDir, msgDir)
+			require_NoError(t, os.Remove(filepath.Join(mdir, fmt.Sprintf(blkScan, 1))))
+			require_NoError(t, os.Remove(filepath.Join(mdir, streamStreamStateFile)))
+
+			fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			fs.mu.RLock()
+			lblks := len(fs.blks)
+			fs.mu.RUnlock()
+			require_Equal(t, lblks, 2)
+
+			state := fs.State()
+			require_Equal(t, state.Msgs, 0)
+			require_Equal(t, state.FirstSeq, 4)
+			require_Equal(t, state.LastSeq, 3)
+
+			// Rebuilding must not take the first sequence from where the first empty block starts.
+			fs.rebuildState(nil)
+			state = fs.State()
+			require_Equal(t, state.Msgs, 0)
+			require_Equal(t, state.FirstSeq, 4)
+			require_Equal(t, state.LastSeq, 3)
+		})
+	})
+
+	t.Run("WithMessages", func(t *testing.T) {
+		testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+			fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// 1.blk only holds a skipped sequence.
+			_, err = fs.SkipMsg(0)
+			require_NoError(t, err)
+			// 2.blk has its first message removed.
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+			require_NoError(t, err)
+			_, err = fs.RemoveMsg(2)
+			require_NoError(t, err)
+			// 3.blk is empty and ends at the same last sequence, without a timestamp.
+			fs.mu.Lock()
+			_, err = fs.newMsgBlockForWrite()
+			fs.mu.Unlock()
+			require_NoError(t, err)
+
+			before := fs.State()
+			require_Equal(t, before.Msgs, 1)
+			require_Equal(t, before.FirstSeq, 3)
+			require_Equal(t, before.LastSeq, 3)
+
+			// Rebuilding must take the first sequence from the first message, and keep the last timestamp.
+			fs.rebuildState(nil)
+			if state := fs.State(); !reflect.DeepEqual(state, before) {
+				t.Fatalf("Expected state\n of %+v, \ngot %+v", before, state)
+			}
+		})
+	})
+}
+
 func TestFileStoreStateWithBlkFirstDeleted(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fcfg.BlockSize = 4096

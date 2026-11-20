@@ -1456,10 +1456,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
+		firstWithMsgs := fs.state.Msgs == 0 && mb.msgs > 0
 		fs.state.Msgs += mb.msgs
 		fs.state.Bytes += mb.bytes
 		fseq := atomic.LoadUint64(&mb.first.seq)
-		if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
+		if fs.state.FirstSeq == 0 || firstWithMsgs || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
 			fs.state.FirstSeq = fseq
 			if mb.first.ts == 0 {
 				fs.state.FirstTime = time.Time{}
@@ -1469,7 +1470,7 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		}
 		// Preserve last time, could have erased the last message in one block, and then
 		// have a tombstone with the proper timestamp afterward in another block
-		if lseq := atomic.LoadUint64(&mb.last.seq); lseq >= fs.state.LastSeq {
+		if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq || (lseq == fs.state.LastSeq && mb.last.ts != 0) {
 			fs.state.LastSeq = lseq
 			if mb.last.ts == 0 {
 				fs.state.LastTime = time.Time{}
@@ -1478,6 +1479,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 			}
 		}
 		mb.mu.RUnlock()
+	}
+	// Without messages the first sequence comes after the last, not where an empty block starts.
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
 	}
 }
 
