@@ -14076,14 +14076,15 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				return
 			}
 			buf, err := o.encodeState()
-			o.mu.Unlock()
 			if err != nil {
+				o.mu.Unlock()
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeState(buf); err == nil {
+			if err := o.writeStateLocked(buf, true); err == nil {
 				lastWrite = time.Now()
 			}
+			o.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -14093,11 +14094,11 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 // SetStarting sets our starting stream sequence.
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
 	buf := encodeConsumerState(&o.state)
-	o.mu.Unlock()
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // UpdateStarting updates our starting stream sequence.
@@ -14446,16 +14447,16 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 
 	// Replace our state.
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
 	buf, err := o.encodeState()
-	o.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
@@ -14476,14 +14477,23 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.writeStateLocked(buf, false)
+}
+
+// If current, buf is the state as of now.
+// Lock should be held, it's released while writing the file.
+func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
 	if o.closed {
-		o.mu.Unlock()
 		return ErrStoreClosed
 	}
 	// Check if we have the index file open.
 	if o.writing || len(buf) == 0 {
-		o.mu.Unlock()
+		// Skipped because of another write. Kick the flusher so this state still gets written.
+		if len(buf) > 0 {
+			o.kickFlusher()
+		}
 		return nil
 	}
 
@@ -14491,13 +14501,16 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	if o.aek != nil {
 		var err error
 		if buf, err = o.encryptState(buf); err != nil {
-			o.mu.Unlock()
 			return err
 		}
 	}
 
 	o.writing = true
-	o.dirty = false
+	// Only the current state leaves nothing more to write.
+	// An older one could miss an update made since it was encoded.
+	if current {
+		o.dirty = false
+	}
 	ifn := o.ifn
 	o.mu.Unlock()
 
@@ -14509,8 +14522,6 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 		o.dirty = true
 	}
 	o.writing = false
-	o.mu.Unlock()
-
 	return err
 }
 

@@ -3163,6 +3163,82 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 	})
 }
 
+func TestFileStoreConsumerOutdatedStateWriteKeepsDirty(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	cfg := &ConsumerConfig{AckPolicy: AckExplicit}
+	o, err := fs.ConsumerStore("o22", time.Time{}, cfg)
+	require_NoError(t, err)
+	oc := o.(*consumerFileStore)
+
+	// Let the flusher write once, it then waits before writing again.
+	ts := time.Now().UnixNano()
+	require_NoError(t, o.UpdateDelivered(1, 1, 1, ts))
+	checkFor(t, time.Second, time.Millisecond, func() error {
+		oc.mu.Lock()
+		defer oc.mu.Unlock()
+		if oc.dirty || oc.writing {
+			return fmt.Errorf("Not flushed yet")
+		}
+		return nil
+	})
+
+	// Write a state that's outdated by the time it's written.
+	buf, err := o.EncodedState()
+	require_NoError(t, err)
+	require_NoError(t, o.UpdateDelivered(2, 2, 1, ts))
+	require_NoError(t, oc.writeState(buf))
+
+	// The last update must still be written when stopping.
+	require_NoError(t, o.Stop())
+	o, err = fs.ConsumerStore("o22", time.Time{}, cfg)
+	require_NoError(t, err)
+	defer o.Stop()
+
+	state, err := o.State()
+	require_NoError(t, err)
+	require_Equal(t, state.Delivered.Consumer, 2)
+}
+
+func TestFileStoreConsumerSkippedStateWriteKicksFlusher(t *testing.T) {
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	cfg := &ConsumerConfig{AckPolicy: AckExplicit}
+	o, err := fs.ConsumerStore("o22", time.Time{}, cfg)
+	require_NoError(t, err)
+	defer o.Stop()
+	oc := o.(*consumerFileStore)
+
+	// Pretend another write is in flight, so this one is skipped.
+	oc.mu.Lock()
+	oc.writing = true
+	oc.mu.Unlock()
+	require_NoError(t, o.SetStarting(5))
+	oc.mu.Lock()
+	oc.writing = false
+	oc.mu.Unlock()
+
+	// The flusher must write the skipped state afterward, without another update or a stop.
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		buf, err := os.ReadFile(oc.ifn)
+		if err != nil {
+			return err
+		}
+		state, err := decodeConsumerState(buf)
+		if err != nil {
+			return err
+		}
+		if state.Delivered.Stream != 5 || state.AckFloor.Stream != 5 {
+			return fmt.Errorf("Skipped state not written yet: %+v", state)
+		}
+		return nil
+	})
+}
+
 func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
