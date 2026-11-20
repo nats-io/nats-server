@@ -279,6 +279,7 @@ type Server struct {
 	// not set any timeout.
 	monitoringServer *http.Server
 	profilingServer  *http.Server
+	healthzListener  net.Listener
 
 	// LameDuck mode
 	ldm   bool
@@ -2766,6 +2767,12 @@ func (s *Server) Shutdown() {
 		s.http = nil
 	}
 
+	if s.healthzListener != nil {
+		doneExpected++
+		s.healthzListener.Close()
+		s.healthzListener = nil
+	}
+
 	// Kick Profiling if its running
 	if s.profiler != nil {
 		doneExpected++
@@ -3107,7 +3114,58 @@ func (s *Server) StartMonitoring() error {
 		}
 		err = s.startMonitoring(true)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if opts.HealthzPort != 0 {
+		return s.startHealthz()
+	}
+	return nil
+}
+
+func (s *Server) startHealthz() error {
+	if s.isShuttingDown() {
+		return nil
+	}
+
+	opts := s.getOpts()
+	port := opts.HealthzPort
+	if port == -1 {
+		port = 0
+	}
+	hp := net.JoinHostPort(opts.HealthzHost, strconv.Itoa(port))
+	listener, err := net.Listen("tcp", hp)
+	if err != nil {
+		return fmt.Errorf("can't listen to the healthz port: %v", err)
+	}
+
+	opts.HealthzPort = listener.Addr().(*net.TCPAddr).Port
+	s.Noticef("Starting healthz listener on %s", listener.Addr())
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(HealthzPath, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(s.healthz(nil).StatusCode)
+	})
+	srv := &http.Server{
+		Addr:              hp,
+		Handler:           mux,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          log.New(&captureHTTPServerLog{s, "healthz: "}, _EMPTY_, 0),
+		ReadHeaderTimeout: time.Second * 5,
+	}
+
+	s.mu.Lock()
+	s.healthzListener = listener
+	s.mu.Unlock()
+
+	go func() {
+		if err := srv.Serve(listener); err != nil && !s.isShuttingDown() {
+			s.Fatalf("Error starting healthz listener on %q: %v", hp, err)
+		}
+		srv.Close()
+		s.done <- true
+	}()
+	return nil
 }
 
 // HTTP endpoints
@@ -4327,6 +4385,7 @@ func formatURL(protocol string, addr net.Listener) []string {
 type Ports struct {
 	Nats       []string `json:"nats,omitempty"`
 	Monitoring []string `json:"monitoring,omitempty"`
+	Healthz    []string `json:"healthz,omitempty"`
 	Cluster    []string `json:"cluster,omitempty"`
 	Profile    []string `json:"profile,omitempty"`
 	WebSocket  []string `json:"websocket,omitempty"`
@@ -4343,6 +4402,7 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 		tls := s.info.TLSRequired
 		listener := s.listener
 		httpListener := s.http
+		healthzListener := s.healthzListener
 		clusterListener := s.routeListener
 		profileListener := s.profiler
 		wsListener := s.websocket.listener
@@ -4365,6 +4425,10 @@ func (s *Server) PortsInfo(maxWait time.Duration) *Ports {
 				monProto = "https"
 			}
 			ports.Monitoring = formatURL(monProto, httpListener)
+		}
+
+		if healthzListener != nil {
+			ports.Healthz = formatURL("http", healthzListener)
 		}
 
 		if clusterListener != nil {
@@ -4486,6 +4550,9 @@ func (s *Server) serviceListeners() []net.Listener {
 	}
 	if opts.HTTPPort != 0 || opts.HTTPSPort != 0 {
 		listeners = append(listeners, s.http)
+	}
+	if opts.HealthzPort != 0 {
+		listeners = append(listeners, s.healthzListener)
 	}
 	if opts.ProfPort != 0 {
 		listeners = append(listeners, s.profiler)

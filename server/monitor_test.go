@@ -186,6 +186,36 @@ func TestMonitorNoPort(t *testing.T) {
 	}
 }
 
+func TestDedicatedHealthzListener(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Port = -1
+	opts.NoSystemAccount = true
+	opts.NoLog = true
+	opts.NoSigs = true
+	opts.HealthzHost = "127.0.0.1"
+	opts.HealthzPort = -1
+
+	s := RunServer(opts)
+	defer s.Shutdown()
+
+	require_NotNil(t, s.healthzListener)
+	require_Equal(t, s.http, nil)
+
+	addr := s.healthzListener.Addr().String()
+	resp, err := http.Get(fmt.Sprintf("http://%s/healthz?details=true&account=private&stream=secret", addr))
+	require_NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require_NoError(t, err)
+	require_Equal(t, resp.StatusCode, http.StatusOK)
+	require_Equal(t, len(body), 0)
+
+	resp, err = http.Get(fmt.Sprintf("http://%s/varz", addr))
+	require_NoError(t, err)
+	resp.Body.Close()
+	require_Equal(t, resp.StatusCode, http.StatusNotFound)
+}
+
 var (
 	appJSONContent = "application/json"
 	textPlain      = "text/plain; charset=utf-8"
