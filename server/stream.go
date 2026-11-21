@@ -2299,6 +2299,9 @@ func (s *Server) checkStreamCfgLocked(config *StreamConfig, acc *Account, pedant
 		if src.FilterSubject != _EMPTY_ && len(src.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
 		}
+		if src.FilterSubject != _EMPTY_ && !IsValidSubject(src.FilterSubject) {
+			return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, src.FilterSubject))
+		}
 
 		for _, tr := range src.SubjectTransforms {
 			if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
