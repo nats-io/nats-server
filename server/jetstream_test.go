@@ -24628,6 +24628,47 @@ func TestJetStreamFlowControlCrossAccountFanOut(t *testing.T) {
 	}
 }
 
+func TestJetStreamStreamUpdateInvalidSourceFilterSubject(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN", Subjects: []string{"origin.>"}})
+	require_NoError(t, err)
+
+	invalid := []string{"origin..x", "origin x", "origin.>.x", ".origin"}
+
+	// Creating a stream with an invalid source filter subject errors.
+	for _, filter := range invalid {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:    "SOURCE",
+			Sources: []*nats.StreamSource{{Name: "ORIGIN", FilterSubject: filter}},
+		})
+		require_Error(t, err)
+	}
+
+	cfg := &nats.StreamConfig{
+		Name:    "SOURCE",
+		Sources: []*nats.StreamSource{{Name: "ORIGIN", FilterSubject: "origin.valid"}},
+	}
+	_, err = js.AddStream(cfg)
+	require_NoError(t, err)
+
+	// So does updating an existing stream, and the stored config must not change.
+	for _, filter := range invalid {
+		_, err = js.UpdateStream(&nats.StreamConfig{
+			Name:    "SOURCE",
+			Sources: []*nats.StreamSource{{Name: "ORIGIN", FilterSubject: filter}},
+		})
+		require_Error(t, err, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, filter)))
+	}
+	si, err := js.StreamInfo("SOURCE")
+	require_NoError(t, err)
+	require_Equal(t, si.Config.Sources[0].FilterSubject, "origin.valid")
+}
+
 func TestJetStreamStreamCheckSourcesWithExternal(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

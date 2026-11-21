@@ -2127,6 +2127,9 @@ func (s *Server) checkStreamCfg(config *StreamConfig, acc *Account, pedantic boo
 		if src.FilterSubject != _EMPTY_ && len(src.SubjectTransforms) != 0 {
 			return StreamConfig{}, NewJSSourceMultipleFiltersNotAllowedError()
 		}
+		if src.FilterSubject != _EMPTY_ && !IsValidSubject(src.FilterSubject) {
+			return StreamConfig{}, NewJSSourceInvalidSubjectFilterError(fmt.Errorf("%w %s", ErrBadSubject, src.FilterSubject))
+		}
 
 		for _, tr := range src.SubjectTransforms {
 			if tr.Source != _EMPTY_ && !IsValidSubject(tr.Source) {
