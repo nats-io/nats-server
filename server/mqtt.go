@@ -4832,10 +4832,12 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline) {
 				}
 				return
 			}
-			c.mu.Lock()
-			trace := c.trace
-			c.mu.Unlock()
-			c.mqttEnqueuePubResponse(p.resp, p.pi, trace)
+			if p.resp != 0 {
+				c.mu.Lock()
+				trace := c.trace
+				c.mu.Unlock()
+				c.mqttEnqueuePubResponse(p.resp, p.pi, trace)
+			}
 			p.returnToPool()
 
 		case <-pipe.quitCh:
@@ -5380,7 +5382,20 @@ func (c *client) mqttHandlePubRetain() {
 	// Earlier messages from this read may have left a connection in c.pcd.
 	// It won't flush the store request until we flush it.
 	c.flushClients(0)
-	_, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
+
+	subject := mqttRetainedMsgsStreamSubject + key
+	var err error
+	if pp.hasClientPI() {
+		// QoS1 PUBLISH or QoS2 PUBREL delivery: pipelined, not blocking the readLoop.
+		// Its PUBACK/PUBCOMP is queued behind this entry, so waits for the store.
+		jsa := c.mqtt.sess.jsa
+		p := newMQTTPipelined(0, pp.pi)
+		p.submitStore(jsa, subject, hdr, rmBytes, _EMPTY_)
+		err = c.srv.mqttPipelinePush(c, jsa, p)
+	} else {
+		// QoS0 and wills owe no response, stored synchronously.
+		_, err = asm.jsa.storeMsg(subject, hdr, rmBytes)
+	}
 	if err != nil {
 		c.mu.Lock()
 		acc := c.acc
