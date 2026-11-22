@@ -4513,6 +4513,44 @@ func TestSystemAccountAccConnsUpdateLeafNodeShutdown(t *testing.T) {
 	}
 }
 
+// A call that loaded the system send queue before shutdown can reach the account
+// after clearEventing. That empties a.clients but not a.sysclients, so an account
+// with internal clients, such as the system account, would count below zero and
+// arm its connections timer with nothing left to clear it.
+func TestSystemAccountAccConnsUpdateStaleQueueAfterShutdown(t *testing.T) {
+	s := runServerWithAccounts(t, 2)
+	defer s.Shutdown()
+
+	var accs []*Account
+	s.accounts.Range(func(_, v any) bool {
+		accs = append(accs, v.(*Account))
+		return true
+	})
+	sysAcc := s.SystemAccount()
+	require_True(t, sysAcc != nil)
+	sysAcc.mu.RLock()
+	sysclients := sysAcc.sysclients
+	sysAcc.mu.RUnlock()
+	require_True(t, sysclients > 0)
+
+	// What a racing caller holds: the queue, loaded before shutdown nils it.
+	sendQ := s.sysSendq.Load()
+	require_True(t, sendQ != nil)
+
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	for _, a := range accs {
+		s.pushAccConnsUpdate(a, sendQ, "stale.queue.test")
+		a.mu.RLock()
+		armed := a.ctmr != nil
+		a.mu.RUnlock()
+		if armed {
+			t.Fatalf("Account %q has its connections timer armed after shutdown", a.Name)
+		}
+	}
+}
+
 func BenchmarkConnectCloseParallel(b *testing.B) {
 	for _, accounts := range []int{1, 16} {
 		b.Run(fmt.Sprintf("accounts=%d", accounts), func(b *testing.B) {

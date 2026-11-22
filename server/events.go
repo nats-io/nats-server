@@ -2491,10 +2491,13 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 // pushAccConnsUpdate builds the account's connection event and queues it on
 // sendQ, which must be the system send queue as the caller saw it. It does not
 // need the server lock: it takes no server state, only the account lock. A call
-// that races with shutdown at worst queues an event nobody will send, and cannot
-// leave a.ctmr armed: the count it sets the timer from is taken under a.mu, and
-// clearEventing, which also holds a.mu, empties a.clients, so a count taken after
-// it is zero and stops the timer.
+// that races with shutdown at worst queues an event nobody will send. It must
+// not leave a.ctmr armed, because nothing would clear it once the queue is gone.
+// Shutdown clears the queue pointer before clearEventing takes a.mu, so checking
+// the pointer again under a.mu tells whether cleanup has already run. The count
+// cannot be relied on for that: clearEventing empties a.clients but not
+// a.sysclients, so an account with internal clients, such as the system account,
+// counts below zero afterwards, and a nonzero count arms the timer.
 func (s *Server) pushAccConnsUpdate(a *Account, sendQ *ipQueue[*pubMsg], subj ...string) {
 	if sendQ == nil {
 		return
@@ -2502,6 +2505,10 @@ func (s *Server) pushAccConnsUpdate(a *Account, sendQ *ipQueue[*pubMsg], subj ..
 	// Build event with account name and number of local clients and leafnodes.
 	eid := s.nextEventID()
 	a.mu.Lock()
+	if s.sysSendq.Load() != sendQ {
+		a.mu.Unlock()
+		return
+	}
 	stat := a.statz()
 	m := AccountNumConns{
 		TypedEvent: TypedEvent{
