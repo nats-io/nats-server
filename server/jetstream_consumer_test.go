@@ -10252,6 +10252,95 @@ func TestJetStreamConsumerPullTimeout(t *testing.T) {
 	})
 }
 
+func TestJetStreamConsumerReplicatedPullStatusOrder(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST", Replicas: 3, Storage: nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	data := bytes.Repeat([]byte("x"), 200)
+	for i := 0; i < 3; i++ {
+		_, err := js.Publish("TEST", data)
+		require_NoError(t, err)
+	}
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+
+	for _, test := range []struct {
+		description string
+		status      string
+		batch       int
+		maxBytes    int
+		noWait      bool
+		expires     time.Duration
+	}{
+		{"Batch Completed", "409", 1, 10_000, true, 2 * time.Second},
+		{"Message Size Exceeds MaxBytes", "409", 10, 300, true, 2 * time.Second},
+		{"Request Timeout", "408", 2, 0, false, 200 * time.Millisecond},
+	} {
+		t.Run(test.description, func(t *testing.T) {
+			reply := nc.NewInbox()
+			sub, err := nc.SubscribeSync(reply)
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			req, err := json.Marshal(JSApiConsumerGetNextRequest{
+				Batch: test.batch, MaxBytes: test.maxBytes, Expires: test.expires, NoWait: test.noWait,
+			})
+			require_NoError(t, err)
+
+			o.mu.Lock()
+			o.switching = true
+			o.mu.Unlock()
+			resumeProposals := func() {
+				o.mu.Lock()
+				defer o.mu.Unlock()
+				o.switching = false
+				select {
+				case o.pch <- struct{}{}:
+				default:
+				}
+			}
+			defer resumeProposals()
+
+			require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), reply, req))
+
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if o.waitingDeliveries[reply] == nil || o.waiting.len() != 0 {
+					return errors.New("pull request has not finished queueing")
+				}
+				return nil
+			})
+			_, err = sub.NextMsg(100 * time.Millisecond)
+			require_Error(t, err, nats.ErrTimeout)
+
+			resumeProposals()
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Description"), "")
+			require_Equal(t, string(msg.Data), string(data))
+			status, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, status.Header.Get("Status"), test.status)
+			require_Equal(t, status.Header.Get("Description"), test.description)
+		})
+	}
+}
+
 func TestJetStreamConsumerPullMaxBytes(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()

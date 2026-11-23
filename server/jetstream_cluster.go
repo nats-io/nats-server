@@ -9263,11 +9263,10 @@ func (js *jetStream) applyConsumerMsgOpLocked(o *consumer, buf []byte) (afterUnl
 			o.outq.send(pmsg)
 			delete(o.pendingDeliveries, sseq)
 
-			// Might need to send a request timeout after sending the last replicated delivery.
+			// Send any deferred pull status after the last replicated delivery.
 			if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
-				if wd.pn > 0 || wd.pb > 0 {
-					hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
-					o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+				if wd.hdr != nil {
+					o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, wd.hdr, nil, nil, 0))
 				}
 				wd.recycle()
 				delete(o.waitingDeliveries, dsubj)
