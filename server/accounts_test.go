@@ -3456,6 +3456,66 @@ func BenchmarkNewRouteReply(b *testing.B) {
 	}
 }
 
+// A reply prefix must not be handed out before the wildcard subscription
+// for service import responses is registered, otherwise replies published
+// to it are dropped.
+func TestAccountNewServiceReplyWaitsForSubscription(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	a, err := s.RegisterAccount("SVC_REPLY")
+	require_NoError(t, err)
+
+	a.mu.Lock()
+	require_True(t, a.siReply == nil)
+	ic := a.internalClient()
+	a.mu.Unlock()
+	require_NotNil(t, ic)
+
+	// Block the first caller while it registers the subscription.
+	ic.mu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			ic.mu.Unlock()
+		}
+	}()
+
+	replies := make(chan []byte, 2)
+	go func() { replies <- a.newServiceReply(false) }()
+
+	// Wait for the first caller to have created the prefix.
+	checkFor(t, 2*time.Second, 5*time.Millisecond, func() error {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		if a.siReply == nil {
+			return fmt.Errorf("reply prefix not created yet")
+		}
+		return nil
+	})
+
+	// A second caller must wait, the subscription is not registered yet.
+	go func() { replies <- a.newServiceReply(false) }()
+	select {
+	case r := <-replies:
+		t.Fatalf("Got reply %q before the subscription was registered", r)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	ic.mu.Unlock()
+	unlocked = true
+
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-replies:
+			if res := a.sl.Match(string(r)); len(res.psubs) == 0 {
+				t.Fatalf("No subscription for reply %q", r)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timed out waiting for replies")
+		}
+	}
+}
+
 func TestSamplingHeader(t *testing.T) {
 	test := func(expectSampling bool, h http.Header) {
 		t.Helper()

@@ -68,3 +68,12 @@ another account (which would take that account's locks in unknown order).
 
     cmu -> Account
     cmu -> client
+
+The "siReplyOnce" in the Account serializes the initialization of the service
+reply wildcard prefix and its wildcard subscription for service import responses,
+so that concurrent callers wait until the subscription is registered.
+It must be acquired before the Account and client locks, and neither must be
+held when calling newServiceReply.
+
+    siReplyOnce -> Account
+    siReplyOnce -> client
