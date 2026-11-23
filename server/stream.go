@@ -962,8 +962,9 @@ func (a *Account) addStreamWithAssignment(config *StreamConfig, fsConfig *FileSt
 	ic := s.createInternalJetStreamClient()
 
 	// Work out the stream ingest limits.
-	mlen := s.opts.StreamMaxBufferedMsgs
-	msz := uint64(s.opts.StreamMaxBufferedSize)
+	opts := s.getOpts()
+	mlen := opts.StreamMaxBufferedMsgs
+	msz := uint64(opts.StreamMaxBufferedSize)
 	if mlen == 0 {
 		mlen = streamDefaultMaxQueueMsgs
 	}
@@ -6150,7 +6151,7 @@ func (mset *stream) getDirectMulti(req *JSApiMsgGetRequest, reply string) {
 	mb := req.MaxBytes
 	if mb == 0 && s != nil {
 		// Fill in with the server's MaxPending.
-		mb = int(s.opts.MaxPending)
+		mb = int(s.getOpts().MaxPending)
 	}
 
 	upToSeq := req.UpToSeq
@@ -6267,7 +6268,7 @@ func (mset *stream) getDirectRequest(req *JSApiMsgGetRequest, reply string) {
 	mb := req.MaxBytes
 	if mb == 0 && s != nil {
 		// Fill in with the server's MaxPending.
-		mb = int(s.opts.MaxPending)
+		mb = int(s.getOpts().MaxPending)
 	}
 	// Track what we have sent.
 	var sentBytes int

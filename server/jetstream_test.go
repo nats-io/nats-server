@@ -17960,6 +17960,117 @@ func TestJetStreamDirectGetBatch(t *testing.T) {
 
 }
 
+func TestJetStreamConcurrentReloadStreamOptions(t *testing.T) {
+	conf := createConfFile(t, fmt.Appendf(nil, `
+		listen: 127.0.0.1:-1
+		jetstream: {
+			store_dir: %q
+			max_buffered_msgs: 16
+			max_buffered_size: 1MB
+		}
+	`, t.TempDir()))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "TEST",
+		Subjects:    []string{"foo.*"},
+		Storage:     nats.MemoryStorage,
+		AllowDirect: true,
+	})
+	require_NoError(t, err)
+	_, err = js.Publish("foo.first", []byte("first"))
+	require_NoError(t, err)
+	_, err = js.Publish("foo.second", []byte("second"))
+	require_NoError(t, err)
+
+	startReload := func(t *testing.T) {
+		t.Helper()
+		stop := t.Context().Done()
+		done := make(chan error, 1)
+		go func() {
+			for {
+				if err := s.Reload(); err != nil {
+					done <- err
+					return
+				}
+				select {
+				case <-stop:
+					done <- nil
+					return
+				default:
+				}
+			}
+		}()
+		t.Cleanup(func() {
+			require_NoError(t, <-done)
+		})
+	}
+
+	t.Run("KeyValueGet", func(t *testing.T) {
+		kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: "TEST", Storage: nats.MemoryStorage})
+		require_NoError(t, err)
+		rev, err := kv.PutString("key", "value")
+		require_NoError(t, err)
+
+		startReload(t)
+		for range 100 {
+			entry, err := kv.Get("key")
+			require_NoError(t, err)
+			require_Equal(t, string(entry.Value()), "value")
+			require_Equal(t, entry.Revision(), rev)
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		req  JSApiMsgGetRequest
+	}{
+		{"DirectGetBatch", JSApiMsgGetRequest{Seq: 1, Batch: 2}},
+		{"DirectGetMulti", JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := json.Marshal(test.req)
+			require_NoError(t, err)
+			reply := nats.NewInbox()
+			sub, err := nc.SubscribeSync(reply)
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			subject := fmt.Sprintf(JSDirectMsgGetT, "TEST")
+			startReload(t)
+			for range 100 {
+				require_NoError(t, nc.PublishRequest(subject, reply, req))
+				for i, value := range []string{"first", "second"} {
+					msg, err := sub.NextMsg(time.Second)
+					require_NoError(t, err)
+					require_Equal(t, string(msg.Data), value)
+					require_Equal(t, msg.Header.Get(JSSequence), strconv.Itoa(i+1))
+				}
+				msg, err := sub.NextMsg(time.Second)
+				require_NoError(t, err)
+				require_Equal(t, msg.Header.Get("Status"), "204")
+				require_Equal(t, msg.Header.Get(JSLastSequence), "2")
+			}
+		})
+	}
+
+	t.Run("CreateStream", func(t *testing.T) {
+		acc := s.globalAccount()
+		startReload(t)
+		for range 100 {
+			mset, err := acc.addStream(&StreamConfig{Name: "NEW", Storage: MemoryStorage})
+			require_NoError(t, err)
+			require_Equal(t, mset.msgs.mlen, 16)
+			require_Equal(t, mset.msgs.msz, 1024*1024)
+			require_NoError(t, mset.delete())
+		}
+	})
+}
+
 func TestJetStreamDirectGetBatchMaxBytes(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -18339,6 +18450,12 @@ func TestJetStreamDirectGetMulti(t *testing.T) {
 
 			sub := sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}})
 			checkResponses(sub, 3, p{"foo.foo", 97}, p{"foo.bar", 98}, p{"foo.baz", 99}, eob)
+			// MaxBytes includes the subject and data. Stop after the first result.
+			sub = sendRequest(&JSApiMsgGetRequest{
+				MultiLastFor: []string{"foo.*"},
+				MaxBytes:     len("foo.foo") + len("HELLO-32"),
+			})
+			checkResponses(sub, 3, p{"foo.foo", 97}, eob)
 			// Check with UpToSeq
 			sub = sendRequest(&JSApiMsgGetRequest{MultiLastFor: []string{"foo.*"}, UpToSeq: 3})
 			checkResponses(sub, 3, p{"foo.foo", 1}, p{"foo.bar", 2}, p{"foo.baz", 3}, eob)
