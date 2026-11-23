@@ -14136,6 +14136,10 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			o.streamNumPending()
+			// Caught up messages aren't signaled, so wake a leader that's waiting to deliver.
+			if o.isLeader() && ((o.isPushMode() && o.active) || (o.isPullMode() && !o.waiting.isEmpty())) {
+				o.signalNewMessages()
+			}
 			o.mu.Unlock()
 		}
 		mset.mu.Unlock()
