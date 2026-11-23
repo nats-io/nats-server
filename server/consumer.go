@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -48,6 +49,8 @@ const (
 var (
 	validGroupName = regexp.MustCompile(`^[a-zA-Z0-9/_=-]{1,16}$`)
 )
+
+const jsPullRequestTimeoutT = "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n"
 
 // Headers sent when batch size was completed, but there were remaining bytes.
 const JsPullRequestRemainingBytesT = "NATS/1.0 409 Batch Completed\r\n%s: %d\r\n%s: %d\r\n\r\n"
@@ -474,7 +477,7 @@ type consumer struct {
 	rdc               map[uint64]uint64
 	replies           map[uint64]string
 	pendingDeliveries map[uint64]*jsPubMsg        // Messages that can be delivered after achieving quorum.
-	waitingDeliveries map[string]*waitingDelivery // (Optional) request timeout messages that need to wait for replicated deliveries first.
+	waitingDeliveries map[string]*waitingDelivery // Pull statuses that must wait for replicated deliveries.
 	maxdc             uint64
 	waiting           *waitQueue
 	cfg               ConsumerConfig
@@ -2611,10 +2614,11 @@ func (o *consumer) updateConfig(cfg *ConsumerConfig) error {
 	if cfg.MaxAckPending != o.cfg.MaxAckPending {
 		o.maxp = cfg.MaxAckPending
 		o.signalNewMessages()
-		// If MaxAckPending is lowered, we could have allocated a pending deliveries map of larger size.
-		// Reset it here, so we can shrink the map.
-		if cfg.MaxAckPending < o.cfg.MaxAckPending {
-			o.resetPendingDeliveries()
+		// Shrink the map without discarding in-flight deliveries and their statuses.
+		if cfg.MaxAckPending < o.cfg.MaxAckPending && o.pendingDeliveries != nil {
+			deliveries := make(map[uint64]*jsPubMsg, len(o.pendingDeliveries))
+			maps.Copy(deliveries, o.pendingDeliveries)
+			o.pendingDeliveries = deliveries
 		}
 	}
 	// AckWait
@@ -3127,6 +3131,16 @@ func (o *consumer) addReplicatedQueuedMsg(pmsg *jsPubMsg) {
 		wd.seq = pmsg.seq
 		o.waitingDeliveries[pmsg.dsubj] = wd
 	}
+}
+
+// Send a pull status after the last replicated delivery pending for this reply.
+// Lock should be held.
+func (o *consumer) sendPullStatus(reply string, hdr []byte) {
+	if wd, ok := o.waitingDeliveries[reply]; ok {
+		wd.hdr = hdr
+		return
+	}
+	o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 }
 
 // Lock should be held.
@@ -4111,11 +4125,10 @@ func (wr *waitingRequest) recycle() {
 	}
 }
 
-// Represents an (optional) request timeout that's sent after waiting for replicated deliveries.
+// Tracks the last pending delivery for a reply and its optional pull status.
 type waitingDelivery struct {
 	seq uint64
-	pn  int // Pending messages.
-	pb  int // Pending bytes.
+	hdr []byte
 }
 
 // sync.Pool for waiting deliveries.
@@ -4128,7 +4141,7 @@ var wdPool = sync.Pool{
 // Force a recycle.
 func (wd *waitingDelivery) recycle() {
 	if wd != nil {
-		wd.seq, wd.pn, wd.pb = 0, 0, 0
+		wd.seq, wd.hdr = 0, nil
 		wdPool.Put(wd)
 	}
 }
@@ -4513,7 +4526,7 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 					// notify that we are closing the request.
 					const maxBytesT = "NATS/1.0 409 Message Size Exceeds MaxBytes\r\n%s: %d\r\n%s: %d\r\n\r\n"
 					hdr := fmt.Appendf(nil, maxBytesT, JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
-					o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
+					o.sendPullStatus(wr.reply, hdr)
 					// If we just claimed the pin for this request, release it.
 					if assignedPin {
 						o.unassignPinId()
@@ -4538,19 +4551,8 @@ func (o *consumer) nextWaiting(sz int) *waitingRequest {
 			}
 		} else {
 			// We do check for expiration in `processWaiting`, but it is possible to hit the expiry here, and not there.
-			rdWait := o.replicateDeliveries()
-			if rdWait {
-				// Check if we need to send the timeout after pending replicated deliveries, or can do so immediately.
-				if wd, ok := o.waitingDeliveries[wr.reply]; !ok {
-					rdWait = false
-				} else {
-					wd.pn, wd.pb = wr.n, wr.b
-				}
-			}
-			if !rdWait {
-				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
-				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-			}
+			hdr := fmt.Appendf(nil, jsPullRequestTimeoutT, JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
+			o.sendPullStatus(wr.reply, hdr)
 			// Expiring a request counts as activity for the inactive threshold.
 			if wr.expires.After(o.waiting.last) {
 				o.waiting.last = wr.expires
@@ -5150,25 +5152,11 @@ func (o *consumer) processWaiting(eos bool) (int, int, int, time.Time) {
 		// Check expiration.
 		expires := !wr.expires.IsZero() && now.After(wr.expires)
 		if (eos && wr.noWait) || expires {
-			rdWait := o.replicateDeliveries()
-			if rdWait {
-				// Check if we need to send the timeout after pending replicated deliveries, or can do so immediately.
-				if wd, ok := o.waitingDeliveries[wr.reply]; !ok {
-					rdWait = false
-				} else {
-					wd.pn, wd.pb = wr.n, wr.b
-				}
-				// If we still need to wait for replicated deliveries, remove from waiting list.
-				if rdWait {
-					wr = remove(pre, wr)
-					continue
-				}
-			}
-			// Normally it's a timeout.
-			if expires {
-				hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
-				o.outq.send(newJSPubMsg(wr.reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
-				if wr.expires.After(wq.last) {
+			_, pendingDelivery := o.waitingDeliveries[wr.reply]
+			if expires || pendingDelivery {
+				hdr := fmt.Appendf(nil, jsPullRequestTimeoutT, JSPullRequestPendingMsgs, wr.n, JSPullRequestPendingBytes, wr.b)
+				o.sendPullStatus(wr.reply, hdr)
+				if !pendingDelivery && wr.expires.After(wq.last) {
 					wq.last = wr.expires
 				}
 				wr = remove(pre, wr)
@@ -5653,7 +5641,7 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 		// If given request fulfilled batch size, but there are still pending bytes, send information about it.
 		if wrn <= 0 && wrb > 0 {
 			msg := fmt.Appendf(nil, JsPullRequestRemainingBytesT, JSPullRequestPendingMsgs, wrn, JSPullRequestPendingBytes, wrb)
-			o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, msg, nil, nil, 0))
+			o.sendPullStatus(dsubj, msg)
 		}
 		// Reset our idle heartbeat timer if set.
 		if hb != nil {
