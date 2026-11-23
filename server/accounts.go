@@ -100,6 +100,7 @@ type Account struct {
 	srv          *Server // server this account is registered with (possibly nil)
 	lds          string  // loop detection subject for leaf nodes
 	siReply      []byte  // service reply prefix, will form wildcard subscription.
+	siReplyOnce  sync.Once
 	eventIds     *nuid.NUID
 	eventIdsMu   sync.Mutex
 	defaultPerms *Permissions
@@ -2527,25 +2528,22 @@ func isTrackedReply(reply []byte) bool {
 // Generate a new service reply from the wildcard prefix.
 // FIXME(dlc) - probably do not have to use rand here. about 25ns per.
 func (a *Account) newServiceReply(tracking bool) []byte {
-	a.mu.Lock()
-	s := a.srv
-	rn := rand.Uint64()
-
-	// Check if we need to create the reply here.
-	var createdSiReply bool
-	if a.siReply == nil {
-		a.createRespWildcard()
-		createdSiReply = true
-	}
-	replyPre := a.siReply
-	a.mu.Unlock()
-
-	// If we created the siReply and we are not bound to a leafnode
-	// we need to do the wildcard subscription.
-	if createdSiReply {
+	a.siReplyOnce.Do(func() {
+		a.mu.Lock()
+		if a.siReply == nil {
+			a.createRespWildcard()
+		}
+		replyPre := a.siReply
+		a.mu.Unlock()
 		a.subscribeServiceImportResponse(string(append(replyPre, '>')))
-	}
+	})
 
+	a.mu.RLock()
+	s := a.srv
+	replyPre := a.siReply
+	a.mu.RUnlock()
+
+	rn := rand.Uint64()
 	var b [replyLen]byte
 	for i, l := 0, rn; i < len(b); i++ {
 		b[i] = digits[l%base]
@@ -2556,7 +2554,7 @@ func (a *Account) newServiceReply(tracking bool) []byte {
 	reply = append(reply, replyPre...)
 	reply = append(reply, b[:]...)
 
-	if tracking {
+	if tracking && s != nil {
 		if shash := s.Node(); shash != _EMPTY_ {
 			// Add in our tracking identifier. This allows the metrics to get back to only
 			// this server without needless SUBS/UNSUBS.
