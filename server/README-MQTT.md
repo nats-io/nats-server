@@ -394,7 +394,7 @@ stream.
      - Otherwise, assign the message a new PI (see `trackPublish()` and
        `bumpPI()`) and store it in `sess.cpending` and `sess.pendingPublish`,
        along with the JS reply subject that can be used to remove this pending
-       message from the consumer once it's delivered to the receipient.
+       message from the consumer once it's delivered to the recipient.
      - Decode delivery `topic` from the NATS `subject`.
      - Write (enqueue) outgoing `PUBLISH` packet.
 
