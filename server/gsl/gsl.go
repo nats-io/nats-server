@@ -17,6 +17,8 @@ import (
 	"errors"
 	"strings"
 	"sync"
+
+	"github.com/nats-io/nats-server/v2/internal/subject"
 )
 
 // Sublist is a routing mechanism to handle subject distribution and
@@ -31,7 +33,6 @@ const (
 	fwc     = '>'
 	fwcs    = ">"
 	tsep    = "."
-	btsep   = '.'
 	_EMPTY_ = ""
 )
 
@@ -232,21 +233,10 @@ func singleFilter[T comparable](l *level[T], filter string) (string, bool) {
 
 func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			if i-start == 0 {
-				return
-			}
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	if start >= len(subject) {
+	tokens := tokenizeSubjectIntoSliceNoEmpty(tsa[:0], subject)
+	if tokens == nil {
 		return
 	}
-	tokens = append(tokens, subject[start:])
 
 	if doLock {
 		s.RLock()
@@ -257,21 +247,10 @@ func (s *GenericSublist[T]) match(subject string, cb func(T), doLock bool) {
 
 func (s *GenericSublist[T]) hasInterest(subject string, doLock bool, np *int) bool {
 	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			if i-start == 0 {
-				return false
-			}
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	if start >= len(subject) {
+	tokens := tokenizeSubjectIntoSliceNoEmpty(tsa[:0], subject)
+	if tokens == nil {
 		return false
 	}
-	tokens = append(tokens, subject[start:])
 
 	if doLock {
 		s.RLock()
@@ -552,15 +531,10 @@ func visitLevel[T comparable](l *level[T], depth int) int {
 	return maxDepth
 }
 
-// use similar to append. meaning, the updated slice will be returned
-func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tts = append(tts, subject[start:i])
-			start = i + 1
-		}
-	}
-	tts = append(tts, subject[start:])
-	return tts
+func tokenizeSubjectIntoSlice(tts []string, subj string) []string {
+	return subject.Tokenize(tts, subj)
+}
+
+func tokenizeSubjectIntoSliceNoEmpty(tokens []string, subj string) []string {
+	return subject.TokenizeNoEmpty(tokens, subj)
 }
