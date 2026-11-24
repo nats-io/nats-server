@@ -10267,7 +10267,7 @@ func TestJetStreamConsumerReplicatedPullStatusOrder(t *testing.T) {
 	})
 	require_NoError(t, err)
 	data := bytes.Repeat([]byte("x"), 200)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := js.Publish("TEST", data)
 		require_NoError(t, err)
 	}
@@ -10339,6 +10339,73 @@ func TestJetStreamConsumerReplicatedPullStatusOrder(t *testing.T) {
 			require_Equal(t, status.Header.Get("Description"), test.description)
 		})
 	}
+
+	// Two pull requests on the same reply subject, each ending with a status.
+	t.Run("Shared Reply", func(t *testing.T) {
+		for range 2 {
+			_, err := js.Publish("TEST", data)
+			require_NoError(t, err)
+		}
+
+		reply := nc.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		o.mu.Lock()
+		o.switching = true
+		o.mu.Unlock()
+		resumeProposals := func() {
+			o.mu.Lock()
+			defer o.mu.Unlock()
+			o.switching = false
+			select {
+			case o.pch <- struct{}{}:
+			default:
+			}
+		}
+		defer resumeProposals()
+
+		for _, r := range []JSApiConsumerGetNextRequest{
+			{Batch: 1, MaxBytes: 10_000, Expires: 2 * time.Second},
+			{Batch: 2, Expires: 200 * time.Millisecond},
+		} {
+			req, err := json.Marshal(r)
+			require_NoError(t, err)
+			require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), reply, req))
+		}
+
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			defer o.mu.RUnlock()
+			if wd := o.waitingDeliveries[reply]; wd == nil || len(wd.hdrs) != 2 {
+				return errors.New("pull statuses have not finished queueing")
+			}
+			return nil
+		})
+		_, err = sub.NextMsg(100 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+
+		resumeProposals()
+		for range 2 {
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Description"), "")
+			require_Equal(t, string(msg.Data), string(data))
+		}
+		for _, expected := range []struct {
+			status      string
+			description string
+		}{
+			{"409", "Batch Completed"},
+			{"408", "Request Timeout"},
+		} {
+			status, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, status.Header.Get("Status"), expected.status)
+			require_Equal(t, status.Header.Get("Description"), expected.description)
+		}
+	})
 }
 
 func TestJetStreamConsumerPullMaxBytes(t *testing.T) {
