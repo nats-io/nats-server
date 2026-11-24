@@ -10118,8 +10118,8 @@ func TestJetStreamClusterConsumerPendingDeliveriesOnMaxAckPendingUpdate(t *testi
 	l = len(o.pendingDeliveries)
 	wd := o.waitingDeliveries[reply]
 	var queuedStatus string
-	if wd != nil {
-		queuedStatus = string(wd.hdr)
+	if wd != nil && len(wd.hdrs) == 1 {
+		queuedStatus = string(wd.hdrs[0])
 	}
 	o.mu.Unlock()
 	require_Equal(t, l, 1)

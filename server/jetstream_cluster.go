@@ -7303,8 +7303,8 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 
 					// Send any deferred pull status after the last replicated delivery.
 					if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
-						if wd.hdr != nil {
-							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, wd.hdr, nil, nil, 0))
+						for _, hdr := range wd.hdrs {
+							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 						}
 						wd.recycle()
 						delete(o.waitingDeliveries, dsubj)
