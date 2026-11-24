@@ -3229,7 +3229,8 @@ func (o *consumer) addReplicatedQueuedMsg(pmsg *jsPubMsg) {
 // Lock should be held.
 func (o *consumer) sendPullStatus(reply string, hdr []byte) {
 	if wd, ok := o.waitingDeliveries[reply]; ok {
-		wd.hdr = hdr
+		// Pulls can share a reply subject, so keep every status.
+		wd.hdrs = append(wd.hdrs, hdr)
 		return
 	}
 	o.outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
@@ -4217,10 +4218,10 @@ func (wr *waitingRequest) recycle() {
 	}
 }
 
-// Tracks the last pending delivery for a reply and its optional pull status.
+// Tracks the last pending delivery for a reply and its deferred pull statuses.
 type waitingDelivery struct {
-	seq uint64
-	hdr []byte
+	seq  uint64
+	hdrs [][]byte
 }
 
 // sync.Pool for waiting deliveries.
@@ -4233,7 +4234,7 @@ var wdPool = sync.Pool{
 // Force a recycle.
 func (wd *waitingDelivery) recycle() {
 	if wd != nil {
-		wd.seq, wd.hdr = 0, nil
+		wd.seq, wd.hdrs = 0, nil
 		wdPool.Put(wd)
 	}
 }
