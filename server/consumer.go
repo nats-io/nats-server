@@ -493,6 +493,8 @@ type consumer struct {
 	ptmrEnd           time.Time
 	rdq               []uint64
 	rdqi              avl.SequenceSet
+	udi               avl.SequenceSet // Undelivered push messages, redelivered once interest returns.
+	irnd              bool            // Interest returned, nothing delivered since.
 	rdc               map[uint64]uint64
 	replies           map[uint64]string
 	pendingDeliveries map[uint64]*jsPubMsg        // Messages that can be delivered after achieving quorum.
@@ -1737,6 +1739,7 @@ func (o *consumer) setLeader(isLeader bool, term uint64) error {
 	o.rdc = nil
 	o.rdq = nil
 	o.rdqi.Empty()
+	o.udi.Empty()
 	o.pending = nil
 	o.rsm = nil
 	o.resetPendingDeliveries()
@@ -2422,6 +2425,10 @@ func (o *consumer) watchGWinterest() {
 	if o.hasNoLocalInterest() {
 		o.updateDeliveryInterest(false)
 		if !pa && o.isActive() {
+			o.mu.Lock()
+			o.irnd = true
+			o.redeliverUndelivered()
+			o.mu.Unlock()
 			o.signalNewMessages()
 		}
 	}
@@ -3080,6 +3087,7 @@ func (o *consumer) resetLocalStartingSeq(seq uint64) (bool, error) {
 	o.pending, o.rdc = nil, nil
 	o.rdq = nil
 	o.rdqi.Empty()
+	o.udi.Empty()
 	o.sseq, o.dseq = seq, 1
 	o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	o.ldt, o.lat = time.Time{}, time.Time{}
@@ -5787,6 +5795,12 @@ func (o *consumer) loopAndGatherMsgs(qch chan struct{}) {
 			// inch can be nil on pull-based, but then this will
 			// just block and not fire.
 			o.updateDeliveryInterest(interest)
+			o.mu.Lock()
+			o.irnd = interest
+			if interest {
+				o.redeliverUndelivered()
+			}
+			o.mu.Unlock()
 		case <-qch:
 			return
 		case <-wrExp:
@@ -5974,6 +5988,12 @@ func (o *consumer) deliverMsg(dsubj, ackReply string, pmsg *jsPubMsg, dc uint64,
 
 	dseq := o.dseq
 	o.dseq++
+
+	// Being (re)sent, so it's no longer undelivered.
+	if !o.udi.IsEmpty() {
+		o.udi.Delete(pmsg.seq)
+	}
+	o.irnd = false
 
 	pmsg.dsubj, pmsg.reply, pmsg.o = dsubj, ackReply, o
 	psz := pmsg.size()
@@ -6212,6 +6232,17 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 	if o.isPushMode() {
 		o.active = false
 		checkDeliveryInterest = true
+		// Only redelivered once interest returns, as retrying now could loop if interest remains.
+		// If it already returned after this was sent, retry now. Retrying is a delivery, so it's only once.
+		if _, ok := o.pending[seq]; ok {
+			if o.irnd {
+				if !o.onRedeliverQueue(seq) {
+					o.addToRedeliverQueue(seq)
+				}
+			} else {
+				o.addUndelivered(seq)
+			}
+		}
 	} else if o.pending != nil {
 		// Good chance we did not deliver because no interest so force a check.
 		o.processWaiting(false)
@@ -6235,6 +6266,10 @@ func (o *consumer) didNotDeliver(seq uint64, subj string) {
 	if checkDeliveryInterest {
 		localInterest := !o.hasNoLocalInterest()
 		o.updateDeliveryInterest(localInterest)
+		// Interest could have returned and been signaled before we marked ourselves inactive.
+		if !localInterest && !o.hasNoLocalInterest() {
+			o.updateDeliveryInterest(true)
+		}
 	}
 }
 
@@ -6244,6 +6279,36 @@ func (o *consumer) addToRedeliverQueue(seqs ...uint64) {
 	for _, seq := range seqs {
 		o.rdqi.Insert(seq)
 	}
+}
+
+// Lock should be held.
+func (o *consumer) addUndelivered(seq uint64) {
+	o.udi.Insert(seq)
+	// Drop what's no longer pending, as interest may not return for a while.
+	if o.udi.Size() > 2*len(o.pending) {
+		var acked []uint64
+		o.udi.Range(func(seq uint64) bool {
+			if _, ok := o.pending[seq]; !ok {
+				acked = append(acked, seq)
+			}
+			return true
+		})
+		for _, seq := range acked {
+			o.udi.Delete(seq)
+		}
+	}
+}
+
+// redeliverUndelivered queues up undelivered push messages that are still pending.
+// Lock should be held.
+func (o *consumer) redeliverUndelivered() {
+	o.udi.Range(func(seq uint64) bool {
+		if _, ok := o.pending[seq]; ok && !o.onRedeliverQueue(seq) {
+			o.addToRedeliverQueue(seq)
+		}
+		return true
+	})
+	o.udi.Empty()
 }
 
 // Lock should be held.
@@ -6399,6 +6464,7 @@ func (o *consumer) checkPending() {
 		o.stopAndClearPtmr()
 		o.rdq = nil
 		o.rdqi.Empty()
+		o.udi.Empty()
 		o.pending = nil
 		// Mimic behavior in processAckMsg when pending is empty.
 		o.adflr, o.asflr = o.dseq-1, o.sseq-1
@@ -6509,6 +6575,7 @@ func (o *consumer) reconcileStateWithStream(streamLastSeq uint64) {
 		}
 		o.pending = nil
 		o.rdc = nil
+		o.udi.Empty()
 	}
 
 	// Remove pending entries that are beyond the stream's last sequence
@@ -6852,6 +6919,7 @@ func (o *consumer) purge(sseq uint64, slseq uint64, isWider bool) {
 	// This means we can reset everything at this point.
 	if len(o.pending) == 0 {
 		o.pending, o.rdc = nil, nil
+		o.udi.Empty()
 		o.adflr, o.asflr = o.dseq-1, o.sseq-1
 	}
 
