@@ -2701,3 +2701,19 @@ func TestConfigCheckResolverDirUnderFile(t *testing.T) {
 	require_Error(t, err)
 	require_Contains(t, err.Error(), "not a directory")
 }
+
+func TestConfigCheckResolverDirUnderReadOnlyDir(t *testing.T) {
+	defer func() { FlagSnapshot = nil }()
+	parent := t.TempDir()
+	require_NoError(t, os.Chmod(parent, 0o500))
+	t.Cleanup(func() { os.Chmod(parent, defaultDirPerms) })
+	conf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: full, dir: '%s'}", filepath.Join(parent, "nats", "jwt")))
+	okConf := createConfFile(t, fmt.Appendf(nil, "resolver: {type: full, dir: '%s'}", t.TempDir()))
+
+	for _, args := range [][]string{{"-t", "-c", conf}, {"-t", "-c", okConf, "--test_reload", conf}} {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		_, err := ConfigureOptions(fs, args, PrintServerAndExit, fs.Usage, PrintTLSHelpAndDie)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "dir needs to point to an accessible directory")
+	}
+}

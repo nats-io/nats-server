@@ -1642,7 +1642,13 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 					*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
 					return
 				}
-				if info, err := os.Stat(dir); info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
+				info, err := os.Stat(dir)
+				// The store creates a missing dir, so check mode checks the closest parent that exists.
+				for p := dir; o.CheckConfig && os.IsNotExist(err) && filepath.Dir(p) != p; {
+					p = filepath.Dir(p)
+					info, err = os.Stat(p)
+				}
+				if info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
 					*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
 					return
 				} else if o.CheckConfig && err != nil && !os.IsNotExist(err) {
