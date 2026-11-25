@@ -3947,12 +3947,9 @@ func (o *consumer) moveAckFloor(dseq, sseq uint64) {
 		o.asflr = o.sseq - 1
 	} else if dseq == o.adflr+1 {
 		o.adflr, o.asflr = dseq, sseq
-		for ss := sseq + 1; ss < o.sseq; ss++ {
-			if p, ok := o.pending[ss]; ok {
-				if p.Sequence > 0 {
-					o.adflr, o.asflr = p.Sequence-1, ss-1
-				}
-				break
+		if sseq < o.sseq {
+			if ss, p := nextPending(o.pending, sseq, o.sseq-1); p != nil && p.Sequence > 0 {
+				o.adflr, o.asflr = p.Sequence-1, ss-1
 			}
 		}
 	}
