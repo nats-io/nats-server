@@ -10799,8 +10799,9 @@ func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 	b.StopTimer()
 	b.ReportAllocs()
 	o := testMQTTDefaultOptions()
+	o.StoreDir = b.TempDir()
 	s := RunServer(o)
-	defer testMQTTShutdownServer(s)
+	defer s.Shutdown()
 
 	ci := &mqttConnInfo{clientID: "pub", cleanSess: true}
 	c, br := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
@@ -10851,7 +10852,6 @@ func mqttBenchPubQoS0(b *testing.B, subject, payload string, numSubs int) {
 	}
 	b.StopTimer()
 	c.Close()
-	s.Shutdown()
 }
 
 func mqttBenchConsumeMsgQoS0(c net.Conn, total int64, dch chan<- error) {
@@ -10871,9 +10871,10 @@ func mqttBenchConsumeMsgQoS0(c net.Conn, total int64, dch chan<- error) {
 func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 	b.StopTimer()
 	o := testMQTTDefaultOptions()
+	o.StoreDir = b.TempDir()
 	o.MQTT.MaxAckPending = 0xFFFF
 	s := RunServer(o)
-	defer testMQTTShutdownServer(s)
+	defer s.Shutdown()
 
 	ci := &mqttConnInfo{cleanSess: true}
 	c, br := testMQTTConnect(b, ci, o.MQTT.Host, o.MQTT.Port)
@@ -10960,7 +10961,6 @@ func mqttBenchPubQoS1(b *testing.B, subject, payload string, numSubs int) {
 	}
 	b.StopTimer()
 	c.Close()
-	s.Shutdown()
 }
 
 func mqttBenchConsumeMsgQos1(c net.Conn, total, size int, dch chan<- error) {
