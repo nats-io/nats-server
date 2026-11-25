@@ -8850,7 +8850,11 @@ func (mset *stream) numConsumers() int {
 }
 
 // Lock should be held.
+// The consumers map is written under both the stream lock and clsMu,
+// so it can be read under either one. See lookupConsumer.
 func (mset *stream) setConsumer(o *consumer) {
+	mset.clsMu.Lock()
+	defer mset.clsMu.Unlock()
 	if _, ok := mset.consumers[o.name]; ok {
 		return
 	}
@@ -8859,7 +8863,6 @@ func (mset *stream) setConsumer(o *consumer) {
 		mset.sourcingConsumers++
 	}
 	// Now update consumers list as well
-	mset.clsMu.Lock()
 	mset.cList = append(mset.cList, o)
 	if mset.csl == nil {
 		mset.csl = gsl.NewSublist[*consumer]()
@@ -8867,11 +8870,14 @@ func (mset *stream) setConsumer(o *consumer) {
 	for _, sub := range o.signalSubs() {
 		mset.csl.Insert(sub, o)
 	}
-	mset.clsMu.Unlock()
 }
 
 // Lock should be held.
+// The consumers map is written under both the stream lock and clsMu,
+// so it can be read under either one. See lookupConsumer.
 func (mset *stream) removeConsumer(o *consumer) {
+	mset.clsMu.Lock()
+	defer mset.clsMu.Unlock()
 	if c, ok := mset.consumers[o.name]; !ok || c != o {
 		return
 	}
@@ -8882,7 +8888,6 @@ func (mset *stream) removeConsumer(o *consumer) {
 	}
 
 	// Now update consumers list as well
-	mset.clsMu.Lock()
 	for i, ol := range mset.cList {
 		if ol == o {
 			mset.cList = append(mset.cList[:i], mset.cList[i+1:]...)
@@ -8895,7 +8900,6 @@ func (mset *stream) removeConsumer(o *consumer) {
 			mset.csl.Remove(sub, o)
 		}
 	}
-	mset.clsMu.Unlock()
 }
 
 // swapSigSubs will update signal Subs for a new subject filter.
@@ -8938,9 +8942,13 @@ func (mset *stream) swapSigSubs(o *consumer, newFilters []string) {
 }
 
 // lookupConsumer will retrieve a consumer by name.
+// Uses clsMu instead of the stream lock, so a lookup does not queue
+// behind a stream writer that holds the stream lock while it waits on
+// the store (for example on disk I/O). Consumer info requests, consumer
+// removal in the meta layer and other API handlers call this.
 func (mset *stream) lookupConsumer(name string) *consumer {
-	mset.mu.RLock()
-	defer mset.mu.RUnlock()
+	mset.clsMu.RLock()
+	defer mset.clsMu.RUnlock()
 	return mset.consumers[name]
 }
 
