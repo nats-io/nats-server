@@ -548,6 +548,37 @@ type Pending struct {
 	Timestamp int64
 }
 
+// nextPending returns the first pending message after sseq, up to and including last.
+func nextPending(pending map[uint64]*Pending, sseq, last uint64) (uint64, *Pending) {
+	if sseq >= last {
+		return 0, nil
+	}
+	// Scan the first budget sequences. Keep scanning if the rest of the
+	// range is smaller than the map.
+	budget, limit := uint64(len(pending)), last
+	if gap := last - sseq; gap > budget && gap-budget >= budget {
+		limit = sseq + budget
+	}
+	for sseq < limit {
+		sseq++
+		if p, ok := pending[sseq]; ok {
+			return sseq, p
+		}
+	}
+	if sseq == last {
+		return 0, nil
+	}
+	// Otherwise scan the map instead.
+	var next uint64
+	var p *Pending
+	for seq, entry := range pending {
+		if seq > sseq && seq <= last && (next == 0 || seq < next) {
+			next, p = seq, entry
+		}
+	}
+	return next, p
+}
+
 const (
 	limitsPolicyJSONString    = `"limits"`
 	interestPolicyJSONString  = `"interest"`
