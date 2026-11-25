@@ -3049,14 +3049,9 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 		o.state.AckFloor.Stream = sseq
 
 		if o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
-				if p, ok := o.state.Pending[ss]; ok {
-					if p.Sequence > 0 {
-						o.state.AckFloor.Consumer = p.Sequence - 1
-						o.state.AckFloor.Stream = ss - 1
-					}
-					break
-				}
+			if ss, p := nextPending(o.state.Pending, sseq, o.state.Delivered.Stream); p != nil && p.Sequence > 0 {
+				o.state.AckFloor.Consumer = p.Sequence - 1
+				o.state.AckFloor.Stream = ss - 1
 			}
 		}
 	}

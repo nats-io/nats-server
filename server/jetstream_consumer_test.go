@@ -3774,6 +3774,103 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerAckFloorStreamGap(t *testing.T) {
+	t.Run("ShortRemainingRange", func(t *testing.T) {
+		pending := map[uint64]*Pending{
+			9:  {Sequence: 1},
+			14: {Sequence: 3},
+			15: {Sequence: 4},
+		}
+		seq, p := nextPending(pending, 10, 15)
+		require_Equal(t, seq, uint64(14))
+		require_Equal(t, p, pending[14])
+	})
+
+	for _, test := range []struct {
+		name string
+		next uint64
+		last uint64
+	}{
+		{name: "Adjacent", next: 2, last: 1 << 50},
+		{name: "Dense", next: 3, last: 4},
+		{name: "Filtered", next: 3, last: 1 << 50},
+		{name: "Sparse", next: 1 << 50, last: 1<<50 + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pending := map[uint64]*Pending{
+				test.next: {Sequence: 3},
+				test.last: {Sequence: 4},
+			}
+			want := SequencePair{Consumer: 2, Stream: test.next - 1}
+
+			o := &consumer{dseq: 5, sseq: test.last + 1, pending: pending}
+			o.mu.Lock()
+			o.moveAckFloor(1, 1)
+			o.mu.Unlock()
+			require_Equal(t, SequencePair{Consumer: o.adflr, Stream: o.asflr}, want)
+
+			cfg := ConsumerConfig{AckPolicy: AckExplicit}
+			state := ConsumerState{
+				Delivered: SequencePair{Consumer: 4, Stream: test.last},
+				Pending:   pending,
+			}
+
+			pending[1] = &Pending{Sequence: 1}
+			mem := &consumerMemStore{cfg: cfg, state: state}
+			require_NoError(t, mem.UpdateAcks(1, 1, true))
+			require_Equal(t, mem.state.AckFloor, want)
+
+			pending[1] = &Pending{Sequence: 1}
+			file := &consumerFileStore{cfg: &FileConsumerInfo{ConsumerConfig: cfg}, state: state}
+			require_NoError(t, file.UpdateAcks(1, 1, true))
+			require_Equal(t, file.state.AckFloor, want)
+		})
+	}
+}
+
+func BenchmarkJetStreamConsumerAckFloorScan(b *testing.B) {
+	const pendingCount, acked = 1000, 1000
+	for _, scenario := range []struct {
+		name       string
+		first      uint64
+		last       uint64
+		spacing    uint64
+		searchLast uint64
+	}{
+		{name: "Adjacent", first: 1, last: 99901, spacing: 100},
+		{name: "ShortGap", first: 10, last: 99910, spacing: 100},
+		{name: "AtBudget", first: 1000, last: 100900, spacing: 100},
+		{name: "ShortRemainingGap", first: 1100, last: 1500, spacing: 2},
+		{name: "BeyondBudget", first: 10000, last: 109900, spacing: 100},
+		{name: "NoMatch", first: 10000, last: 109900, spacing: 100, searchLast: 9999},
+		{name: "MillionGap/Match", first: 1_000_000, last: 1_099_900, spacing: 100},
+		{name: "MillionGap/NoMatch", first: 1_000_001, last: 1_099_901, spacing: 100, searchLast: 1_000_000},
+		{name: "HundredMillionGap/Match", first: 100_000_000, last: 100_099_900, spacing: 100},
+		{name: "HundredMillionGap/NoMatch", first: 100_000_001, last: 100_099_901, spacing: 100, searchLast: 100_000_000},
+	} {
+		b.Run(scenario.name, func(b *testing.B) {
+			pending := make(map[uint64]*Pending, pendingCount)
+			p := &Pending{Sequence: 2}
+			for i := range uint64(pendingCount) {
+				seq := scenario.first + scenario.spacing*i
+				if seq <= scenario.last {
+					pending[acked+seq] = p
+				} else {
+					// Keep the rest of the pending entries below the search range.
+					pending[i] = p
+				}
+			}
+			last := scenario.last
+			if scenario.searchLast != 0 {
+				last = scenario.searchLast
+			}
+			for b.Loop() {
+				nextPending(pending, acked, acked+last)
+			}
+		})
+	}
+}
+
 func TestJetStreamConsumerAckAck(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
