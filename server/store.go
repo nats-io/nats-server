@@ -548,6 +548,33 @@ type Pending struct {
 	Timestamp int64
 }
 
+// nextPending returns the first pending message after sseq, up to and including last.
+// It walks at most len(pending) sequences, then scans pending for the rest of the range.
+func nextPending(pending map[uint64]*Pending, sseq, last uint64) (uint64, *Pending) {
+	if sseq >= last {
+		return 0, nil
+	}
+	n := last - sseq
+	walk := min(n, uint64(len(pending)))
+	for end := sseq + walk; sseq < end; {
+		sseq++
+		if p, ok := pending[sseq]; ok {
+			return sseq, p
+		}
+	}
+	if walk == n {
+		return 0, nil
+	}
+	var nss uint64
+	var np *Pending
+	for ss, p := range pending {
+		if ss > sseq && ss <= last && (nss == 0 || ss < nss) {
+			nss, np = ss, p
+		}
+	}
+	return nss, np
+}
+
 const (
 	limitsPolicyJSONString    = `"limits"`
 	interestPolicyJSONString  = `"interest"`

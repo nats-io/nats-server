@@ -1938,3 +1938,71 @@ func TestStoreConsumerAckAllWithRedeliveredDeliverySequence(t *testing.T) {
 		},
 	)
 }
+
+func TestStoreNextPending(t *testing.T) {
+	pending := map[uint64]*Pending{5: {1, 0}, 7: {2, 0}, 1_000_000: {3, 0}}
+	for _, test := range []struct {
+		sseq, last, nss uint64
+	}{
+		// Walks the whole sequence range.
+		{0, 3, 0},
+		{5, 6, 0},
+		{5, 7, 7},
+		// Finds the entry within len(pending) sequences.
+		{4, 99, 5},
+		{5, 99, 7},
+		{6, 99, 7},
+		// Scans pending after walking len(pending) sequences.
+		{0, 5, 5},
+		{0, 99, 5},
+		{7, 999_999, 0},
+		{7, 1_000_000, 1_000_000},
+		{1_000_000, 1_999_999, 0},
+		// Walks up to the last sequence without wrapping.
+		{math.MaxUint64 - 3, math.MaxUint64, 0},
+		// Empty range.
+		{5, 5, 0},
+		{6, 5, 0},
+	} {
+		nss, p := nextPending(pending, test.sseq, test.last)
+		require_Equal(t, nss, test.nss)
+		if test.nss == 0 {
+			require_True(t, p == nil)
+		} else {
+			require_Equal(t, p, pending[test.nss])
+		}
+	}
+	nss, p := nextPending(nil, 0, 100)
+	require_Equal(t, nss, 0)
+	require_True(t, p == nil)
+}
+
+func TestStoreConsumerAckExplicitFloorWithSparsePending(t *testing.T) {
+	testAllStoreAllPermutations(
+		t, false,
+		StreamConfig{Name: "zzz", Subjects: []string{"foo"}},
+		func(t *testing.T, fs StreamStore) {
+			o, err := fs.ConsumerStore("o", time.Time{}, &ConsumerConfig{AckPolicy: AckExplicit})
+			require_NoError(t, err)
+			defer o.Stop()
+
+			// Pending messages are far apart, walking the sequence range would never finish.
+			ts := time.Now().UnixNano()
+			require_NoError(t, o.UpdateDelivered(1, 1, 1, ts))
+			require_NoError(t, o.UpdateDelivered(2, 1<<40, 1, ts))
+			require_NoError(t, o.UpdateDelivered(3, 1<<41, 1, ts))
+
+			require_NoError(t, o.UpdateAcks(1, 1, true))
+			state, err := o.State()
+			require_NoError(t, err)
+			require_Equal(t, state.AckFloor, SequencePair{Consumer: 1, Stream: 1<<40 - 1})
+			require_Len(t, len(state.Pending), 2)
+
+			require_NoError(t, o.UpdateAcks(2, 1<<40, true))
+			state, err = o.State()
+			require_NoError(t, err)
+			require_Equal(t, state.AckFloor, SequencePair{Consumer: 2, Stream: 1<<41 - 1})
+			require_Len(t, len(state.Pending), 1)
+		},
+	)
+}

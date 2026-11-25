@@ -3774,6 +3774,23 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerMoveAckFloorWithSparsePending(t *testing.T) {
+	// Pending messages are far apart, walking the sequence range would never finish.
+	o := &consumer{dseq: 4, sseq: 1<<41 + 1, pending: map[uint64]*Pending{
+		1 << 40: {Sequence: 2},
+		1 << 41: {Sequence: 3},
+	}}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.moveAckFloor(1, 1)
+	require_Equal(t, SequencePair{Consumer: o.adflr, Stream: o.asflr}, SequencePair{Consumer: 1, Stream: 1<<40 - 1})
+
+	delete(o.pending, 1<<40)
+	o.moveAckFloor(2, 1<<40)
+	require_Equal(t, SequencePair{Consumer: o.adflr, Stream: o.asflr}, SequencePair{Consumer: 2, Stream: 1<<41 - 1})
+}
+
 func TestJetStreamConsumerAckAck(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
