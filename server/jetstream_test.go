@@ -27451,7 +27451,7 @@ func TestJetStreamHealthzConsumerCheckConcurrentMapRace(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Writer: repeatedly create and delete consumers in the stream's map,
-	// holding mset.mu just like setConsumer/removeConsumer.
+	// through setConsumer/removeConsumer like the server does.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -27464,11 +27464,12 @@ func TestJetStreamHealthzConsumerCheckConcurrentMapRace(t *testing.T) {
 			}
 			name := fmt.Sprintf("C-%d", i)
 			i++
+			o := &consumer{name: name}
 			mset.mu.Lock()
-			mset.consumers[name] = &consumer{name: name}
+			mset.setConsumer(o)
 			mset.mu.Unlock()
 			mset.mu.Lock()
-			delete(mset.consumers, name)
+			mset.removeConsumer(o)
 			mset.mu.Unlock()
 		}
 	}()

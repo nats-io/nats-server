@@ -15045,9 +15045,6 @@ func TestJetStreamConsumerLookupNotBlockedByStreamLock(t *testing.T) {
 	}
 
 	ci, err := js.ConsumerInfo("TEST", "CONSUMER", nats.MaxWait(2*time.Second))
-	if err != nil {
-		unlock()
-		t.Fatalf("Consumer info blocked behind the stream lock: %v", err)
-	}
+	require_NoError(t, err)
 	require_Equal(t, ci.Name, "CONSUMER")
 }
