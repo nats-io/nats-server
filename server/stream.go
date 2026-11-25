@@ -7464,6 +7464,18 @@ func (mset *stream) processJetStreamMsgWithBatch(subject, reply string, hdr, msg
 	}
 
 	if err != nil {
+		if !isClustered && isMirror && sourced {
+			switch err {
+			case ErrMaxMsgs, ErrMaxBytes, ErrMaxMsgsPerSubject:
+				// Keep the upstream sequence even when the mirror discards the message.
+				skipped, skipErr := store.SkipMsg(seq)
+				if skipErr == nil {
+					mset.lseq = skipped
+					return nil
+				}
+				err = skipErr
+			}
+		}
 		if isPermissionError(err) {
 			// messages in block cache could be lost in the worst case.
 			// In the clustered mode it is very highly unlikely as a result of replication.

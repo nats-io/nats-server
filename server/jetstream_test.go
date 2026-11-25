@@ -11496,6 +11496,54 @@ func TestJetStreamSourceStartSeqRespectedOnEmptyOrigin(t *testing.T) {
 	})
 }
 
+func TestJetStreamMirrorDiscardNewCanContinueAfterMaxMsgs(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "ORIGIN", Subjects: []string{"origin.*"}})
+	require_NoError(t, err)
+
+	const maxMsgs = 40
+	for i := range maxMsgs + 10 {
+		_, err := js.Publish(fmt.Sprintf("origin.%d", i), []byte("initial"))
+		require_NoError(t, err)
+	}
+	ack, err := js.Publish("origin.0", []byte("updated"))
+	require_NoError(t, err)
+	require_Equal(t, ack.Sequence, maxMsgs+11)
+
+	_, err = js.AddStream(&nats.StreamConfig{
+		Name:              "MIRROR",
+		Mirror:            &nats.StreamSource{Name: "ORIGIN"},
+		MaxMsgs:           maxMsgs,
+		MaxMsgsPerSubject: 1,
+		Discard:           nats.DiscardNew,
+		Storage:           nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	checkFor(t, 3*time.Second, 20*time.Millisecond, func() error {
+		msg, err := js.GetLastMsg("MIRROR", "origin.0")
+		if err != nil {
+			return err
+		}
+		if string(msg.Data) != "updated" {
+			return fmt.Errorf("mirror still has %q at sequence %d", msg.Data, msg.Sequence)
+		}
+		require_Equal(t, msg.Sequence, ack.Sequence)
+		return nil
+	})
+	si, err := js.StreamInfo("MIRROR")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, maxMsgs)
+	require_Equal(t, si.Mirror.Lag, 0)
+	_, err = js.GetMsg("MIRROR", maxMsgs+1)
+	require_Error(t, err, nats.ErrMsgNotFound)
+}
+
 func TestJetStreamMirrorStripExpectedHeaders(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
