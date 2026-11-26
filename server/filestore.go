@@ -2575,12 +2575,6 @@ func (fs *fileStore) recoverPerMessageState() error {
 						fs.ttls.Add(seq, int64(expires))
 					}
 				}
-				if schedRecover && seq >= schedSeq {
-					if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
-						// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
-						fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
-					}
-				}
 				if sourcesRecover && seq >= sourcesSeq {
 					if ss := sliceHeader(JSStreamSource, msg.hdr); len(ss) > 0 {
 						streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
@@ -2597,6 +2591,10 @@ func (fs *fileStore) recoverPerMessageState() error {
 						}
 					}
 				}
+			}
+			// Apply every message like when it was stored, a fired schedule then keeps its next time.
+			if schedRecover && seq >= schedSeq {
+				fs.trackMsgSchedule(seq, msg.subj, msg.hdr, msg.ts)
 			}
 			mb.finishedWithCache()
 			mb.mu.Unlock()
@@ -5505,6 +5503,30 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	return nil
 }
 
+// Applies a stored message to the message scheduling state, when storing or recovering it.
+// Returns whether it's a schedule or a message the schedule produced.
+// Lock should be held.
+func (fs *fileStore) trackMsgSchedule(seq uint64, subj string, hdr []byte, ts int64) bool {
+	var tracked bool
+	if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
+		// Copy the subject, as it's kept and could point into a reused cache.
+		fs.scheduling.add(seq, copyString(subj), schedule.UnixNano())
+		tracked = true
+	} else if getMessageScheduler(hdr) == _EMPTY_ {
+		fs.scheduling.removeSubject(subj)
+	}
+
+	// Check for a repeating schedule and update such that it triggers again.
+	if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
+		scheduler := getMessageScheduler(hdr)
+		if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
+			fs.scheduling.update(scheduler, next.UnixNano())
+			tracked = true
+		}
+	}
+	return tracked
+}
+
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
 func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) (err error) {
@@ -5687,23 +5709,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 
 	// Message scheduling.
-	if fs.scheduling != nil {
-		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
-			fs.scheduling.add(seq, subj, schedule.UnixNano())
-			fs.lmb.mu.Lock()
-			fs.lmb.schedules++
-			fs.lmb.mu.Unlock()
-		} else if getMessageScheduler(hdr) == _EMPTY_ {
-			fs.scheduling.removeSubject(subj)
-		}
-
-		// Check for a repeating schedule and update such that it triggers again.
-		if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
-			scheduler := getMessageScheduler(hdr)
-			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
-				fs.scheduling.update(scheduler, next.UnixNano())
-			}
-		}
+	if fs.scheduling != nil && fs.trackMsgSchedule(seq, subj, hdr, ts) {
+		fs.lmb.mu.Lock()
+		fs.lmb.schedules++
+		fs.lmb.mu.Unlock()
 	}
 
 	// Track sources.
@@ -8803,7 +8812,8 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 var (
 	natsHeaderKeyPrefix = []byte("Nats-")
 	ttlHeaderKey        = []byte(JSMessageTTL + ":")
-	scheduleHeaderKey   = []byte(JSSchedulePattern + ":")
+	// Covers both schedules and the messages they produce, which carry Nats-Scheduler and Nats-Schedule-Next.
+	scheduleHeaderKey = []byte(JSSchedulePattern)
 )
 
 // hasTTLAndScheduleHeaders reports whether hdr has a Nats-TTL or Nats-Schedule key.
