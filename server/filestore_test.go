@@ -3741,6 +3741,33 @@ func TestFileStoreStreamFailToRollBug(t *testing.T) {
 	})
 }
 
+func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
+	// A valid header with ack floor and delivered sequences.
+	header := func() []byte {
+		b := []byte{magic, 2}
+		for range 4 {
+			b = binary.AppendUvarint(b, 1)
+		}
+		return b
+	}
+	for _, test := range []struct {
+		title string
+		buf   []byte
+	}{
+		// Would otherwise allocate for a huge number of pending entries.
+		{title: "Pending", buf: binary.AppendUvarint(header(), 1<<62)},
+		// Would otherwise allocate and loop for a huge number of redelivered entries.
+		{title: "Redelivered", buf: binary.AppendUvarint(append(header(), 0), 1<<62)},
+		// The second redelivered entry is cut off.
+		{title: "RedeliveredShort", buf: append(binary.AppendUvarint(append(header(), 0), 2), 1, 1, 1, 0x80)},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			_, err := decodeConsumerState(test.buf)
+			require_Error(t, err, errCorruptState)
+		})
+	}
+}
+
 // We had a case where a consumer state had a redelivered record that had seq of 0.
 // This was causing the server to panic.
 func TestFileStoreBadConsumerState(t *testing.T) {

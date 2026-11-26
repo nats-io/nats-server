@@ -14937,6 +14937,10 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 
 	// We have additional stuff.
 	if numPending := readLen(); numPending > 0 {
+		// Each entry takes at least two bytes, so a larger count is corrupt.
+		if numPending > uint64(len(buf)-bi)/2 {
+			return nil, errCorruptState
+		}
 		mints := readTimeStamp()
 		state.Pending = make(map[uint64]*Pending, numPending)
 		for i := 0; i < int(numPending); i++ {
@@ -14971,9 +14975,17 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 
 	// We have redelivered entries here.
 	if numRedelivered := readLen(); numRedelivered > 0 {
+		// Each entry takes at least two bytes, so a larger count is corrupt.
+		if numRedelivered > uint64(len(buf)-bi)/2 {
+			return nil, errCorruptState
+		}
 		state.Redelivered = make(map[uint64]uint64, numRedelivered)
 		for i := 0; i < int(numRedelivered); i++ {
-			if seq, n := readSeq(), readCount(); seq > 0 && n > 0 {
+			seq, n := readSeq(), readCount()
+			if bi == -1 {
+				return nil, errCorruptState
+			}
+			if seq > 0 && n > 0 {
 				// Adjust seq back.
 				seq += state.AckFloor.Stream
 				state.Redelivered[seq] = n
