@@ -1061,6 +1061,155 @@ func TestNotificationOnPackWalk(t *testing.T) {
 	}
 }
 
+func TestDirStoreTombstoneChecksum(t *testing.T) {
+	newStore := func(t *testing.T) *DirJWTStore {
+		store, err := NewExpiringDirJWTStore(t.TempDir(), false, true, RenameDeleted, 0, 0, true, 0, nil)
+		require_NoError(t, err)
+		store.deleted = func(string) {}
+		t.Cleanup(store.Close)
+		return store
+	}
+	newAccount := func(t *testing.T, store *DirJWTStore) (string, string) {
+		t.Helper()
+		accKey, err := nkeys.CreateAccount()
+		require_NoError(t, err)
+		pubKey, err := accKey.PublicKey()
+		require_NoError(t, err)
+		return pubKey, createTestAccount(t, store, 0, accKey)
+	}
+	tombPath := func(store *DirJWTStore, pubKey string) string {
+		return filepath.Join(store.directory, pubKey+fileExtension+deletedSuffix)
+	}
+	requireExists := func(t *testing.T, path string, exists bool) {
+		t.Helper()
+		_, err := os.Stat(path)
+		require_Equal(t, err == nil, exists)
+	}
+	// Deletes a new account, and returns its tombstone and the tombstone with the delete rolled back.
+	deleteAccount := func(t *testing.T, store *DirJWTStore, deletedAt int64) (string, string, string, string) {
+		t.Helper()
+		pubKey, theJWT := newAccount(t, store)
+		require_NoError(t, store.delete(pubKey, deletedAt, nil))
+		tomb, err := os.ReadFile(tombPath(store, pubKey))
+		require_NoError(t, err)
+		deleted, err := decodeTombstone(pubKey, string(tomb))
+		require_NoError(t, err)
+		require_Equal(t, deleted.Subject, pubKey)
+
+		// Rolling back the delete still decodes, only the checksum catches it.
+		deleted.IssuedAt = 0
+		rolledBack, err := encodeTombstone(pubKey, deleted)
+		require_NoError(t, err)
+		corrupt := rolledBack[:strings.LastIndexByte(rolledBack, '.')] + string(tomb[bytes.LastIndexByte(tomb, '.'):])
+		return pubKey, theJWT, string(tomb), corrupt
+	}
+
+	// The deleted JWT isn't accepted again.
+	t.Run("RollbackRejected", func(t *testing.T) {
+		a := newStore(t)
+		pubKey, theJWT, _, corrupt := deleteAccount(t, a, time.Now().Unix())
+		require_NoError(t, os.WriteFile(tombPath(a, pubKey), []byte(corrupt), defaultFilePerms))
+		require_Error(t, a.SaveAcc(pubKey, theJWT), errCorruptTombstone)
+	})
+
+	// Not even when re-issued after the delete, until a delete replaces the tombstone.
+	t.Run("ReissueOverCorrupt", func(t *testing.T) {
+		a := newStore(t)
+		pubKey, theJWT := newAccount(t, a)
+		// The tombstone of a delete before the JWT was issued.
+		deleted := jwt.NewAccountClaims(pubKey)
+		deleted.IssuedAt = time.Now().Unix() - 10
+		tomb, err := encodeTombstone(pubKey, deleted)
+		require_NoError(t, err)
+		require_NoError(t, os.WriteFile(tombPath(a, pubKey), []byte(tomb), defaultFilePerms))
+		require_NoError(t, a.SaveAcc(pubKey, theJWT))
+
+		// Its last checksum character changed.
+		last := byte('A')
+		if tomb[len(tomb)-1] == 'A' {
+			last = 'B'
+		}
+		corrupt := tomb[:len(tomb)-1] + string(last)
+		require_NoError(t, os.WriteFile(tombPath(a, pubKey), []byte(corrupt), defaultFilePerms))
+		require_Error(t, a.SaveAcc(pubKey, theJWT), errCorruptTombstone)
+	})
+
+	// The account's JWT in a pack is held back, but the rest of the pack still applies.
+	t.Run("MergeHoldsBackOnlyThatAccount", func(t *testing.T) {
+		a, b := newStore(t), newStore(t)
+		pubKey, theJWT, _, corrupt := deleteAccount(t, a, time.Now().Unix())
+		require_NoError(t, os.WriteFile(tombPath(a, pubKey), []byte(corrupt), defaultFilePerms))
+		laterKey, laterJWT := newAccount(t, b)
+		require_Error(t, a.Merge(pubKey+"|"+theJWT+"\n"+laterKey+"|"+laterJWT), errCorruptTombstone)
+		requireExists(t, filepath.Join(a.directory, pubKey+fileExtension), false)
+		requireExists(t, filepath.Join(a.directory, laterKey+fileExtension), true)
+	})
+
+	// A peer's delete repairs the corrupt tombstone.
+	t.Run("PeerDeleteRepairs", func(t *testing.T) {
+		a := newStore(t)
+		pubKey, _, tomb, corrupt := deleteAccount(t, a, time.Now().Unix())
+		require_NoError(t, os.WriteFile(tombPath(a, pubKey), []byte(corrupt), defaultFilePerms))
+		require_NoError(t, a.Merge(packTombstonePrefix+pubKey+"|"+tomb))
+		repaired, err := os.ReadFile(tombPath(a, pubKey))
+		require_NoError(t, err)
+		_, err = decodeTombstone(pubKey, string(repaired))
+		require_NoError(t, err)
+	})
+
+	// A peer rejects the corrupt tombstone, but still applies the rest of the pack.
+	t.Run("PeerRejectsCorrupt", func(t *testing.T) {
+		a, b := newStore(t), newStore(t)
+		pubKey, _, _, corrupt := deleteAccount(t, a, time.Now().Unix())
+		extraKey, extraJWT := newAccount(t, a)
+		pack := packTombstonePrefix + pubKey + "|" + corrupt + "\n" + extraKey + "|" + extraJWT
+		require_Error(t, b.Merge(pack), errCorruptTombstone)
+		requireExists(t, tombPath(b, pubKey), false)
+		requireExists(t, filepath.Join(b.directory, extraKey+fileExtension), true)
+	})
+
+	// The tombstone of another account fails the checksum.
+	t.Run("OtherAccountsTombstone", func(t *testing.T) {
+		a := newStore(t)
+		_, _, tomb, _ := deleteAccount(t, a, time.Now().Unix())
+		otherKey, otherJWT := newAccount(t, a)
+		require_NoError(t, os.WriteFile(tombPath(a, otherKey), []byte(tomb), defaultFilePerms))
+		require_Error(t, a.SaveAcc(otherKey, otherJWT), errCorruptTombstone)
+	})
+
+	// Older servers renamed the deleted JWT itself, its signature makes it a valid tombstone.
+	t.Run("LegacySignedJWT", func(t *testing.T) {
+		a, b := newStore(t), newStore(t)
+		oldKey, oldJWT := newAccount(t, a)
+		oldFn := filepath.Join(a.directory, oldKey+fileExtension)
+		require_NoError(t, os.Rename(oldFn, oldFn+deletedSuffix))
+		err := a.SaveAcc(oldKey, oldJWT)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "must be re-issued")
+
+		// A peer takes it as a delete, and rejects the JWT from then on.
+		require_NoError(t, b.Merge(packTombstonePrefix+oldKey+"|"+oldJWT))
+		requireExists(t, tombPath(b, oldKey), true)
+		err = b.SaveAcc(oldKey, oldJWT)
+		require_Error(t, err)
+		require_Contains(t, err.Error(), "must be re-issued")
+	})
+
+	// Unless the signature doesn't match.
+	t.Run("LegacyBadSignature", func(t *testing.T) {
+		a := newStore(t)
+		oldKey, oldJWT := newAccount(t, a)
+		pi := strings.IndexByte(oldJWT, '.') + 5
+		flipped := byte('A')
+		if oldJWT[pi] == 'A' {
+			flipped = 'B'
+		}
+		corruptJWT := oldJWT[:pi] + string(flipped) + oldJWT[pi+1:]
+		require_NoError(t, os.WriteFile(tombPath(a, oldKey), []byte(corruptJWT), defaultFilePerms))
+		require_Error(t, a.SaveAcc(oldKey, oldJWT), errCorruptTombstone)
+	})
+}
+
 func TestDirStoreMergeKeepsDeleted(t *testing.T) {
 	newStore := func() *DirJWTStore {
 		store, err := NewExpiringDirJWTStore(t.TempDir(), false, true, RenameDeleted, 0, 0, true, 0, nil)

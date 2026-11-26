@@ -19,6 +19,7 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/minio/highwayhash"
 	"github.com/nats-io/nkeys"
 
 	"github.com/nats-io/jwt/v2" // only used to decode, not for storage
@@ -44,6 +46,9 @@ const (
 
 // Returned if a delete is ignored, since the JWT was re-issued after it.
 var errJWTReissued = errors.New("jwt was re-issued after the delete")
+
+// Returned if a tombstone doesn't match its checksum or can't be decoded.
+var errCorruptTombstone = errors.New("jwt tombstone is corrupt")
 
 // validatePathExists checks that the provided path exists and is a dir if requested
 func validatePathExists(path string, dir bool) (string, error) {
@@ -343,6 +348,9 @@ func (store *DirJWTStore) packWalk(maxJWTs int, tombstones bool, cb func(partial
 // Merge is destructive in the sense that it doesn't check if the JWT
 // is newer or anything like that.
 func (store *DirJWTStore) Merge(pack string) error {
+	// A corrupt tombstone only holds back its own account, not the rest of the pack.
+	// It's still reported once the rest is applied.
+	var tombErr error
 	newJWTs := strings.Split(pack, "\n")
 	for _, line := range newJWTs {
 		if line == _EMPTY_ { // ignore blank lines
@@ -357,13 +365,17 @@ func (store *DirJWTStore) Merge(pack string) error {
 			return fmt.Errorf("key to merge is not a valid public account key")
 		}
 		if !tombstone {
-			if err := store.saveIfNewer(pubKey, split[1]); err != nil {
+			if err := store.saveIfNewer(pubKey, split[1]); err == errCorruptTombstone {
+				tombErr = err
+			} else if err != nil {
 				return err
 			}
 			continue
 		}
 		// Apply a delete that a peer sent during sync.
-		if deleted := decodeUnverified(split[1]); deleted.Subject != pubKey {
+		if deleted, err := decodeTombstone(pubKey, split[1]); err != nil {
+			tombErr = err
+		} else if deleted.Subject != pubKey {
 			return fmt.Errorf("jwt subject nkey and provided nkey do not match")
 		} else if store.deleteType != NoDelete {
 			// A peer's delete doesn't apply to a JWT re-issued after it.
@@ -372,7 +384,7 @@ func (store *DirJWTStore) Merge(pack string) error {
 			}
 		}
 	}
-	return nil
+	return tombErr
 }
 
 func (store *DirJWTStore) Reload() error {
@@ -511,7 +523,11 @@ func (store *DirJWTStore) delete(publicKey string, deletedAt int64, deleted *jwt
 		deleted = live
 	}
 	if store.deleteType == RenameDeleted {
-		tomb, err := readUnverified(name + deletedSuffix)
+		tomb, err := readTombstone(name+deletedSuffix, publicKey)
+		if err == errCorruptTombstone {
+			// Replace a corrupt tombstone, so a peer's delete repairs it.
+			tomb, err = nil, nil
+		}
 		if err != nil {
 			return err
 		}
@@ -524,13 +540,10 @@ func (store *DirJWTStore) delete(publicKey string, deletedAt int64, deleted *jwt
 				deleted = &jwt.AccountClaims{}
 			}
 			deleted.Subject, deleted.IssuedAt = publicKey, deletedAt
-			// The tombstone has no signature, since a deleted JWT must be re-issued anyway.
-			header, _ := json.Marshal(jwt.Header{Type: jwt.TokenTypeJwt, Algorithm: jwt.AlgorithmNkey})
-			payload, err := json.Marshal(deleted)
+			tombstone, err := encodeTombstone(publicKey, deleted)
 			if err != nil {
 				return err
 			}
-			tombstone := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + "."
 			if err := os.MkdirAll(filepath.Dir(name), defaultDirPerms); err != nil {
 				return err
 			}
@@ -550,7 +563,61 @@ func (store *DirJWTStore) delete(publicKey string, deletedAt int64, deleted *jwt
 	return nil
 }
 
-// readUnverified reads the account claims of a JWT or tombstone, without verifying a signature.
+// encodeTombstone encodes the deleted claims as a JWT without a signature.
+// A deleted JWT must be re-issued anyway, so a checksum keyed by the account takes its place.
+func encodeTombstone(publicKey string, deleted *jwt.AccountClaims) (string, error) {
+	header, _ := json.Marshal(jwt.Header{Type: jwt.TokenTypeJwt, Algorithm: jwt.AlgorithmNkey})
+	payload, err := json.Marshal(deleted)
+	if err != nil {
+		return _EMPTY_, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	return token + "." + tombstoneChecksum(publicKey, token), nil
+}
+
+// decodeTombstone decodes the deleted claims of a tombstone after verifying its checksum.
+func decodeTombstone(publicKey, tombstone string) (*jwt.AccountClaims, error) {
+	i := strings.LastIndexByte(tombstone, '.')
+	if i < 0 || tombstone[i+1:] != tombstoneChecksum(publicKey, tombstone[:i]) {
+		// Older servers renamed the deleted JWT itself, its signature then proves it's intact.
+		if claims, err := jwt.DecodeAccountClaims(tombstone); err == nil && claims.Subject == publicKey {
+			return claims, nil
+		}
+		return nil, errCorruptTombstone
+	}
+	parts := strings.Split(tombstone[:i], ".")
+	if len(parts) != 2 {
+		return nil, errCorruptTombstone
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, errCorruptTombstone
+	}
+	var claims jwt.AccountClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, errCorruptTombstone
+	}
+	return &claims, nil
+}
+
+func tombstoneChecksum(publicKey, token string) string {
+	sum := highwayhash.Sum64([]byte(token), stateChecksumKey(publicKey))
+	return base64.RawURLEncoding.EncodeToString(binary.LittleEndian.AppendUint64(nil, sum))
+}
+
+// readTombstone reads the deleted claims of the account's tombstone.
+// It returns nil if the file doesn't exist.
+func readTombstone(path, publicKey string) (*jwt.AccountClaims, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return decodeTombstone(publicKey, string(data))
+}
+
+// readUnverified reads the account claims of a JWT, without verifying a signature.
 // It returns nil if the file doesn't exist, and empty claims if it can't be decoded.
 func readUnverified(path string) (*jwt.AccountClaims, error) {
 	data, err := os.ReadFile(path)
@@ -594,7 +661,7 @@ func (store *DirJWTStore) save(publicKey string, theJWT string) error {
 		}
 	}
 	// Only a re-issued JWT can replace a delete.
-	if deleted, err := store.isDeleted(path, decodeUnverified(theJWT).IssuedAt); err != nil {
+	if deleted, err := store.isDeleted(path, publicKey, decodeUnverified(theJWT).IssuedAt); err != nil {
 		store.Unlock()
 		return err
 	} else if deleted {
@@ -654,7 +721,7 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 		}
 	}
 	// Don't bring back an account that was deleted after this JWT was issued.
-	if deleted, err := store.isDeleted(path, decodeUnverified(theJWT).IssuedAt); err != nil || deleted {
+	if deleted, err := store.isDeleted(path, publicKey, decodeUnverified(theJWT).IssuedAt); err != nil || deleted {
 		store.Unlock()
 		return err
 	}
@@ -671,8 +738,8 @@ func (store *DirJWTStore) saveIfNewer(publicKey string, theJWT string) error {
 
 // isDeleted returns whether the tombstone next to path covers a JWT issued at issuedAt.
 // A tombstone covers JWTs issued at or before the delete.
-func (store *DirJWTStore) isDeleted(path string, issuedAt int64) (bool, error) {
-	tomb, err := readUnverified(path + deletedSuffix)
+func (store *DirJWTStore) isDeleted(path, publicKey string, issuedAt int64) (bool, error) {
+	tomb, err := readTombstone(path+deletedSuffix, publicKey)
 	if err != nil || tomb == nil {
 		return false, err
 	}
