@@ -4065,8 +4065,7 @@ func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
 				} else {
 					le.PutUint32(buf[0:], le.Uint32(buf[0:])&^rbit)
 				}
-				hashRecord(hh, buf[:msgHdrSize], buf[msgHdrSize:rl-recordHashSize], slen, hasHeaders, record)
-				copy(buf[rl-recordHashSize:rl], hh.Sum(nil))
+				le.PutUint64(buf[rl-recordHashSize:rl], hashRecord(hh, key[:], buf[:rl-recordHashSize], slen, hasHeaders, record))
 				require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
 			}
 			load := func() (*StoreMsg, error) {
@@ -18138,8 +18137,7 @@ func TestFileStoreIndexCacheBufCountsTTLAndScheduleHeaders(t *testing.T) {
 	// Reseal it, so the checksum passes and only the header length is wrong.
 	rl := le.Uint32(buf[second:]) &^ (hbit | rbit)
 	rec := buf[second : second+rl-recordHashSize]
-	hashRecord(mb.hh, rec[:msgHdrSize], rec[msgHdrSize:], int(slen), true, true)
-	copy(buf[second+rl-recordHashSize:], mb.hh.Sum(nil))
+	le.PutUint64(buf[second+rl-recordHashSize:], hashRecord(mb.hh, mb.hkey, rec, int(slen), true, true))
 	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
 	mb.clearCacheAndOffset()
 	require_NoError(t, mb.loadMsgsWithLock())
@@ -20301,8 +20299,7 @@ func TestFileStoreMixedRecordFormats(t *testing.T) {
 			rec := buf[index : index+rlen]
 			le.PutUint32(rec, rl^rbit)
 			slen := int(le.Uint16(rec[20:]))
-			hashRecord(hh, rec[:msgHdrSize], rec[msgHdrSize:rlen-recordHashSize], slen, hasHeaders, record)
-			copy(rec[rlen-recordHashSize:], hh.Sum(nil))
+			le.PutUint64(rec[rlen-recordHashSize:], hashRecord(hh, key[:], rec[:rlen-recordHashSize], slen, hasHeaders, record))
 			resealed++
 		}
 		index += rlen
