@@ -1465,7 +1465,7 @@ func (js *jetStream) setupMetaGroup() error {
 			// To track possible configuration changes, responsible for an altered value of cfg.Observer,
 			// set extension state to undetermined.
 			ps.domainExt = extUndetermined
-			if err := writePeerState(s.diskIOSemaphore(), storeDir, ps); err != nil {
+			if err := writePeerState(s.diskIOSemaphore(), storeDir, defaultMetaGroupName, ps); err != nil {
 				fs.Stop()
 				return err
 			}
