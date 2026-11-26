@@ -6003,7 +6003,7 @@ func TestNoRaceEncodeConsumerStateBug(t *testing.T) {
 			Pending:   map[uint64]*Pending{1: &pending},
 		}
 		buf := encodeConsumerState(&state)
-		_, err := decodeConsumerState(buf)
+		_, err := decodeConsumerState(buf, nil)
 		require_NoError(t, err)
 	}
 }

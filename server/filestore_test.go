@@ -2716,7 +2716,7 @@ func TestFileStoreConsumerEncodeDecodeRedelivered(t *testing.T) {
 	state.Redelivered = map[uint64]uint64{122: 3, 144: 8}
 	buf := encodeConsumerState(state)
 
-	rstate, err := decodeConsumerState(buf)
+	rstate, err := decodeConsumerState(buf, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2741,7 +2741,7 @@ func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
 	}
 	buf := encodeConsumerState(state)
 
-	rstate, err := decodeConsumerState(buf)
+	rstate, err := decodeConsumerState(buf, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3328,7 +3328,7 @@ func TestFileStoreConsumerSkippedStateWriteKicksFlusher(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		state, err := decodeConsumerState(buf)
+		state, err := decodeConsumerState(buf, oc.skey)
 		if err != nil {
 			return err
 		}
@@ -3742,7 +3742,7 @@ func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
 		{title: "RedeliveredShort", buf: append(binary.AppendUvarint(append(header(), 0), 2), 1, 1, 1, 0x80)},
 	} {
 		t.Run(test.title, func(t *testing.T) {
-			_, err := decodeConsumerState(test.buf)
+			_, err := decodeConsumerState(test.buf, nil)
 			require_Error(t, err, errCorruptState)
 		})
 	}
@@ -3752,9 +3752,84 @@ func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
 // This was causing the server to panic.
 func TestFileStoreBadConsumerState(t *testing.T) {
 	bs := []byte("\x16\x02\x01\x01\x03\x02\x01\x98\xf4\x8a\x8a\f\x01\x03\x86\xfa\n\x01\x00\x01")
-	if cs, err := decodeConsumerState(bs); err != nil || cs == nil {
+	if cs, err := decodeConsumerState(bs, nil); err != nil || cs == nil {
 		t.Fatalf("Expected to not throw error, got %v and %+v", err, cs)
 	}
+}
+
+func TestFileStoreConsumerStateFileChecksum(t *testing.T) {
+	dir := t.TempDir()
+	ccfg := &ConsumerConfig{AckPolicy: AckExplicit}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+	o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+	require_NoError(t, err)
+	require_NoError(t, o.Stop())
+
+	now := time.Now().UnixNano()
+	state := &ConsumerState{
+		Delivered:   SequencePair{Consumer: 22, Stream: 22},
+		AckFloor:    SequencePair{Consumer: 11, Stream: 11},
+		Pending:     map[uint64]*Pending{15: {Sequence: 15, Timestamp: now}, 18: {Sequence: 18, Timestamp: now}},
+		Redelivered: map[uint64]uint64{15: 2},
+	}
+	key := stateChecksumKey("zzz/o22")
+	// Newer servers flag the version, and follow the encoding with a checksum.
+	file := func(key []byte) []byte {
+		b := encodeConsumerState(state)
+		b[1] |= consumerStateChecksummed
+		return appendStateChecksum(b, key)
+	}
+	fn := filepath.Join(dir, consumerDir, "o22", consumerState)
+	reload := func(t *testing.T, buf []byte) (*ConsumerState, error) {
+		t.Helper()
+		require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+		o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+		if err != nil {
+			return nil, err
+		}
+		defer o.Stop()
+		return o.State()
+	}
+	requireState := func(t *testing.T, buf []byte) {
+		t.Helper()
+		cs, err := reload(t, buf)
+		require_NoError(t, err)
+		require_Equal(t, cs.Delivered, state.Delivered)
+		require_Equal(t, cs.AckFloor, state.AckFloor)
+		require_Len(t, len(cs.Pending), len(state.Pending))
+		require_Equal(t, cs.Redelivered[15], 2)
+	}
+
+	t.Run("Read", func(t *testing.T) { requireState(t, file(key)) })
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	// Read without the flag, the checksum is left over and rejected.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, file(key), func(b []byte) (*ConsumerState, error) { return decodeConsumerState(b, key) })
+	})
+
+	// The state of another consumer fails the checksum.
+	t.Run("OtherConsumer", func(t *testing.T) {
+		_, err := reload(t, file(stateChecksumKey("zzz/o33")))
+		require_Error(t, err, errStateChecksumMismatch)
+	})
+
+	// Only a state file has a checksum, other encoded state has no key.
+	t.Run("NilKey", func(t *testing.T) {
+		_, err := decodeConsumerState(file(key), nil)
+		require_Error(t, err, errCorruptState)
+	})
+
+	// Older servers wrote version 2 without a checksum.
+	t.Run("LegacyV2", func(t *testing.T) { requireState(t, encodeConsumerState(state)) })
+
+	// Their state fills the file exactly too, so a changed version byte isn't read as another version.
+	t.Run("LegacyV2Trailing", func(t *testing.T) {
+		_, err := reload(t, append(encodeConsumerState(state), 0))
+		require_Error(t, err, errCorruptState)
+	})
 }
 
 func TestFileStoreStateChecksum(t *testing.T) {

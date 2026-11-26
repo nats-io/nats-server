@@ -13938,6 +13938,7 @@ type consumerFileStore struct {
 	odir    string
 	ifn     string
 	hh      *highwayhash.Digest64
+	skey    []byte // Key for the state file checksum.
 	state   ConsumerState
 	fch     chan struct{}
 	qch     chan struct{}
@@ -13990,6 +13991,8 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 	o.hh = hh
+	// The state file checksum uses the same key.
+	o.skey = key[:]
 
 	// Check for encryption.
 	if o.prf != nil {
@@ -14051,7 +14054,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 			}
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
 			if buf, err := os.ReadFile(o.ifn); err == nil {
-				if _, err := decodeConsumerState(buf); err == nil {
+				if _, err := decodeConsumerState(buf, o.skey); err == nil {
 					state, err := o.encryptState(buf)
 					if err != nil {
 						return nil, err
@@ -14759,7 +14762,7 @@ func checkConsumerHeader(hdr []byte) (uint8, error) {
 	if len(hdr) < 2 || hdr[0] != magic {
 		return 0, errCorruptState
 	}
-	version := hdr[1]
+	version := hdr[1] &^ consumerStateChecksummed
 	switch version {
 	case 1, 2:
 		return version, nil
@@ -14855,7 +14858,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 		}
 	}
 
-	state, err = decodeConsumerState(buf)
+	state, err = decodeConsumerState(buf, o.skey)
 	if err != nil {
 		return nil, err
 	}
@@ -14900,11 +14903,26 @@ func (o *consumerFileStore) loadState() error {
 	}
 }
 
+// Flags the version of a consumer state file, its encoded state is followed by a checksum.
+// Keeps the file's checksum apart from the encoding's version, which is also replicated.
+// It's the version byte's high bit, so encoding versions go up to 127.
+const consumerStateChecksummed = 0x80
+
 // Decode consumer state.
-func decodeConsumerState(buf []byte) (*ConsumerState, error) {
+// The key verifies the checksum of a state file, encoded state elsewhere passes nil.
+func decodeConsumerState(buf, key []byte) (*ConsumerState, error) {
 	version, err := checkConsumerHeader(buf)
 	if err != nil {
 		return nil, err
+	}
+	if buf[1]&consumerStateChecksummed != 0 {
+		// Only a state file has a checksum.
+		if key == nil {
+			return nil, errCorruptState
+		}
+		if buf, err = verifyStateChecksum(buf, key); err != nil {
+			return nil, err
+		}
 	}
 
 	bi := hdrLen
@@ -15021,6 +15039,10 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 		}
 	}
 
+	// A state file must be filled exactly, older ones have no checksum to catch a truncation.
+	if key != nil && bi != len(buf) {
+		return nil, errCorruptState
+	}
 	return state, nil
 }
 

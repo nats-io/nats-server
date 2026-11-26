@@ -4853,7 +4853,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	validateConsumerState := func(snap *snapshot) {
 		t.Helper()
 		require_Equal(t, snap.lastIndex, maxApplied)
-		state, err := decodeConsumerState(snap.data)
+		state, err := decodeConsumerState(snap.data, nil)
 		require_NoError(t, err)
 		require_Equal(t, state.Delivered.Consumer, 1)
 		require_Equal(t, state.Delivered.Stream, 1)
