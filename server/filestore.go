@@ -259,6 +259,7 @@ type msgBlock struct {
 	lsts        int64
 	llseq       uint64
 	hh          *highwayhash.Digest64
+	hkey        []byte // Key of hh, for one-shot record checksums.
 	ecache      elastic.Pointer[cache]
 	cache       *cache
 	cloads      uint64
@@ -1264,6 +1265,7 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 
 	key := sha256.Sum256(fs.hashKeyForBlock(index))
 	mb.hh, _ = highwayhash.NewDigest64(key[:])
+	mb.hkey = key[:]
 	return mb
 }
 
@@ -1856,7 +1858,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
-	var hb [highwayhash.Size64]byte
 
 	updateLast := func(seq uint64, ts int64) {
 		// The sequence needs to only ever move up.
@@ -1909,10 +1910,8 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		}
 
 		// Check for checksum failures before additional processing.
-		data := buf[index+msgHdrSize : index+rl]
-		hashRecord(mb.hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
-		checksum := mb.hh.Sum(hb[:0])
-		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
+		rec, checksum := buf[index:index+rl-recordHashSize], buf[index+rl-recordHashSize:index+rl]
+		if hashRecord(mb.hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
 			err = errBadMsg{mb.mfn, "invalid checksum"}
 			if allowTruncate {
 				if err = truncate(index); err != nil {
@@ -5418,7 +5417,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
-	mb.hh = hh
+	mb.hh, mb.hkey = hh, key[:]
 
 	fs.dios.acquire()
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
@@ -7095,12 +7094,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	b.Write(hdr[:])
 	b.Write(data)
 
-	// Calculate hash.
-	hashRecord(mb.hh, hdr[:], data, 0, false, true)
-	var hb [highwayhash.Size64]byte
-	checksum := mb.hh.Sum(hb[:0])
-	// Write to msg record.
-	b.Write(checksum)
+	// Calculate hash and write it to the msg record.
+	b.Write(le.AppendUint64(nil, hashRecord(mb.hh, mb.hkey, b.Bytes(), 0, false, true)))
 
 	// Update both cache and disk.
 	nbytes := b.Bytes()
@@ -8034,10 +8029,8 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	mb.cache.buf = append(mb.cache.buf, msg...)
 
 	// Calculate hash.
-	record := mb.cache.buf[start:]
-	hashRecord(mb.hh, record[:msgHdrSize], record[msgHdrSize:], len(subj), hasHeaders, true)
-	checksum := mb.hh.Sum(mb.lchk[:0:highwayhash.Size64])
-	copy(mb.lchk[0:], checksum)
+	le.PutUint64(mb.lchk[:], hashRecord(mb.hh, mb.hkey, mb.cache.buf[start:], len(subj), hasHeaders, true))
+	checksum := mb.lchk[:]
 
 	// Update write through cache.
 	// Write to msg record.
@@ -8884,7 +8877,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var last uint64
 	// Lowest message stored, can be below our first.
 	rfseq := mbFirstSeq
-	var hb [highwayhash.Size64]byte
 
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
@@ -8911,8 +8903,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		}
 		// Verify the record before using its sequence, subject or headers.
 		rec, checksum := buf[index:index+rl-recordHashSize], buf[index+rl-recordHashSize:index+rl]
-		hashRecord(mb.hh, rec[:msgHdrSize], rec[msgHdrSize:], slen, hasHeaders, record)
-		if !bytes.Equal(mb.hh.Sum(hb[:0]), checksum) {
+		if hashRecord(mb.hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
 			mb.fs.warn("indexCacheBuf invalid checksum in %s: index %d", mb.mfn, index)
 			return errCorruptState
 		}
@@ -9461,24 +9452,25 @@ const (
 	tbit = 1 << 62
 )
 
-// hashRecord hashes a message record for its checksum.
-// The data is everything after the record header, up to the checksum.
-func hashRecord(hh *highwayhash.Digest64, hdr, data []byte, slen int, hasHeaders, record bool) {
-	hh.Reset()
+// hashRecord returns the checksum of a message record, using hh or its key.
+// The record is everything up to the checksum.
+func hashRecord(hh *highwayhash.Digest64, key, rec []byte, slen int, hasHeaders, record bool) uint64 {
 	// The whole record, including its length, flags, subject length and header length.
+	// It's contiguous, so a one-shot hash avoids the digest's overhead.
 	if record {
-		hh.Write(hdr)
-		hh.Write(data)
-		return
+		return highwayhash.Sum64(rec, key)
 	}
 	// Older records only cover the sequence, timestamp, subject, headers and message.
-	hh.Write(hdr[4:20])
+	data := rec[msgHdrSize:]
+	hh.Reset()
+	hh.Write(rec[4:20])
 	hh.Write(data[:slen])
 	if hasHeaders {
 		hh.Write(data[slen+4:])
 	} else {
 		hh.Write(data[slen:])
 	}
+	return hh.Sum64()
 }
 
 // Will do a lookup from cache.
@@ -9695,9 +9687,8 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
 	if hh != nil {
-		hashRecord(hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
-		var hb [highwayhash.Size64]byte
-		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
+		rec, checksum := buf[:int(rl)-recordHashSize], buf[int(rl)-recordHashSize:rl]
+		if hashRecord(hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
 			return nil, errBadMsg{mb.mfn, "invalid checksum"}
 		}
 	}
