@@ -12669,6 +12669,32 @@ func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaCorruptPeerStateFails(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.JetStream = true
+	o.StoreDir = t.TempDir()
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	// A peer state file whose checksum doesn't match.
+	js := s.getJetStream()
+	sd := filepath.Join(js.config.StoreDir, s.SystemAccount().Name, defaultStoreDirName, defaultMetaGroupName)
+	require_NoError(t, os.MkdirAll(sd, defaultDirPerms))
+	buf := append(peerStateMagic[:], peerStateVersion)
+	buf = append(buf, encodePeerState(&peerState{[]string{"abc"}, 3, extUndetermined})...)
+	buf = appendStateChecksum(buf, stateChecksumKey(defaultMetaGroupName))
+	buf[peerStateHdrLen] ^= 1
+	psf := filepath.Join(sd, peerStateFile)
+	require_NoError(t, os.WriteFile(psf, buf, defaultFilePerms))
+
+	// The meta group fails to start instead of bootstrapping over it.
+	require_Error(t, js.setupMetaGroup(), errCorruptPeers)
+	got, err := os.ReadFile(psf)
+	require_NoError(t, err)
+	require_Equal(t, string(got), string(buf))
+}
+
 func TestJetStreamClusterScaleDownNotBlockedByUnaddedPeer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R4S", 4)
 	defer c.shutdown()

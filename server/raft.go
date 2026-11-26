@@ -483,7 +483,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, rerr error) {
 	restorePeerState := func(n *raft) error {
-		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
+		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 		if err != nil {
 			return err
 		}
@@ -6066,7 +6066,8 @@ func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
 	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
 }
 
-func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) {
+// The group's name is the key for the checksum.
+func readPeerState(dios *diskIOSemaphore, sd, group string) (ps *peerState, err error) {
 	dios.acquire()
 	buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
 	dios.release()
@@ -6074,8 +6075,44 @@ func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) 
 	if err != nil {
 		return nil, err
 	}
-	return decodePeerState(buf)
+	return decodePeerStateFile(buf, stateChecksumKey(group))
 }
+
+// Decodes a peer state file, the key verifies its checksum.
+func decodePeerStateFile(buf, key []byte) (*peerState, error) {
+	// Newer files have a header and checksum, older ones don't.
+	checksummed := len(buf) >= peerStateHdrLen && buf[0] == peerStateMagic[0] && buf[1] == peerStateMagic[1]
+	if checksummed {
+		if buf[2] != peerStateVersion {
+			return nil, errCorruptPeers
+		}
+		b, err := verifyStateChecksum(buf, key)
+		if err != nil {
+			return nil, errCorruptPeers
+		}
+		buf = b[peerStateHdrLen:]
+	}
+	ps, err := decodePeerState(buf)
+	if err != nil {
+		return nil, err
+	}
+	// The peer state fills the file exactly, older files have no checksum to catch a truncation.
+	// The oldest servers didn't write the domain extension.
+	if n := peerStateBufSize(ps); len(buf) != n && (checksummed || len(buf) != n-2) {
+		return nil, errCorruptPeers
+	}
+	return ps, nil
+}
+
+const (
+	// Magic and version, followed by the encoded peer state and a checksum.
+	peerStateHdrLen  = 3
+	peerStateVersion = 1
+)
+
+// "PS" for peer state, marking a file with a header and checksum.
+// An older file would need a cluster size of at least 21328 to start with these bytes.
+var peerStateMagic = [2]byte{'P', 'S'}
 
 const (
 	commitFile = "commit.idx"

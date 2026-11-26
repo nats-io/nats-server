@@ -172,6 +172,67 @@ func TestNRGAppendEntryDecodeTruncatedEntryLength(t *testing.T) {
 	require_Error(t, err, errBadAppendEntry)
 }
 
+func TestNRGPeerStateFileVersion1(t *testing.T) {
+	ps := &peerState{knownPeers: []string{"12345678", "abcdefgh"}, clusterSize: 2, domainExt: extNotExtended}
+	// Newer servers add a header and checksum.
+	file := func(group string) []byte {
+		b := []byte{peerStateMagic[0], peerStateMagic[1], peerStateVersion}
+		b = append(b, encodePeerState(ps)...)
+		return appendStateChecksum(b, stateChecksumKey(group))
+	}
+	key := stateChecksumKey("TEST")
+	enc := encodePeerState(ps)
+
+	t.Run("Read", func(t *testing.T) {
+		dps, err := decodePeerStateFile(file("TEST"), key)
+		require_NoError(t, err)
+		require_True(t, reflect.DeepEqual(dps, ps))
+	})
+
+	// Older servers wrote no header or checksum, the oldest also no domain extension.
+	t.Run("Legacy", func(t *testing.T) {
+		for _, legacy := range [][]byte{enc, enc[:len(enc)-2]} {
+			dps, err := decodePeerStateFile(legacy, key)
+			require_NoError(t, err)
+			require_Equal(t, dps.clusterSize, 2)
+			require_Equal(t, len(dps.knownPeers), 2)
+		}
+	})
+
+	// Their state fills the file exactly, anything else is corrupt.
+	t.Run("LegacyTrailing", func(t *testing.T) {
+		_, err := decodePeerStateFile(append(enc, 0), key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// Newer files always have the domain extension, so they can't leave it out.
+	t.Run("NoDomainExt", func(t *testing.T) {
+		b := []byte{peerStateMagic[0], peerStateMagic[1], peerStateVersion}
+		b = append(b, enc[:len(enc)-2]...)
+		b = appendStateChecksum(b, key)
+		_, err := decodePeerStateFile(b, key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// The peer state of another group fails the checksum.
+	t.Run("OtherGroup", func(t *testing.T) {
+		_, err := decodePeerStateFile(file("OTHER"), key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	t.Run("UnknownVersion", func(t *testing.T) {
+		unknown := file("TEST")
+		unknown[2]++
+		_, err := decodePeerStateFile(unknown, key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, file("TEST"), func(b []byte) (*peerState, error) { return decodePeerStateFile(b, key) })
+	})
+}
+
 func TestNRGPeerStateDecodeTruncated(t *testing.T) {
 	ps := &peerState{knownPeers: []string{"12345678", "abcdefgh"}, clusterSize: 2}
 	buf := encodePeerState(ps)
@@ -8903,7 +8964,7 @@ func TestNRGBootstrapExpectedClusterSize(t *testing.T) {
 			// allPeersKnown=false forces the estimate path.
 			require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
 
-			ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
+			ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 			require_NoError(t, err)
 			require_Equal(t, ps.clusterSize, test.expected)
 		})
@@ -10157,7 +10218,7 @@ func TestNRGMembershipChangeTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 3)
 	require_Equal(t, n.qn, 2)
-	ps, err := readPeerState(n.dios, n.sd)
+	ps, err := readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_True(t, slices.Contains(ps.knownPeers, peer))
 	require_Equal(t, ps.clusterSize, 3)
@@ -10189,7 +10250,7 @@ func TestNRGMembershipChangeTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 2)
 	require_Equal(t, n.qn, 2)
-	ps, err = readPeerState(n.dios, n.sd)
+	ps, err = readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_False(t, slices.Contains(ps.knownPeers, peer))
 	require_Equal(t, ps.clusterSize, 2)
@@ -10231,7 +10292,7 @@ func TestNRGPeerStateTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 3)
 	require_Equal(t, n.qn, 2)
-	ps, err := readPeerState(n.dios, n.sd)
+	ps, err := readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_True(t, slices.Contains(ps.knownPeers, peer))
 

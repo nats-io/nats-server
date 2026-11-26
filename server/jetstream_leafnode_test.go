@@ -1454,7 +1454,7 @@ func TestJetStreamLeafNodeNotExtendedPeerStateInMetaDir(t *testing.T) {
 	for _, s := range lc.servers {
 		meta := s.getJetStream().getMetaGroup().(*raft)
 		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
-			ps, err := readPeerState(s.diskIOSemaphore(), meta.sd)
+			ps, err := readPeerState(s.diskIOSemaphore(), meta.sd, meta.group)
 			if err != nil {
 				return err
 			}
