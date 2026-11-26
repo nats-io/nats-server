@@ -354,11 +354,18 @@ func (a *stateAdder) stop() {
 
 // Restart the group
 func (a *stateAdder) restart() {
+	if err := a.tryRestart(); err != nil {
+		panic(err)
+	}
+}
+
+// tryRestart restarts like restart, but returns an error if the node can't start.
+func (a *stateAdder) tryRestart() error {
 	a.Lock()
 	defer a.Unlock()
 
 	if a.n.State() != Closed {
-		return
+		return nil
 	}
 
 	// The filestore is stopped as well, so need to extract the parts to recreate it.
@@ -374,7 +381,7 @@ func (a *stateAdder) restart() {
 		a.cfg.Log, err = newMemStore(&ms.cfg)
 	}
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	// Must reset in-memory state.
@@ -382,12 +389,14 @@ func (a *stateAdder) restart() {
 	// already applied an entry. So, the sum must only be updated based on append entries or snapshots.
 	a.sum = 0
 
-	a.n, err = a.s.startRaftNode(globalAccountName, a.cfg, pprofLabels{})
+	n, err := a.s.startRaftNode(globalAccountName, a.cfg, pprofLabels{})
 	if err != nil {
-		panic(err)
+		return err
 	}
+	a.n = n
 	// Finally restart the driver.
 	go smLoop(a)
+	return nil
 }
 
 // Total for the adder state machine.

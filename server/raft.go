@@ -389,6 +389,7 @@ var (
 	errAlreadyLeader     = errors.New("raft: already leader")
 	errNilCfg            = errors.New("raft: no config given")
 	errCorruptPeers      = errors.New("raft: corrupt peer state")
+	errCorruptTermVote   = errors.New("raft: corrupt term and vote")
 	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
 	errEntryStoreFailed  = errors.New("raft: could not store entry to WAL")
 	errNodeClosed        = errors.New("raft: node is closed")
@@ -571,6 +572,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	if term, vote, err := n.readTermVote(); err == nil && term > 0 {
 		n.term = term
 		n.vote = vote
+	} else if err != nil && !os.IsNotExist(err) {
+		// Without our term and vote we could vote twice in the same term.
+		return nil, err
 	}
 
 	// Can't recover snapshots if memory based since wal will be reset.
@@ -6143,7 +6147,16 @@ const (
 	termVoteFile = "tav.idx"
 	termLen      = 8 // uint64
 	termVoteLen  = idLen + termLen
+	// Magic and version, followed by the term, the vote and a checksum.
+	// The vote is zero-padded if empty.
+	termVoteHdrLen  = 3
+	termVoteVersion = 1
+	termVoteFileLen = termVoteHdrLen + termVoteLen + checksumSize
 )
+
+// "TV" for term and vote, marking a file with a header and checksum.
+// Older files have no header, only their shorter length tells them apart.
+var termVoteMagic = [2]byte{'T', 'V'}
 
 // Writes out our term & vote outside of a specific raft context.
 func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) error {
@@ -6164,17 +6177,27 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 	if err != nil {
 		return 0, noVote, err
 	}
-	if len(buf) < termLen {
-		// Not enough bytes for the uint64 below, so avoid a panic.
-		return 0, noVote, nil
-	}
 	le := binary.LittleEndian
-	term = le.Uint64(buf[0:])
-	if len(buf) < termVoteLen {
-		return term, noVote, nil
+	switch len(buf) {
+	case termVoteFileLen:
+		if buf[0] != termVoteMagic[0] || buf[1] != termVoteMagic[1] || buf[2] != termVoteVersion {
+			return 0, noVote, errCorruptTermVote
+		}
+		if buf, err = verifyStateChecksum(buf, stateChecksumKey(n.group)); err != nil {
+			return 0, noVote, errCorruptTermVote
+		}
+		buf = buf[termVoteHdrLen:]
+		return le.Uint64(buf), string(bytes.TrimRight(buf[termLen:], "\x00")), nil
+	case termVoteLen:
+		// Older servers wrote no checksum.
+		return le.Uint64(buf), string(buf[termLen:]), nil
+	case termLen:
+		// Older servers also left out an empty vote.
+		return le.Uint64(buf), noVote, nil
+	default:
+		// The file is always written whole, any other length lost our term or vote.
+		return 0, noVote, errCorruptTermVote
 	}
-	voted = string(buf[8:])
-	return term, voted, nil
 }
 
 // Lock should be held.
