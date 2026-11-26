@@ -9211,7 +9211,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error
 
 		if e.Type == EntrySnapshot {
 			// Always apply, an older snapshot is ignored by the store.
-			state, err := decodeConsumerState(e.Data)
+			state, err := decodeConsumerState(e.Data, nil)
 			if err != nil {
 				if mset, node := o.streamAndNode(); mset != nil && node != nil {
 					s := js.srv

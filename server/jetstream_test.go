@@ -12325,7 +12325,7 @@ func TestJetStreamServerEncryption(t *testing.T) {
 				state, err := os.ReadFile(filepath.Join(sdir, "obs", "dlc", "o.dat"))
 				require_NoError(t, err)
 
-				if _, err := decodeConsumerState(state); err == nil {
+				if _, err := decodeConsumerState(state, nil); err == nil {
 					t.Fatalf("Expected decoding consumer state to fail")
 				}
 			}
@@ -17272,7 +17272,7 @@ func TestJetStreamDanglingMessageAutoCleanup(t *testing.T) {
 			buf, err := os.ReadFile(cstore)
 			require_NoError(t, err)
 
-			state, err := decodeConsumerState(buf)
+			state, err := decodeConsumerState(buf, stateChecksumKey("TEST/dlc"))
 			require_NoError(t, err)
 
 			// Update from 10 for delivered and ack to 90.

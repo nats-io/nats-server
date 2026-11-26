@@ -4946,7 +4946,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	validateConsumerState := func(snap *snapshot) {
 		t.Helper()
 		require_Equal(t, snap.lastIndex, maxApplied)
-		state, err := decodeConsumerState(snap.data)
+		state, err := decodeConsumerState(snap.data, nil)
 		require_NoError(t, err)
 		require_Equal(t, state.Delivered.Consumer, 1)
 		require_Equal(t, state.Delivered.Stream, 1)
@@ -13165,7 +13165,7 @@ func TestJetStreamClusterSwitchToReplicatedSendsSnapshotAfterDrainingLog(t *test
 	ack := append(binary.AppendUvarint(binary.AppendUvarint([]byte{byte(updateAcksOp)}, 2), 2), 1)
 	state, err := decodeConsumerState(switchWithUncommitted(cn, ack, func(apply func() error) error {
 		return cl.getJetStream().switchConsumerToReplicated(o, cn, cn.Term(), true, apply)
-	}))
+	}), nil)
 	require_NoError(t, err)
 	require_Len(t, len(state.Pending), 2)
 	require_True(t, state.Pending[2] == nil)
