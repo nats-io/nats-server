@@ -480,7 +480,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
-func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (*raft, error) {
+func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, rerr error) {
 	restorePeerState := func(n *raft) error {
 		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
 		if err != nil {
@@ -542,11 +542,18 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		n.t = defaultRaftTransport(s, n)
 	}
 
+	// Release what was set up if we fail, the run goroutine won't be there to do it.
+	defer func() {
+		if rerr != nil {
+			n.shutdown()
+			n.releaseResources()
+		}
+	}()
+
 	// Setup our internal subscriptions for proposals, votes and append entries.
 	// If we fail to do this for some reason then this is fatal — we cannot
 	// continue setting up or the Raft node may be partially/totally isolated.
 	if err := n.RecreateInternalSubs(); err != nil {
-		n.shutdown()
 		return nil, err
 	}
 
@@ -575,7 +582,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 		// If we failed to recover from the snapshot, then we should surface
 		// the error upwards, otherwise we can complete recovery but have only
 		// a partial view of the world.
-		n.shutdown()
 		return nil, err
 	}
 
@@ -590,7 +596,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	// Make sure that the snapshots directory exists.
 	if err := os.MkdirAll(filepath.Join(n.sd, snapshotsDir), defaultDirPerms); err != nil {
-		n.shutdown()
 		return nil, fmt.Errorf("could not create snapshots directory - %v", err)
 	}
 
@@ -598,7 +603,6 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	if _, ok := n.wal.(*memStore); !ok && cfg.PersistCommit {
 		n.csync = cfg.SyncCommit
 		if err := n.openCommitFile(); err != nil {
-			n.shutdown()
 			return nil, err
 		}
 	}
