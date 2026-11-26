@@ -5509,7 +5509,8 @@ func (fs *fileStore) trackMsgSchedule(seq uint64, subj string, hdr []byte, ts in
 		// Copy the subject, as it's kept and could point into a reused cache.
 		fs.scheduling.add(seq, copyString(subj), schedule.UnixNano())
 		tracked = true
-	} else if getMessageScheduler(hdr) == _EMPTY_ {
+	} else {
+		// Any other message replaces the schedule, also one a schedule produced.
 		fs.scheduling.removeSubject(subj)
 	}
 
@@ -7788,10 +7789,6 @@ func (fs *fileStore) runMsgScheduling() {
 	fs.scheduling.running = true
 
 	scheduledMsgs := fs.scheduling.getScheduledMessages(
-		func(seq uint64, smv *StoreMsg) *StoreMsg {
-			sm, _ := fs.msgForSeqLocked(seq, smv, false)
-			return sm
-		},
 		func(subj string, smv *StoreMsg) *StoreMsg {
 			sm, _ := fs.loadLastLocked(subj, smv)
 			return sm

@@ -159,7 +159,7 @@ func (ms *MsgScheduling) resetTimer() {
 	}
 }
 
-func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *StoreMsg) *StoreMsg, loadLast func(subj string, smv *StoreMsg) *StoreMsg) []*inMsg {
+func (ms *MsgScheduling) getScheduledMessages(loadLast func(subj string, smv *StoreMsg) *StoreMsg) []*inMsg {
 	var (
 		smv    StoreMsg
 		srcSmv StoreMsg
@@ -167,9 +167,13 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 		msgs   []*inMsg
 	)
 	ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-		// Need to grab the message for the specified sequence, and check
-		// if it hasn't been removed in the meantime.
-		sm = loadMsg(seq, &smv)
+		// The last message on the subject holds the schedule.
+		sm = nil
+		if subj, ok := ms.seqToSubj[seq]; ok {
+			if sm = loadLast(subj, &smv); sm != nil && sm.seq != seq {
+				sm = nil
+			}
+		}
 		if sm != nil {
 			// If already inflight, don't duplicate a scheduled message. The stream could
 			// be replicated and the scheduled message could take some time to propagate.
