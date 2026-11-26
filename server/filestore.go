@@ -13035,7 +13035,7 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the schedules are valid.
-	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
+	buf := fs.scheduling.encode(fs.state.LastSeq+1, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)

@@ -274,11 +274,11 @@ func (ms *MsgScheduling) getScheduledMessages(loadLast func(subj string, smv *St
 
 // encode writes out the contents of the schedule into a binary snapshot
 // and returns it. The high seq number is included in the snapshot and will
-// be returned on decode.
-func (ms *MsgScheduling) encode(highSeq uint64) []byte {
+// be returned on decode. The key is used for the checksum.
+func (ms *MsgScheduling) encode(highSeq uint64, key []byte) []byte {
 	count := uint64(len(ms.schedules))
-	b := make([]byte, 0, headerLen+(count*(2*binary.MaxVarintLen64)))
-	b = append(b, 1)                                 // Magic version
+	b := make([]byte, 0, headerLen+(count*(2*binary.MaxVarintLen64))+checksumSize)
+	b = append(b, 2)                                 // Magic version
 	b = binary.LittleEndian.AppendUint64(b, count)   // Entry count
 	b = binary.LittleEndian.AppendUint64(b, highSeq) // Stamp
 	for subj, sched := range ms.schedules {
@@ -288,7 +288,7 @@ func (ms *MsgScheduling) encode(highSeq uint64) []byte {
 		b = binary.AppendVarint(b, sched.ts)
 		b = binary.AppendUvarint(b, sched.seq)
 	}
-	return b
+	return appendStateChecksum(b, key)
 }
 
 // decode snapshots a binary-encoded schedule and replaces the contents of this
