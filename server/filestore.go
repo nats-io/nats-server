@@ -13517,7 +13517,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		if writeFile(filepath.Join(odirPre, JetStreamMetaFileSum), sum) != nil {
 			return
 		}
-		writeFile(filepath.Join(odirPre, consumerState), state)
+		writeFile(filepath.Join(odirPre, consumerState), encodeConsumerStateFile(state, o.skey))
 	}
 }
 
@@ -14160,6 +14160,11 @@ func (o *consumerFileStore) convertCipher() error {
 	if err != nil {
 		return err
 	}
+	// Re-encoded below, as writing adds the checksum again.
+	state, err := decodeConsumerState(buf, o.skey)
+	if err != nil {
+		return err
+	}
 
 	// Since we are here we recovered our old state.
 	// Now write our meta, which will generate the new keys with the new cipher.
@@ -14168,7 +14173,7 @@ func (o *consumerFileStore) convertCipher() error {
 	}
 
 	// Now write out or state with the new cipher.
-	return o.writeState(buf)
+	return o.writeState(encodeConsumerState(state))
 }
 
 // Kick flusher for this consumer.
@@ -14643,6 +14648,13 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 	return o.aek.Seal(nonce, nonce, buf, nil), nil
 }
 
+// Returns the state file contents for the encoded state, with a flagged version and checksum.
+// It updates buf in place, so it must be a buffer that's not used elsewhere.
+func encodeConsumerStateFile(buf, key []byte) []byte {
+	buf[1] |= consumerStateChecksummed
+	return appendStateChecksum(buf, key)
+}
+
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -14664,6 +14676,9 @@ func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 		}
 		return nil
 	}
+
+	// The file holds a flagged version, with a checksum.
+	buf = encodeConsumerStateFile(buf, o.skey)
 
 	// Check on encryption.
 	if o.aek != nil {
@@ -15076,6 +15091,8 @@ func (o *consumerFileStore) Stop() error {
 	if o.dirty {
 		// Make sure to write this out..
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
+			// The file holds a flagged version, with a checksum.
+			buf = encodeConsumerStateFile(buf, o.skey)
 			if o.aek != nil {
 				if buf, err = o.encryptState(buf); err != nil {
 					o.mu.Unlock()
