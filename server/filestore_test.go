@@ -18833,6 +18833,63 @@ func TestFileStoreEncryptionKeyFileSyncedBySyncBlocks(t *testing.T) {
 	require_False(t, needKeySync)
 }
 
+func TestFileStoreEncryptionKeySyncBlocksRemoval(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: AES, SyncInterval: time.Hour}
+	fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "WQ", Storage: FileStorage, Retention: WorkQueuePolicy}, time.Now(), prf(&fcfg), nil)
+	require_NoError(t, err)
+	defer fs.Stop()
+
+	seq, _, err := fs.StoreMsg("foo", nil, []byte("hello"), 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.FlushAllPending())
+	mb := fs.getFirstBlock()
+	mb.mu.RLock()
+	kfn := mb.kfn
+	require_True(t, mb.needKeySync)
+	mb.mu.RUnlock()
+
+	// Pause the key sync before opening the file, independently of OS sharing semantics.
+	for range fs.dios.cap() {
+		fs.dios.acquire()
+	}
+	syncDone := make(chan struct{})
+	go func() {
+		fs.syncBlocks()
+		close(syncDone)
+	}()
+	release := sync.OnceFunc(func() {
+		for range fs.dios.cap() {
+			fs.dios.release()
+		}
+	})
+	defer func() {
+		release()
+		<-syncDone
+	}()
+	checkFor(t, time.Second, time.Millisecond, func() error {
+		if fs.dios.waiters.Load() == 0 {
+			return errors.New("waiting for key sync")
+		}
+		return nil
+	})
+	locked := mb.mu.TryLock()
+	if locked {
+		mb.mu.Unlock()
+	}
+	require_False(t, locked)
+
+	// Allow syncing to complete, then remove the last message and its key file.
+	release()
+	require_ChanRead(t, syncDone, 5*time.Second)
+	removed, err := fs.RemoveMsg(seq)
+	require_NoError(t, err)
+	require_True(t, removed)
+	_, err = os.Stat(kfn)
+	require_True(t, os.IsNotExist(err))
+	_, _, err = fs.StoreMsg("foo", nil, []byte("next"), 0)
+	require_NoError(t, err)
+}
+
 func TestFileStoreStoreRawMsgVsConcurrentBlockRemovalNoWriteErr(t *testing.T) {
 	fcfg := FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 256}
 	cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo.>"}, Storage: FileStorage, MaxMsgsPer: 1}

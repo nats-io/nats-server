@@ -8596,14 +8596,23 @@ func (fs *fileStore) syncBlocks() {
 			storeFsWerr(err)
 			continue
 		}
-		// Check if we need to sync. We will not hold lock during actual sync.
+		// Keep the block locked until the key file is closed. On Windows an open
+		// key file prevents dirtyCloseWithRemove from deleting it.
+		if mb.needKeySync && mb.kfn != _EMPTY_ {
+			if err := fs.syncFileAndDir(mb.kfn); err != nil {
+				mb.mu.Unlock()
+				storeFsWerr(err)
+				continue
+			}
+		}
+		mb.needKeySync = false
+
+		// Check if we need to sync the block after releasing the lock.
 		needSync := mb.needSync
-		needKeySync, kfn := mb.needKeySync, mb.kfn
 
 		// Reset. Because we let go of the lock, we could write new data to this mb which might or
 		// might not be synced later if we would've reset after letting go of the lock.
 		mb.needSync = false
-		mb.needKeySync = false
 		mb.mu.Unlock()
 
 		// Check if we should compact here.
@@ -8648,14 +8657,6 @@ func (fs *fileStore) syncBlocks() {
 					storeFsWerr(err)
 					continue
 				}
-			}
-		}
-
-		// Check if we need to sync this block's key file.
-		if needKeySync && kfn != _EMPTY_ {
-			if err := fs.syncFileAndDir(kfn); err != nil {
-				storeFsWerr(err)
-				continue
 			}
 		}
 
