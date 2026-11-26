@@ -11725,6 +11725,74 @@ func TestNRGTermVoteFileChecksum(t *testing.T) {
 	})
 }
 
+func TestNRGManagedGroupHasNoPeerStateFile(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// The membership is the assigned one, without a peer state file. Returns that file's path.
+	requireAssigned := func(s *Server) string {
+		t.Helper()
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn := mset.raftNode().(*raft)
+		var peers []string
+		for _, p := range rn.Peers() {
+			peers = append(peers, p.ID)
+		}
+		s.getJetStream().mu.RLock()
+		assigned := slices.Clone(mset.streamAssignment().Group.Peers)
+		s.getJetStream().mu.RUnlock()
+		require_Equal(t, rn.ClusterSize(), len(assigned))
+		require_True(t, slices.Equal(slices.Sorted(slices.Values(peers)), slices.Sorted(slices.Values(assigned))))
+		psf := filepath.Join(rn.sd, peerStateFile)
+		_, err = os.Stat(psf)
+		require_True(t, os.IsNotExist(err))
+		return psf
+	}
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	psf := requireAssigned(s)
+
+	// A valid file an older server left is removed on restart, so a downgrade starts from the assignment.
+	s.Shutdown()
+	stale := encodePeerState(&peerState{knownPeers: []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee"}, clusterSize: 5})
+	require_NoError(t, os.WriteFile(psf, stale, defaultFilePerms))
+	requireAssigned(c.restartServer(s))
+
+	// After scaling down and up again, a restarted follower recovers the membership without it.
+	for _, replicas := range []int{1, 3} {
+		cfg.Replicas = replicas
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if len(si.Cluster.Replicas) != replicas-1 {
+				return fmt.Errorf("expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+			}
+			for _, r := range si.Cluster.Replicas {
+				if !r.Current {
+					return fmt.Errorf("replica %s not current", r.Name)
+				}
+			}
+			return nil
+		})
+	}
+	s = c.randomNonStreamLeader(globalAccountName, "TEST")
+	s.Shutdown()
+	requireAssigned(c.restartServer(s))
+}
+
 func TestNRGStepDownPrefersCaughtUpPeer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
