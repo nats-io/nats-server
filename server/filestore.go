@@ -1261,10 +1261,8 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fmt.Sprintf(blkScan, index))
 
-	if mb.hh == nil {
-		key := sha256.Sum256(fs.hashKeyForBlock(index))
-		mb.hh, _ = highwayhash.NewDigest64(key[:])
-	}
+	key := sha256.Sum256(fs.hashKeyForBlock(index))
+	mb.hh, _ = highwayhash.NewDigest64(key[:])
 	return mb
 }
 
@@ -1912,27 +1910,25 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		// Check for checksum failures before additional processing.
 		data := buf[index+msgHdrSize : index+rl]
 		subj := data[:slen]
-		if hh := mb.hh; hh != nil {
-			hh.Reset()
-			hh.Write(hdr[4:20])
-			hh.Write(subj)
-			if hasHeaders {
-				hh.Write(data[slen+4 : dlen-recordHashSize])
-			} else {
-				hh.Write(data[slen : dlen-recordHashSize])
-			}
-			checksum := hh.Sum(hb[:0])
-			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
-				err = errBadMsg{mb.mfn, "invalid checksum"}
-				if allowTruncate {
-					if err = truncate(index); err != nil {
-						return nil, nil, err
-					}
-				}
-				return gatherLost(lbuf - index), tombstones, err
-			}
-			copy(mb.lchk[0:], checksum)
+		mb.hh.Reset()
+		mb.hh.Write(hdr[4:20])
+		mb.hh.Write(subj)
+		if hasHeaders {
+			mb.hh.Write(data[slen+4 : dlen-recordHashSize])
+		} else {
+			mb.hh.Write(data[slen : dlen-recordHashSize])
 		}
+		checksum := mb.hh.Sum(hb[:0])
+		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
+			err = errBadMsg{mb.mfn, "invalid checksum"}
+			if allowTruncate {
+				if err = truncate(index); err != nil {
+					return nil, nil, err
+				}
+			}
+			return gatherLost(lbuf - index), tombstones, err
+		}
+		copy(mb.lchk[0:], checksum)
 
 		// Grab our sequence and timestamp.
 		seq := le.Uint64(hdr[4:])
