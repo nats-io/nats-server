@@ -13141,6 +13141,53 @@ func TestFileStoreMessageScheduleRecoveredAfterFire(t *testing.T) {
 	}
 }
 
+func TestFileStoreMessageScheduleReplacedAfterRecovery(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+	// Small blocks, so the replacing message is in a block without schedules.
+	fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 128, srv: s}
+	cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	fn := filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)
+	stale, err := os.ReadFile(fn)
+	require_NoError(t, err)
+
+	// A plain message replaces the schedule.
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo.schedule", nil, []byte("replaced"), 0)
+	require_NoError(t, err)
+	require_True(t, fs.numMsgBlocks() > 1)
+	require_NoError(t, fs.Stop())
+
+	// The state was last written before the schedule was replaced, like after an unclean shutdown.
+	require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms))
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	ch := make(chan *inMsg, 1)
+	fs.mu.Lock()
+	fs.pmsgcb = func(im *inMsg) { ch <- im }
+	fs.mu.Unlock()
+
+	// The replaced schedule doesn't fire, and is removed.
+	require_NoChanRead(t, ch, 2*time.Second)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	_, ok := fs.scheduling.schedules["foo.schedule"]
+	require_False(t, ok)
+}
+
 func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	now := time.Now()
