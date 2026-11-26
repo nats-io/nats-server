@@ -860,6 +860,28 @@ func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
 	c.waitOnAllCurrent()
 }
 
+func TestNRGInitFailureReleasesResources(t *testing.T) {
+	_, c := initSingleMemRaftNodeWithCluster(t)
+	defer c.shutdown()
+	s := c.servers[0]
+
+	numQueues := func() (n int) {
+		s.ipQueues.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	before := numQueues()
+
+	// Without a peer state file the node fails to initialize.
+	ms, err := newMemStore(&StreamConfig{Name: "FAIL", Storage: MemoryStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "FAIL", Store: t.TempDir(), Log: ms}
+	_, err = s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_Error(t, err)
+
+	// What it set up so far is released again.
+	require_Equal(t, numQueues(), before)
+}
+
 func TestNRGAssumeHighTermAfterCandidateIsolation(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
