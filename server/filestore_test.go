@@ -13135,6 +13135,59 @@ func TestFileStoreMessageScheduleRecovered(t *testing.T) {
 	})
 }
 
+func TestFileStoreMessageScheduleRecoveredAfterFire(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		restore func(fn string, stale []byte)
+	}{
+		// The state was last written before the schedule fired, like after an unclean shutdown.
+		{title: "Outdated", restore: func(fn string, stale []byte) { require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms)) }},
+		{title: "Missing", restore: func(fn string, _ []byte) { require_NoError(t, os.Remove(fn)) }},
+		// Without the stream state, the blocks are indexed again to find the schedules.
+		{title: "OutdatedWithoutStreamState", restore: func(fn string, stale []byte) {
+			require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms))
+			require_NoError(t, os.Remove(filepath.Join(filepath.Dir(fn), streamStreamStateFile)))
+		}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			dir := t.TempDir()
+			// Small blocks, so the fired message is in a block without the schedule.
+			fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 128}
+			cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true}
+			fs, err := newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			hdr := genHeader(nil, JSSchedulePattern, "@every 1h")
+			hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+			_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+			require_NoError(t, err)
+			require_NoError(t, fs.Stop())
+
+			fn := filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)
+			stale, err := os.ReadFile(fn)
+			require_NoError(t, err)
+
+			// The fired message moves the schedule to its next time.
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			next := time.Now().Add(2 * time.Hour).UTC()
+			fired := genHeader(nil, JSScheduler, "foo.schedule")
+			fired = genHeader(fired, JSScheduleNext, next.Format(time.RFC3339Nano))
+			_, _, err = fs.StoreMsg("foo.target", fired, nil, 0)
+			require_NoError(t, err)
+			require_True(t, fs.numMsgBlocks() > 1)
+			require_NoError(t, fs.Stop())
+
+			test.restore(fn, stale)
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			defer fs.Stop()
+			fs.mu.RLock()
+			defer fs.mu.RUnlock()
+			require_Equal(t, fs.scheduling.schedules["foo.schedule"].ts, next.UnixNano())
+		})
+	}
+}
+
 func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	now := time.Now()
@@ -17443,7 +17496,8 @@ func TestFileStoreHasTTLAndScheduleHeaders(t *testing.T) {
 		t.Helper()
 		hasTTL, hasSchedule := hasTTLAndScheduleHeaders(hdr)
 		require_Equal(t, hasTTL, bytes.Contains(hdr, []byte("\r\n"+JSMessageTTL+":")))
-		require_Equal(t, hasSchedule, bytes.Contains(hdr, []byte("\r\n"+JSSchedulePattern+":")))
+		// Any key starting with Nats-Schedule counts, to include Nats-Scheduler and Nats-Schedule-Next.
+		require_Equal(t, hasSchedule, bytes.Contains(hdr, []byte("\r\n"+JSSchedulePattern)))
 	}
 	for i, hdr := range []string{
 		"",
