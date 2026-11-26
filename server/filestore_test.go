@@ -4022,6 +4022,31 @@ func TestFileStoreBadConsumerState(t *testing.T) {
 	}
 }
 
+func TestFileStoreStateChecksum(t *testing.T) {
+	key := stateChecksumKey("TEST")
+	b := appendStateChecksum([]byte("state"), key)
+	require_Len(t, len(b), len("state")+checksumSize)
+
+	got, err := verifyStateChecksum(b, key)
+	require_NoError(t, err)
+	require_Equal(t, string(got), "state")
+
+	// It's what index.db always held, a highwayhash digest keyed the same way.
+	hh, err := highwayhash.NewDigest64(key)
+	require_NoError(t, err)
+	hh.Write([]byte("state"))
+	require_True(t, bytes.Equal(b, hh.Sum([]byte("state"))))
+
+	// The checksum of another owner doesn't match.
+	_, err = verifyStateChecksum(b, stateChecksumKey("OTHER"))
+	require_Error(t, err, errStateChecksumMismatch)
+
+	// Neither does changed or truncated state.
+	requireCorruptionRejected(t, b, func(b []byte) ([]byte, error) { return verifyStateChecksum(b, key) })
+	_, err = verifyStateChecksum(b[:checksumSize-1], key)
+	require_Error(t, err, io.ErrShortBuffer)
+}
+
 func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		if fcfg.Compression != NoCompression || fcfg.Cipher != NoCipher {

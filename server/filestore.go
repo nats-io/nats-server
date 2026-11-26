@@ -2113,12 +2113,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 
 	// The highwayhash will be on the end. Check that it still matches.
-	h := buf[len(buf)-highwayhash.Size64:]
-	buf = buf[:len(buf)-highwayhash.Size64]
-	fs.hh.Reset()
-	fs.hh.Write(buf)
-	var hb [highwayhash.Size64]byte
-	if !bytes.Equal(h, fs.hh.Sum(hb[:0])) {
+	if buf, err = verifyStateChecksum(buf, stateChecksumKey(fs.cfg.Name)); err != nil {
 		_ = os.Remove(fn)
 		fs.warn("Stream state checksum did not match")
 		return errCorruptState
@@ -12937,12 +12932,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 
-	// Need to have our own hasher here, as under a read lock we can't mutate the
-	// fs.hh safely.
-	key := sha256.Sum256([]byte(fs.cfg.Name))
-	hh, _ := highwayhash.NewDigest64(key[:])
-	hh.Write(buf)
-	buf = hh.Sum(buf)
+	buf = appendStateChecksum(buf, stateChecksumKey(fs.cfg.Name))
 
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
@@ -12995,6 +12985,32 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		return sourcesErr
 	}
 	return nil
+}
+
+// Returns the key for a state file checksum, derived from the name of its owner.
+// A file that ends up at another owner then fails its checksum.
+func stateChecksumKey(name string) []byte {
+	key := sha256.Sum256([]byte(name))
+	return key[:]
+}
+
+var errStateChecksumMismatch = errors.New("state checksum mismatch")
+
+// appendStateChecksum appends a checksum over b, using a key from stateChecksumKey.
+func appendStateChecksum(b, key []byte) []byte {
+	return binary.LittleEndian.AppendUint64(b, highwayhash.Sum64(b, key))
+}
+
+// verifyStateChecksum checks the trailing checksum and returns b without it.
+func verifyStateChecksum(b, key []byte) ([]byte, error) {
+	if len(b) < checksumSize {
+		return nil, io.ErrShortBuffer
+	}
+	n := len(b) - checksumSize
+	if highwayhash.Sum64(b[:n], key) != binary.LittleEndian.Uint64(b[n:]) {
+		return nil, errStateChecksumMismatch
+	}
+	return b[:n], nil
 }
 
 func (fs *fileStore) writeTTLState() error {
