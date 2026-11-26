@@ -2915,10 +2915,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			return err
 		}
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 		if err := mb.dirtyCloseWithRemove(true); err != nil {
@@ -3010,7 +3007,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 				mb.mu.Unlock()
 				return err
 			}
-			fs.removePerSubject(sm.subj)
+			fs.removePerSubject(sm.subj, 1)
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -6367,16 +6364,16 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, true, false, true)
 }
 
-// Convenience function to remove per subject tracking at the filestore level.
+// Convenience function to remove n messages from per subject tracking at the filestore level.
 // Lock should be held.
-func (fs *fileStore) removePerSubject(subj string) uint64 {
-	if len(subj) == 0 || fs.psim == nil {
+func (fs *fileStore) removePerSubject(subj string, n uint64) uint64 {
+	if len(subj) == 0 || fs.psim == nil || n == 0 {
 		return 0
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
 	if info, ok := fs.psim.Find(bsubj); ok {
-		info.total--
+		info.total -= min(n, info.total)
 		if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
@@ -6588,7 +6585,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		mb.mu.Unlock()
 		return false, err
 	}
-	fs.removePerSubject(subj)
+	fs.removePerSubject(subj, 1)
 	if fs.ttls != nil && ttl > 0 {
 		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
 		fs.ttls.Remove(seq, int64(expires))
@@ -10882,7 +10879,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					fs.mu.Unlock()
 					return purged, err
 				}
-				nrg = fs.removePerSubject(sm.subj)
+				nrg = fs.removePerSubject(sm.subj, 1)
 
 				// Track tombstones we need to write.
 				tombs = append(tombs, msgId{sm.seq, sm.ts})
@@ -11277,10 +11274,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			return 0, 0, err
 		}
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 		// Now close.
@@ -11339,7 +11333,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 				smb.mu.Unlock()
 				return purged, bytes, err
 			}
-			fs.removePerSubject(sm.subj)
+			fs.removePerSubject(sm.subj, 1)
 			tombs = append(tombs, msgId{sm.seq, sm.ts})
 		}
 	}
@@ -12036,10 +12030,7 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock, agg *storeUpdateAgg) error {
 		return err
 	} else if mb.fss != nil {
 		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for range ss.Msgs {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 	}

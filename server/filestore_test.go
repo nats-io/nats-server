@@ -1022,6 +1022,53 @@ func TestFileStoreCompactMsgCountBug(t *testing.T) {
 	})
 }
 
+func TestFileStoreRemoveWholeBlocksPerSubjectTotals(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 4 * fileStoreMsgSize("foo", nil, []byte("Hello World"))
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Subjects: []string{"*"}, Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		for range 8 {
+			_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("bar", nil, []byte("Hello World"), 0)
+			require_NoError(t, err)
+		}
+		fs.mu.RLock()
+		require_Len(t, len(fs.blks), 4)
+		fs.mu.RUnlock()
+
+		// Removes the first two blocks entirely.
+		n, err := fs.Compact(9)
+		require_NoError(t, err)
+		require_Equal(t, n, 8)
+		totals := fs.SubjectsTotals("*")
+		require_Len(t, len(totals), 2)
+		require_Equal(t, totals["foo"], 4)
+		require_Equal(t, totals["bar"], 4)
+
+		// Removes the third block entirely.
+		fs.mu.Lock()
+		err = fs.removeMsgsInRange(9, 12, true, nil)
+		fs.mu.Unlock()
+		require_NoError(t, err)
+		totals = fs.SubjectsTotals("*")
+		require_Len(t, len(totals), 2)
+		require_Equal(t, totals["foo"], 2)
+		require_Equal(t, totals["bar"], 2)
+
+		// Removing more than the subject's total removes the subject.
+		fs.mu.Lock()
+		require_Equal(t, fs.removePerSubject("foo", 1), 1)
+		require_Equal(t, fs.removePerSubject("foo", 5), 0)
+		_, ok := fs.psim.Find([]byte("foo"))
+		require_False(t, ok)
+		require_Equal(t, fs.tsl, len("bar"))
+		fs.mu.Unlock()
+	})
+}
+
 func TestFileStoreCompactPerf(t *testing.T) {
 	t.SkipNow()
 
