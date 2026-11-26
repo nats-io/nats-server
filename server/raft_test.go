@@ -11685,6 +11685,17 @@ func TestNRGTermVoteFileChecksum(t *testing.T) {
 		requireCorruptionRejected(t, withChecksum(n.group, 5, nats0), readTAV, termLen, termVoteLen)
 	})
 
+	// We write exactly the format with a checksum.
+	t.Run("Write", func(t *testing.T) {
+		n.Lock()
+		n.term, n.vote = 7, nats0
+		require_NoError(t, n.writeTermVote())
+		n.Unlock()
+		buf, err := os.ReadFile(tav)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, withChecksum(n.group, 7, nats0)))
+	})
+
 	s := c.servers[0]
 	bootstrapped := func(t *testing.T, name string) *RaftConfig {
 		t.Helper()
