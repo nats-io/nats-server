@@ -205,10 +205,10 @@ func (hw *HashWheel) Count() uint64 {
 
 // Encode writes out the contents of the THW into a binary snapshot
 // and returns it. The high seq number is included in the snapshot and will
-// be returned on decode.
-func (hw *HashWheel) Encode(highSeq uint64) []byte {
-	b := make([]byte, 0, headerLen+(hw.count*(2*binary.MaxVarintLen64)))
-	b = append(b, 1)                                  // Magic version
+// be returned on decode. The key is used for the checksum.
+func (hw *HashWheel) Encode(highSeq uint64, key []byte) []byte {
+	b := make([]byte, 0, headerLen+(hw.count*(2*binary.MaxVarintLen64))+checksumLen)
+	b = append(b, 2)                                  // Magic version
 	b = binary.LittleEndian.AppendUint64(b, hw.count) // Entry count
 	b = binary.LittleEndian.AppendUint64(b, highSeq)  // Stamp
 	for _, slot := range hw.wheel {
@@ -220,7 +220,7 @@ func (hw *HashWheel) Encode(highSeq uint64) []byte {
 			b = binary.AppendUvarint(b, v)
 		}
 	}
-	return b
+	return binary.LittleEndian.AppendUint64(b, highwayhash.Sum64(b, key))
 }
 
 // Decode snapshots a binary-encoded THW and replaces the contents of this

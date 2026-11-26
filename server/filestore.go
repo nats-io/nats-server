@@ -13028,7 +13028,7 @@ func (fs *fileStore) writeTTLState() error {
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the TTLs are valid.
-	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
+	buf := fs.ttls.Encode(fs.state.LastSeq+1, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
