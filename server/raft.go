@@ -362,6 +362,10 @@ type RaftConfig struct {
 	Managed  bool
 	Observer bool
 
+	// The initial peers of a managed group, which has no peer state file.
+	// Set when bootstrapping, the snapshot and log take precedence when recovering.
+	initPeers *peerState
+
 	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
 	// first seen after a catchup from another server. If a server recovers with an empty log,
 	// we know to protect against data loss.
@@ -477,12 +481,27 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name, &peerState{knownPeers, expected, extUndetermined})
+	ps := &peerState{knownPeers, expected, extUndetermined}
+	// Managed groups don't use a peer state file, their peers come from the assignment.
+	if cfg.Managed {
+		cfg.initPeers = ps
+		return nil
+	}
+	return writePeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name, ps)
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, rerr error) {
 	restorePeerState := func(n *raft) error {
+		// Managed groups start from the peers they were bootstrapped with.
+		if cfg.Managed {
+			if cfg.initPeers == nil {
+				return errNoPeerState
+			}
+			n.processPeerState(cfg.initPeers)
+			n.extSt = cfg.initPeers.domainExt
+			return nil
+		}
 		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 		if err != nil {
 			return err
@@ -497,6 +516,10 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	if cfg == nil {
 		return nil, errNilCfg
+	}
+	// Remove a peer state file an older server left, a downgrade then starts from the assignment.
+	if cfg.Managed {
+		_ = os.Remove(filepath.Join(cfg.Store, peerStateFile))
 	}
 	s.mu.RLock()
 	if s.sys == nil {
@@ -2833,6 +2856,7 @@ func (n *raft) Reset() {
 	n.writeTermVote()
 
 	// Persist the cleared peer state so a restart picks up the reset.
+	// Managed groups don't persist it, they restart from their assigned peers.
 	n.writePeerState(n.currentPeerStateLocked())
 }
 
@@ -6045,6 +6069,10 @@ const peerStateFile = "peers.idx"
 
 // Lock should be held.
 func (n *raft) writePeerState(ps *peerState) {
+	// Managed groups don't use a peer state file, their peers come from the assignment.
+	if n.managed {
+		return
+	}
 	pse := encodePeerState(ps)
 	if bytes.Equal(n.wps, pse) {
 		return

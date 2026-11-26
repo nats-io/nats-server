@@ -11725,6 +11725,81 @@ func TestNRGTermVoteFileChecksum(t *testing.T) {
 	})
 }
 
+func TestNRGManagedGroupHasNoPeerStateFile(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	mset, err := s.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sd := mset.raftNode().(*raft).sd
+	psf := filepath.Join(sd, peerStateFile)
+	_, err = os.Stat(psf)
+	require_True(t, os.IsNotExist(err))
+
+	// The membership is the assigned one, and still no peer state file.
+	requireAssigned := func(s *Server) {
+		t.Helper()
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn := mset.raftNode()
+		require_Equal(t, rn.ClusterSize(), 3)
+		var peers []string
+		for _, p := range rn.Peers() {
+			peers = append(peers, p.ID)
+		}
+		s.getJetStream().mu.RLock()
+		assigned := slices.Clone(mset.streamAssignment().Group.Peers)
+		s.getJetStream().mu.RUnlock()
+		slices.Sort(peers)
+		slices.Sort(assigned)
+		require_True(t, slices.Equal(peers, assigned))
+		_, err = os.Stat(filepath.Join(rn.(*raft).sd, peerStateFile))
+		require_True(t, os.IsNotExist(err))
+	}
+
+	// A valid file an older server left is removed on restart, so a downgrade starts from the assignment.
+	s.Shutdown()
+	stale := encodePeerState(&peerState{knownPeers: []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee"}, clusterSize: 5})
+	require_NoError(t, os.WriteFile(psf, stale, defaultFilePerms))
+	s = c.restartServer(s)
+	c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	requireAssigned(s)
+
+	// After scaling down and up again, a restarted follower recovers the membership without it.
+	for _, replicas := range []int{1, 3} {
+		_, err = js.UpdateStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: replicas})
+		require_NoError(t, err)
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if len(si.Cluster.Replicas) != replicas-1 {
+				return fmt.Errorf("expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+			}
+			for _, r := range si.Cluster.Replicas {
+				if !r.Current {
+					return fmt.Errorf("replica %s not current", r.Name)
+				}
+			}
+			return nil
+		})
+	}
+	s = c.randomNonStreamLeader(globalAccountName, "TEST")
+	s.Shutdown()
+	s = c.restartServer(s)
+	c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+	requireAssigned(s)
+}
+
 func TestNRGStepDownPrefersCaughtUpPeer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()

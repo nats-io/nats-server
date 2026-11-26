@@ -4148,8 +4148,11 @@ retry:
 
 		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Managed: true, Recovering: recovering, ScaleUp: rgScaleUp}
 
-		if _, err := readPeerState(s.diskIOSemaphore(), storeDir, rgName); err != nil {
-			s.bootstrapRaftNode(cfg, rgPeers, true)
+		// Managed groups start from the assigned peers, the snapshot and log take precedence when recovering.
+		if err := s.bootstrapRaftNode(cfg, rgPeers, true); err != nil {
+			s.Warnf("Error bootstrapping raft group: %v", err)
+			store.Stop()
+			return nil, err
 		}
 
 		n, err := s.startRaftNode(accName, cfg, labels)
