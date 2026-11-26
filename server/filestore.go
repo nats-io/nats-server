@@ -3192,6 +3192,11 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 		mb.mu.Unlock()
 	}()
 
+	// The block may have been removed since it was selected, in which case its messages are gone.
+	if mb.closed {
+		return nil, false, ErrStoreMsgNotFound
+	}
+
 	if mb.fssNotLoaded() {
 		// Make sure we have fss loaded.
 		if err := mb.loadMsgsWithLock(); err != nil {
@@ -3281,8 +3286,10 @@ func (mb *msgBlock) firstMatchingMulti(sl *gsl.SimpleSublist, start uint64, sm *
 }
 
 // Find the first matching message.
-// fs lock should be held.
-func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
+// preferLinearScan should be set if nearly every message is expected to match the filter, so it is
+// quicker to scan from the start than to look for the first match in the per-subject state.
+// fs lock does not need to be held.
+func (mb *msgBlock) firstMatching(filter string, wc, preferLinearScan bool, start uint64, sm *StoreMsg) (*StoreMsg, bool, error) {
 	mb.mu.Lock()
 	var updateLLTS bool
 	defer func() {
@@ -3292,6 +3299,11 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		mb.finishedWithCache()
 		mb.mu.Unlock()
 	}()
+
+	// The block may have been removed since it was selected, in which case its messages are gone.
+	if mb.closed {
+		return nil, false, ErrStoreMsgNotFound
+	}
 
 	fseq, isAll := start, filter == _EMPTY_ || filter == fwcs
 
@@ -3342,9 +3354,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 
-	subjs := mb.fs.cfg.Subjects
-	// If isAll or our single filter matches the filter arg do linear scan.
-	doLinearScan := isAll || (wc && len(subjs) == 1 && subjs[0] == filter)
+	doLinearScan := isAll || preferLinearScan
 	// If we do not think we should do a linear scan check how many fss we
 	// would need to scan vs the full range of the linear walk. Optimize for
 	// 25th quantile of a match in a linear walk. Filter should be a wildcard.
@@ -6333,7 +6343,7 @@ func (fs *fileStore) enforceMsgPerSubjectLimit(fireCallback bool) error {
 				}
 			}
 			for first := ss.First; *total > maxMsgsPer && first <= ss.Last; {
-				m, _, err := mb.firstMatching(bytesToString(subj), false, first, &sm)
+				m, _, err := mb.firstMatching(bytesToString(subj), false, false, first, &sm)
 				if err != nil {
 					break
 				}
@@ -9998,6 +10008,40 @@ func (fs *fileStore) LoadLastSeq(subject string) (uint64, error) {
 	return seq, nil
 }
 
+// blockWalk iterates over message blocks, only holding the fs read lock while finding
+// the next block, so that writers aren't blocked while each block is being scanned.
+type blockWalk struct {
+	fs   *fileStore
+	next uint64 // Sequences below this have been scanned, can be moved forward to skip ahead.
+	last uint64 // Once the walk is done, the last sequence that is safe to report as scanned.
+}
+
+// Yields the blocks holding sequences from w.next onwards, along with the sequence to scan each from.
+// Read lock must not be held, it is only held while finding each block.
+func (w *blockWalk) blocks() iter.Seq2[*msgBlock, uint64] {
+	return func(yield func(*msgBlock, uint64) bool) {
+		fs := w.fs
+		fs.mu.RLock()
+		for !fs.isClosed() {
+			// Messages below the first sequence may have been removed while we were unlocked.
+			_, mb := fs.selectMsgBlockWithIndex(max(w.next, fs.state.FirstSeq))
+			if mb == nil {
+				break
+			}
+			from := w.next
+			// Messages stored in this block after this point are scanned on the next pass.
+			w.next = max(w.next, atomic.LoadUint64(&mb.last.seq)+1)
+			fs.mu.RUnlock()
+			if !yield(mb, from) {
+				return
+			}
+			fs.mu.RLock()
+		}
+		w.last = fs.state.LastSeq
+		fs.mu.RUnlock()
+	}
+}
+
 // LoadNextMsgMulti will find the next message matching any entry in the sublist.
 func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *StoreMsg) (sm *StoreMsg, skip uint64, err error) {
 	if fs.isClosed() {
@@ -10010,10 +10054,11 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 		return fs.LoadNextMsg(filter, subjectHasWildcard(filter), start, smp)
 	}
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
 
 	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
-		return nil, fs.state.LastSeq, ErrStoreEOF
+		lseq := fs.state.LastSeq
+		fs.mu.RUnlock()
+		return nil, lseq, ErrStoreEOF
 	}
 	if start < fs.state.FirstSeq {
 		start = fs.state.FirstSeq
@@ -10034,7 +10079,9 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 		})
 		// Nothing available.
 		if total == 0 {
-			return nil, fs.state.LastSeq, ErrStoreEOF
+			lseq := fs.state.LastSeq
+			fs.mu.RUnlock()
+			return nil, lseq, ErrStoreEOF
 		}
 		// We can skip ahead.
 		if mb := fs.bim[blkStart]; mb != nil {
@@ -10045,45 +10092,54 @@ func (fs *fileStore) LoadNextMsgMulti(sl *gsl.SimpleSublist, start uint64, smp *
 		}
 	}
 
-	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
-		for i := bi; i < len(fs.blks); i++ {
-			mb := fs.blks[i]
-			if sm, expireOk, err := mb.firstMatchingMulti(sl, start, smp); err == nil {
-				if expireOk {
-					mb.tryForceExpireCache()
-				}
-				return sm, sm.seq, nil
-			} else if err != ErrStoreMsgNotFound {
-				return nil, 0, err
-			} else {
-				// Check if we can expire.
-				if expireOk {
-					mb.tryForceExpireCache()
-				}
-				// Nothing found in this block. We missed, if first block (bi) check psim.
-				// Similar to above if start <= first seq.
-				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
-				// We should not do this at all if we are already on the last block.
-				// Nor if the next block is the last one, since we can simply skip to it.
-				if i == bi && i < len(fs.blks)-2 {
-					nbi, err := fs.checkSkipFirstBlockMulti(sl, bi)
-					// Nothing available.
-					if err == ErrStoreEOF {
-						return nil, fs.state.LastSeq, ErrStoreEOF
-					}
-					// See if we can jump ahead here.
-					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
-					// For v2 will track all blocks that have matches for psim.
-					if nbi > i {
-						i = nbi - 1 // Offset the loop's i++
-					}
-				}
+	fs.mu.RUnlock()
+
+	w := blockWalk{fs: fs, next: start}
+	first := true
+	for mb, from := range w.blocks() {
+		if sm, expireOk, err := mb.firstMatchingMulti(sl, from, smp); err == nil {
+			if expireOk {
+				mb.tryForceExpireCache()
+			}
+			return sm, sm.seq, nil
+		} else if err != ErrStoreMsgNotFound {
+			return nil, 0, err
+		} else if expireOk {
+			// Check if we can expire.
+			mb.tryForceExpireCache()
+		}
+		// Nothing found in this block. We missed, if first block check psim.
+		// Similar to above if start <= first seq.
+		// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
+		if !first {
+			continue
+		}
+		first = false
+		fs.mu.RLock()
+		// We should not do this at all if we are already on the last block.
+		// Nor if the next block is the last one, since we can simply skip to it.
+		// Blocks may have changed while we were unlocked, so only check if mb is still there.
+		if bi, smb := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq)); smb == mb && bi < len(fs.blks)-2 {
+			nbi, err := fs.checkSkipFirstBlockMulti(sl, bi)
+			// Nothing available.
+			if err == ErrStoreEOF {
+				lseq := fs.state.LastSeq
+				fs.mu.RUnlock()
+				return nil, lseq, ErrStoreEOF
+			}
+			// See if we can jump ahead here.
+			// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
+			// For v2 will track all blocks that have matches for psim.
+			if nbi > bi+1 {
+				w.next = max(w.next, atomic.LoadUint64(&fs.blks[nbi].first.seq))
 			}
 		}
+		fs.mu.RUnlock()
 	}
-
-	return nil, fs.state.LastSeq, ErrStoreEOF
-
+	if fs.isClosed() {
+		return nil, 0, ErrStoreClosed
+	}
+	return nil, w.last, ErrStoreEOF
 }
 
 func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *StoreMsg) (*StoreMsg, uint64, error) {
@@ -10092,10 +10148,11 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	}
 
 	fs.mu.RLock()
-	defer fs.mu.RUnlock()
 
 	if fs.state.Msgs == 0 || start > fs.state.LastSeq {
-		return nil, fs.state.LastSeq, ErrStoreEOF
+		lseq := fs.state.LastSeq
+		fs.mu.RUnlock()
+		return nil, lseq, ErrStoreEOF
 	}
 	if start < fs.state.FirstSeq {
 		start = fs.state.FirstSeq
@@ -10106,11 +10163,14 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 	if start <= fs.state.FirstSeq {
 		var ss SimpleState
 		if err := fs.numFilteredPendingNoLast(filter, &ss); err != nil {
+			fs.mu.RUnlock()
 			return nil, 0, err
 		}
 		// Nothing available.
 		if ss.Msgs == 0 {
-			return nil, fs.state.LastSeq, ErrStoreEOF
+			lseq := fs.state.LastSeq
+			fs.mu.RUnlock()
+			return nil, lseq, ErrStoreEOF
 		}
 		// We can skip ahead.
 		if ss.First > start {
@@ -10118,46 +10178,60 @@ func (fs *fileStore) LoadNextMsg(filter string, wc bool, start uint64, sm *Store
 		}
 	}
 
-	if bi, _ := fs.selectMsgBlockWithIndex(start); bi >= 0 {
-		for i := bi; i < len(fs.blks); i++ {
-			mb := fs.blks[i]
-			if sm, expireOk, err := mb.firstMatching(filter, wc, start, sm); err == nil {
-				if expireOk {
-					mb.tryForceExpireCache()
-				}
-				return sm, sm.seq, nil
-			} else if err != ErrStoreMsgNotFound {
-				return nil, 0, err
-			} else {
-				// Check if we can expire.
-				if expireOk {
-					mb.tryForceExpireCache()
-				}
-				// Nothing found in this block. We missed, if first block (bi) check psim.
-				// Similar to above if start <= first seq.
-				// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
-				// We should not do this at all if we are already on the last block.
-				// Nor if the next block is the last one, since we can simply skip to it.
-				// Also if we are a wildcard do not check if large subject space.
-				const wcMaxSizeToCheck = 64 * 1024
-				if i == bi && i < len(fs.blks)-2 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
-					nbi, err := fs.checkSkipFirstBlock(filter, wc, bi)
-					// Nothing available.
-					if err == ErrStoreEOF {
-						return nil, fs.state.LastSeq, ErrStoreEOF
-					}
-					// See if we can jump ahead here.
-					// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
-					// For v2 will track all blocks that have matches for psim.
-					if nbi > i {
-						i = nbi - 1 // Offset the loop's i++
-					}
-				}
+	// If our filter is the stream's only subject, then nearly every message will match. The
+	// stream config can change once we are unlocked, so check this now.
+	subjs := fs.cfg.Subjects
+	preferLinearScan := wc && len(subjs) == 1 && subjs[0] == filter
+	fs.mu.RUnlock()
+
+	w := blockWalk{fs: fs, next: start}
+	first := true
+	for mb, from := range w.blocks() {
+		if sm, expireOk, err := mb.firstMatching(filter, wc, preferLinearScan, from, sm); err == nil {
+			if expireOk {
+				mb.tryForceExpireCache()
+			}
+			return sm, sm.seq, nil
+		} else if err != ErrStoreMsgNotFound {
+			return nil, 0, err
+		} else if expireOk {
+			// Check if we can expire.
+			mb.tryForceExpireCache()
+		}
+		// Nothing found in this block. We missed, if first block check psim.
+		// Similar to above if start <= first seq.
+		// TODO(dlc) - For v2 track these by filter subject since they will represent filtered consumers.
+		if !first {
+			continue
+		}
+		first = false
+		fs.mu.RLock()
+		// We should not do this at all if we are already on the last block.
+		// Nor if the next block is the last one, since we can simply skip to it.
+		// Also if we are a wildcard do not check if large subject space.
+		const wcMaxSizeToCheck = 64 * 1024
+		// Blocks may have changed while we were unlocked, so only check if mb is still there.
+		if bi, smb := fs.selectMsgBlockWithIndex(atomic.LoadUint64(&mb.last.seq)); smb == mb && bi < len(fs.blks)-2 && (!wc || fs.psim.Size() < wcMaxSizeToCheck) {
+			nbi, err := fs.checkSkipFirstBlock(filter, wc, bi)
+			// Nothing available.
+			if err == ErrStoreEOF {
+				lseq := fs.state.LastSeq
+				fs.mu.RUnlock()
+				return nil, lseq, ErrStoreEOF
+			}
+			// See if we can jump ahead here.
+			// Right now we can only spin on first, so if we have interior sparseness need to favor checking per block fss if loaded.
+			// For v2 will track all blocks that have matches for psim.
+			if nbi > bi+1 {
+				w.next = max(w.next, atomic.LoadUint64(&fs.blks[nbi].first.seq))
 			}
 		}
+		fs.mu.RUnlock()
 	}
-
-	return nil, fs.state.LastSeq, ErrStoreEOF
+	if fs.isClosed() {
+		return nil, 0, ErrStoreClosed
+	}
+	return nil, w.last, ErrStoreEOF
 }
 
 // Find the previous matching message.

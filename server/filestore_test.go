@@ -16266,6 +16266,142 @@ func TestFileStoreLoadNextMsgMultiSkipAhead(t *testing.T) {
 	}
 }
 
+func TestFileStoreLoadNextMsgDoesNotBlockWriters(t *testing.T) {
+	sl := gsl.NewSublist[struct{}]()
+	require_NoError(t, sl.Insert("bar", struct{}{}))
+	require_NoError(t, sl.Insert("baz", struct{}{}))
+
+	for _, test := range []struct {
+		title string
+		load  func(fs *fileStore, start uint64) (*StoreMsg, uint64, error)
+	}{
+		{"Single", func(fs *fileStore, start uint64) (*StoreMsg, uint64, error) {
+			return fs.LoadNextMsg("bar", false, start, nil)
+		}},
+		{"Multi", func(fs *fileStore, start uint64) (*StoreMsg, uint64, error) {
+			return fs.LoadNextMsgMulti(sl, start, nil)
+		}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir()},
+				StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			// 1.blk: foo. 2.blk: foo. 3.blk: foo. 4.blk: empty.
+			for range 3 {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+				fs.mu.Lock()
+				_, err = fs.newMsgBlockForWrite()
+				fs.mu.Unlock()
+				require_NoError(t, err)
+			}
+			fs.mu.RLock()
+			require_Len(t, len(fs.blks), 4)
+			smb := fs.blks[1]
+			fs.mu.RUnlock()
+
+			// Hold up the walk on 2.blk, as if it were slowly being loaded from disk.
+			smb.mu.Lock()
+			type result struct {
+				sm  *StoreMsg
+				err error
+			}
+			loaded := make(chan result, 1)
+			go func() {
+				sm, _, err := test.load(fs, 2)
+				loaded <- result{sm, err}
+			}()
+			// Give the walk time to reach 2.blk.
+			time.Sleep(50 * time.Millisecond)
+
+			stored := make(chan uint64, 1)
+			go func() {
+				seq, _, err := fs.StoreMsg("bar", nil, nil, 0)
+				if err == nil {
+					stored <- seq
+				}
+			}()
+			var seq uint64
+			select {
+			case seq = <-stored:
+				smb.mu.Unlock()
+			case <-time.After(2 * time.Second):
+				smb.mu.Unlock()
+				t.Fatalf("Store was blocked by the walk")
+			}
+
+			// The walk must find the message stored while it was held up.
+			r := require_ChanRead(t, loaded, 2*time.Second)
+			require_NoError(t, r.err)
+			require_Equal(t, r.sm.seq, seq)
+		})
+	}
+}
+
+func TestFileStoreLoadNextMsgWithConcurrentBlockRemoval(t *testing.T) {
+	sl := gsl.NewSublist[struct{}]()
+	require_NoError(t, sl.Insert("bar", struct{}{}))
+	require_NoError(t, sl.Insert("baz", struct{}{}))
+
+	for _, test := range []struct {
+		title string
+		load  func(fs *fileStore, start uint64) (*StoreMsg, uint64, error)
+	}{
+		{"Single", func(fs *fileStore, start uint64) (*StoreMsg, uint64, error) {
+			return fs.LoadNextMsg("bar", false, start, nil)
+		}},
+		{"Multi", func(fs *fileStore, start uint64) (*StoreMsg, uint64, error) {
+			return fs.LoadNextMsgMulti(sl, start, nil)
+		}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir(), BlockSize: 10 * fileStoreMsgSize("foo", nil, nil)},
+				StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			const msgs = 1000
+			for range msgs {
+				_, _, err = fs.StoreMsg("foo", nil, nil, 0)
+				require_NoError(t, err)
+			}
+			target, _, err := fs.StoreMsg("bar", nil, nil, 0)
+			require_NoError(t, err)
+
+			// Remove blocks from the head while walks cross them, shifting the remaining blocks down.
+			removed := make(chan error, 1)
+			go func() {
+				for seq := uint64(1); seq <= msgs-10; seq++ {
+					if _, err := fs.RemoveMsg(seq); err != nil {
+						removed <- err
+						return
+					}
+				}
+				removed <- nil
+			}()
+
+			for {
+				select {
+				case err := <-removed:
+					require_NoError(t, err)
+					return
+				default:
+				}
+				var state StreamState
+				fs.FastState(&state)
+				// Start past the first sequence, so the psim doesn't let us skip straight to the target.
+				sm, _, err := test.load(fs, state.FirstSeq+1)
+				require_NoError(t, err)
+				require_Equal(t, sm.seq, target)
+			}
+		})
+	}
+}
+
 func BenchmarkFileStoreCheckSkipFirstBlockMultiTippingPoint(b *testing.B) {
 	if testing.Short() {
 		b.Skip("performance-oriented benchmark")
