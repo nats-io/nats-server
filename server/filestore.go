@@ -994,24 +994,61 @@ func (fs *fileStore) recoverAEK() error {
 		if err != nil {
 			return err
 		}
-		rb, err := fs.prf([]byte(fs.cfg.Name))
-		if err != nil {
-			return err
+		sc := fs.fcfg.Cipher
+		osc := AES
+		if sc == AES {
+			osc = ChaCha
 		}
-		kek, err := genEncryptionKey(fs.fcfg.Cipher, rb)
-		if err != nil {
-			return err
+		type prfWithCipher struct {
+			keyGen
+			StoreCipher
 		}
-		ns := kek.NonceSize()
-		seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
-		if err != nil {
-			return err
+		prfs := []prfWithCipher{{fs.prf, sc}}
+		if fs.oldprf != nil {
+			prfs = append(prfs, prfWithCipher{fs.oldprf, sc}, prfWithCipher{fs.oldprf, osc})
 		}
-		aek, err := genEncryptionKey(fs.fcfg.Cipher, seed)
-		if err != nil {
-			return err
+		for i, prf := range prfs {
+			rb, err := prf.keyGen([]byte(fs.cfg.Name))
+			if err != nil {
+				continue
+			}
+			kek, err := genEncryptionKey(prf.StoreCipher, rb)
+			if err != nil {
+				continue
+			}
+			ns := kek.NonceSize()
+			if len(ekey) < ns {
+				return errBadKeySize
+			}
+			seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+			if err != nil {
+				continue
+			}
+			aek, err := genEncryptionKey(prf.StoreCipher, seed)
+			if err != nil {
+				return err
+			}
+			fs.aek = aek
+			// If we recovered using the previous key with the same cipher,
+			// re-key the meta keyfile under the current key so a later boot
+			// without prev_encryption_key can still open it.
+			if i > 0 && prf.StoreCipher == sc {
+				if nrb, err := fs.prf([]byte(fs.cfg.Name)); err == nil {
+					if nkek, err := genEncryptionKey(sc, nrb); err == nil {
+						nonce := make([]byte, nkek.NonceSize(), nkek.NonceSize()+len(seed)+nkek.Overhead())
+						if n, err := rand.Read(nonce); err == nil && n == len(nonce) {
+							encrypted := nkek.Seal(nonce, nonce, seed, nil)
+							keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+							if err := fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms); err != nil {
+								return err
+							}
+						}
+					}
+				}
+			}
+			return nil
 		}
-		fs.aek = aek
+		return errKeyInvalid
 	}
 	return nil
 }
@@ -2822,7 +2859,7 @@ func (fs *fileStore) recoverMsgs() error {
 				mb.last.ts = fs.state.LastTime.UnixNano()
 			}
 			mb.mu.Unlock()
-		} else if (err == errBadKeySize || err == errKeyInvalid) && mb != nil {
+		} else if (err == errBadKeySize || err == errKeyInvalid) && mb != nil && fs.oldprf == nil {
 			// If we can't load the encryption key, we can't decrypt the block's data.
 			// We'll revert to deleting this block until there is peer-based recovery. This still
 			// catches up from the leader if it happened in the stream's tail.
@@ -14086,53 +14123,82 @@ func (o *consumerFileStore) convertCipher() error {
 	if len(ekey) < minBlkKeySize {
 		return errBadKeySize
 	}
-	// Recover key encryption key.
-	fs.mu.RLock()
-	sname := fs.cfg.Name
-	fs.mu.RUnlock()
-	rb, err := fs.prf([]byte(sname + tsep + o.name))
-	if err != nil {
-		return err
-	}
 
-	// Do these in reverse since converting.
+	// Try the alternate cipher under the current key, and both ciphers under the previous key.
 	sc := fs.fcfg.Cipher
 	osc := AES
 	if sc == AES {
 		osc = ChaCha
 	}
-	kek, err := genEncryptionKey(osc, rb)
-	if err != nil {
-		return err
+	type prfWithCipher struct {
+		keyGen
+		StoreCipher
 	}
-	ns := kek.NonceSize()
-	nonce := ekey[:ns]
-	seed, err := kek.Open(nil, nonce, ekey[ns:], nil)
-	if err != nil {
-		return err
+	var prfs []prfWithCipher
+	if fs.prf != nil {
+		prfs = append(prfs, prfWithCipher{fs.prf, osc})
 	}
-	aek, err := genEncryptionKey(osc, seed)
-	if err != nil {
-		return err
-	}
-	// Now read in and decode our state using the old cipher.
-	buf, err := os.ReadFile(o.ifn)
-	if err != nil {
-		return err
-	}
-	buf, err = aek.Open(nil, buf[:ns], buf[ns:], nil)
-	if err != nil {
-		return err
+	if fs.oldprf != nil {
+		prfs = append(prfs, prfWithCipher{fs.oldprf, sc})
+		prfs = append(prfs, prfWithCipher{fs.oldprf, osc})
 	}
 
-	// Since we are here we recovered our old state.
-	// Now write our meta, which will generate the new keys with the new cipher.
-	if err := o.writeConsumerMeta(); err != nil {
-		return err
-	}
+	fs.mu.RLock()
+	sname := fs.cfg.Name
+	fs.mu.RUnlock()
+	ctxName := []byte(sname + tsep + o.name)
 
-	// Now write out or state with the new cipher.
-	return o.writeState(buf)
+	for _, prf := range prfs {
+		rb, err := prf.keyGen(ctxName)
+		if err != nil {
+			continue
+		}
+		kek, err := genEncryptionKey(prf.StoreCipher, rb)
+		if err != nil {
+			continue
+		}
+		ns := kek.NonceSize()
+		if len(ekey) < ns {
+			continue
+		}
+		seed, err := kek.Open(nil, ekey[:ns], ekey[ns:], nil)
+		if err != nil {
+			continue
+		}
+		aek, err := genEncryptionKey(prf.StoreCipher, seed)
+		if err != nil {
+			return err
+		}
+
+		// Read and decrypt our state if it exists.
+		var stateBuf []byte
+		if buf, err := os.ReadFile(o.ifn); err == nil {
+			if len(buf) > 0 {
+				if len(buf) < ns {
+					return errCorruptState
+				}
+				stateBuf, err = aek.Open(nil, buf[:ns], buf[ns:], nil)
+				if err != nil {
+					return err
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+
+		// Since we are here we recovered our old state.
+		// Now write our meta, which will generate the new keys with the new cipher/key.
+		if err := o.writeConsumerMeta(); err != nil {
+			return err
+		}
+
+		// Now write out our state with the new cipher/key if we had any.
+		if len(stateBuf) > 0 {
+			return o.writeState(stateBuf)
+		}
+		return nil
+	}
+	return errKeyInvalid
 }
 
 // Kick flusher for this consumer.
