@@ -80,6 +80,13 @@ func (d *diskIOSemaphore) release() {
 	d.ch <- struct{}{}
 }
 
+// waitForRename yields the caller's slot during backoff and reacquires it before returning.
+func (d *diskIOSemaphore) waitForRename(delay time.Duration) {
+	d.release()
+	time.Sleep(delay)
+	d.acquire()
+}
+
 func (d *diskIOSemaphore) cap() int {
 	return cap(d.ch)
 }

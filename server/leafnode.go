@@ -2205,10 +2205,16 @@ func (s *Server) addLeafNodeConnection(c *client, srvName, clusterName string, c
 			// When a remote with a system account is present in a server, unless otherwise disabled, the server will be
 			// started in observer mode. Now that it is clear that this not used, turn the observer mode off.
 			if solicited && meta != nil && meta.IsObserver() {
-				meta.setObserver(false, extNotExtended)
 				c.Debugf("Turning JetStream metadata controller Observer Mode off")
 				// Take note that the domain was not extended to avoid this state from startup.
-				writePeerState(c.srv.diskIOSemaphore(), js.config.StoreDir, meta.currentPeerState())
+				meta.Lock()
+				meta.setObserverLocked(false, extNotExtended)
+				result, err := writePeerState(meta.dios, js.config.StoreDir, meta.currentPeerStateLocked())
+				meta.Unlock()
+				result.Report(c.srv.Warnf, err)
+				if err != nil {
+					c.srv.Warnf("Could not persist JetStream observer state in %q, continuing campaign: %v", js.config.StoreDir, err)
+				}
 				// Meta controller can't be leader yet.
 				// Yet it is possible that due to observer mode every server already stopped campaigning.
 				// Therefore this server needs to be kicked into campaigning gear explicitly.

@@ -90,3 +90,11 @@ held when calling newServiceReply.
 
     siReplyOnce -> Account
     siReplyOnce -> client
+
+The consumer file store serializes state writes and its final close with writeMu.
+Writers take writeMu before the consumer store mutex, and release the latter during disk I/O.
+Close releases the consumer store mutex before waiting for the flusher or writeMu. The file
+store releases cmu before stopping its consumers; close can take cmu to unregister the consumer.
+
+    consumerFileStore.writeMu -> consumerFileStore.mu
+    consumerFileStore.writeMu -> fileStore.cmu

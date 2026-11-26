@@ -33,6 +33,7 @@ import (
 
 	"golang.org/x/crypto/ocsp"
 
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 	"github.com/nats-io/nats-server/v2/server/certidp"
 	"github.com/nats-io/nats-server/v2/server/certstore"
 )
@@ -861,8 +862,11 @@ func (oc *OCSPMonitor) writeOCSPStatus(storeDir, file string, data []byte) error
 	}
 
 	oc.mu.Lock()
-	err = os.Rename(tmp.Name(), filepath.Join(storeDir, file))
+	result, err := filerename.Rename(tmp.Name(), filepath.Join(storeDir, file), nil)
 	oc.mu.Unlock()
+	if oc.srv != nil {
+		result.Report(oc.srv.Warnf, err)
+	}
 	if err != nil {
 		os.Remove(tmp.Name())
 		return err

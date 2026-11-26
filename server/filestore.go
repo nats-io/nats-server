@@ -46,6 +46,7 @@ import (
 	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/elastic"
@@ -225,6 +226,8 @@ type fileStore struct {
 	lpex        time.Time // Last PurgeEx call.
 	dios        *diskIOSemaphore
 	sources     map[string]*StreamSourceState
+
+	consumerDirs map[string]struct{} // Persistent consumer directories being opened, used or closed; guarded by cmu.
 }
 
 // Represents a message store block and its data.
@@ -1625,7 +1628,8 @@ func (mb *msgBlock) convertCipher() error {
 		// the old keyfile back.
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
 			keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
-			writeFileWithSync(fs.dios, keyFile, ekey, defaultFilePerms)
+			result, restoreErr := writeFileWithSyncResult(fs.dios, keyFile, ekey, defaultFilePerms)
+			fs.reportRename(result, restoreErr)
 			return err
 		}
 		mb.bek.XORKeyStream(buf, buf)
@@ -5489,13 +5493,13 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 		return err
 	}
 	mb.aek, mb.bek, mb.seed, mb.nonce = key, bek, seed, encrypted[:key.NonceSize()]
-	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
+	mdir := filepath.Dir(mb.mfn)
 	keyFile := filepath.Join(mdir, fmt.Sprintf(keyScan, mb.index))
 	if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
-	err = writeAtomically(fs.dios, keyFile, encrypted, defaultFilePerms, sync)
+	err = fs.writeFileAtomically(keyFile+".tmp", keyFile, encrypted, defaultFilePerms, sync)
 	if err != nil {
 		return err
 	}
@@ -6864,7 +6868,7 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 	// We will write to a new file and mv/rename it in case of failure.
 	mfn := filepath.Join(mb.fs.fcfg.StoreDir, msgDir, fmt.Sprintf(newScan, mb.index))
 	sync := mb.fs.syncAlways.Load() || mb.fs.syncOnFlush.Load()
-	if err := writeAtomicallyWithTemp(mb.fs.dios, mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
+	if err := mb.fs.writeFileAtomically(mfn, mb.mfn, nbuf, defaultFilePerms, sync); err != nil {
 		return err
 	}
 
@@ -8383,7 +8387,7 @@ func (mb *msgBlock) atomicOverwriteFile(buf []byte, allowCompress bool) error {
 	}
 
 	// Now replace the original file with the newly updated temp file.
-	if err := os.Rename(tmpFN, origFN); err != nil {
+	if err := mb.fs.renameFile(tmpFN, origFN, nil); err != nil {
 		return fmt.Errorf("failed to move temporary file into place: %w", err)
 	}
 
@@ -11074,138 +11078,150 @@ func (fs *fileStore) purge(fseq uint64) (uint64, error) {
 
 // Lock must be held.
 func (fs *fileStore) purgeLocked(fseq uint64) (purged, bytes uint64, err error) {
-	// Always return previous write errors.
 	if err := fs.werr; err != nil {
 		return 0, 0, err
 	}
 
-	purged, bytes = fs.state.Msgs, fs.state.Bytes
-
-	fs.state.FirstSeq = fs.state.LastSeq + 1
-	fs.state.FirstTime = time.Time{}
-
-	fs.state.Bytes = 0
-	fs.state.Msgs = 0
-
+	// Until the staged block is promoted, recovery must see the complete original stream.
+	var highest uint32
 	for _, mb := range fs.blks {
-		// These blocks are being discarded by the purge, so mark them closed.
-		mb.mu.Lock()
-		mb.dirtyCloseWithRemove(false)
-		mb.closed = true
-		mb.mu.Unlock()
-	}
-
-	// Check if we need to set the first seq to a new number.
-	if fseq > fs.state.FirstSeq {
-		fs.state.FirstSeq = fseq
-		fs.state.LastSeq = fseq - 1
-	}
-
-	// Make sure we have a lmb to write to.
-	if _, err := fs.newMsgBlockForWrite(); err != nil {
-		return purged, bytes, err
-	}
-
-	lmb := fs.lmb
-	atomic.StoreUint64(&lmb.first.seq, fs.state.FirstSeq)
-	atomic.StoreUint64(&lmb.last.seq, fs.state.LastSeq)
-	lmb.last.ts = fs.state.LastTime.UnixNano()
-
-	if lseq := atomic.LoadUint64(&lmb.last.seq); lseq > 0 {
-		// Leave a tombstone so we can remember our starting sequence in case
-		// full state becomes corrupted.
-		if err := fs.writeTombstone(lseq, lmb.last.ts); err != nil {
-			return purged, bytes, err
+		if err := mb.flushPendingMsgs(); err != nil {
+			return 0, 0, err
 		}
+		highest = max(highest, mb.index)
 	}
-	// Close FDs since we'll move the file. We re-enable the FD after the purge is complete.
-	if err := lmb.flushPendingMsgs(); err != nil {
-		return purged, bytes, err
+	index := highest + 1
+	if index == 0 {
+		return 0, 0, errors.New("purge block index overflow")
 	}
-	if err := lmb.closeFDs(); err != nil {
-		return purged, bytes, err
+	last := fs.state.LastSeq
+	if fseq > last {
+		last = fseq - 1
 	}
-
-	fs.blks = nil
-	fs.lmb = nil
-	fs.bim = make(map[uint32]*msgBlock)
-	// Clear any per subject tracking.
-	fs.psim, fs.tsl = fs.psim.Empty(), 0
-	fs.sdm.empty()
-	// Mark dirty.
-	fs.dirty++
-	fs.addMsgBlock(lmb)
-
-	// Move the msgs directory out of the way, will delete out of band.
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	ndir := filepath.Join(fs.fcfg.StoreDir, newMsgDir)
 	pdir := filepath.Join(fs.fcfg.StoreDir, purgeDir)
-	fs.dios.acquire()
-	// If purge directory still exists then we need to wait
-	// in place and remove since rename would fail.
-	if _, err := os.Stat(ndir); err == nil {
-		if err = os.RemoveAll(ndir); err != nil {
-			fs.dios.release()
-			return purged, bytes, err
+	prep := filepath.Join(ndir, purgePrepDir)
+	// Legacy recovery uses a staged key to identify a block to discard from msgs.
+	// Refuse to stage an index that could name an existing on-disk block or key.
+	for _, format := range []string{blkScan, keyScan} {
+		name := filepath.Join(mdir, fmt.Sprintf(format, index))
+		if _, err := os.Lstat(name); err == nil {
+			return 0, 0, fmt.Errorf("purge staging index already exists: %s", name)
+		} else if !os.IsNotExist(err) {
+			return 0, 0, err
 		}
-	} else if !os.IsNotExist(err) {
-		fs.dios.release()
-		return purged, bytes, err
 	}
-	if _, err := os.Stat(pdir); err == nil {
-		if err = os.RemoveAll(pdir); err != nil {
-			fs.dios.release()
-			return purged, bytes, err
-		}
-	} else if !os.IsNotExist(err) {
-		fs.dios.release()
-		return purged, bytes, err
+	fs.dios.acquire()
+	err = os.RemoveAll(ndir)
+	if err == nil {
+		err = os.RemoveAll(pdir)
+	}
+	if err == nil {
+		err = os.MkdirAll(prep, defaultDirPerms)
+	}
+	fs.dios.release()
+	if err != nil {
+		return 0, 0, err
 	}
 
-	// Create directory to move the new tombstone to.
-	if err := os.MkdirAll(ndir, defaultDirPerms); err != nil {
-		fs.dios.release()
-		return purged, bytes, err
+	lmb, err := fs.preparePurgeBlock(prep, index, last)
+	if err != nil {
+		return 0, 0, err
 	}
-	// Move out the block containing the tombstone. Also move the key file if encrypted.
-	// The block file itself MUST be moved last to ensure we can assume the prior renames
-	// were successful during recovery.
-	for _, mbf := range []string{fmt.Sprintf(keyScan, lmb.index), fmt.Sprintf(blkScan, lmb.index)} {
-		b := filepath.Join(mdir, mbf)
-		a := filepath.Join(ndir, mbf)
-		if err := os.Rename(b, a); err != nil && !os.IsNotExist(err) {
+
+	fs.dios.acquire()
+	if lmb.kfn != _EMPTY_ {
+		if err := fs.renameFile(lmb.kfn, filepath.Join(ndir, filepath.Base(lmb.kfn)), fs.dios.waitForRename); err != nil {
 			fs.dios.release()
+			return 0, 0, err
+		}
+	}
+	// A complete block at the top level is the existing recovery commit point,
+	// including for an empty stream where the block contains no tombstone.
+	if err := fs.renameFile(lmb.mfn, filepath.Join(ndir, filepath.Base(lmb.mfn)), fs.dios.waitForRename); err != nil {
+		fs.dios.release()
+		return 0, 0, err
+	}
+	fs.dios.release()
+	// An empty prep directory is harmless if a crash or an open handle leaves it behind.
+	_ = os.Remove(prep)
+
+	purged, bytes = fs.state.Msgs, fs.state.Bytes
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		err := mb.dirtyCloseWithRemove(false)
+		mb.closed = true
+		mb.mu.Unlock()
+		if err != nil {
 			return purged, bytes, err
 		}
 	}
-	// Purge all remaining messages.
-	if err := os.Rename(mdir, pdir); err != nil {
+	fs.state.FirstSeq, fs.state.LastSeq = last+1, last
+	fs.state.FirstTime = time.Time{}
+	fs.state.Msgs, fs.state.Bytes = 0, 0
+	fs.blks = nil
+	fs.bim = make(map[uint32]*msgBlock)
+	fs.psim, fs.tsl = fs.psim.Empty(), 0
+	fs.sdm.empty()
+	fs.dirty++
+	lmb.mfn = filepath.Join(mdir, filepath.Base(lmb.mfn))
+	if lmb.kfn != _EMPTY_ {
+		lmb.kfn = filepath.Join(mdir, filepath.Base(lmb.kfn))
+	}
+	fs.addMsgBlock(lmb)
+
+	fs.dios.acquire()
+	if err := fs.renameFile(mdir, pdir, fs.dios.waitForRename); err != nil {
 		fs.dios.release()
 		return purged, bytes, err
 	}
-	// Rename the directory back to be left only with the tombstone.
-	if err := os.Rename(ndir, mdir); err != nil {
+	if err := fs.renameFile(ndir, mdir, fs.dios.waitForRename); err != nil {
 		fs.dios.release()
 		return purged, bytes, err
 	}
 	fs.dios.release()
 
-	// Remove the purged messages directory asynchronously.
 	go func() {
 		fs.dios.acquire()
 		_ = os.RemoveAll(pdir)
 		fs.dios.release()
 	}()
-
-	// Re-enable writing for the lmb.
 	lmb.mu.Lock()
 	err = lmb.enableForWriting(fs.fip)
 	lmb.mu.Unlock()
-	if err != nil {
-		return purged, bytes, err
-	}
+	return purged, bytes, err
+}
 
-	return purged, bytes, nil
+const purgePrepDir = "prep"
+
+// Prepare an unpublished, closed block using the normal on-disk record and key formats.
+func (fs *fileStore) preparePurgeBlock(dir string, index uint32, last uint64) (*msgBlock, error) {
+	mb := fs.initMsgBlock(index)
+	mb.mfn = filepath.Join(dir, fmt.Sprintf(blkScan, index))
+	mb.first.seq, mb.last.seq = last+1, last
+	mb.last.ts = fs.state.LastTime.UnixNano()
+	mb.fss = stree.NewSubjectTree[SimpleState]()
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	if err := mb.setupWriteCache(nil); err != nil {
+		return nil, err
+	}
+	// No flusher for the staging file: its owner flushes and closes it before promotion.
+	err := mb.enableForWriting(true)
+	if err == nil && fs.prf != nil {
+		err = fs.genEncryptionKeysForBlock(mb)
+	}
+	if err == nil && last > 0 {
+		err = mb.writeMsgRecordLocked(emptyRecordLen, last|tbit, _EMPTY_, nil, nil, mb.last.ts, false, false)
+		if err == nil {
+			_, err = mb.flushPendingMsgsLocked()
+		}
+	}
+	if closeErr := mb.dirtyCloseWithRemove(false); err == nil {
+		err = closeErr
+	}
+	return mb, err
 }
 
 // Lock and dios should be held.
@@ -11223,9 +11239,12 @@ func (fs *fileStore) recoverPartialPurge() error {
 			if err = os.RemoveAll(mdir); err != nil {
 				return err
 			}
-			if err = os.Rename(ndir, mdir); err != nil {
+			if err = fs.renameFile(ndir, mdir, fs.dios.waitForRename); err != nil {
 				return err
 			}
+		} else if slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.IsDir() && e.Name() == purgePrepDir }) {
+			// New-format preparation never writes a purge record into the live directory.
+			return os.RemoveAll(ndir)
 		} else {
 			// No .blk means the purge did not complete, so clear
 			// any progress made by the partial purge.
@@ -11470,7 +11489,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 			// We will write to a new file and mv/rename it in case of failure.
 			sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
-			err = writeAtomically(fs.dios, smb.mfn, nbuf, defaultFilePerms, sync)
+			err = fs.writeFileAtomically(smb.mfn+".tmp", smb.mfn, nbuf, defaultFilePerms, sync)
 			if err != nil {
 				smb.mu.Unlock()
 				return purged, bytes, err
@@ -12651,7 +12670,7 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 	// Now move into different directory with "." prefix.
 	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir))
-	if err := os.Rename(fs.fcfg.StoreDir, ndir); err != nil {
+	if err := fs.renameFile(fs.fcfg.StoreDir, ndir, nil); err != nil {
 		return err
 	}
 	// Do this in separate Go routine in case lots of blocks.
@@ -12771,6 +12790,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 	// the store lock.
 	fs.wfsmu.Lock()
 	defer fs.wfsmu.Unlock()
+	// A caller can have passed the first closed check while waiting for another
+	// writer. Stop drains this lock before handing the directory to a new owner.
+	if fs.isClosed() {
+		return nil
+	}
 
 	start := time.Now()
 	fs.mu.RLock()
@@ -13277,17 +13301,28 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	fs.syncMu.Lock()
 	fs.syncMu.Unlock() //nolint:staticcheck // Only waiting for in-flight syncBlocks.
 
+	// Both periodic and explicitly requested full-state writes may be between
+	// releasing fs.mu and replacing an auxiliary index. Drain them before Delete
+	// can move the stream directory; writers that have not started see closed.
+	fs.wfsmu.Lock()
+	fs.wfsmu.Unlock() //nolint:staticcheck // Only waiting for an in-flight state write.
+
 	fs.cmu.Lock()
 	var _cfs [256]ConsumerStore
 	cfs := append(_cfs[:0], fs.cfs...)
 	fs.cfs = nil
 	fs.cmu.Unlock()
 
+	var consumerErr error
 	for _, o := range cfs {
+		var err error
 		if delete {
-			o.StreamDelete()
+			err = o.StreamDelete()
 		} else {
-			o.Stop()
+			err = o.Stop()
+		}
+		if err != nil && consumerErr == nil {
+			consumerErr = err
 		}
 	}
 
@@ -13299,7 +13334,7 @@ func (fs *fileStore) stop(delete, writeState bool) error {
 	ats.Unregister()
 
 	fs.debug("Stopped")
-	return nil
+	return consumerErr
 }
 
 const errFile = "errors.txt"
@@ -13908,25 +13943,27 @@ func deleteBlockContentsEqual(a, b DeleteBlock) bool {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	mu      sync.Mutex
-	fs      *fileStore
-	cfg     *FileConsumerInfo
-	prf     keyGen
-	aek     cipher.AEAD
-	name    string
-	odir    string
-	ifn     string
-	hh      *highwayhash.Digest64
-	state   ConsumerState
-	fch     chan struct{}
-	qch     chan struct{}
-	flusher bool
-	writing bool
-	dirty   bool
-	closed  bool
+	mu          sync.Mutex
+	writeMu     sync.Mutex // Serializes state I/O, without blocking delivery/ACK updates.
+	fs          *fileStore
+	cfg         *FileConsumerInfo
+	prf         keyGen
+	aek         cipher.AEAD
+	name        string
+	odir        string
+	ifn         string
+	hh          *highwayhash.Digest64
+	state       ConsumerState
+	fch         chan struct{}
+	qch         chan struct{}
+	flusherDone chan struct{}
+	closeDone   chan struct{}
+	closeErr    error
+	dirty       bool
+	closed      bool
 }
 
-func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
+func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (_ ConsumerStore, retErr error) {
 	if fs == nil {
 		return nil, fmt.Errorf("filestore is nil")
 	}
@@ -13948,6 +13985,24 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	}
 
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
+	// A stream unregisters its consumer before the old store has finished closing.
+	// Reserve the directory before touching files, including during construction.
+	dirKey := consumerDirKey(odir)
+	fs.cmu.Lock()
+	if _, exists := fs.consumerDirs[dirKey]; exists {
+		fs.cmu.Unlock()
+		return nil, NewJSConsumerNameExistError()
+	}
+	if fs.consumerDirs == nil {
+		fs.consumerDirs = make(map[string]struct{})
+	}
+	fs.consumerDirs[dirKey] = struct{}{}
+	fs.cmu.Unlock()
+	defer func() {
+		if retErr != nil {
+			fs.releaseConsumerDir(dirKey)
+		}
+	}()
 	if err := mkdirAllWithOptionalSync(fs.dios, odir, defaultDirPerms, fs.syncAlways.Load() || fs.syncOnFlush.Load()); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
@@ -14060,6 +14115,8 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	// Create channels to control our flush go routine.
 	o.fch = make(chan struct{}, 1)
 	o.qch = make(chan struct{})
+	o.flusherDone = make(chan struct{})
+	fch, qch := o.fch, o.qch
 
 	// Make sure to load in our state from disk if needed.
 	if err = o.loadState(); err != nil {
@@ -14071,8 +14128,21 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		return nil, err
 	}
 
-	go o.flushLoop(o.fch, o.qch)
+	go o.flushLoop(fch, qch)
 	return o, nil
+}
+
+func consumerDirKey(dir string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(dir)
+	}
+	return dir
+}
+
+func (fs *fileStore) releaseConsumerDir(key string) {
+	fs.cmu.Lock()
+	delete(fs.consumerDirs, key)
+	fs.cmu.Unlock()
 }
 
 func (o *consumerFileStore) convertCipher() error {
@@ -14147,32 +14217,20 @@ func (o *consumerFileStore) kickFlusher() {
 	o.dirty = true
 }
 
-// Set in flusher status
-func (o *consumerFileStore) setInFlusher() {
-	o.mu.Lock()
-	o.flusher = true
-	o.mu.Unlock()
-}
-
-// Clear in flusher status
-func (o *consumerFileStore) clearInFlusher() {
-	o.mu.Lock()
-	o.flusher = false
-	o.mu.Unlock()
-}
-
 // Report in flusher status
 func (o *consumerFileStore) inFlusher() bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.flusher
+	select {
+	case <-o.flusherDone:
+		return false
+	default:
+		return true
+	}
 }
 
 // flushLoop watches for consumer updates and the quit channel.
 func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 
-	o.setInFlusher()
-	defer o.clearInFlusher()
+	defer close(o.flusherDone)
 
 	// Maintain approximately 10 updates per second per consumer under load.
 	const minTime = 100 * time.Millisecond
@@ -14204,21 +14262,11 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 					return
 				}
 			}
-			o.mu.Lock()
-			if o.closed {
-				o.mu.Unlock()
+			if err := o.writeState(nil); err == ErrStoreClosed {
 				return
-			}
-			buf, err := o.encodeState()
-			if err != nil {
-				o.mu.Unlock()
-				return
-			}
-			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeStateLocked(buf, true); err == nil {
+			} else if err == nil {
 				lastWrite = time.Now()
 			}
-			o.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -14228,17 +14276,24 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 // SetStarting sets our starting stream sequence.
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	if o.closed {
+		o.mu.Unlock()
+		return ErrStoreClosed
+	}
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
-	buf := encodeConsumerState(&o.state)
-	return o.writeStateLocked(buf, true)
+	o.dirty = true
+	o.mu.Unlock()
+	return o.writeState(nil)
 }
 
 // UpdateStarting updates our starting stream sequence.
 func (o *consumerFileStore) UpdateStarting(sseq uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return
+	}
 
 	if sseq > o.state.Delivered.Stream {
 		o.state.Delivered.Stream = sseq
@@ -14254,9 +14309,14 @@ func (o *consumerFileStore) UpdateStarting(sseq uint64) {
 // Reset all values in the store, and reset the starting sequence.
 func (o *consumerFileStore) Reset(sseq uint64) error {
 	o.mu.Lock()
-	o.state = ConsumerState{}
+	if o.closed {
+		o.mu.Unlock()
+		return ErrStoreClosed
+	}
+	o.state = ConsumerState{Delivered: SequencePair{Stream: sseq}, AckFloor: SequencePair{Stream: sseq}}
+	o.dirty = true
 	o.mu.Unlock()
-	return o.SetStarting(sseq)
+	return o.writeState(nil)
 }
 
 // HasState returns if this store has a recorded state.
@@ -14276,6 +14336,9 @@ func (o *consumerFileStore) HasState() bool {
 func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return ErrStoreClosed
+	}
 
 	if dc != 1 && o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy
@@ -14345,6 +14408,9 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return ErrStoreClosed
+	}
 
 	if o.cfg.AckPolicy == AckNone {
 		return ErrNoAckPolicy
@@ -14443,6 +14509,9 @@ func (o *consumerFileStore) RemoveRedeliveredBelow(seq uint64) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return
+	}
 	var removed bool
 	for s := range o.state.Redelivered {
 		if s < seq {
@@ -14533,6 +14602,9 @@ func (o *consumerFileStore) Update(state *ConsumerState) error {
 	defer o.mu.Unlock()
 
 	// Check to see if this is an outdated update.
+	if o.closed {
+		return ErrStoreClosed
+	}
 	if state.Delivered.Consumer < o.state.Delivered.Consumer || state.AckFloor.Stream < o.state.AckFloor.Stream {
 		return ErrStoreOldUpdate
 	}
@@ -14579,16 +14651,17 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 
 	// Replace our state.
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	if o.closed {
+		o.mu.Unlock()
+		return ErrStoreClosed
+	}
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
-	buf, err := o.encodeState()
-	if err != nil {
-		return err
-	}
-	return o.writeStateLocked(buf, true)
+	o.dirty = true
+	o.mu.Unlock()
+	return o.writeState(nil)
 }
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
@@ -14608,24 +14681,26 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 }
 
 func (o *consumerFileStore) writeState(buf []byte) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.writeStateLocked(buf, false)
-}
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
 
-// If current, buf is the state as of now.
-// Lock should be held, it's released while writing the file.
-func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
+	o.mu.Lock()
 	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
 	if o.closed {
+		o.mu.Unlock()
 		return ErrStoreClosed
 	}
-	// Check if we have the index file open.
-	if o.writing || len(buf) == 0 {
-		// Skipped because of another write. Kick the flusher so this state still gets written.
-		if len(buf) > 0 {
-			o.kickFlusher()
+	// Snapshot the latest state only after acquiring the writer. During cipher
+	// conversion the store is unpublished and buf contains the decoded old state.
+	if buf == nil || o.flusherDone != nil {
+		if !o.dirty {
+			o.mu.Unlock()
+			return nil
 		}
+		buf = encodeConsumerState(&o.state)
+	}
+	if len(buf) == 0 {
+		o.mu.Unlock()
 		return nil
 	}
 
@@ -14633,16 +14708,12 @@ func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 	if o.aek != nil {
 		var err error
 		if buf, err = o.encryptState(buf); err != nil {
+			o.mu.Unlock()
 			return err
 		}
 	}
 
-	o.writing = true
-	// Only the current state leaves nothing more to write.
-	// An older one could miss an update made since it was encoded.
-	if current {
-		o.dirty = false
-	}
+	o.dirty = false
 	ifn := o.ifn
 	o.mu.Unlock()
 
@@ -14653,7 +14724,8 @@ func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 	if err != nil {
 		o.dirty = true
 	}
-	o.writing = false
+	o.mu.Unlock()
+
 	return err
 }
 
@@ -14993,107 +15065,74 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 
 // Stop the processing of the consumers's state.
 func (o *consumerFileStore) Stop() error {
-	o.mu.Lock()
-	if o.closed {
-		o.mu.Unlock()
-		return nil
-	}
-	if o.qch != nil {
-		close(o.qch)
-		o.qch = nil
-	}
-
-	var err error
-	var buf []byte
-
-	if o.dirty {
-		// Make sure to write this out..
-		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
-			if o.aek != nil {
-				if buf, err = o.encryptState(buf); err != nil {
-					o.mu.Unlock()
-					return err
-				}
-			}
-		}
-	}
-
-	o.odir = _EMPTY_
-	o.closed = true
-	ifn, fs := o.ifn, o.fs
-	o.mu.Unlock()
-
-	if err = fs.RemoveConsumer(o); err != nil {
-		return err
-	}
-
-	// Wait for an in-progress flush, even if not dirty, so the state is on disk when we return.
-	o.waitOnFlusher()
-	if len(buf) > 0 {
-		err = o.fs.writeFileWithOptionalSync(ifn, buf, defaultFilePerms)
-	}
-	return err
-}
-
-func (o *consumerFileStore) waitOnFlusher() {
-	if !o.inFlusher() {
-		return
-	}
-
-	timeout := time.Now().Add(100 * time.Millisecond)
-	for time.Now().Before(timeout) {
-		if !o.inFlusher() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return o.close(false, false)
 }
 
 // Delete the consumer.
 func (o *consumerFileStore) Delete() error {
-	return o.delete(false)
+	return o.close(true, false)
 }
 
 func (o *consumerFileStore) StreamDelete() error {
-	return o.delete(true)
+	return o.close(true, true)
 }
 
-func (o *consumerFileStore) delete(streamDeleted bool) error {
+func (o *consumerFileStore) close(deleting, streamDeleted bool) (err error) {
 	o.mu.Lock()
-	if o.closed {
+	if done := o.closeDone; done != nil {
 		o.mu.Unlock()
-		return nil
+		<-done
+		return o.closeErr
 	}
+	o.closeDone = make(chan struct{})
+	o.closed = true
 	if o.qch != nil {
 		close(o.qch)
 		o.qch = nil
 	}
-
 	odir := o.odir
 	o.odir = _EMPTY_
-	o.closed = true
-	fs := o.fs
 	o.mu.Unlock()
+	defer func() {
+		o.fs.releaseConsumerDir(consumerDirKey(odir))
+		o.closeErr = err
+		close(o.closeDone)
+	}()
 
-	// If our stream was not deleted this will remove the directories.
-	if odir != _EMPTY_ && !streamDeleted {
-		if err := removeAllWithRetry(o.fs.dios, odir); err != nil {
-			return err
+	// The background and synchronous writers both need o.mu to publish their
+	// result. Keep it free while draining them, including a failed write which
+	// marks the state dirty again.
+	<-o.flusherDone
+	o.writeMu.Lock()
+	defer o.writeMu.Unlock()
+
+	if !deleting {
+		o.mu.Lock()
+		var buf []byte
+		if o.dirty {
+			buf, err = o.encryptState(encodeConsumerState(&o.state))
 		}
+		o.mu.Unlock()
+		if err == nil && len(buf) > 0 {
+			err = o.fs.writeFileWithOptionalSync(o.ifn, buf, defaultFilePerms)
+		}
+	} else if !streamDeleted {
+		err = removeAllWithRetry(o.fs.dios, odir)
 	}
-
 	if !streamDeleted {
-		if err := fs.RemoveConsumer(o); err != nil {
-			return err
+		if removeErr := o.fs.RemoveConsumer(o); err == nil {
+			err = removeErr
 		}
 	}
-
-	return nil
+	return err
 }
 
 func (fs *fileStore) AddConsumer(o ConsumerStore) error {
 	fs.cmu.Lock()
 	defer fs.cmu.Unlock()
+	if fs.isClosed() {
+		return ErrStoreClosed
+	}
 	fs.cfs = append(fs.cfs, o)
 	return nil
 }
@@ -15234,14 +15273,36 @@ func (alg StoreCompression) Decompress(buf []byte) ([]byte, error) {
 // handled automatically by this function, so don't wrap calls to it in dios.
 func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs.FileMode) error {
 	sync := fs.syncAlways.Load() || fs.syncOnFlush.Load()
-	return writeAtomically(fs.dios, name, data, perm, sync)
+	return fs.writeFileAtomically(name+".tmp", name, data, perm, sync)
+}
+
+func (fs *fileStore) reportRename(result filerename.Result, err error) {
+	if fs.srv != nil {
+		result.Report(fs.srv.Warnf, err)
+	}
+}
+
+func (fs *fileStore) renameFile(from, to string, wait func(time.Duration)) error {
+	result, err := filerename.Rename(from, to, wait)
+	fs.reportRename(result, err)
+	return err
+}
+
+func (fs *fileStore) writeFileAtomically(tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
+	result, err := writeAtomicallyWithTemp(fs.dios, tmp, name, data, perm, sync)
+	fs.reportRename(result, err)
+	return err
+}
+
+func writeFileWithSyncResult(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) (filerename.Result, error) {
+	return writeAtomicallyWithTemp(dios, name+".tmp", name, data, perm, true)
 }
 
 // renameWithOptionalSync renames from to to, and flushes the directory metadata if sync is set.
 func renameWithOptionalSync(dios *diskIOSemaphore, from, to string, sync bool) error {
 	dios.acquire()
 	defer dios.release()
-	if err := os.Rename(from, to); err != nil {
+	if _, err := filerename.Rename(from, to, dios.waitForRename); err != nil {
 		return err
 	}
 	if sync && canFsyncDirectories {
@@ -15251,18 +15312,16 @@ func renameWithOptionalSync(dios *diskIOSemaphore, from, to string, sync bool) e
 }
 
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
-	return writeAtomically(dios, name, data, perm, true)
+	_, err := writeFileWithSyncResult(dios, name, data, perm)
+	return err
 }
 
 // Windows does not support fsyncing directory metadata, it results in a panic, so
 // we need to skip doing this there.
 const canFsyncDirectories = runtime.GOOS != "windows"
 
-func writeAtomically(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode, sync bool) error {
-	return writeAtomicallyWithTemp(dios, name+".tmp", name, data, perm, sync)
-}
-
-func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) error {
+func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byte, perm fs.FileMode, sync bool) (filerename.Result, error) {
+	var result filerename.Result
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if sync {
 		flags = flags | os.O_SYNC
@@ -15271,30 +15330,31 @@ func writeAtomicallyWithTemp(dios *diskIOSemaphore, tmp, name string, data []byt
 	defer dios.release()
 	f, err := os.OpenFile(tmp, flags, perm)
 	if err != nil {
-		return err
+		return result, err
 	}
 	if _, err := f.Write(data); err != nil {
 		// Close fd, but ignore its error since write takes precedence.
 		_ = f.Close()
 		_ = os.Remove(tmp)
-		return err
+		return result, err
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return result, err
 	}
-	if err := os.Rename(tmp, name); err != nil {
+	result, err = filerename.Rename(tmp, name, dios.waitForRename)
+	if err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return result, err
 	}
 	if sync && canFsyncDirectories {
 		// To ensure that the file rename was persisted on all filesystems,
 		// also try to flush the directory metadata.
 		if err = syncDir(filepath.Dir(name)); err != nil {
-			return err
+			return result, err
 		}
 	}
-	return nil
+	return result, nil
 }
 
 func (fs *fileStore) syncFileAndDir(name string) error {
