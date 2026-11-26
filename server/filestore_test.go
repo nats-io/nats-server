@@ -13735,7 +13735,7 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 		ms.add(uint64(seq), subj, ts)
 	}
 
-	b := ms.encode(12345)
+	b := ms.encode(12345, stateChecksumKey("TEST"))
 	require_True(t, len(b) > 17) // Bigger than just the header
 
 	nms := newMsgScheduling(func() {})
@@ -13758,19 +13758,15 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	}
 }
 
-// Newer servers write version 2, the version 1 encoding followed by a checksum.
-func encodeMsgSchedulingVersion2(ms *MsgScheduling, highSeq uint64, key []byte) []byte {
-	b := ms.encode(highSeq)
-	b[0] = 2
-	return appendStateChecksum(b, key)
-}
-
-func TestFileStoreMessageScheduleDecodeVersion2(t *testing.T) {
+func TestFileStoreMessageScheduleDecodeVersion1(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	ts := time.Now().Add(time.Second).UnixNano()
 	ms.add(1, "foo", ts)
 
-	b := encodeMsgSchedulingVersion2(ms, 12345, stateChecksumKey("TEST"))
+	// Version 1 is the same encoding without the trailing checksum.
+	b := ms.encode(12345, stateChecksumKey("TEST"))
+	b[0] = 1
+	b = b[:len(b)-checksumSize]
 
 	nms := newMsgScheduling(func() {})
 	stamp, err := nms.decode(b, stateChecksumKey("TEST"))
@@ -13778,6 +13774,49 @@ func TestFileStoreMessageScheduleDecodeVersion2(t *testing.T) {
 	require_Equal(t, stamp, 12345)
 	require_Equal(t, nms.seqToSubj[1], "foo")
 	require_Equal(t, nms.ttls.GetNextExpiration(math.MaxInt64), ts)
+}
+
+func TestFileStoreRecoverCorruptTTLAndScheduleState(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}, AllowMsgTTL: true, AllowMsgSchedules: true}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := genHeader(nil, JSMessageTTL, "1h")
+	hdr = genHeader(hdr, JSSchedulePattern, fmt.Sprintf("@at %s", time.Now().Add(time.Hour).Format(time.RFC3339)))
+	_, _, err = fs.StoreMsg("foo", hdr, nil, 3600)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	// Clear the entry count of both state files, index.db stays valid.
+	// Without the checksum they'd be read as empty and up to date.
+	files := []string{ttlStreamStateFile, msgSchedulingStreamStateFile}
+	for _, name := range files {
+		fn := filepath.Join(dir, msgDir, name)
+		buf, err := os.ReadFile(fn)
+		require_NoError(t, err)
+		clear(buf[1:9])
+		require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+	}
+
+	// The state is recovered from the messages instead.
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	fs.mu.RLock()
+	ttls, schedules := fs.ttls.Count(), len(fs.scheduling.schedules)
+	fs.mu.RUnlock()
+	require_Equal(t, ttls, 1)
+	require_Equal(t, schedules, 1)
+
+	// And written again with a valid checksum.
+	require_NoError(t, fs.Stop())
+	key := stateChecksumKey(cfg.Name)
+	for _, name := range files {
+		buf, err := os.ReadFile(filepath.Join(dir, msgDir, name))
+		require_NoError(t, err)
+		_, err = verifyStateChecksum(buf, key)
+		require_NoError(t, err)
+	}
 }
 
 func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
@@ -13798,13 +13837,9 @@ func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
 		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: ErrMsgScheduleInvalidVersion},
 		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
-		{title: "BadChecksum", buf: func() []byte {
-			b := encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("TEST"))
-			b[9]++
-			return b
-		}(), err: errStateChecksumMismatch},
+		{title: "BadChecksum", buf: func() []byte { b := newMsgScheduling(func() {}).encode(1, stateChecksumKey("TEST")); b[9]++; return b }(), err: errStateChecksumMismatch},
 		// Valid, but encoded for another stream.
-		{title: "WrongKey", buf: encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("OTHER")), err: errStateChecksumMismatch},
+		{title: "WrongKey", buf: newMsgScheduling(func() {}).encode(1, stateChecksumKey("OTHER")), err: errStateChecksumMismatch},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtSubjLen", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Claims one entry, has the subject length but the subject bytes are missing.
@@ -20424,14 +20459,14 @@ func TestFileStoreMessageScheduleDecodeRejectsCorruption(t *testing.T) {
 		schedules map[string]*MsgSchedule
 	}
 	key := stateChecksumKey("TEST")
-	requireCorruptionRejected(t, encodeMsgSchedulingVersion2(ms, 12345, key), func(b []byte) (decoded, error) {
+	requireCorruptionRejected(t, ms.encode(12345, key), func(b []byte) (decoded, error) {
 		nms := newMsgScheduling(func() {})
 		stamp, err := nms.decode(b, key)
 		return decoded{stamp, nms.schedules}, err
 	})
 
 	// Read as version 1, the checksum is left after the entries.
-	b := encodeMsgSchedulingVersion2(ms, 12345, key)
+	b := ms.encode(12345, key)
 	b[0] = 1
 	_, err := newMsgScheduling(func() {}).decode(b, key)
 	require_Error(t, err, errCorruptState)
