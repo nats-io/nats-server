@@ -4135,6 +4135,35 @@ func TestNRGSetupLastSnapshotIgnoresTmpFile(t *testing.T) {
 	require_Equal(t, n.snapfile, sfile)
 }
 
+func TestNRGSetupLastSnapshotRaisesStaleTerm(t *testing.T) {
+	n, cleanup := initSingleMemRaftNode(t)
+	defer cleanup()
+
+	snapDir := filepath.Join(n.sd, snapshotsDir)
+	require_NoError(t, os.MkdirAll(snapDir, defaultDirPerms))
+	snap := &snapshot{
+		lastTerm:  5,
+		lastIndex: 1,
+		peerstate: encodePeerState(n.currentPeerState()),
+		data:      []byte("snapshot"),
+	}
+	sfile := filepath.Join(snapDir, fmt.Sprintf(snapFileT, snap.lastTerm, snap.lastIndex))
+	require_NoError(t, os.WriteFile(sfile, n.encodeSnapshot(snap), defaultFilePerms))
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	// A stale term and vote are raised to the snapshot's term.
+	n.term, n.vote = 2, nats0
+	require_NoError(t, n.setupLastSnapshot())
+	require_Equal(t, n.term, 5)
+	require_Equal(t, n.vote, noVote)
+
+	// A higher term keeps its vote.
+	n.term, n.vote = 7, nats0
+	require_NoError(t, n.setupLastSnapshot())
+	require_Equal(t, n.term, 7)
+	require_Equal(t, n.vote, nats0)
+}
+
 func TestNRGKeepRunningOnServerShutdown(t *testing.T) {
 	n, cleanup := initSingleMemRaftNode(t)
 	defer cleanup()

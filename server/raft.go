@@ -2138,6 +2138,10 @@ func (n *raft) setupLastSnapshot() error {
 	n.pindex = snap.lastIndex
 	n.pterm = snap.lastTerm
 	n.papplied = snap.lastIndex
+	// A stale term and vote are raised to the snapshot's term, like replaying the log does.
+	if n.term < snap.lastTerm {
+		n.term, n.vote = snap.lastTerm, noVote
+	}
 	// Restore the peerState
 	ps, err := decodePeerState(snap.peerstate)
 	if err != nil {
