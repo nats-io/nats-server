@@ -231,6 +231,19 @@ func TestNRGPeerStateFileVersion1(t *testing.T) {
 	t.Run("Corruption", func(t *testing.T) {
 		requireCorruptionRejected(t, file("TEST"), func(b []byte) (*peerState, error) { return decodePeerStateFile(b, key) })
 	})
+
+	// We write exactly the format with a header and checksum.
+	t.Run("Write", func(t *testing.T) {
+		dios := newDiskIOSemaphore(1)
+		sd := t.TempDir()
+		require_NoError(t, writePeerState(dios, sd, "TEST", ps))
+		buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, file("TEST")))
+		dps, err := readPeerState(dios, sd, "TEST")
+		require_NoError(t, err)
+		require_True(t, reflect.DeepEqual(dps, ps))
+	})
 }
 
 func TestNRGPeerStateDecodeTruncated(t *testing.T) {

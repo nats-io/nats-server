@@ -477,7 +477,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(s.diskIOSemaphore(), cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	return writePeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name, &peerState{knownPeers, expected, extUndetermined})
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
@@ -6051,19 +6051,25 @@ func (n *raft) writePeerState(ps *peerState) {
 	}
 	// Stamp latest and write the peer state file.
 	n.wps = pse
-	if err := writePeerState(n.dios, n.sd, ps); err != nil && !n.isClosed() {
+	if err := writePeerState(n.dios, n.sd, n.group, ps); err != nil && !n.isClosed() {
 		n.setWriteErrLocked(err)
 		n.warn("Error writing peer state file for %q: %v", n.group, err)
 	}
 }
 
 // Writes out our peer state outside of a specific raft context.
-func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
+// The group's name is the key for the checksum.
+func writePeerState(dios *diskIOSemaphore, sd, group string, ps *peerState) error {
 	psf := filepath.Join(sd, peerStateFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
+	buf := make([]byte, 0, peerStateHdrLen+peerStateBufSize(ps)+checksumSize)
+	buf = append(buf, peerStateMagic[:]...)
+	buf = append(buf, peerStateVersion)
+	buf = append(buf, encodePeerState(ps)...)
+	buf = appendStateChecksum(buf, stateChecksumKey(group))
+	return writeFileWithSync(dios, psf, buf, defaultFilePerms)
 }
 
 // The group's name is the key for the checksum.
