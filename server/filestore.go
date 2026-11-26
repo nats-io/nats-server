@@ -7068,7 +7068,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	var le = binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
-	le.PutUint32(hdr[0:], uint32(rl))
+	// The checksum covers the whole record, like any other.
+	le.PutUint32(hdr[0:], uint32(rl)|rbit)
 	le.PutUint64(hdr[4:], seq|ebit)
 	le.PutUint64(hdr[12:], 0)
 	le.PutUint16(hdr[20:], 0)
@@ -7087,9 +7088,7 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	b.Write(data)
 
 	// Calculate hash.
-	mb.hh.Reset()
-	mb.hh.Write(hdr[4:20])
-	mb.hh.Write(data)
+	hashRecord(mb.hh, hdr[:], data, 0, false, true)
 	var hb [highwayhash.Size64]byte
 	checksum := mb.hh.Sum(hb[:0])
 	// Write to msg record.
@@ -7999,13 +7998,15 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 
 	var le = binary.LittleEndian
 
-	l := uint32(rl)
+	// The checksum also covers the subject and header lengths.
+	l := uint32(rl) | rbit
 	hasHeaders := len(mhdr) > 0
 	if hasHeaders {
 		l |= hbit
 	}
 
 	// Reserve space for the header on the underlying buffer.
+	start := len(mb.cache.buf)
 	mb.cache.buf = append(mb.cache.buf, make([]byte, msgHdrSize)...)
 	hdr := mb.cache.buf[len(mb.cache.buf)-msgHdrSize : len(mb.cache.buf)]
 	le.PutUint32(hdr[0:], l)
@@ -8025,13 +8026,8 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	mb.cache.buf = append(mb.cache.buf, msg...)
 
 	// Calculate hash.
-	mb.hh.Reset()
-	mb.hh.Write(hdr[4:20])
-	mb.hh.Write(stringToBytes(subj))
-	if hasHeaders {
-		mb.hh.Write(mhdr)
-	}
-	mb.hh.Write(msg)
+	record := mb.cache.buf[start:]
+	hashRecord(mb.hh, record[:msgHdrSize], record[msgHdrSize:], len(subj), hasHeaders, true)
 	checksum := mb.hh.Sum(mb.lchk[:0:highwayhash.Size64])
 	copy(mb.lchk[0:], checksum)
 

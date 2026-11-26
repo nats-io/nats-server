@@ -1703,6 +1703,57 @@ func TestFileStoreBitRot(t *testing.T) {
 	})
 }
 
+func TestFileStoreEraseMsgChecksumCoversWholeRecord(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	for range 2 {
+		_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+		require_NoError(t, err)
+	}
+	_, err = fs.EraseMsg(1)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Unlocks even if a check fails, so stopping the store doesn't hang.
+	func() {
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		_, err := mb.flushPendingMsgsLocked()
+		require_NoError(t, err)
+		buf, err := mb.loadBlock(nil)
+		require_NoError(t, err)
+
+		// The erased record is written with the record bit.
+		rl := binary.LittleEndian.Uint32(buf[0:])
+		require_True(t, rl&rbit != 0)
+		rec := buf[:rl&^(hbit|rbit)]
+		var sm StoreMsg
+		_, err = mb.msgFromBufNoCopy(rec, &sm, mb.hh)
+		require_NoError(t, err)
+
+		// A subject length moved into its random payload is caught too.
+		rec[20] = 1
+		_, err = mb.msgFromBufNoCopy(rec, &sm, mb.hh)
+		require_Error(t, err)
+	}()
+
+	// After a restart the erased message stays gone, and the block still loads.
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	_, err = fs.LoadMsg(1, nil)
+	require_Error(t, err, ErrStoreMsgNotFound, errDeletedMsg)
+	lsm, err := fs.LoadMsg(2, nil)
+	require_NoError(t, err)
+	require_Equal(t, string(lsm.msg), "bar")
+}
+
 func TestFileStoreEraseMsg(t *testing.T) {
 	// Just do no encryption, etc.
 	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
@@ -3965,6 +4016,7 @@ func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
 			require_NoError(t, err)
 			rl, slen := le.Uint32(buf[0:]), int(le.Uint16(buf[20:]))
 			hasHeaders := rl&hbit != 0
+			require_True(t, rl&rbit != 0)
 			rl &^= hbit | rbit
 
 			// Rewrite the record with or without the record bit.
@@ -18045,7 +18097,7 @@ func TestFileStoreIndexCacheBufCountsTTLAndScheduleHeaders(t *testing.T) {
 	buf, err := os.ReadFile(mb.mfn)
 	require_NoError(t, err)
 	le := binary.LittleEndian
-	second := le.Uint32(buf) &^ hbit
+	second := le.Uint32(buf) &^ (hbit | rbit)
 	slen := uint32(le.Uint16(buf[second+20:]))
 	le.PutUint32(buf[second+msgHdrSize+slen:], math.MaxUint32)
 	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
