@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -1438,6 +1439,34 @@ func TestJetStreamLeafNodeJSClusterMigrateRecoveryWithDelay(t *testing.T) {
 	// have failed to elect a stream leader as they were stuck on a
 	// long election timer. Now this should work reliably.
 	lnc.waitOnStreamLeader(globalAccountName, "TEST")
+}
+
+func TestJetStreamLeafNodeNotExtendedPeerStateInMetaDir(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", `domain: "HUB", store_dir:`, 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "HUB", 3)
+	defer c.shutdown()
+
+	lc := c.createLeafNodes("LEAF", 3, "LEAF")
+	defer lc.shutdown()
+	lc.waitOnPeerCount(3)
+
+	// The domains differ, so the meta group leaves observer mode and remembers it wasn't extended.
+	for _, s := range lc.servers {
+		meta := s.getJetStream().getMetaGroup().(*raft)
+		checkFor(t, 5*time.Second, 100*time.Millisecond, func() error {
+			ps, err := readPeerState(s.diskIOSemaphore(), meta.sd)
+			if err != nil {
+				return err
+			}
+			if ps.domainExt != extNotExtended {
+				return fmt.Errorf("expected domain to not be extended, got %v", ps.domainExt)
+			}
+			return nil
+		})
+		// Nothing is written outside the meta group's directory.
+		_, err := os.Stat(filepath.Join(s.JetStreamConfig().StoreDir, peerStateFile))
+		require_True(t, os.IsNotExist(err))
+	}
 }
 
 func TestJetStreamLeafNodeJSClusterMigrateClearObserverOnRemoteRemoval(t *testing.T) {
