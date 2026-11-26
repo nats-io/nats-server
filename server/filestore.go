@@ -13124,7 +13124,18 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 	if len(b) < sourcesHeaderLen {
 		return 0, io.ErrShortBuffer
 	}
-	if b[0] != 1 {
+	switch b[0] {
+	case 1:
+		// Version 1 has no checksum.
+	case 2:
+		if len(b) < sourcesHeaderLen+checksumSize {
+			return 0, io.ErrShortBuffer
+		}
+		var err error
+		if b, err = verifyStateChecksum(b, stateChecksumKey(fs.cfg.Name)); err != nil {
+			return 0, err
+		}
+	default:
 		return 0, errSourcesInvalidVersion
 	}
 
@@ -13159,6 +13170,10 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 			return 0, io.ErrUnexpectedEOF
 		}
 		fs.sources[source] = &StreamSourceState{Seq: seq, Ident: ident}
+	}
+	// The entries must fill the buffer exactly, a version 2 file read as version 1 leaves its checksum.
+	if len(b) != 0 {
+		return 0, errCorruptState
 	}
 	return stamp, nil
 }

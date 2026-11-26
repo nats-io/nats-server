@@ -13836,7 +13836,8 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 		err   error
 	}{
 		{title: "ShortHeader", buf: make([]byte, sourcesHeaderLen-1), err: io.ErrShortBuffer},
-		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: errSourcesInvalidVersion},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: errSourcesInvalidVersion},
+		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtSourceLen", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Has the source length but the source bytes are missing.
@@ -13847,6 +13848,8 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 		{title: "TruncatedAtIdentLen", buf: append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), err: io.ErrUnexpectedEOF},
 		// Has the identity length but the identity bytes are missing.
 		{title: "TruncatedIdent", buf: append(append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), uvi(5)...), err: io.ErrUnexpectedEOF},
+		// Has a byte left after the entries.
+		{title: "TrailingByte", buf: append(header(0), 0), err: errCorruptState},
 	} {
 		t.Run(test.title, func(t *testing.T) {
 			fs := &fileStore{}
@@ -13854,6 +13857,87 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 			require_Error(t, err, test.err)
 		})
 	}
+}
+
+func TestFileStoreSourcesStateChecksum(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"foo.*"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN 5 > > foo.bar IDENTITY1")
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	fn := filepath.Join(dir, sourcesStreamStateFile)
+	// The state is written as version 1, without a checksum.
+	v1, err := os.ReadFile(fn)
+	require_NoError(t, err)
+	require_Equal(t, v1[0], 1)
+	// Newer servers write version 2, the version 1 encoding followed by a checksum.
+	v2 := appendStateChecksum(append([]byte{2}, v1[1:]...), stateChecksumKey("SOURCE"))
+
+	// The stamp and every source.
+	type decoded struct {
+		stamp   uint64
+		sources map[string]*StreamSourceState
+	}
+	decode := func(name string, b []byte) (decoded, error) {
+		nfs := &fileStore{cfg: FileStreamInfo{StreamConfig: StreamConfig{Name: name}}}
+		stamp, err := nfs.decodeSourcesState(b)
+		return decoded{stamp, nfs.sources}, err
+	}
+
+	for _, test := range []struct {
+		title string
+		buf   []byte
+	}{{"Version1", v1}, {"Version2", v2}} {
+		t.Run(test.title, func(t *testing.T) {
+			d, err := decode("SOURCE", test.buf)
+			require_NoError(t, err)
+			require_Equal(t, d.sources["ORIGIN > >"].Seq, 5)
+		})
+	}
+
+	// The state of another stream fails the checksum.
+	t.Run("OtherStream", func(t *testing.T) {
+		_, err := decode("OTHER", v2)
+		require_Error(t, err, errStateChecksumMismatch)
+	})
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, v2, func(b []byte) (decoded, error) { return decode("SOURCE", b) })
+	})
+
+	// Read as version 1, the checksum is left after the entries.
+	t.Run("Downgrade", func(t *testing.T) {
+		b := slices.Clone(v2)
+		b[0] = 1
+		_, err := decode("SOURCE", b)
+		require_Error(t, err, errCorruptState)
+	})
+
+	// A corrupt state is rebuilt from the messages.
+	// Its changed sequence still decodes, only the checksum catches it.
+	t.Run("Rebuilt", func(t *testing.T) {
+		corrupt := slices.Clone(v2)
+		si := bytes.Index(corrupt, []byte("ORIGIN > >")) + len("ORIGIN > >")
+		require_Equal(t, corrupt[si], 5)
+		corrupt[si]++
+		require_NoError(t, os.WriteFile(fn, corrupt, defaultFilePerms))
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+		require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, 5)
+	})
 }
 
 func TestFileStoreSourcesRecovery(t *testing.T) {
