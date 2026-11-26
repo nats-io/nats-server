@@ -2716,6 +2716,19 @@ func TestFileStoreSnapshot(t *testing.T) {
 				fd.Close()
 			}
 
+			// Consumer state is copied like the other files, as a state file with a checksum.
+			ofns, err := filepath.Glob(filepath.Join(rstoreDir, consumerDir, "*", consumerState))
+			require_NoError(t, err)
+			require_Len(t, len(ofns), 2)
+			for _, fn := range ofns {
+				buf, err := os.ReadFile(fn)
+				require_NoError(t, err)
+				require_Equal(t, buf[1], 2|consumerStateChecksummed)
+				key := stateChecksumKey(scfg.Name + "/" + filepath.Base(filepath.Dir(fn)))
+				_, err = decodeConsumerState(buf, key)
+				require_NoError(t, err)
+			}
+
 			fcfg.StoreDir = rstoreDir
 			fsr, err := newFileStoreWithCreated(fcfg, scfg, time.Now(), prf(&fcfg), nil)
 			require_NoError(t, err)
@@ -4095,6 +4108,63 @@ func TestFileStoreConsumerStateFileChecksum(t *testing.T) {
 	t.Run("LegacyV2Trailing", func(t *testing.T) {
 		_, err := reload(t, append(encodeConsumerState(state), 0))
 		require_Error(t, err, errCorruptState)
+	})
+
+	// Pending timestamps are encoded relative to the current second, which can tick between writes.
+	// Without them the encoding is the same every time, so the bytes can be compared.
+	acked := &ConsumerState{Delivered: state.Delivered, AckFloor: SequencePair{Consumer: 22, Stream: 22}}
+	ackedFile := func() []byte {
+		b := encodeConsumerState(acked)
+		b[1] |= consumerStateChecksummed
+		return appendStateChecksum(b, key)
+	}
+
+	// We write exactly the flagged version, with a checksum.
+	t.Run("Write", func(t *testing.T) {
+		// Start without the state the previous subtests left.
+		require_NoError(t, os.Remove(fn))
+		o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		require_NoError(t, o.Update(acked))
+		require_NoError(t, o.Stop())
+		buf, err := os.ReadFile(fn)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, ackedFile()))
+	})
+
+	// Plaintext state is encrypted once encryption is enabled, and keeps its checksum.
+	t.Run("Encrypted", func(t *testing.T) {
+		efcfg := FileStoreConfig{StoreDir: t.TempDir()}
+		scfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+		efs, err := newFileStore(efcfg, scfg)
+		require_NoError(t, err)
+		o, err := efs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		require_NoError(t, o.Update(acked))
+		require_NoError(t, o.Stop())
+		require_NoError(t, efs.Stop())
+
+		efcfg.Cipher = ChaCha
+		efs, err = newFileStoreWithCreated(efcfg, scfg, time.Now(), prf(&efcfg), nil)
+		require_NoError(t, err)
+		defer efs.Stop()
+		o, err = efs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		defer o.Stop()
+		cs, err := o.State()
+		require_NoError(t, err)
+		require_Equal(t, cs.Delivered, acked.Delivered)
+		require_Equal(t, cs.AckFloor, acked.AckFloor)
+
+		// Decrypted, the file holds exactly the flagged version.
+		buf, err := os.ReadFile(filepath.Join(efcfg.StoreDir, consumerDir, "o22", consumerState))
+		require_NoError(t, err)
+		aek := o.(*consumerFileStore).aek
+		require_NotNil(t, aek)
+		ns := aek.NonceSize()
+		plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(plain, ackedFile()))
 	})
 }
 
