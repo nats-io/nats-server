@@ -2409,22 +2409,20 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 		require_NoError(t, fs.FlushAllPending())
 
 		// Now we're going to mangle the in-memory cache by changing
-		// the sequence number of the first message. We also need to
-		// trick the cache into believing the hash is already validated
-		// so we don't fail on that. This is specifically testing the
-		// seq != fsm.seq condition.
+		// the sequence number of the first message. The checksum was
+		// already verified when loading, so this is specifically testing
+		// the seq != fsm.seq condition.
 		mb := fs.selectMsgBlock(1)
 		require_NotNil(t, mb)
 		require_NoError(t, mb.loadMsgs())
 		require_True(t, mb.cacheAlreadyLoaded())
-		ri, rl, _, err := mb.slotInfo(0)
+		ri, rl, err := mb.slotInfo(0)
 		require_NoError(t, err)
 		require_NotNil(t, mb.cache)
 		require_NotNil(t, mb.cache.buf)
 		slot := mb.cache.buf[ri : ri+rl]
 		require_Equal(t, binary.LittleEndian.Uint64(slot[4:]), 1)
 		binary.LittleEndian.PutUint64(slot[4:], 12345)
-		mb.cache.idx[0] = (mb.cache.idx[0] | cbit)
 
 		// Expect an error on the first instance and for cacheLookupEx
 		// to discard the cache.
@@ -3981,6 +3979,43 @@ func TestFileStoreStateChecksum(t *testing.T) {
 	// TTL state computes the same checksum by itself.
 	_, err = verifyStateChecksum(thw.NewHashWheel().Encode(1, key), key)
 	require_NoError(t, err)
+}
+
+func TestFileStoreIndexCacheBufVerifiesChecksums(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		corrupt func(rec []byte)
+	}{
+		// A changed subject would otherwise end up in the per-subject state.
+		{title: "Subject", corrupt: func(rec []byte) { rec[msgHdrSize] ^= 1 }},
+		// A huge sequence would otherwise allocate an index slot for every sequence up to it.
+		{title: "Sequence", corrupt: func(rec []byte) { rec[4+5] ^= 1 }},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+			for range 3 {
+				_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+				require_NoError(t, err)
+			}
+
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			fs.mu.RUnlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			_, err = mb.flushPendingMsgsLocked()
+			require_NoError(t, err)
+			buf, err := mb.loadBlock(nil)
+			require_NoError(t, err)
+
+			// Corrupt the second record.
+			rl := binary.LittleEndian.Uint32(buf[0:]) &^ (hbit | rbit)
+			test.corrupt(buf[rl:])
+			require_Error(t, mb.indexCacheBuf(buf), errCorruptState)
+		})
+	}
 }
 
 func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
@@ -18100,6 +18135,11 @@ func TestFileStoreIndexCacheBufCountsTTLAndScheduleHeaders(t *testing.T) {
 	second := le.Uint32(buf) &^ (hbit | rbit)
 	slen := uint32(le.Uint16(buf[second+20:]))
 	le.PutUint32(buf[second+msgHdrSize+slen:], math.MaxUint32)
+	// Reseal it, so the checksum passes and only the header length is wrong.
+	rl := le.Uint32(buf[second:]) &^ (hbit | rbit)
+	rec := buf[second : second+rl-recordHashSize]
+	hashRecord(mb.hh, rec[:msgHdrSize], rec[msgHdrSize:], int(slen), true, true)
+	copy(buf[second+rl-recordHashSize:], mb.hh.Sum(nil))
 	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
 	mb.clearCacheAndOffset()
 	require_NoError(t, mb.loadMsgsWithLock())

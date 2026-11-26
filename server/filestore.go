@@ -6547,7 +6547,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 			}
 		}
 		// Grab record info, but use the pre-computed record length.
-		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
+		ri, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
@@ -6910,24 +6910,23 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 // Grab info from a slot.
 // Lock should be held.
-func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
+func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, error) {
 	switch {
 	case mb.cache == nil: // Shouldn't be possible, but check it anyway.
-		return 0, 0, false, errNoCache
+		return 0, 0, errNoCache
 	case slot < 0:
 		mb.fs.warn("Partial cache: offset slot index %d is less zero", slot)
-		return 0, 0, false, errPartialCache
+		return 0, 0, errPartialCache
 	case slot >= len(mb.cache.idx):
 		mb.fs.warn("Partial cache: offset slot index %d is greater than index len %d", slot, len(mb.cache.idx))
-		return 0, 0, false, errPartialCache
+		return 0, 0, errPartialCache
 	}
 
-	bi := mb.cache.idx[slot]
-	ri, hashChecked := (bi &^ cbit), (bi&cbit) != 0
+	ri := mb.cache.idx[slot]
 
 	// If this is a deleted slot return here.
-	if bi == dbit {
-		return 0, 0, false, errDeletedMsg
+	if ri == dbit {
+		return 0, 0, errDeletedMsg
 	}
 
 	// Determine record length
@@ -6935,7 +6934,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 	// Need to account for dbit markers in idx.
 	// So we will walk until we find valid idx slot to calculate rl.
 	for i := 1; slot+i < len(mb.cache.idx); i++ {
-		ni := mb.cache.idx[slot+i] &^ cbit
+		ni := mb.cache.idx[slot+i]
 		if ni == dbit {
 			continue
 		}
@@ -6948,9 +6947,9 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		rl = uint32(len(mb.cache.buf)) - ri
 	}
 	if rl < msgHdrSize {
-		return 0, 0, false, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
+		return 0, 0, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
 	}
-	return uint32(ri), rl, hashChecked, nil
+	return uint32(ri), rl, nil
 }
 
 func (fs *fileStore) isClosed() bool {
@@ -7121,7 +7120,7 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 	defer mb.finishedWithCache()
 
 	// Calculate new eof using slot info from our new last sm.
-	ri, rl, _, err := mb.slotInfo(int(tseq - mb.cache.fseq))
+	ri, rl, err := mb.slotInfo(int(tseq - mb.cache.fseq))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -8052,7 +8051,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			}
 		}
 		// Write index
-		if mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit); len(mb.cache.idx) == 1 {
+		if mb.cache.idx = append(mb.cache.idx, uint32(index)); len(mb.cache.idx) == 1 {
 			mb.cache.fseq = seq
 		}
 	} else {
@@ -8873,6 +8872,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 	var last uint64
 	// Lowest message stored, can be below our first.
 	rfseq := mbFirstSeq
+	var hb [highwayhash.Size64]byte
 
 	for index < lbuf {
 		if index+msgHdrSize > lbuf {
@@ -8882,7 +8882,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		seq = le.Uint64(hdr[4:])
 
-		hasHeaders := rl&hbit != 0
+		hasHeaders, record := rl&hbit != 0, rl&rbit != 0
 		// Clear any headers or record bit that could be set.
 		rl &^= hbit | rbit
 		shlen := slen
@@ -8895,6 +8895,13 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			mb.fs.warn("indexCacheBuf corrupt record state in %s: dlen %d slen %d index %d rl %d lbuf %d", mb.mfn, dlen, slen, index, rl, lbuf)
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
+			return errCorruptState
+		}
+		// Verify the record before using its sequence, subject or headers.
+		rec, checksum := buf[index:index+rl-recordHashSize], buf[index+rl-recordHashSize:index+rl]
+		hashRecord(mb.hh, rec[:msgHdrSize], rec[msgHdrSize:], slen, hasHeaders, record)
+		if !bytes.Equal(mb.hh.Sum(hb[:0]), checksum) {
+			mb.fs.warn("indexCacheBuf invalid checksum in %s: index %d", mb.mfn, index)
 			return errCorruptState
 		}
 
@@ -8919,8 +8926,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			index += rl
 			continue
 		}
-		// We defer checksum checks to individual msg cache lookups to amortorize costs and
-		// not introduce latency for first message from a newly loaded block.
 		if seq >= mbFirstSeq {
 			last = seq
 
@@ -9432,8 +9437,6 @@ func (e errBadMsg) Error() string {
 }
 
 const (
-	// "Checksum bit" is used in "mb.cache.idx" for marking messages that have had their checksums checked.
-	cbit = 1 << 31
 	// "Delete bit" is used in "mb.cache.idx" to mark an index as deleted and non-existent.
 	dbit = 1 << 30
 	// "Header bit" is used in "rl" to signal a message record with headers.
@@ -9534,7 +9537,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		return nil, errPartialCache
 	}
 
-	bi, _, hashChecked, err := mb.slotInfo(int(seq - mb.cache.fseq))
+	bi, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 	if err != nil {
 		return nil, err
 	}
@@ -9549,14 +9552,8 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	}
 	buf := mb.cache.buf[li:]
 
-	// We use the high bit to denote we have already checked the checksum.
-	var hh *highwayhash.Digest64
-	if !hashChecked {
-		hh = mb.hh // This will force the hash check in msgFromBuf.
-	}
-
-	// Parse from the raw buffer.
-	fsm, err := mb.msgFromBufEx(buf, sm, hh, doCopy)
+	// Parse from the raw buffer, its checksum was verified when it was loaded or written.
+	fsm, err := mb.msgFromBufEx(buf, sm, nil, doCopy)
 	if err != nil || fsm == nil {
 		return nil, err
 	}
@@ -9569,11 +9566,6 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	if seq != fsm.seq { // See TestFileStoreInvalidIndexesRebuilt.
 		mb.clearCacheAndOffset()
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, fsm.seq)
-	}
-
-	// Clear the check bit here after we know all is good.
-	if !hashChecked {
-		mb.cache.idx[seq-mb.cache.fseq] = (bi | cbit)
 	}
 
 	return fsm, nil
@@ -11424,7 +11416,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		// This will be optimistic only, so don't continue if we encounter any errors here.
 		if smb.rbytes > compactMinimum && smb.bytes*2 < smb.rbytes {
 			var moff uint32
-			moff, _, _, err = smb.slotInfo(int(atomic.LoadUint64(&smb.first.seq) - smb.cache.fseq))
+			moff, _, err = smb.slotInfo(int(atomic.LoadUint64(&smb.first.seq) - smb.cache.fseq))
 			if err != nil {
 				smb.mu.Unlock()
 				return purged, bytes, err
@@ -12312,7 +12304,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 			fseq = mbFseq
 		}
 		for slot := startSlot; slot < len(mb.cache.idx); slot++ {
-			bi := mb.cache.idx[slot] &^ cbit
+			bi := mb.cache.idx[slot]
 			if bi == dbit {
 				// delete marker so skip.
 				continue
@@ -12353,7 +12345,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 			lseq = mbLseq
 		}
 		for slot := endSlot; slot >= startSlot; slot-- {
-			bi := mb.cache.idx[slot] &^ cbit
+			bi := mb.cache.idx[slot]
 			if bi == dbit {
 				// delete marker so skip.
 				continue
