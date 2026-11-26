@@ -13009,7 +13009,7 @@ func TestJetStreamClusterSwitchConsumerToReplicatedWithoutTeardown(t *testing.T)
 
 	// Switching back keeps leading without a teardown, like the stream.
 	// Being local, the snapshot is sent through the log.
-	require_NoError(t, sjs.switchConsumerToReplicated(o, n, term, true))
+	require_NoError(t, sjs.switchConsumerToReplicated(o, n, term, true, waitApply))
 	require_True(t, o.IsClustered())
 	o.mu.RLock()
 	sameQch := o.qch == qch
@@ -13031,6 +13031,98 @@ func TestJetStreamClusterSwitchConsumerToReplicatedWithoutTeardown(t *testing.T)
 		}
 		return nil
 	})
+}
+
+func TestJetStreamClusterSwitchToReplicatedSendsSnapshotAfterDrainingLog(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 3 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	sub, err := js.PullSubscribe("foo", "C")
+	require_NoError(t, err)
+	msgs, err := sub.Fetch(3)
+	require_NoError(t, err)
+	require_Len(t, len(msgs), 3)
+
+	// Switches while the entry is in the log but not yet committed, and returns the snapshot sent after it.
+	switchWithUncommitted := func(n RaftNode, entry []byte, switchToReplicated func(apply func() error) error) []byte {
+		t.Helper()
+		// Followers can't store the entry while their lock is held, so it isn't committed.
+		var followers []*raft
+		for _, s := range c.servers {
+			if fn := s.lookupRaftNode(n.Group()).(*raft); fn != n {
+				fn.Lock()
+				followers = append(followers, fn)
+			}
+		}
+		release := sync.OnceFunc(func() {
+			for _, fn := range followers {
+				fn.Unlock()
+			}
+		})
+		defer release()
+
+		index, _, _ := n.Progress()
+		index++
+		require_NoError(t, n.Propose(n.Term(), entry))
+		checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+			if pindex, _, _ := n.Progress(); pindex < index {
+				return fmt.Errorf("index %d, expected %d", pindex, index)
+			}
+			return nil
+		})
+		// Draining releases the followers, and waits for the entry to be applied.
+		require_NoError(t, switchToReplicated(func() error {
+			release()
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				if _, _, applied := n.Progress(); applied < index {
+					return fmt.Errorf("applied %d, expected %d", applied, index)
+				}
+				return nil
+			})
+			return nil
+		}))
+		ae, err := n.(*raft).loadEntry(index + 1)
+		require_NoError(t, err)
+		require_Equal(t, ae.entries[0].Type, EntrySnapshot)
+		return ae.entries[0].Data
+	}
+
+	// The stream's snapshot includes the stored message.
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	sn := mset.raftNode()
+	msg := encodeStreamMsg("foo", _EMPTY_, nil, nil, mset.lastSeq()+mset.getCLFS(), time.Now().UnixNano(), false)
+	snap, err := decodeStreamSnapshot(switchWithUncommitted(sn, msg, func(apply func() error) error {
+		return sl.getJetStream().switchStreamToReplicated(mset, sn, sn.Term(), true, apply)
+	}))
+	require_NoError(t, err)
+	require_Equal(t, snap.LastSeq, 4)
+
+	// The consumer's snapshot includes the out-of-order ack, which only changes pending.
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	mset, err = cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	cn := o.raftNode()
+	ack := append(binary.AppendUvarint(binary.AppendUvarint([]byte{byte(updateAcksOp)}, 2), 2), 1)
+	state, err := decodeConsumerState(switchWithUncommitted(cn, ack, func(apply func() error) error {
+		return cl.getJetStream().switchConsumerToReplicated(o, cn, cn.Term(), true, apply)
+	}))
+	require_NoError(t, err)
+	require_Len(t, len(state.Pending), 2)
+	require_True(t, state.Pending[2] == nil)
 }
 
 func TestJetStreamClusterR1StreamWriteErrFailsHealthz(t *testing.T) {
