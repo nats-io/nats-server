@@ -13073,8 +13073,8 @@ func (fs *fileStore) writeSourcesState() error {
 		sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
 			uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
 	}
-	buf := make([]byte, 0, sourcesHeaderLen+sz)
-	buf = append(buf, 1)                                 // Magic version
+	buf := make([]byte, 0, sourcesHeaderLen+sz+checksumSize)
+	buf = append(buf, 2)                                 // Magic version
 	buf = binary.LittleEndian.AppendUint64(buf, count)   // Entry count
 	buf = binary.LittleEndian.AppendUint64(buf, highSeq) // Stamp
 	for source, ss := range fs.sources {
@@ -13084,6 +13084,7 @@ func (fs *fileStore) writeSourcesState() error {
 		buf = binary.AppendUvarint(buf, uint64(len(ss.Ident)))
 		buf = append(buf, ss.Ident...)
 	}
+	buf = appendStateChecksum(buf, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)

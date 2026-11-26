@@ -13917,12 +13917,12 @@ func TestFileStoreSourcesStateChecksum(t *testing.T) {
 	require_NoError(t, fs.Stop())
 
 	fn := filepath.Join(dir, sourcesStreamStateFile)
-	// The state is written as version 1, without a checksum.
-	v1, err := os.ReadFile(fn)
+	// The state is written as version 2, with a checksum.
+	v2, err := os.ReadFile(fn)
 	require_NoError(t, err)
-	require_Equal(t, v1[0], 1)
-	// Newer servers write version 2, the version 1 encoding followed by a checksum.
-	v2 := appendStateChecksum(append([]byte{2}, v1[1:]...), stateChecksumKey("SOURCE"))
+	require_Equal(t, v2[0], 2)
+	// Version 1 is the same encoding without the trailing checksum.
+	v1 := append([]byte{1}, v2[1:len(v2)-checksumSize]...)
 
 	// The stamp and every source.
 	type decoded struct {
