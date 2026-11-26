@@ -4047,6 +4047,81 @@ func TestFileStoreStateChecksum(t *testing.T) {
 	require_Error(t, err, io.ErrShortBuffer)
 }
 
+func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
+	le := binary.LittleEndian
+	hdr := []byte("NATS/1.0\r\nA: B\r\n\r\n")
+	for _, test := range []struct {
+		title   string
+		hdr     []byte
+		corrupt func(buf []byte, slen int)
+	}{
+		// Moves the boundary between subject and payload.
+		{title: "SubjectLength", corrupt: func(buf []byte, slen int) { le.PutUint16(buf[20:], uint16(slen+1)) }},
+		// Moves the boundary between headers and payload.
+		{title: "HeaderLength", hdr: hdr, corrupt: func(buf []byte, slen int) {
+			hl := msgHdrSize + slen
+			le.PutUint32(buf[hl:], le.Uint32(buf[hl:])-1)
+		}},
+		// Reads the headers as part of the payload.
+		{title: "HeaderBit", hdr: hdr, corrupt: func(buf []byte, _ int) { buf[3] ^= hbit >> 24 }},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			dir := t.TempDir()
+			fcfg := FileStoreConfig{StoreDir: dir}
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+			fs, err := newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", test.hdr, []byte("bar"), 0)
+			require_NoError(t, err)
+			require_NoError(t, fs.Stop())
+
+			fn := filepath.Join(dir, msgDir, "1.blk")
+			buf, err := os.ReadFile(fn)
+			require_NoError(t, err)
+			rl, slen := le.Uint32(buf[0:]), int(le.Uint16(buf[20:]))
+			hasHeaders := rl&hbit != 0
+			rl &^= hbit | rbit
+
+			// Rewrite the record with or without the record bit.
+			key := sha256.Sum256(fs.hashKeyForBlock(1))
+			hh, err := highwayhash.NewDigest64(key[:])
+			require_NoError(t, err)
+			seal := func(record bool) {
+				t.Helper()
+				if record {
+					le.PutUint32(buf[0:], le.Uint32(buf[0:])|rbit)
+				} else {
+					le.PutUint32(buf[0:], le.Uint32(buf[0:])&^rbit)
+				}
+				hashRecord(hh, buf[:msgHdrSize], buf[msgHdrSize:rl-recordHashSize], slen, hasHeaders, record)
+				copy(buf[rl-recordHashSize:rl], hh.Sum(nil))
+				require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+			}
+			load := func() (*StoreMsg, error) {
+				t.Helper()
+				fs, err := newFileStore(fcfg, cfg)
+				require_NoError(t, err)
+				defer fs.Stop()
+				return fs.LoadMsg(1, nil)
+			}
+
+			// Records from older servers don't cover the lengths, but are still read.
+			seal(false)
+			sm, err := load()
+			require_NoError(t, err)
+			require_Equal(t, sm.subj, "foo")
+			require_Equal(t, string(sm.msg), "bar")
+
+			// The changed record still parses, only the checksum catches it.
+			seal(true)
+			test.corrupt(buf, slen)
+			require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+			_, err = load()
+			require_Error(t, err)
+		})
+	}
+}
+
 func TestFileStoreExpireMsgsOnStart(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		if fcfg.Compression != NoCompression || fcfg.Cipher != NoCipher {
@@ -20075,4 +20150,71 @@ func TestFileStoreLogBackedFollowsWriteMode(t *testing.T) {
 			return nil
 		})
 	})
+}
+
+// A block can hold records of older servers next to newer ones, after an upgrade or downgrade.
+func TestFileStoreMixedRecordFormats(t *testing.T) {
+	le := binary.LittleEndian
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := []byte("NATS/1.0\r\nA: B\r\n\r\n")
+	for _, h := range [][]byte{nil, hdr, nil, hdr, nil, hdr} {
+		_, _, err = fs.StoreMsg("foo", h, []byte("bar"), 0)
+		require_NoError(t, err)
+	}
+	_, err = fs.EraseMsg(2)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(4)
+	require_NoError(t, err)
+	key := sha256.Sum256(fs.hashKeyForBlock(1))
+	require_NoError(t, fs.Stop())
+
+	// Reseal every other record in the other format, except the last one index.db checks.
+	fn := filepath.Join(dir, msgDir, "1.blk")
+	buf, err := os.ReadFile(fn)
+	require_NoError(t, err)
+	hh, err := highwayhash.NewDigest64(key[:])
+	require_NoError(t, err)
+	var resealed int
+	for i, index := 0, uint32(0); index < uint32(len(buf)); i++ {
+		rl := le.Uint32(buf[index:])
+		hasHeaders, record, rlen := rl&hbit != 0, rl&rbit == 0, rl&^(hbit|rbit)
+		if i%2 == 1 && index+rlen < uint32(len(buf)) {
+			rec := buf[index : index+rlen]
+			le.PutUint32(rec, rl^rbit)
+			slen := int(le.Uint16(rec[20:]))
+			hashRecord(hh, rec[:msgHdrSize], rec[msgHdrSize:rlen-recordHashSize], slen, hasHeaders, record)
+			copy(rec[rlen-recordHashSize:], hh.Sum(nil))
+			resealed++
+		}
+		index += rlen
+	}
+	require_True(t, resealed >= 3)
+	require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+
+	check := func() {
+		t.Helper()
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+		for seq := uint64(1); seq <= 6; seq++ {
+			sm, err := fs.LoadMsg(seq, nil)
+			if seq == 2 || seq == 4 {
+				require_Error(t, err)
+				continue
+			}
+			require_NoError(t, err)
+			require_Equal(t, sm.subj, "foo")
+			require_Equal(t, string(sm.msg), "bar")
+			require_Equal(t, len(sm.hdr) > 0, seq%2 == 0)
+		}
+	}
+	// Loaded with index.db.
+	check()
+	// Without it, the block is rebuilt from its records.
+	require_NoError(t, os.Remove(filepath.Join(dir, msgDir, streamStreamStateFile)))
+	check()
 }

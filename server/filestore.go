@@ -1889,9 +1889,9 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 
-		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		hasHeaders, record := rl&hbit != 0, rl&rbit != 0
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -1910,15 +1910,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 		// Check for checksum failures before additional processing.
 		data := buf[index+msgHdrSize : index+rl]
-		subj := data[:slen]
-		mb.hh.Reset()
-		mb.hh.Write(hdr[4:20])
-		mb.hh.Write(subj)
-		if hasHeaders {
-			mb.hh.Write(data[slen+4 : dlen-recordHashSize])
-		} else {
-			mb.hh.Write(data[slen : dlen-recordHashSize])
-		}
+		hashRecord(mb.hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
 		checksum := mb.hh.Sum(hb[:0])
 		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 			err = errBadMsg{mb.mfn, "invalid checksum"}
@@ -6802,8 +6794,8 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -8907,8 +8899,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		seq = le.Uint64(hdr[4:])
 
 		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -9462,11 +9454,33 @@ const (
 	dbit = 1 << 30
 	// "Header bit" is used in "rl" to signal a message record with headers.
 	hbit = 1 << 31
+	// "Record bit" is used in "rl" to signal the checksum covers the whole record, including all lengths and flags.
+	rbit = 1 << 30
 	// "Erase bit" is used in "seq" for marking erased messages sequences.
 	ebit = 1 << 63
 	// "Tombstone bit" is used in "seq" for marking tombstone sequences.
 	tbit = 1 << 62
 )
+
+// hashRecord hashes a message record for its checksum.
+// The data is everything after the record header, up to the checksum.
+func hashRecord(hh *highwayhash.Digest64, hdr, data []byte, slen int, hasHeaders, record bool) {
+	hh.Reset()
+	// The whole record, including its length, flags, subject length and header length.
+	if record {
+		hh.Write(hdr)
+		hh.Write(data)
+		return
+	}
+	// Older records only cover the sequence, timestamp, subject, headers and message.
+	hh.Write(hdr[4:20])
+	hh.Write(data[:slen])
+	if hasHeaders {
+		hh.Write(data[slen+4:])
+	} else {
+		hh.Write(data[slen:])
+	}
+}
 
 // Will do a lookup from cache.
 // This will copy the msg from the cache.
@@ -9677,8 +9691,8 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 
 	hdr := buf[:msgHdrSize]
 	rl := le.Uint32(hdr[0:])
-	hasHeaders := rl&hbit != 0
-	rl &^= hbit // clear header bit
+	hasHeaders, record := rl&hbit != 0, rl&rbit != 0
+	rl &^= hbit | rbit // clear header and record bit
 	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 
@@ -9693,14 +9707,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
 	if hh != nil {
-		hh.Reset()
-		hh.Write(hdr[4:20])
-		hh.Write(data[:slen])
-		if hasHeaders {
-			hh.Write(data[slen+4 : dlen-recordHashSize])
-		} else {
-			hh.Write(data[slen : dlen-recordHashSize])
-		}
+		hashRecord(hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
 		var hb [highwayhash.Size64]byte
 		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
 			return nil, errBadMsg{mb.mfn, "invalid checksum"}
@@ -11644,8 +11651,8 @@ func (mb *msgBlock) tombsAfterLocked(after uint64) []msgId {
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, seq := le.Uint32(hdr[0:]), le.Uint64(hdr[4:])
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			if found {
@@ -11713,8 +11720,8 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, seq := le.Uint32(hdr[0:]), le.Uint64(hdr[4:])
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			seq = seq &^ tbit
