@@ -85,6 +85,33 @@ func prf(fcfg *FileStoreConfig) func(context []byte) ([]byte, error) {
 	}
 }
 
+// requireCorruptionRejected flips every bit of valid, and truncates it at every length.
+// None may be misread: each must fail to decode, or decode to the same as valid.
+// Truncations to the allowed lengths are skipped.
+func requireCorruptionRejected[T any](t testing.TB, valid []byte, decode func([]byte) (T, error), allowLens ...int) {
+	t.Helper()
+	want, err := decode(slices.Clone(valid))
+	require_NoError(t, err)
+	misread := func(b []byte) bool {
+		got, err := decode(b)
+		return err == nil && !reflect.DeepEqual(got, want)
+	}
+	for i := range valid {
+		for bit := range 8 {
+			b := slices.Clone(valid)
+			b[i] ^= 1 << bit
+			if misread(b) {
+				t.Fatalf("Flipping bit %d of byte %d is misread", bit, i)
+			}
+		}
+	}
+	for n := range len(valid) {
+		if !slices.Contains(allowLens, n) && misread(slices.Clone(valid[:n])) {
+			t.Fatalf("Truncating to %d bytes is misread", n)
+		}
+	}
+}
+
 func TestFileStoreBasics(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
@@ -3728,6 +3755,31 @@ func TestFileStoreBadConsumerState(t *testing.T) {
 	if cs, err := decodeConsumerState(bs); err != nil || cs == nil {
 		t.Fatalf("Expected to not throw error, got %v and %+v", err, cs)
 	}
+}
+
+func TestFileStoreStateChecksum(t *testing.T) {
+	key := stateChecksumKey("TEST")
+	b := appendStateChecksum([]byte("state"), key)
+	require_Len(t, len(b), len("state")+checksumSize)
+
+	got, err := verifyStateChecksum(b, key)
+	require_NoError(t, err)
+	require_Equal(t, string(got), "state")
+
+	// It's what index.db always held, a highwayhash digest keyed the same way.
+	hh, err := highwayhash.NewDigest64(key)
+	require_NoError(t, err)
+	hh.Write([]byte("state"))
+	require_True(t, bytes.Equal(b, hh.Sum([]byte("state"))))
+
+	// The checksum of another owner doesn't match.
+	_, err = verifyStateChecksum(b, stateChecksumKey("OTHER"))
+	require_Error(t, err, errStateChecksumMismatch)
+
+	// Neither does changed or truncated state.
+	requireCorruptionRejected(t, b, func(b []byte) ([]byte, error) { return verifyStateChecksum(b, key) })
+	_, err = verifyStateChecksum(b[:checksumSize-1], key)
+	require_Error(t, err, io.ErrShortBuffer)
 }
 
 func TestFileStoreExpireMsgsOnStart(t *testing.T) {
