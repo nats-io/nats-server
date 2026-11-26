@@ -13235,6 +13235,42 @@ func TestFileStoreMessageScheduleReplacedAfterRecovery(t *testing.T) {
 	require_False(t, ok)
 }
 
+func TestFileStoreMessageScheduleKeptOnLoadError(t *testing.T) {
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", time.Now().Format(time.RFC3339Nano)))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	hdr = genHeader(hdr, JSScheduleSource, "foo.source")
+	errIO := errors.New("i/o error")
+
+	for _, test := range []struct {
+		title    string
+		schedErr error
+		srcErr   error
+		kept     bool
+	}{
+		{title: "ScheduleLoadError", schedErr: errIO, kept: true},
+		{title: "SourceLoadError", srcErr: errIO, kept: true},
+		{title: "ScheduleNotFound", schedErr: ErrStoreMsgNotFound},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			ms := newMsgScheduling(func() {})
+			ms.add(1, "foo.schedule", time.Now().Add(-time.Second).UnixNano())
+			msgs := ms.getScheduledMessages(func(subj string, smv *StoreMsg) (*StoreMsg, error) {
+				if subj == "foo.schedule" {
+					if test.schedErr != nil {
+						return nil, test.schedErr
+					}
+					return &StoreMsg{subj: subj, hdr: hdr, seq: 1}, nil
+				}
+				return nil, test.srcErr
+			})
+			require_Len(t, len(msgs), 0)
+			_, ok := ms.schedules["foo.schedule"]
+			require_Equal(t, ok, test.kept)
+			require_False(t, ms.isInflight("foo.schedule"))
+		})
+	}
+}
+
 func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	now := time.Now()

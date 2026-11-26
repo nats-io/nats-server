@@ -1569,12 +1569,7 @@ func (ms *memStore) runMsgScheduling() {
 	}
 	ms.scheduling.running = true
 
-	scheduledMsgs := ms.scheduling.getScheduledMessages(
-		func(subj string, smv *StoreMsg) *StoreMsg {
-			sm, _ := ms.loadLastLocked(subj, smv)
-			return sm
-		},
-	)
+	scheduledMsgs := ms.scheduling.getScheduledMessages(ms.loadLastLocked)
 	if len(scheduledMsgs) > 0 {
 		ms.mu.Unlock()
 		for _, msg := range scheduledMsgs {

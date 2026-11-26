@@ -7788,12 +7788,7 @@ func (fs *fileStore) runMsgScheduling() {
 	}
 	fs.scheduling.running = true
 
-	scheduledMsgs := fs.scheduling.getScheduledMessages(
-		func(subj string, smv *StoreMsg) *StoreMsg {
-			sm, _ := fs.loadLastLocked(subj, smv)
-			return sm
-		},
-	)
+	scheduledMsgs := fs.scheduling.getScheduledMessages(fs.loadLastLocked)
 	if len(scheduledMsgs) > 0 {
 		fs.mu.Unlock()
 		for _, msg := range scheduledMsgs {
