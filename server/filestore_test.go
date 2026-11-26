@@ -50,6 +50,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/thw"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -3855,6 +3856,10 @@ func TestFileStoreStateChecksum(t *testing.T) {
 	requireCorruptionRejected(t, b, func(b []byte) ([]byte, error) { return verifyStateChecksum(b, key) })
 	_, err = verifyStateChecksum(b[:checksumSize-1], key)
 	require_Error(t, err, io.ErrShortBuffer)
+
+	// TTL state computes the same checksum by itself.
+	_, err = verifyStateChecksum(thw.NewHashWheel().Encode(1, key), key)
+	require_NoError(t, err)
 }
 
 func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {

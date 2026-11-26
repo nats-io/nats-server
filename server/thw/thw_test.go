@@ -23,8 +23,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/minio/highwayhash"
 )
 
 func TestHashWheelBasics(t *testing.T) {
@@ -227,13 +225,6 @@ func TestHashWheelStress(t *testing.T) {
 	}
 }
 
-// Newer servers write version 2, the version 1 encoding followed by a checksum.
-func encodeVersion2(hw *HashWheel, highSeq uint64, key []byte) []byte {
-	b := hw.Encode(highSeq)
-	b[0] = 2
-	return binary.LittleEndian.AppendUint64(b, highwayhash.Sum64(b, key))
-}
-
 func TestHashWheelEncodeDecode(t *testing.T) {
 	key := make([]byte, 32)
 	hw := NewHashWheel()
@@ -246,7 +237,7 @@ func TestHashWheelEncodeDecode(t *testing.T) {
 		require_NoError(t, hw.Add(uint64(seq), expires))
 	}
 
-	b := hw.Encode(12345)
+	b := hw.Encode(12345, key)
 	require_True(t, len(b) > 17) // Bigger than just the header
 
 	nhw := NewHashWheel()
@@ -267,13 +258,16 @@ func TestHashWheelEncodeDecode(t *testing.T) {
 	}
 }
 
-func TestHashWheelDecodeVersion2(t *testing.T) {
+func TestHashWheelDecodeVersion1(t *testing.T) {
 	key := make([]byte, 32)
 	hw := NewHashWheel()
 	expires := time.Now().Add(time.Second).UnixNano()
 	require_NoError(t, hw.Add(1, expires))
 
-	b := encodeVersion2(hw, 12345, key)
+	// Version 1 is the same encoding without the trailing checksum.
+	b := hw.Encode(12345, key)
+	b[0] = 1
+	b = b[:len(b)-checksumLen]
 
 	nhw := NewHashWheel()
 	stamp, err := nhw.Decode(b, key)
@@ -302,9 +296,9 @@ func TestHashWheelDecodeRejectsMalformed(t *testing.T) {
 		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
 		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: ErrInvalidVersion},
 		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
-		{title: "BadChecksum", buf: func() []byte { b := encodeVersion2(NewHashWheel(), 1, key); b[9]++; return b }(), err: ErrInvalidChecksum},
+		{title: "BadChecksum", buf: func() []byte { b := NewHashWheel().Encode(1, key); b[9]++; return b }(), err: ErrInvalidChecksum},
 		// Valid, but encoded for another owner.
-		{title: "WrongKey", buf: encodeVersion2(NewHashWheel(), 1, bytes.Repeat([]byte{1}, 32)), err: ErrInvalidChecksum},
+		{title: "WrongKey", buf: NewHashWheel().Encode(1, bytes.Repeat([]byte{1}, 32)), err: ErrInvalidChecksum},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtVarints", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Has the timestamp varint but the seq varint is missing.
@@ -427,7 +421,7 @@ func TestHashWheelDecodeRejectsCorruption(t *testing.T) {
 	now := time.Now()
 	require_NoError(t, hw.Add(1, now.Add(time.Second).UnixNano()))
 	require_NoError(t, hw.Add(2, now.Add(time.Hour).UnixNano()))
-	valid := encodeVersion2(hw, 12345, key)
+	valid := hw.Encode(12345, key)
 
 	// The stamp and every sequence with its expiration.
 	type decoded struct {
