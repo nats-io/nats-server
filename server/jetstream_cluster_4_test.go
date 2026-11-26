@@ -4643,6 +4643,52 @@ func TestJetStreamClusterConsumerDontSendSnapshotOnLeaderChange(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterConsumerAppliesSnapshotWhileLeader(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	for range 10 {
+		_, err = js.Publish("foo", nil)
+		require_NoError(t, err)
+	}
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+
+	// Right after stepping down, the snapshot from the new leader can be applied while we still think we're leader.
+	sl := c.randomNonConsumerLeader(globalAccountName, "TEST", "CONSUMER")
+	mset, err := sl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("CONSUMER")
+	require_NotNil(t, o)
+
+	apply := func(seq uint64) {
+		t.Helper()
+		state := &ConsumerState{Delivered: SequencePair{Consumer: seq, Stream: seq}, AckFloor: SequencePair{Consumer: seq, Stream: seq}}
+		ce := newCommittedEntry(100, []*Entry{newEntry(EntrySnapshot, encodeConsumerState(state))})
+		require_NoError(t, sl.getJetStream().applyConsumerEntries(o, ce, true))
+	}
+	requireState := func(seq uint64) {
+		t.Helper()
+		state, err := o.store.State()
+		require_NoError(t, err)
+		require_Equal(t, state.Delivered.Stream, seq)
+		require_Equal(t, state.AckFloor.Stream, seq)
+	}
+
+	// A newer snapshot is applied.
+	apply(5)
+	requireState(5)
+
+	// An older snapshot is ignored.
+	apply(3)
+	requireState(5)
+}
+
 func TestJetStreamClusterDontInstallSnapshotWhenStoppingStream(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
