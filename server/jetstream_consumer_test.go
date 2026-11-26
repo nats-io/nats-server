@@ -15100,3 +15100,48 @@ func BenchmarkJetStreamConsumerRedeliveryQueue(b *testing.B) {
 		})
 	}
 }
+
+// A stream writer can hold the stream lock while it waits on the store (for
+// example on a cold block read from disk). Consumer lookups, and with them
+// consumer info requests and consumer removal from the meta layer, must not
+// queue behind it.
+func TestJetStreamConsumerLookupNotBlockedByStreamLock(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Simulate a stream writer stuck while holding the stream lock.
+	mset.mu.Lock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			mset.mu.Unlock()
+		}
+	}
+	defer unlock()
+
+	done := make(chan *consumer, 1)
+	go func() { done <- mset.lookupConsumer("CONSUMER") }()
+	select {
+	case o := <-done:
+		require_True(t, o != nil)
+	case <-time.After(2 * time.Second):
+		unlock()
+		t.Fatalf("lookupConsumer blocked behind the stream lock")
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER", nats.MaxWait(2*time.Second))
+	require_NoError(t, err)
+	require_Equal(t, ci.Name, "CONSUMER")
+}
