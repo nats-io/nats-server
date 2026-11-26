@@ -2616,7 +2616,7 @@ func (fs *fileStore) recoverTTLState() uint64 {
 
 	var ttlseq uint64
 	if err == nil {
-		ttlseq, err = fs.ttls.Decode(buf)
+		ttlseq, err = fs.ttls.Decode(buf, stateChecksumKey(fs.cfg.Name))
 		if err != nil {
 			fs.warn("Error decoding TTL state: %s", err)
 			// Remove the file, and reset collected state (if any).
