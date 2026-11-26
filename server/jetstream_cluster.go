@@ -8625,7 +8625,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					}
 				}
 			}
-			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+			if err := js.applyConsumerEntries(o, ce); err == nil {
 				var ne, nb uint64
 				// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
 				if !js.isShuttingDown() {
@@ -9201,7 +9201,7 @@ func (o *consumer) isMigrating() bool {
 	return false
 }
 
-func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLeader bool) error {
+func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error {
 	for _, e := range ce.Entries {
 		// Ignore if lower-level catchup is started.
 		// We don't need to optimize during this, all entries are handled as normal.
@@ -9210,35 +9210,33 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 		}
 
 		if e.Type == EntrySnapshot {
-			if !isLeader {
-				// No-op needed?
-				state, err := decodeConsumerState(e.Data)
-				if err != nil {
-					if mset, node := o.streamAndNode(); mset != nil && node != nil {
-						s := js.srv
-						s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
-							mset.account(), mset.name(), o, node.Group())
-					}
-					return err
+			// Always apply, an older snapshot is ignored by the store.
+			state, err := decodeConsumerState(e.Data)
+			if err != nil {
+				if mset, node := o.streamAndNode(); mset != nil && node != nil {
+					s := js.srv
+					s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
+						mset.account(), mset.name(), o, node.Group())
 				}
+				return err
+			}
 
-				if err = o.store.Update(state); err != nil && err != ErrStoreOldUpdate {
-					o.mu.RLock()
-					s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-					o.mu.RUnlock()
-					if s != nil && mset != nil {
-						s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
-					}
+			if err = o.store.Update(state); err != nil && err != ErrStoreOldUpdate {
+				o.mu.RLock()
+				s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+				o.mu.RUnlock()
+				if s != nil && mset != nil {
+					s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
 				}
-				// Check our interest state if applicable.
-				if mset := o.getStream(); mset != nil {
-					var ss StreamState
-					mset.store.FastState(&ss)
-					// We used to register preacks here if our ack floor was higher than the last sequence.
-					// Now when streams catch up they properly call checkInterestState() and periodically run this as well.
-					// If our states drift this could have allocated lots of pre-acks.
-					o.checkStateForInterestStream(&ss)
-				}
+			}
+			// Check our interest state if applicable.
+			if mset := o.getStream(); mset != nil {
+				var ss StreamState
+				mset.store.FastState(&ss)
+				// We used to register preacks here if our ack floor was higher than the last sequence.
+				// Now when streams catch up they properly call checkInterestState() and periodically run this as well.
+				// If our states drift this could have allocated lots of pre-acks.
+				o.checkStateForInterestStream(&ss)
 			}
 
 		} else if e.Type == EntryRemovePeer {
