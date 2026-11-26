@@ -6317,11 +6317,13 @@ func (n *raft) writeTermVote() error {
 		return n.werr
 	}
 
-	var buf [termVoteLen]byte
+	var buf [termVoteFileLen]byte
+	copy(buf[:], termVoteMagic[:])
+	buf[2] = termVoteVersion
 	le := binary.LittleEndian
-	le.PutUint64(buf[0:], n.term)
-	copy(buf[8:], n.vote)
-	b := buf[:8+len(n.vote)]
+	le.PutUint64(buf[termVoteHdrLen:], n.term)
+	copy(buf[termVoteHdrLen+termLen:], n.vote)
+	b := appendStateChecksum(buf[:termVoteHdrLen+termVoteLen], stateChecksumKey(n.group))
 
 	// If the term and vote hasn't changed then don't rewrite to disk.
 	if bytes.Equal(n.wtv, b) {
