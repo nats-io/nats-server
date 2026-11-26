@@ -2648,7 +2648,7 @@ func (fs *fileStore) recoverMsgSchedulingState() uint64 {
 
 	var schedSeq uint64
 	if err == nil {
-		schedSeq, err = fs.scheduling.decode(buf)
+		schedSeq, err = fs.scheduling.decode(buf, stateChecksumKey(fs.cfg.Name))
 		if err != nil {
 			fs.warn("Error decoding message scheduling state: %s", err)
 			// Remove the file, and reset collected state (if any).

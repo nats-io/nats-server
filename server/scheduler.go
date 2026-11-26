@@ -293,11 +293,23 @@ func (ms *MsgScheduling) encode(highSeq uint64) []byte {
 
 // decode snapshots a binary-encoded schedule and replaces the contents of this
 // schedule with them. Returns the high seq number from the snapshot.
-func (ms *MsgScheduling) decode(b []byte) (uint64, error) {
+// The key must match the one used to encode.
+func (ms *MsgScheduling) decode(b []byte, key []byte) (uint64, error) {
 	if len(b) < headerLen {
 		return 0, io.ErrShortBuffer
 	}
-	if b[0] != 1 {
+	switch b[0] {
+	case 1:
+		// Version 1 has no checksum.
+	case 2:
+		if len(b) < headerLen+checksumSize {
+			return 0, io.ErrShortBuffer
+		}
+		var err error
+		if b, err = verifyStateChecksum(b, key); err != nil {
+			return 0, err
+		}
+	default:
 		return 0, ErrMsgScheduleInvalidVersion
 	}
 
@@ -325,6 +337,10 @@ func (ms *MsgScheduling) decode(b []byte) (uint64, error) {
 		}
 		ms.init(seq, subj, ts)
 		b = b[tn+vn:]
+	}
+	// The entries must fill the buffer exactly, a version 2 file read as version 1 leaves its checksum.
+	if len(b) != 0 {
+		return 0, errCorruptState
 	}
 	return stamp, nil
 }
