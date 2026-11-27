@@ -3828,6 +3828,26 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 	})
 }
 
+func TestFileStoreStreamDeleteWhileEarlierDeletePending(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+		require_NoError(t, err)
+
+		// An earlier delete of the same name can still be removing its directory.
+		pending := filepath.Join(filepath.Dir(fcfg.StoreDir), tsep+filepath.Base(fcfg.StoreDir))
+		require_NoError(t, os.MkdirAll(pending, defaultDirPerms))
+		require_NoError(t, os.WriteFile(filepath.Join(pending, "old"), []byte("OK"), defaultFilePerms))
+
+		// The data must not be left behind for a stream recreated with this name.
+		require_NoError(t, fs.Delete(false))
+		_, err = os.Stat(fcfg.StoreDir)
+		require_True(t, os.IsNotExist(err))
+	})
+}
+
 func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()

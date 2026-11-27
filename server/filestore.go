@@ -52,6 +52,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
+	"github.com/nats-io/nuid"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -12653,7 +12654,8 @@ func (fs *fileStore) Delete(inline bool) error {
 		return err
 	}
 	// Now move into different directory with "." prefix.
-	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir))
+	// Unique, an earlier delete of the same name may still be removing its directory.
+	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir)+tsep+nuid.Next())
 	if err := os.Rename(fs.fcfg.StoreDir, ndir); err != nil {
 		return err
 	}
