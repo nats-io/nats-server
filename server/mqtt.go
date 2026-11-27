@@ -4832,10 +4832,12 @@ func (s *Server) mqttAckLoop(c *client, pipe *mqttAckPipeline) {
 				}
 				return
 			}
-			c.mu.Lock()
-			trace := c.trace
-			c.mu.Unlock()
-			c.mqttEnqueuePubResponse(p.resp, p.pi, trace)
+			if p.resp != 0 {
+				c.mu.Lock()
+				trace := c.trace
+				c.mu.Unlock()
+				c.mqttEnqueuePubResponse(p.resp, p.pi, trace)
+			}
 			p.returnToPool()
 
 		case <-pipe.quitCh:
@@ -4938,6 +4940,11 @@ func (s *Server) mqttPipelinePush(c *client, jsa *mqttJSA, p *mqttPipelined) err
 		c.mqtt.pipe = pipe
 	}
 
+	// A full window waits for the oldest ack. Its store may need a connection we left pending.
+	// Only the readLoop pushes, so a window that isn't full here won't block in push.
+	if len(pipe.q) == cap(pipe.q) {
+		c.flushClients(0)
+	}
 	return pipe.push(p)
 }
 
@@ -5038,9 +5045,9 @@ func (s *Server) mqttInitiateMsgDelivery(c *client, pp *mqttPublish, heldSeq uin
 		return nil
 	}
 
-	// We need to call flushClients now since this we may have called c.addToPCD
+	// We need to call flushClients now since we may have called c.addToPCD
 	// with destination clients (possibly a route). Without calling flushClients
-	// the following call may then be stuck waiting for a reply that may never
+	// the synchronous will store below may then be stuck waiting for a reply that may never
 	// come because the destination is not flushed (due to c.out.fsp > 0,
 	// see addToPCD and writeLoop for details).
 	c.flushClients(0)
@@ -5107,6 +5114,8 @@ func (s *Server) mqttProcessPubRel(c *client, pi uint16) error {
 	}
 	if pp == nil {
 		var err error
+		// Flush first. The load may need a connection we left pending.
+		c.flushClients(0)
 		if pp, heldSeq, err = c.mqttLoadHeldQoS2Msg(pi); err != nil {
 			return err
 		}
@@ -5370,7 +5379,23 @@ func (c *client) mqttHandlePubRetain() {
 	// $sparkplug subject for sparkB.
 	rm.Subject = key
 	rmBytes, hdr := mqttEncodeRetainedMessage(rm) // will copy the payload bytes
-	_, err := asm.jsa.storeMsg(mqttRetainedMsgsStreamSubject+key, hdr, rmBytes)
+	// Earlier messages from this read may have left a connection in c.pcd.
+	// It won't flush the store request until we flush it.
+	c.flushClients(0)
+
+	subject := mqttRetainedMsgsStreamSubject + key
+	var err error
+	if pp.hasClientPI() {
+		// QoS1 PUBLISH or QoS2 PUBREL delivery: pipelined, not blocking the readLoop.
+		// Its PUBACK/PUBCOMP is queued behind this entry, so waits for the store.
+		jsa := c.mqtt.sess.jsa
+		p := newMQTTPipelined(0, pp.pi)
+		p.submitStore(jsa, subject, hdr, rmBytes, _EMPTY_)
+		err = c.srv.mqttPipelinePush(c, jsa, p)
+	} else {
+		// QoS0 and wills owe no response, stored synchronously.
+		_, err = asm.jsa.storeMsg(subject, hdr, rmBytes)
+	}
 	if err != nil {
 		c.mu.Lock()
 		acc := c.acc
@@ -5603,6 +5628,8 @@ func (c *client) mqttProcessPublishReceived(pi uint16, isPubRec bool) (err error
 
 	if isPubRec {
 		natsMsg, headerLen := mqttNewDeliverablePubRel(pi)
+		// Flush first. The store may need a connection we left pending.
+		c.flushClients(0)
 		_, err = sess.jsa.storeMsg(sess.pubRelSubject, headerLen, natsMsg)
 		if err != nil {
 			// Failure to send out PUBREL will terminate the connection.
@@ -6147,6 +6174,8 @@ func (c *client) mqttProcessSubs(filters []*mqttFilter) ([]*subscription, error)
 	trace := c.trace
 	c.mu.Unlock()
 
+	// Flush first. The JetStream requests below may need a connection we left pending.
+	c.flushClients(0)
 	if err := asm.lockSession(sess, c); err != nil {
 		return nil, err
 	}
@@ -6446,6 +6475,8 @@ func (c *client) mqttProcessUnsubs(filters []*mqttFilter) error {
 	sess := c.mqtt.sess
 	c.mu.Unlock()
 
+	// Flush first. The session save may need a connection we left pending.
+	c.flushClients(0)
 	if err := asm.lockSession(sess, c); err != nil {
 		return err
 	}

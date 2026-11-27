@@ -17,6 +17,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -926,6 +927,63 @@ func TestStoreStreamInteriorDeleteAccounting(t *testing.T) {
 	}
 }
 
+func TestStoreStateNoDeletedWithoutMsgs(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		compact  uint64
+		truncate uint64
+		first    uint64
+	}{
+		{"New", 0, 0, 0},
+		{"Truncated", 0, 6, 7},
+		{"CompactedAndTruncated", 24, 24, 25},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}}
+			testAllStoreAllPermutations(t, true, cfg, func(t *testing.T, s StreamStore) {
+				// Both move the sequences up, but nothing was ever stored.
+				if test.compact > 0 {
+					_, err := s.Compact(test.compact)
+					require_NoError(t, err)
+				}
+				if test.truncate > 0 {
+					require_NoError(t, s.Truncate(test.truncate))
+				}
+
+				// Without messages the first sequence comes after the last, so nothing is deleted.
+				before := s.State()
+				require_Equal(t, before.Msgs, 0)
+				require_Equal(t, before.FirstSeq, test.first)
+				require_Equal(t, before.LastSeq, test.truncate)
+				require_Equal(t, before.NumDeleted, 0)
+				require_Len(t, len(before.Deleted), 0)
+
+				var fstate StreamState
+				s.FastState(&fstate)
+				require_Equal(t, fstate.NumDeleted, 0)
+
+				// Only a file store recovers, and only if it was written to.
+				fs, ok := s.(*fileStore)
+				if !ok || test.truncate == 0 {
+					return
+				}
+				// Otherwise it must be the same after a restart.
+				cfg.Storage = FileStorage
+				fcfg := fs.fcfg
+				require_NoError(t, fs.Stop())
+				fs, err := newFileStore(fcfg, cfg)
+				require_NoError(t, err)
+				defer fs.Stop()
+
+				state := fs.State()
+				require_Equal(t, state.FirstSeq, before.FirstSeq)
+				require_Equal(t, state.LastSeq, before.LastSeq)
+				require_Equal(t, state.NumDeleted, 0)
+			})
+		})
+	}
+}
+
 func TestStoreMsgLoadPrevMsgMulti(t *testing.T) {
 	testAllStoreAllPermutations(
 		t, false,
@@ -1169,6 +1227,41 @@ func TestStoreGetSeqFromTimeWithTrailingDeletes(t *testing.T) {
 			require_Equal(t, fs.GetSeqFromTime(ts), 2)
 		},
 	)
+}
+
+func TestStoreSkipMsgsSequenceLimits(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		seq     uint64
+		num     uint64
+		wantErr bool
+	}{
+		{"zero count", 2, 0, true},
+		{"zero count zero sequence", 0, 0, true},
+		{"overflow", 2, math.MaxUint64, true},
+		{"overflow zero sequence", 0, math.MaxUint64, true},
+		{"last sequence exhausted", 2, math.MaxUint64 - 1, true},
+		{"normal skip", 2, 100, false},
+		{"zero sequence", 0, 100, false},
+		{"largest valid skip", 2, math.MaxUint64 - 2, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testAllStoreAllPermutations(t, false, StreamConfig{Name: "T"}, func(t *testing.T, store StreamStore) {
+				require_NoError(t, store.SkipMsgs(1, 1))
+				before := store.State()
+				err := store.SkipMsgs(test.seq, test.num)
+				if test.wantErr {
+					require_Error(t, err, ErrSequenceMismatch)
+					require_True(t, reflect.DeepEqual(store.State(), before))
+				} else {
+					require_NoError(t, err)
+					state := store.State()
+					require_Equal(t, state.LastSeq, before.LastSeq+test.num)
+					require_Equal(t, state.FirstSeq, state.LastSeq+1)
+				}
+			})
+		})
+	}
 }
 
 func TestStoreSkipMsgsCarryForwardLastTime(t *testing.T) {
@@ -1557,6 +1650,127 @@ func TestStoreNumPendingLastPerSubjectExcludeOvercount(t *testing.T) {
 	)
 }
 
+func TestStoreFilteredStateFirstAndLast(t *testing.T) {
+	put := func(t *testing.T, fs StreamStore, subjs ...string) {
+		for _, subj := range subjs {
+			_, _, err := fs.StoreMsg(subj, nil, nil, 0)
+			require_NoError(t, err)
+		}
+	}
+	// Only the file store has blocks.
+	newBlock := func(t *testing.T, fs StreamStore) {
+		if fs, ok := fs.(*fileStore); ok {
+			fs.mu.Lock()
+			defer fs.mu.Unlock()
+			_, err := fs.newMsgBlockForWrite()
+			require_NoError(t, err)
+		}
+	}
+	for _, test := range []struct {
+		title             string
+		setup             func(t *testing.T, fs StreamStore)
+		sseq              uint64
+		filter            string
+		msgs, first, last uint64
+	}{
+		{
+			// Starting at "bar", the only "foo" left is the last message.
+			title: "FirstIsLastMatch",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "bar", "foo")
+			},
+			sseq: 2, filter: "foo", msgs: 1, first: 3, last: 3,
+		},
+		{
+			// With many skipped sequences the memory store goes over its messages instead of the sequence range.
+			title: "FirstIsLastMatchSparse",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "bar")
+				require_NoError(t, fs.SkipMsgs(3, 1000))
+				put(t, fs, "foo")
+			},
+			sseq: 2, filter: "foo", msgs: 1, first: 1003, last: 1003,
+		},
+		{
+			title: "FirstIsLowestMatch",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo")
+				require_NoError(t, fs.SkipMsgs(2, 1000))
+				put(t, fs, "foo")
+				require_NoError(t, fs.SkipMsgs(1003, 10))
+				put(t, fs, "foo", "foo")
+			},
+			sseq: 1002, filter: "foo", msgs: 3, first: 1002, last: 1014,
+		},
+		{
+			// When matching all messages the last is the stream's, even if that message is removed.
+			title: "FullWildcardLast",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo", "foo", "foo")
+				for seq := uint64(4); seq <= 5; seq++ {
+					_, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+			},
+			sseq: 2, filter: ">", msgs: 2, first: 2, last: 5,
+		},
+		{
+			// The file store keeps the emptied second block for its tombstone, the first isn't taken from it.
+			title: "FullWildcardFirstAfterEmptyBlock",
+			setup: func(t *testing.T, fs StreamStore) {
+				remove := func(seq uint64) {
+					_, err := fs.RemoveMsg(seq)
+					require_NoError(t, err)
+				}
+				put(t, fs, "foo", "foo")
+				newBlock(t, fs)
+				put(t, fs, "foo")
+				remove(1)
+				newBlock(t, fs)
+				put(t, fs, "foo", "foo")
+				remove(3)
+				remove(4)
+			},
+			sseq: 3, filter: ">", msgs: 1, first: 5, last: 5,
+		},
+		{
+			// Without messages at or after the start, the sequences are the stream's.
+			title: "StartPastLast",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo")
+			},
+			sseq: 10, filter: "foo", msgs: 0, first: 1, last: 3,
+		},
+		{
+			title: "StartPastLastAfterPurge",
+			setup: func(t *testing.T, fs StreamStore) {
+				put(t, fs, "foo", "foo", "foo")
+				_, err := fs.Purge()
+				require_NoError(t, err)
+			},
+			sseq: 1, filter: "foo", msgs: 0, first: 4, last: 3,
+		},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			testAllStoreAllPermutations(
+				t, false,
+				StreamConfig{Name: "zzz", Subjects: []string{"*"}},
+				func(t *testing.T, fs StreamStore) {
+					test.setup(t, fs)
+					// Repeated, since the memory store's map of messages has no fixed iteration order.
+					for range 30 {
+						ss, err := fs.FilteredState(test.sseq, test.filter)
+						require_NoError(t, err)
+						require_Equal(t, ss.Msgs, test.msgs)
+						require_Equal(t, ss.First, test.first)
+						require_Equal(t, ss.Last, test.last)
+					}
+				},
+			)
+		})
+	}
+}
+
 // Resolving last sequences for many subjects whose last messages are spread
 // over the whole stream. For the filestore a small block size spreads them
 // across many blocks: WholeStream can resolve via each subject's last block,
@@ -1702,7 +1916,7 @@ func TestStoreConsumerAckAllWithRedeliveredDeliverySequence(t *testing.T) {
 
 			// An older leader acks with the redelivered delivery sequence.
 			// The floor must use the original, staying below the other pending messages.
-			require_NoError(t, o.UpdateAcks(4, 1))
+			require_NoError(t, o.UpdateAcks(4, 1, false))
 			state, err := o.State()
 			require_NoError(t, err)
 			require_Equal(t, state.AckFloor, SequencePair{Consumer: 1, Stream: 1})
@@ -1716,7 +1930,7 @@ func TestStoreConsumerAckAllWithRedeliveredDeliverySequence(t *testing.T) {
 			}))
 
 			// Acking the last one must still ack all, and move the floor up to the last delivered.
-			require_NoError(t, o.UpdateAcks(3, 3))
+			require_NoError(t, o.UpdateAcks(3, 3, false))
 			state, err = o.State()
 			require_NoError(t, err)
 			require_Equal(t, state.AckFloor, SequencePair{Consumer: 4, Stream: 3})

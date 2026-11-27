@@ -15,13 +15,13 @@ jobs:
       contents: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version: "stable"
 
@@ -32,19 +32,15 @@ jobs:
           go test -race -v -run=TestVersionMatchesTag ./server -ldflags="-X=github.com/nats-io/nats-server/v2/server.serverVersion=$TRAVIS_TAG" -count=1 -vet=off
 
       - name: Install cosign
-        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit 6f9f17788090df1f26f669e9d70d6ae9567deba6 = tag v4.1.2
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Install syft
-        # Use commit hash here to avoid a re-tagging attack, as this is a third-party action
-        # Commit e22c389904149dbc22b58101806040fa8d37a610 = tag v0.24.0
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action/download-syft@v0.24.0
         with:
           syft-version: "v1.42.3"
 
       - name: Create release
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2"

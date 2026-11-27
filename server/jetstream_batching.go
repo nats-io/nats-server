@@ -362,6 +362,52 @@ func (batches *batching) fastBatchCommit(b *fastBatch, batchId string, mset *str
 	return false
 }
 
+// fastBatchMsgFailed reports a message that was not persisted, and either continues or commits the batch.
+// The message must be counted in b.lseq, but not as pending.
+// Lock should be held.
+func (batches *batching) fastBatchMsgFailed(b *fastBatch, batch *FastBatch, mset *stream, reply, name string, apiErr *ApiError, err error, dseq uint64) {
+	// If a batch immediately errors, we send the same response as we would a normal publish.
+	if !batch.gapOk && b.lseq == 1 {
+		var response []byte
+		if err == errMsgIdDuplicate && dseq > 0 {
+			var buf [256]byte
+			response = append(buf[:0], mset.pubAck...)
+			response = append(response, strconv.FormatUint(dseq, 10)...)
+			response = append(response, fmt.Sprintf(",\"duplicate\": true,\"batch\":%q,\"count\":%d}", batch.id, batch.seq)...)
+		} else {
+			response, _ = json.Marshal(&JSPubAckResponse{PubAck: &PubAck{Stream: name}, Error: apiErr})
+		}
+		b.cleanupLocked(batch.id, batches)
+		mset.outq.sendMsg(reply, response)
+		return
+	}
+
+	// We always return the error to the client, unless it's a duplicate.
+	if err != errMsgIdDuplicate {
+		buf, _ := BatchFlowErr{Sequence: batch.seq, Error: apiErr}.MarshalJSON()
+		mset.outq.sendMsg(reply, buf)
+	}
+
+	// If gaps are okay, we just allow them to continue.
+	// Unless this is the commit message, in which case we must still complete it below.
+	if batch.gapOk && !batch.commit {
+		return
+	}
+
+	// Revert the last sequence, we might be able to immediately return the PubAck as part of the commit.
+	// Otherwise, the batch is cleaned up automatically later.
+	if err != errMsgIdDuplicate {
+		b.lseq--
+		// If there is none pending, correct the persisted sequence as we need to commit below.
+		if b.pending == 0 {
+			b.pseq = b.lseq
+		}
+	}
+	if batches.fastBatchCommit(b, batch.id, mset, reply) {
+		b.cleanupLocked(batch.id, batches)
+	}
+}
+
 // setupCleanupTimer sets up a timer to clean up the batch after a timeout.
 func (b *fastBatch) setupCleanupTimer(mset *stream, batchId string, batches *batching) {
 	// Create a timer to clean up after timeout.
@@ -419,6 +465,7 @@ type batchStagedDiff struct {
 	msgIds             map[string]struct{}
 	counter            map[string]*msgCounterRunningTotal
 	inflight           map[string]*inflightSubjectRunningTotal
+	inflightBytes      uint64 // Total bytes of the staged messages, as stored.
 	inflightTransform  map[uint64]string
 	expectedPerSubject map[string]*batchExpectedPerSubject
 }
@@ -537,17 +584,11 @@ func (batch *batchApply) rejectBatchState(mset *stream) {
 // mset.clMu lock must be held.
 func checkMsgHeadersPreClusteredProposal(
 	diff *batchStagedDiff, mset *stream, subject, rsubject string, hdr []byte, msg []byte, sourced bool, name string,
-	jsa *jsAccount, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
+	jsa *jsAccount, tierName string, replicas int, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules bool,
 	discard DiscardPolicy, discardNewPer bool, maxMsgSize int, maxMsgs int64, maxMsgsPer int64, maxBytes int64,
 ) ([]byte, []byte, uint64, *ApiError, error) {
 	var incr *big.Int
 	var hasSchedule bool
-
-	// Do this before staging any proposal state. All clustered publish paths,
-	// including atomic and fast batches, use this helper.
-	if mset.store.Type() == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
-		return hdr, msg, 0, NewJSStreamStoreFailedError(ErrMsgTooLarge), ErrMsgTooLarge
-	}
 
 	// Some header checks must be checked pre proposal.
 	if len(hdr) > 0 {
@@ -950,6 +991,12 @@ func checkMsgHeadersPreClusteredProposal(
 		}
 	}
 
+	// Check the message as it will be stored, since the headers above can make it grow.
+	// All clustered publish paths, including atomic and fast batches, use this helper.
+	if mset.store.Type() == FileStorage && isFileStoreMsgTooLarge(fileStoreMsgSize(subject, hdr, msg)) {
+		return hdr, msg, 0, NewJSStreamStoreFailedError(ErrMsgTooLarge), ErrMsgTooLarge
+	}
+
 	// Track inflight.
 	// Store the subject to ensure other messages in this batch using
 	// an expected check or rollup on the same subject fail.
@@ -974,6 +1021,18 @@ func checkMsgHeadersPreClusteredProposal(
 	} else {
 		i = &inflightSubjectRunningTotal{bytes: sz, ops: 1, schedule: hasSchedule}
 		diff.inflight[subject] = i
+	}
+	diff.inflightBytes += sz
+
+	// Check the account limits for the whole batch so far, as it will be stored.
+	if jsa != nil {
+		if exceeded, apiErr := jsa.wouldExceedLimitsWithSize(mset.store.Type(), tierName, replicas, diff.inflightBytes); exceeded {
+			if apiErr == nil {
+				apiErr = NewJSAccountResourcesExceededError()
+			}
+			mset.srv.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), apiErr.Error())
+			return hdr, msg, 0, apiErr, apiErr
+		}
 	}
 
 	// Subject transform.

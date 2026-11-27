@@ -160,7 +160,8 @@ type Info struct {
 	GatewayIOM        bool     `json:"gateway_iom,omitempty"`         // Indicate that all accounts will be switched to InterestOnly mode "right away"
 
 	// LeafNode Specific
-	LeafNodeURLs []string `json:"leafnode_urls,omitempty"` // LeafNode URLs that the server can reconnect to.
+	// Uses omitzero so an empty list is still sent, pre-2.15 leafnodes require it.
+	LeafNodeURLs []string `json:"leafnode_urls,omitzero"` // LeafNode URLs that the server can reconnect to.
 
 	XKey string `json:"xkey,omitempty"` // Public server's x25519 key.
 }
@@ -224,6 +225,7 @@ type Server struct {
 	routeListenerErr    error
 	routeInfo           Info
 	routeResolver       netResolver
+	routeDialer         netDialer
 	routesToSelf        map[string]struct{}
 	routeTLSName        string
 	leafNodeListener    net.Listener
@@ -234,7 +236,7 @@ type Server struct {
 	leafNodeOpts        struct {
 		resolver    netResolver
 		dialTimeout time.Duration
-		dialer      leafNodeDialer
+		dialer      netDialer
 	}
 	leafRemoteCfgs     map[*leafNodeCfg]struct{}
 	rmLeafRemoteCfgs   map[string]*leafNodeCfg
@@ -854,6 +856,10 @@ func NewServer(opts *Options) (*Server, error) {
 	s.routeResolver = opts.Cluster.resolver
 	if s.routeResolver == nil {
 		s.routeResolver = net.DefaultResolver
+	}
+	s.routeDialer = opts.Cluster.dialer
+	if s.routeDialer == nil {
+		s.routeDialer = natsDialTimeout
 	}
 
 	// Used internally for quick look-ups.
@@ -2786,6 +2792,14 @@ func (s *Server) Shutdown() {
 
 	// Wait for go routines to be done.
 	s.grWG.Wait()
+
+	// Stop the service exports' response threshold timers. A pending one
+	// keeps its account, and through it the whole server, reachable until
+	// it fires, two minutes later by default.
+	s.accounts.Range(func(_, v any) bool {
+		v.(*Account).clearResponseThresholdTimers()
+		return true
+	})
 
 	if opts.PortsFileDir != _EMPTY_ {
 		s.deletePortsFile(opts.PortsFileDir)

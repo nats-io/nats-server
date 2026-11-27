@@ -470,6 +470,10 @@ func (ms *memStore) SkipMsgs(seq uint64, num uint64) error {
 		}
 		seq = ms.state.LastSeq + 1
 	}
+	// Make sure the last sequence leaves room for the next message.
+	if num == 0 || seq == 0 || num > math.MaxUint64-seq {
+		return ErrSequenceMismatch
+	}
 	lseq := seq + num - 1
 
 	ms.state.LastSeq = lseq
@@ -602,7 +606,12 @@ func (ms *memStore) FilteredState(sseq uint64, subj string) (SimpleState, error)
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	return ms.filteredStateLocked(sseq, subj, false), nil
+	ss := ms.filteredStateLocked(sseq, subj, false)
+	// When matching all messages the last is the stream's, like when starting from the first sequence.
+	if ss.Msgs > 0 && (subj == _EMPTY_ || subj == fwcs) {
+		ss.Last = ms.state.LastSeq
+	}
+	return ss, nil
 }
 
 func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubject bool) SimpleState {
@@ -612,7 +621,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 	// If past the end no results.
 	if sseq > ms.state.LastSeq {
-		return SimpleState{}
+		// Make sure we track sequences
+		return SimpleState{First: ms.state.FirstSeq, Last: ms.state.LastSeq}
 	}
 
 	if filter == _EMPTY_ {
@@ -717,7 +727,8 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 
 		update := func(sm *StoreMsg) {
 			ss.Msgs++
-			if ss.First == 0 {
+			// Keep the lowest, since the map of messages has no fixed iteration order.
+			if ss.First == 0 || sm.seq < ss.First {
 				ss.First = sm.seq
 			}
 			if seen != nil {
@@ -789,19 +800,16 @@ func (ms *memStore) filteredStateLocked(sseq uint64, filter string, lastPerSubje
 			// Since we will need to scan all of the msgs vs below where we break on the first match,
 			// we will only do so if a few orders of magnitude lower.
 			if last-first > 100*uint64(len(ms.msgs)) {
-				low := ms.state.LastSeq
+				// The message at last always matches, so it's the first if nothing before it does.
+				low := last
 				for _, sm := range ms.msgs {
-					if sm.seq >= first && sm.seq < last && isMatch(sm.subj) {
-						if sm.seq < low {
-							low = sm.seq
-						}
+					if sm.seq >= first && sm.seq < low && isMatch(sm.subj) {
+						low = sm.seq
 					}
 				}
-				if low < ms.state.LastSeq {
-					ss.First = low
-				}
+				ss.First = low
 			} else {
-				for seq := first; seq < last; seq++ {
+				for seq := first; seq <= last; seq++ {
 					if sm, ok := ms.msgs[seq]; ok && isMatch(sm.subj) {
 						ss.First = seq
 						break
@@ -1844,6 +1852,10 @@ func (ms *memStore) Truncate(seq uint64) error {
 		bytes = ms.state.Bytes
 	}
 	ms.state.Bytes -= bytes
+	if ms.state.Msgs == 0 {
+		ms.state.FirstSeq = ms.state.LastSeq + 1
+		ms.state.FirstTime = time.Time{}
+	}
 
 	cb := ms.scb
 	ms.mu.Unlock()
@@ -2500,7 +2512,7 @@ func (ms *memStore) State() StreamState {
 	state.Deleted = nil
 
 	// Calculate interior delete details.
-	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 && state.FirstSeq > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
 		fseq, lseq := state.FirstSeq, state.LastSeq
 		ms.dmap.Range(func(seq uint64) bool {
@@ -2963,7 +2975,7 @@ func (o *consumerMemStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) erro
 	return nil
 }
 
-func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
+func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -2987,7 +2999,7 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		return ErrStoreMsgNotFound
 	}
 
-	if ackAll {
+	if !explicit && ackAll {
 		// Use the original delivery sequence.
 		if p := o.state.Pending[sseq]; dseq > p.Sequence && p.Sequence > 0 {
 			dseq = p.Sequence
@@ -3034,14 +3046,9 @@ func (o *consumerMemStore) UpdateAcks(dseq, sseq uint64) error {
 		o.state.AckFloor.Stream = sseq
 
 		if o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
-				if p, ok := o.state.Pending[ss]; ok {
-					if p.Sequence > 0 {
-						o.state.AckFloor.Consumer = p.Sequence - 1
-						o.state.AckFloor.Stream = ss - 1
-					}
-					break
-				}
+			if ss, p := nextPending(o.state.Pending, sseq, o.state.Delivered.Stream); p != nil && p.Sequence > 0 {
+				o.state.AckFloor.Consumer = p.Sequence - 1
+				o.state.AckFloor.Stream = ss - 1
 			}
 		}
 	}

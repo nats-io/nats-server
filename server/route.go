@@ -942,6 +942,12 @@ func (s *Server) negotiateRouteCompression(c *client, didSolicit bool, accName, 
 			for c.out.pb > 0 && !c.isClosed() {
 				c.flushOutbound()
 			}
+			// A write error closed the connection, clean up and reconnect.
+			if c.isClosed() {
+				c.mu.Unlock()
+				c.closeConnection(WriteError)
+				return true, nil
+			}
 		}
 		// This is to notify the readLoop that it should switch to a
 		// (de)compression reader.
@@ -2082,7 +2088,14 @@ func (s *Server) createRoute(conn net.Conn, rURL *url.URL, rtype RouteType, goss
 	s.startGoRoutine(func() { c.readLoop(nil) })
 
 	// Spin up the write loop.
-	s.startGoRoutine(func() { c.writeLoop() })
+	wld := opts.Cluster.writeLoopDelay
+	s.startGoRoutine(func() {
+		// Tests can start it late to let the readLoop flush first.
+		if wld > 0 {
+			time.Sleep(wld)
+		}
+		c.writeLoop()
+	})
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
@@ -2950,6 +2963,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 
 	s.mu.RLock()
 	resolver := s.routeResolver
+	dial := s.routeDialer
 	excludedAddresses := s.routesToSelf
 	s.mu.RUnlock()
 
@@ -2982,7 +2996,7 @@ func (s *Server) connectToRoute(rURL *url.URL, rtype RouteType, firstConnect boo
 		}
 		if err == nil {
 			s.Debugf("Trying to connect to route on %s (%s)", rURL.Host, address)
-			conn, err = natsDialTimeout("tcp", address, DEFAULT_ROUTE_DIAL)
+			conn, err = dial("tcp", address, DEFAULT_ROUTE_DIAL)
 		}
 		if err != nil {
 			attempts++

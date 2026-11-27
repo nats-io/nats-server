@@ -10172,6 +10172,68 @@ func TestJetStreamClusterStreamMoveCatchupStallKeepsPeerTracked(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterStreamCatchupSignalsConsumers(t *testing.T) {
+	test := func(t *testing.T, deliverSubject string) {
+		c := createJetStreamClusterExplicit(t, "R3S", 3)
+		defer c.shutdown()
+
+		nc, js := jsClientConnect(t, c.randomServer())
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+		require_NoError(t, err)
+		_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", DeliverSubject: deliverSubject, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+
+		const toSend = 10
+		for range toSend {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			return checkState(t, c, globalAccountName, "TEST")
+		})
+
+		// Move the consumer leader onto a stream follower.
+		fs := c.randomNonStreamLeader(globalAccountName, "TEST")
+		require_NotNil(t, fs)
+		c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "CONSUMER", fs)
+
+		// Empty the follower's stream, so the consumer has nothing to deliver until it catches up.
+		mset, err := fs.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		snap, err := DecodeStreamState(mset.stateSnapshot())
+		require_NoError(t, err)
+		_, _, applied := mset.raftNode().Progress()
+		require_NoError(t, mset.store.Truncate(0))
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+
+		// Pull requests reply to the same subject push consumers deliver to.
+		sub := natsSubSync(t, nc, "reply")
+		if deliverSubject == _EMPTY_ {
+			// Expires after the wait below, so only the catchup can deliver.
+			req, err := json.Marshal(JSApiConsumerGetNextRequest{Batch: toSend, Expires: time.Minute})
+			require_NoError(t, err)
+			require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "CONSUMER"), "reply", req))
+		}
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			o.mu.RLock()
+			defer o.mu.RUnlock()
+			if (o.isPushMode() && !o.active) || (o.isPullMode() && o.waiting.isEmpty()) {
+				return errors.New("consumer not waiting to deliver yet")
+			}
+			return nil
+		})
+
+		// Completing the catchup must deliver, without a new publish.
+		require_NoError(t, mset.processSnapshot(snap, applied))
+		checkSubsPending(t, sub, toSend)
+	}
+	t.Run("Pull", func(t *testing.T) { test(t, _EMPTY_) })
+	t.Run("Push", func(t *testing.T) { test(t, "reply") })
+}
+
 func TestJetStreamClusterDurableStreamMirror(t *testing.T) {
 	test := func(t *testing.T, replicas int, retention RetentionPolicy) {
 		var s *Server

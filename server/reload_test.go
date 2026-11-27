@@ -4179,9 +4179,13 @@ func TestConfigReloadMaxControlLineWithClients(t *testing.T) {
 	}
 
 	changeCurrentConfigContentWithNewContent(t, config, []byte("listen: 127.0.0.1:-1; max_control_line: 222"))
+	// Have the parser read the limit while reload updates it.
+	flushed := make(chan error, 1)
+	go func() { flushed <- nc.FlushTimeout(time.Second) }()
 	if err := server.Reload(); err != nil {
 		t.Fatalf("Expected Reload to succeed, got %v", err)
 	}
+	require_NoError(t, <-flushed)
 
 	// Refresh properly.
 	opts = server.getOpts()
