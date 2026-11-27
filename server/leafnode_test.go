@@ -1281,6 +1281,34 @@ func TestLeafNodeNoAdvertiseDoesNotAdvertiseListener(t *testing.T) {
 	})
 }
 
+func TestLeafNodeNoAdvertiseSendsEmptyLeafNodeURLs(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: "127.0.0.1:-1"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			no_advertise: true
+		}
+	`))
+	s, o := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	readInfo := func(port int) string {
+		t.Helper()
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+		require_NoError(t, err)
+		defer c.Close()
+		line, err := bufio.NewReader(c).ReadString('\n')
+		require_NoError(t, err)
+		require_True(t, strings.HasPrefix(line, "INFO "))
+		return line
+	}
+
+	// Pre-2.15 leafnodes treat a missing list as having connected to the wrong port.
+	require_Contains(t, readInfo(o.LeafNode.Port), `"leafnode_urls":[]`)
+	// Other INFOs must still omit it, so leafnodes can detect the wrong port.
+	require_False(t, strings.Contains(readInfo(o.Port), "leafnode_urls"))
+}
+
 func TestLeafNodeRemoteIsHub(t *testing.T) {
 	oa := testDefaultOptionsForGateway("A")
 	oa.Accounts = []*Account{NewAccount("sys")}
