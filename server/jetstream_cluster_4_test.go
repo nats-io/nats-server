@@ -4502,6 +4502,99 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterMetaRecoveryStaleConsumerRemovalKeepsRecreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{Name: "TEST", Replicas: 1}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+
+	ccfg := &nats.ConsumerConfig{Name: "consumer", Replicas: 1}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mjs := sl.getJetStream()
+	assignment := func() *consumerAssignment {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "consumer")
+		require_NotNil(t, ca)
+		return ca.clone()
+	}
+	oca := assignment()
+
+	// Get the snapshot before recreating the consumer, so we can recover through the recreate.
+	snap, _, _, err := mjs.metaSnapshot()
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteConsumer("TEST", "consumer"))
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	nca := assignment()
+	require_NotEqual(t, oca.Group.Name, nca.Group.Name)
+
+	// Remove the stream so we can recover fresh.
+	require_NoError(t, js.DeleteStream("TEST"))
+	nc.Close()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// Simulate recovering:
+	// - snapshot with a stream and consumer
+	// - normal entry deleting the consumer
+	// - normal entry recreating the consumer with the same name
+	// - normal entry deleting the earlier consumer again, a retry from a server that still ran it
+	// This should result in the recreated consumer, like for servers applying the entries one by one.
+	mjs.mu.Lock()
+	mjs.metaRecovering = true
+	mjs.mu.Unlock()
+	_, _, err = mjs.applyMetaEntries([]*Entry{
+		newEntry(EntrySnapshot, snap),
+		newEntry(EntryNormal, encodeDeleteConsumerAssignment(oca)),
+		newEntry(EntryNormal, encodeAddConsumerAssignment(nca)),
+		newEntry(EntryNormal, encodeDeleteConsumerAssignment(oca)),
+	}, ru)
+	require_NoError(t, err)
+
+	// Recovery should contain the stream create, the consumer delete and the recreated consumer.
+	require_Len(t, len(ru.addStreams), 1)
+	require_Len(t, len(ru.removeConsumers), 1)
+	require_Len(t, len(ru.updateConsumers), 1)
+	staged := ru.updateConsumers[nca.streamRecoveryKey()][nca.recoveryKey()]
+	require_NotNil(t, staged)
+	require_Equal(t, staged.Group.Name, nca.Group.Name)
+
+	// Process those updates, in the order recovery completes.
+	for _, cas := range ru.removeConsumers {
+		for _, ca := range cas {
+			mjs.processConsumerRemoval(ca)
+		}
+	}
+	for _, sa := range ru.addStreams {
+		mjs.processStreamAssignment(sa)
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca := range cas {
+			mjs.processConsumerAssignment(ca)
+		}
+	}
+	mjs.clearMetaRecovering()
+
+	ca := assignment()
+	require_Equal(t, ca.Group.Name, nca.Group.Name)
+}
+
 func TestJetStreamClusterMetaSnapshotDecodeError(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
