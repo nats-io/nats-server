@@ -2546,6 +2546,93 @@ func TestFileStoreCorruptRecordKeepsPriorRecords(t *testing.T) {
 	})
 }
 
+// Messages stored after the last block was truncated at a corrupt record must stay readable.
+func TestFileStoreCorruptLastBlockThenWrite(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		// The first record leaves an empty block, at startup or while running.
+		for _, bad := range []int{2, 0} {
+			for _, startup := range []bool{false, true} {
+				t.Run(fmt.Sprintf("Record%d-Startup=%v", bad, startup), func(t *testing.T) {
+					fcfg.StoreDir = t.TempDir()
+					open := func() *fileStore {
+						fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+						require_NoError(t, err)
+						return fs
+					}
+					fs := open()
+					defer func() { fs.Stop() }()
+					for i := range 5 {
+						_, _, err := fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+						require_NoError(t, err)
+					}
+					fs.mu.RLock()
+					mb := fs.lmb
+					fs.mu.RUnlock()
+					require_NoError(t, mb.flushPendingMsgs())
+					mfn := mb.mfn
+					if startup {
+						require_NoError(t, fs.Stop())
+					}
+
+					// Flip a bit of the record's length, the cipher keeps it in place.
+					// A record is 22 header bytes, "foo", "hello-N" and an 8 byte checksum.
+					buf, err := os.ReadFile(mfn)
+					require_NoError(t, err)
+					require_Equal(t, len(buf), 5*40)
+					buf[bad*40+2] ^= 0x10
+					require_NoError(t, os.WriteFile(mfn, buf, defaultFilePerms))
+
+					if startup {
+						// Recovering without the stream state file truncates the block.
+						require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+						fs = open()
+					} else {
+						// Loading the block truncates it.
+						mb.mu.Lock()
+						mb.clearCacheAndOffset()
+						mb.mu.Unlock()
+						_, _ = fs.LoadMsg(1, nil)
+					}
+					// The stream's state is rebuilt in the background.
+					checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+						if msgs := fs.State().Msgs; msgs != uint64(bad) {
+							return fmt.Errorf("expected %d msgs, got %d", bad, msgs)
+						}
+						return nil
+					})
+
+					seqs := make([]uint64, 3)
+					for i := range seqs {
+						seqs[i], _, err = fs.StoreMsg("foo", nil, fmt.Appendf(nil, "new-%d", i), 0)
+						require_NoError(t, err)
+					}
+					check := func() {
+						t.Helper()
+						for i, seq := range seqs {
+							sm, err := fs.LoadMsg(seq, nil)
+							require_NoError(t, err)
+							require_Equal(t, string(sm.msg), fmt.Sprintf("new-%d", i))
+						}
+					}
+					// From disk, and after a restart.
+					fs.mu.RLock()
+					lmb := fs.lmb
+					fs.mu.RUnlock()
+					require_NoError(t, lmb.flushPendingMsgs())
+					lmb.mu.Lock()
+					lmb.clearCacheAndOffset()
+					lmb.mu.Unlock()
+					check()
+					require_NoError(t, fs.Stop())
+					fs = open()
+					check()
+				})
+			}
+		}
+	})
+}
+
 func TestFileStoreSnapshot(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		subj, msg := "foo", []byte("Hello Snappy!")

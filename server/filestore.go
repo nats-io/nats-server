@@ -1802,10 +1802,11 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	// There are cases where we're not allowed to truncate, like when converting the block's cipher.
 	truncate := func(index uint32) error {
-		// The index is into the decompressed block, so rewrite it with the records before it.
-		if mb.cmp != NoCompression {
+		// The index is into the decrypted and decompressed block, so rewrite it with the records before it.
+		// That also restarts the block's keystream at its new end.
+		if mb.cmp != NoCompression || mb.bek != nil {
 			// An empty block can't be compressed, it's written empty.
-			if err := mb.atomicOverwriteFile(buf[:index], index > 0); err != nil {
+			if err := mb.atomicOverwriteFile(buf[:index], mb.cmp != NoCompression && index > 0); err != nil {
 				return err
 			}
 			if index >= checksumSize {
@@ -8448,13 +8449,16 @@ func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
 
 // Lock should be held.
 func (mb *msgBlock) encryptOrDecryptIfNeeded(buf []byte) error {
-	if mb.bek != nil && len(buf) > 0 {
+	if mb.bek != nil {
+		// Always reset the keystream, so it continues at the end of buf, even if the block is empty.
 		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
 			return err
 		}
 		mb.bek = bek
-		mb.bek.XORKeyStream(buf, buf)
+		if len(buf) > 0 {
+			mb.bek.XORKeyStream(buf, buf)
+		}
 	}
 	return nil
 }
