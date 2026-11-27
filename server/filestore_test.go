@@ -19595,3 +19595,218 @@ func TestFileStoreLogBackedFollowsWriteMode(t *testing.T) {
 		})
 	})
 }
+
+func TestFileStoreWildcardSelectiveLoadedCache(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 64 * 1024
+		fs, err := newFileStore(fcfg, StreamConfig{
+			Name:     "WC_SELECTIVE",
+			Subjects: []string{"a.>"},
+			Storage:  FileStorage,
+		})
+		require_NoError(t, err)
+		defer fs.Stop()
+
+		payload := make([]byte, 128)
+		// Place >8 non-matching messages before target device 999 so the short linear
+		// lookahead misses and triggers the bounded fss probe.
+		for i := 0; i < 20; i++ {
+			subj := fmt.Sprintf("a.%d.b.%d.%d.c.0", i%10, i%10, i)
+			_, _, err := fs.StoreMsg(subj, nil, payload, 0)
+			require_NoError(t, err)
+		}
+		// Store 3 messages on the same subject so deleting the first leaves Msgs=2
+		// with ss.firstNeedsUpdate=true until mb.fss is consulted.
+		first999, _, err := fs.StoreMsg("a.9.b.99.99999.c.0", nil, payload, 0)
+		require_NoError(t, err)
+		second999, _, err := fs.StoreMsg("a.9.b.99.99999.c.0", nil, payload, 0)
+		require_NoError(t, err)
+		third999, _, err := fs.StoreMsg("a.9.b.99.99999.c.0", nil, payload, 0)
+		require_NoError(t, err)
+
+		// Write one-subject-per-message traffic across multiple blocks so
+		// mb.fss.Size()*4 > (lseq-fseq) holds in every block while caches stay loaded.
+		for i := 20; i < 1500; i++ {
+			subj := fmt.Sprintf("a.%d.b.%d.%d.c.%d", i%25, i%50, i, i)
+			_, _, err := fs.StoreMsg(subj, nil, payload, 0)
+			require_NoError(t, err)
+		}
+		later999, _, err := fs.StoreMsg("a.9.b.99.99999.c.1", nil, payload, 0)
+		require_NoError(t, err)
+		for i := 1500; i < 2200; i++ {
+			subj := fmt.Sprintf("a.%d.b.%d.%d.c.%d", i%25, i%50, i, i)
+			_, _, err := fs.StoreMsg(subj, nil, payload, 0)
+			require_NoError(t, err)
+		}
+
+		// Warm all block caches ("hot" setup from #8928), then delete first999.
+		fs.mu.RLock()
+		numBlks := len(fs.blks)
+		mb0 := fs.blks[0]
+		var loadErr error
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			if err := mb.loadMsgsWithLock(); err != nil && loadErr == nil {
+				loadErr = err
+			}
+			mb.mu.Unlock()
+		}
+		fs.mu.RUnlock()
+		require_NoError(t, loadErr)
+		require_True(t, numBlks >= 3)
+
+		removed, err := fs.RemoveMsg(first999)
+		require_NoError(t, err)
+		require_True(t, removed)
+
+		mb0.mu.Lock()
+		ss999, ok := mb0.fss.Find([]byte("a.9.b.99.99999.c.0"))
+		needsUpdBefore := ok && ss999.firstNeedsUpdate
+		cacheWarm := mb0.cacheAlreadyLoaded()
+		mb0.mu.Unlock()
+		require_True(t, ok)
+		require_True(t, cacheWarm)
+		require_True(t, needsUpdBefore)
+
+		collectForward := func(filter string) []uint64 {
+			var seqs []uint64
+			var sm StoreMsg
+			for seq := uint64(1); ; {
+				m, _, err := fs.LoadNextMsg(filter, true, seq, &sm)
+				if err != nil {
+					require_Error(t, err, ErrStoreEOF)
+					break
+				}
+				seqs = append(seqs, m.seq)
+				seq = m.seq + 1
+			}
+			return seqs
+		}
+
+		collectBackward := func(filter string) []uint64 {
+			var seqs []uint64
+			var sm StoreMsg
+			for seq := fs.State().LastSeq; seq >= 1; {
+				m, _, err := fs.LoadPrevMsg(filter, true, seq, &sm)
+				if err != nil {
+					require_Error(t, err, ErrStoreEOF)
+					break
+				}
+				seqs = append(seqs, m.seq)
+				if m.seq <= 1 {
+					break
+				}
+				seq = m.seq - 1
+			}
+			return seqs
+		}
+
+		expectedFwd := []uint64{second999, third999, later999}
+		hotFwd := collectForward("a.*.b.*.99999.>")
+		require_Equal(t, len(hotFwd), len(expectedFwd))
+		for i := range expectedFwd {
+			require_Equal(t, hotFwd[i], expectedFwd[i])
+		}
+
+		// Proves mb.fss bounded probe ran (recalculating ss999) rather than falling back to pure linear scan.
+		mb0.mu.Lock()
+		needsUpdAfter := ss999.firstNeedsUpdate
+		mb0.mu.Unlock()
+		require_False(t, needsUpdAfter)
+
+		hotRev := collectBackward("a.*.b.*.99999.>")
+		require_Equal(t, len(hotRev), len(expectedFwd))
+		for i := range expectedFwd {
+			require_Equal(t, hotRev[i], expectedFwd[len(expectedFwd)-1-i])
+		}
+
+		require_Equal(t, len(collectForward("a.*.b.*.888888.>")), 0)
+		require_Equal(t, len(collectBackward("a.*.b.*.888888.>")), 0)
+		hotBroad := collectForward("a.0.>")
+		hotBroadRev := collectBackward("a.0.>")
+		require_True(t, len(hotBroad) > 50)
+		require_Equal(t, len(hotBroad), len(hotBroadRev))
+
+		// Expire all block caches ("cold" fss-only path) and verify exact sequence parity.
+		fs.mu.RLock()
+		for _, mb := range fs.blks {
+			mb.mu.Lock()
+			mb.tryForceExpireCacheLocked()
+			mb.mu.Unlock()
+		}
+		fs.mu.RUnlock()
+
+		coldFwd := collectForward("a.*.b.*.99999.>")
+		require_Equal(t, len(coldFwd), len(hotFwd))
+		for i := range hotFwd {
+			require_Equal(t, coldFwd[i], hotFwd[i])
+		}
+		coldBroad := collectForward("a.0.>")
+		require_Equal(t, len(coldBroad), len(hotBroad))
+		for i := range hotBroad {
+			require_Equal(t, coldBroad[i], hotBroad[i])
+		}
+	})
+}
+
+func BenchmarkFileStoreWildcardSelectiveLoadedCache(b *testing.B) {
+	fcfg := FileStoreConfig{StoreDir: b.TempDir(), BlockSize: 1024 * 1024}
+	fs, err := newFileStore(fcfg, StreamConfig{
+		Name:     "BENCH_WC",
+		Subjects: []string{"a.>"},
+		Storage:  FileStorage,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer fs.Stop()
+
+	payload := make([]byte, 200)
+	if _, _, err := fs.StoreMsg("a.0.b.99.9999.c.0", nil, payload, 0); err != nil {
+		b.Fatal(err)
+	}
+	const numDevs = 5000
+	for i := 0; i < 50_000; i++ {
+		dev := i % (numDevs - 1)
+		subj := fmt.Sprintf("a.%d.b.%d.%d.c.%d", dev%50, dev%100, dev, i/numDevs)
+		if _, _, err := fs.StoreMsg(subj, nil, payload, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	fs.mu.RLock()
+	for _, mb := range fs.blks {
+		mb.mu.Lock()
+		_ = mb.loadMsgsWithLock()
+		mb.mu.Unlock()
+	}
+	fs.mu.RUnlock()
+
+	b.Run("SelectiveOneOld", func(b *testing.B) {
+		var sm StoreMsg
+		b.ReportAllocs()
+		for b.Loop() {
+			for seq := uint64(1); ; {
+				m, _, err := fs.LoadNextMsg("a.*.b.*.9999.>", true, seq, &sm)
+				if err != nil {
+					break
+				}
+				seq = m.seq + 1
+			}
+		}
+	})
+
+	b.Run("BroadWildcard", func(b *testing.B) {
+		var sm StoreMsg
+		b.ReportAllocs()
+		for b.Loop() {
+			for seq := uint64(1); ; {
+				m, _, err := fs.LoadNextMsg("a.0.>", true, seq, &sm)
+				if err != nil {
+					break
+				}
+				seq = m.seq + 1
+			}
+		}
+	})
+}

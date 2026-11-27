@@ -3345,18 +3345,26 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 	}
 
+	if fseq > lseq {
+		return nil, didLoad, ErrStoreMsgNotFound
+	}
+
+	const (
+		wcCacheProbeMsgs   = 8
+		wcNodesPerMsg      = 16
+		wcMaxLiveMatchSubj = 256
+	)
+
 	subjs := mb.fs.cfg.Subjects
 	// If isAll or our single filter matches the filter arg do linear scan.
 	doLinearScan := isAll || (wc && len(subjs) == 1 && subjs[0] == filter)
-	// If we do not think we should do a linear scan check how many fss we
-	// would need to scan vs the full range of the linear walk. Optimize for
-	// 25th quantile of a match in a linear walk. Filter should be a wildcard.
-	// We should consult fss if our cache is not loaded and we only have fss loaded.
-	if !doLinearScan && wc && mb.cacheAlreadyLoaded() {
-		doLinearScan = mb.fss.Size()*4 > int(lseq-fseq)
-	}
+	// When the block cache is already loaded on a wildcard filter, avoid walking fss
+	// up front (which hurts dense wildcards), and instead run a bounded fss probe
+	// once a short linear lookahead misses so selective wildcards still jump ahead
+	// even when mb.fss.Size() is comparable to the block message count.
+	probeFSSOnMiss := !doLinearScan && wc && mb.cacheAlreadyLoaded()
 
-	if !doLinearScan {
+	if !doLinearScan && !probeFSSOnMiss {
 		// If we have a wildcard match against all tracked subjects we know about.
 		fseq = lseq + 1
 		if bfilter := stringToBytes(filter); wc {
@@ -3386,10 +3394,9 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 				fseq = min(fseq, max(start, ss.First))
 			}
 		}
-	}
-
-	if fseq > lseq {
-		return nil, didLoad, ErrStoreMsgNotFound
+		if fseq > lseq {
+			return nil, didLoad, ErrStoreMsgNotFound
+		}
 	}
 
 	// Need messages loaded from here on out.
@@ -3408,6 +3415,7 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 	if !isAll {
 		fsm = &StoreMsg{}
 	}
+	var wcMisses int
 	for seq := fseq; seq <= lseq; seq++ {
 		if end, deleted := mb.dmap.SpanEnd(seq); deleted {
 			// Optimisation to avoid calling cacheLookup which hits time.Now().
@@ -3438,6 +3446,53 @@ func (mb *msgBlock) firstMatching(filter string, wc bool, start uint64, sm *Stor
 		}
 		// If we are here we did not match, so put the llseq back.
 		mb.llseq = llseq
+
+		if probeFSSOnMiss {
+			wcMisses++
+			if wcMisses >= wcCacheProbeMsgs && seq < lseq {
+				probeFSSOnMiss = false
+				nextSeq := seq + 1
+				remSpan := lseq - nextSeq + 1
+				maxNodes := int(min(uint64(math.MaxInt/2), remSpan*wcNodesPerMsg))
+				maxLive := int(min(uint64(wcMaxLiveMatchSubj), remSpan/4))
+				if maxLive > 0 {
+					candSeq := lseq + 1
+					var liveMatches int
+					var tooManyMatches bool
+					var ierr error
+					_, exceeded := mb.fss.MatchUntilBounded(stringToBytes(filter), maxNodes, func(bsubj []byte, ss *SimpleState) bool {
+						if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+							if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
+								return false
+							}
+						}
+						if nextSeq <= ss.Last {
+							candSeq = min(candSeq, max(nextSeq, ss.First))
+							if candSeq == nextSeq {
+								return false
+							}
+							liveMatches++
+							if liveMatches > maxLive {
+								tooManyMatches = true
+								return false
+							}
+						}
+						return true
+					})
+					if ierr != nil {
+						return nil, false, ierr
+					}
+					if !exceeded && !tooManyMatches {
+						if candSeq > lseq {
+							return nil, didLoad, ErrStoreMsgNotFound
+						}
+						if candSeq > nextSeq {
+							seq = candSeq - 1
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return nil, didLoad, ErrStoreMsgNotFound
@@ -10218,13 +10273,21 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 		}
 	}
 
-	subjs := mb.fs.cfg.Subjects
-	doLinearScan := isAll || (wc && len(subjs) == 1 && subjs[0] == filter)
-	if !doLinearScan && wc && mb.cacheAlreadyLoaded() {
-		doLinearScan = mb.fss.Size()*4 > int(end-lseq)
+	if end < lseq {
+		return nil, didLoad, ErrStoreMsgNotFound
 	}
 
-	if !doLinearScan {
+	const (
+		wcCacheProbeMsgs   = 8
+		wcNodesPerMsg      = 16
+		wcMaxLiveMatchSubj = 256
+	)
+
+	subjs := mb.fs.cfg.Subjects
+	doLinearScan := isAll || (wc && len(subjs) == 1 && subjs[0] == filter)
+	probeFSSOnMiss := !doLinearScan && wc && mb.cacheAlreadyLoaded()
+
+	if !doLinearScan && !probeFSSOnMiss {
 		var found bool
 		var first, last uint64
 		if bfilter := stringToBytes(filter); wc {
@@ -10235,7 +10298,7 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 						return false
 					}
 				}
-				if end < ss.First {
+				if end < ss.First || ss.Last < lseq {
 					return true
 				}
 				if !found {
@@ -10260,7 +10323,7 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 					return nil, false, err
 				}
 			}
-			if end >= ss.First {
+			if end >= ss.First && ss.Last >= lseq {
 				found = true
 				first, last = ss.First, min(end, ss.Last)
 			}
@@ -10286,6 +10349,7 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 	if !isAll {
 		fsm = &StoreMsg{}
 	}
+	var wcMisses int
 	for seq := end; seq >= lseq; seq-- {
 		if mb.dmap.Exists(seq) {
 			updateLLTS = true
@@ -10309,6 +10373,62 @@ func (mb *msgBlock) prevMatching(filter string, wc bool, start uint64, sm *Store
 			return sm, expireOk, nil
 		}
 		mb.llseq = llseq
+
+		if probeFSSOnMiss {
+			wcMisses++
+			if wcMisses >= wcCacheProbeMsgs && seq > lseq {
+				probeFSSOnMiss = false
+				prevSeq := seq - 1
+				remSpan := prevSeq - lseq + 1
+				maxNodes := int(min(uint64(math.MaxInt/2), remSpan*wcNodesPerMsg))
+				maxLive := int(min(uint64(wcMaxLiveMatchSubj), remSpan/4))
+				if maxLive > 0 {
+					var found bool
+					var first, last uint64
+					var liveMatches int
+					var tooManyMatches bool
+					var ierr error
+					_, exceeded := mb.fss.MatchUntilBounded(stringToBytes(filter), maxNodes, func(bsubj []byte, ss *SimpleState) bool {
+						if ss.firstNeedsUpdate || ss.lastNeedsUpdate {
+							if ierr = mb.recalculateForSubj(bytesToString(bsubj), ss); ierr != nil {
+								return false
+							}
+						}
+						if prevSeq < ss.First || ss.Last < lseq {
+							return true
+						}
+						if !found {
+							found = true
+							first, last = ss.First, min(prevSeq, ss.Last)
+						} else {
+							first = min(first, ss.First)
+							last = max(last, min(prevSeq, ss.Last))
+						}
+						if first <= lseq && last >= prevSeq {
+							return false
+						}
+						liveMatches++
+						if liveMatches > maxLive {
+							tooManyMatches = true
+							return false
+						}
+						return true
+					})
+					if ierr != nil {
+						return nil, false, ierr
+					}
+					if !exceeded && !tooManyMatches {
+						if !found || first > last {
+							return nil, didLoad, ErrStoreMsgNotFound
+						}
+						lseq = max(lseq, first)
+						if last < prevSeq {
+							seq = last + 1
+						}
+					}
+				}
+			}
+		}
 	}
 
 	return nil, didLoad, ErrStoreMsgNotFound
