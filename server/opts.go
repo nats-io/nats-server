@@ -561,6 +561,8 @@ type Options struct {
 	CustomRouterAuthentication Authentication `json:"-"`
 
 	// CheckConfig configuration file syntax test was successful and exit.
+	// Config files processed with it set do not create account resolver stores,
+	// so these options must not be used to run a server.
 	CheckConfig bool `json:"-"`
 
 	// CheckReloadTo is a config file to check, together with CheckConfig, whether
@@ -1649,9 +1651,18 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 					*errors = append(*errors, &configErr{tk, "dir has no value and needs to point to a directory"})
 					return
 				}
-				if info, _ := os.Stat(dir); info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
+				info, err := os.Stat(dir)
+				// The store creates a missing dir, so check mode checks the closest parent that exists.
+				for p := dir; o.CheckConfig && os.IsNotExist(err) && filepath.Dir(p) != p; {
+					p = filepath.Dir(p)
+					info, err = os.Stat(p)
+				}
+				if info != nil && (!info.IsDir() || info.Mode().Perm()&(1<<(uint(7))) == 0) {
 					*errors = append(*errors, &configErr{tk, "dir needs to point to an accessible directory"})
 					return
+				} else if o.CheckConfig && err != nil && !os.IsNotExist(err) {
+					// Check mode does not create the store, so report a path that the store can not use.
+					*errors = append(*errors, &configErr{tk, err.Error()})
 				}
 			}
 
@@ -1668,7 +1679,18 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 				if hdel_set {
 					*errors = append(*errors, &configErr{tk, "CACHE does not accept hard_delete"})
 				}
-				res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
+				if ttl < 0 {
+					*errors = append(*errors, &configErr{tk, "CACHE does not accept a negative ttl"})
+					return
+				}
+				if o.CheckConfig {
+					// Creating the store would create the directory, so only check the options.
+					// Keep the resolver type, since validateTrustedOperators depends on it.
+					cr := &CacheDirAccResolver{}
+					res, err = cr, cr.apply(opts...)
+				} else {
+					res, err = NewCacheDirAccResolver(dir, limit, ttl, opts...)
+				}
 			case "FULL":
 				checkDir()
 				if ttl != 0 {
@@ -1685,7 +1707,14 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 						delete = RenameDeleted
 					}
 				}
-				res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
+				if o.CheckConfig {
+					// Creating the store would create the directory, so only check the options.
+					// Keep the resolver type, since validateTrustedOperators depends on it.
+					dr := &DirAccResolver{}
+					res, err = dr, dr.apply(opts...)
+				} else {
+					res, err = NewDirAccResolver(dir, limit, sync, delete, opts...)
+				}
 			case "MEM", "MEMORY":
 				res = &MemAccResolver{}
 			}
@@ -6632,12 +6661,17 @@ func ConfigureOptions(fs *flag.FlagSet, args []string, printVersion, printHelp, 
 		}
 		// Check whether a server running with these options can reload the config file.
 		if opts.CheckReloadTo != _EMPTY_ {
-			newOpts, err := ProcessConfigFile(opts.CheckReloadTo)
-			if err != nil {
-				return nil, err
+			// Also process this config file in check mode, so that it does not write files.
+			newOpts := &Options{CheckConfig: true}
+			if err := newOpts.ProcessConfigFile(opts.CheckReloadTo); err != nil {
+				// Like ProcessConfigFile, continue if there are only warnings.
+				if cerr, ok := err.(*processConfigErr); !ok || len(cerr.Errors()) != 0 {
+					return nil, err
+				}
 			}
 			// A running server doesn't have the options for checking the config.
 			copts.CheckConfig, copts.CheckReloadTo = false, _EMPTY_
+			newOpts.CheckConfig = false
 			if err = checkReload(copts, newOpts); err != nil {
 				return nil, err
 			}
