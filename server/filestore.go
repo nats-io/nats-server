@@ -1800,9 +1800,19 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	var le = binary.LittleEndian
 
-	// There are cases where we're not allowed to truncate, like for an encrypted or compressed
-	// block since the index will be the decrypted and decompressed index.
+	// There are cases where we're not allowed to truncate, like when converting the block's cipher.
 	truncate := func(index uint32) error {
+		// The index is into the decompressed block, so rewrite it with the records before it.
+		if mb.cmp != NoCompression {
+			// An empty block can't be compressed, it's written empty.
+			if err := mb.atomicOverwriteFile(buf[:index], index > 0); err != nil {
+				return err
+			}
+			if index >= checksumSize {
+				copy(mb.lchk[0:], buf[index-checksumSize:index])
+			}
+			return nil
+		}
 		var fd *os.File
 		if mb.mfd != nil {
 			fd = mb.mfd

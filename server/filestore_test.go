@@ -2408,6 +2408,144 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 	})
 }
 
+func TestFileStoreRebuildStateRewritesCompressedBlock(t *testing.T) {
+	for _, test := range []struct {
+		title string
+		bad   int // Index of the corrupt record.
+		lost  []uint64
+	}{
+		{title: "Second", bad: 1, lost: []uint64{2, 3}},
+		// No record is left, so the block is written empty.
+		{title: "First", bad: 0, lost: []uint64{1, 2, 3}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir(), Compression: S2Compression},
+				StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+			for range 3 {
+				_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+				require_NoError(t, err)
+			}
+
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			fs.mu.RUnlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			_, err = mb.flushPendingMsgsLocked()
+			require_NoError(t, err)
+			buf, err := mb.loadBlock(nil)
+			require_NoError(t, err)
+
+			// Corrupt the record's subject and store the block compressed.
+			// Every record has the same length.
+			rl := msgHdrSize + len("foo") + len("bar") + recordHashSize
+			buf[test.bad*rl+msgHdrSize] ^= 1
+			cbuf, err := S2Compression.Compress(buf)
+			require_NoError(t, err)
+			meta := &CompressionInfo{Algorithm: S2Compression, OriginalSize: uint64(len(buf))}
+			cbuf = append(meta.MarshalMetadata(), cbuf...)
+			require_NoError(t, os.WriteFile(mb.mfn, cbuf, defaultFilePerms))
+
+			// The offset of the bad record is into the decompressed block, so the block is rewritten with the records before it.
+			ld, _, err := mb.rebuildStateLocked()
+			require_NoError(t, err)
+			require_NotNil(t, ld)
+			require_True(t, slices.Equal(ld.Msgs, test.lost))
+			got, err := os.ReadFile(mb.mfn)
+			require_NoError(t, err)
+			got, alg, err := mb.decode(got)
+			require_NoError(t, err)
+			if test.bad > 0 {
+				require_Equal(t, alg, S2Compression)
+			}
+			require_True(t, bytes.Equal(got, buf[:test.bad*rl]))
+		})
+	}
+}
+
+// A record corrupted before its block was compressed must only lose the records from it onwards.
+func TestFileStoreCorruptRecordKeepsPriorRecords(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 256
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		// The first record leaves no records in the block.
+		for _, bad := range []uint64{2, 0} {
+			t.Run(fmt.Sprintf("Record%d", bad), func(t *testing.T) {
+				fcfg.StoreDir = t.TempDir()
+				open := func() *fileStore {
+					fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+					require_NoError(t, err)
+					return fs
+				}
+				fs := open()
+				defer func() { fs.Stop() }()
+				for i := range 5 {
+					_, _, err := fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+					require_NoError(t, err)
+				}
+				fs.mu.RLock()
+				mb := fs.blks[0]
+				fs.mu.RUnlock()
+				require_NoError(t, mb.flushPendingMsgs())
+
+				// Flip a bit of the record's length on disk, the block isn't compressed yet.
+				// A record is 22 header bytes, "foo", "hello-N" and an 8 byte checksum.
+				buf, err := os.ReadFile(mb.mfn)
+				require_NoError(t, err)
+				require_Equal(t, len(buf), 5*40)
+				buf[bad*40+2] ^= 0x10
+				require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
+
+				// Roll to a new block, and compress the old one if configured.
+				for i := 5; fs.numMsgBlocks() < 2; i++ {
+					_, _, err = fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+					require_NoError(t, err)
+				}
+				mb.mu.Lock()
+				require_NoError(t, mb.recompressOnDiskIfNeeded())
+				require_Equal(t, mb.cmp, fcfg.Compression)
+				mb.clearCacheAndOffset()
+				mb.mu.Unlock()
+				// The first message of the next block stays readable.
+				fs.mu.RLock()
+				next := atomic.LoadUint64(&fs.blks[1].first.seq)
+				fs.mu.RUnlock()
+
+				check := func() {
+					t.Helper()
+					for seq := uint64(1); seq <= next; seq++ {
+						sm, err := fs.LoadMsg(seq, nil)
+						if seq <= bad || seq == next {
+							require_NoError(t, err)
+							require_Equal(t, string(sm.msg), fmt.Sprintf("hello-%d", seq-1))
+						} else {
+							require_Error(t, err, ErrStoreMsgNotFound)
+						}
+					}
+				}
+				check()
+				// Loading again uses the rewritten block.
+				mb.mu.Lock()
+				mb.clearCacheAndOffset()
+				mb.mu.Unlock()
+				check()
+
+				// Also after a restart, with and without the stream state file.
+				require_NoError(t, fs.Stop())
+				fs = open()
+				check()
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+				fs = open()
+				check()
+			})
+		}
+	})
+}
+
 func TestFileStoreSnapshot(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		subj, msg := "foo", []byte("Hello Snappy!")
