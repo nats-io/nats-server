@@ -68,7 +68,7 @@ func benchmarkWriteTermVote(b *testing.B, workers int) {
 				}
 				binary.LittleEndian.PutUint64(wtv[:termLen], n)
 				start := time.Now()
-				if err := writeTermVote(dios, dir, wtv); err != nil {
+				if _, err := writeTermVote(dios, dir, wtv); err != nil {
 					b.Errorf("writeTermVote failed: %v", err)
 					return
 				}

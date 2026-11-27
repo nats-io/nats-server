@@ -30,6 +30,7 @@ import (
 	"github.com/klauspost/compress/s2"
 	"golang.org/x/crypto/ocsp"
 
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 	"github.com/nats-io/nats-server/v2/server/certidp"
 )
 
@@ -465,7 +466,8 @@ func (c *LocalCache) saveCache(s *Server) {
 		return
 	}
 	// do the final swap and overwrite any old saved peer cache
-	err = os.Rename(tmp.Name(), store)
+	result, err := filerename.Rename(tmp.Name(), store, nil)
+	result.Report(s.Warnf, err)
 	if err != nil {
 		s.Errorf(certidp.ErrSaveCacheFail, err)
 		return

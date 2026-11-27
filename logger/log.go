@@ -23,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 )
 
 // Default file permissions for log files.
@@ -261,7 +263,7 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 			bak := fmt.Sprintf("%s.%04d.%02d.%02d.%02d.%02d.%02d.%09d", fname,
 				now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(),
 				now.Second(), now.Nanosecond())
-			os.Rename(fname, bak)
+			result, renameErr := filerename.Rename(fname, bak, nil)
 			fileflags := os.O_WRONLY | os.O_APPEND | os.O_CREATE
 			f, err := os.OpenFile(fname, fileflags, defaultLogPerms)
 			if err != nil {
@@ -269,8 +271,22 @@ func (l *fileLogger) Write(b []byte) (int, error) {
 				panic(fmt.Sprintf("Unable to re-open the logfile %q after rotation: %v", fname, err))
 			}
 			l.f = f
-			n := l.logDirect(l.l.infoLabel, "Rotated log, backup saved as %q", bak)
-			l.out = int64(n)
+			if renameErr == nil {
+				l.out = 0
+			}
+			result.Report(func(format string, args ...any) {
+				l.out += int64(l.logDirect(l.l.warnLabel, format, args...))
+			}, renameErr)
+			if renameErr != nil {
+				if result.Attempts <= 1 {
+					l.out += int64(l.logDirect(l.l.errorLabel, "Unable to rotate logfile %q to %q: %v", fname, bak, renameErr))
+				}
+				// The original log is still active. Space the next attempt by bytes written.
+				l.limit = max(l.limit, l.out) * 2
+				l.Unlock()
+				return n, renameErr
+			}
+			l.out += int64(l.logDirect(l.l.infoLabel, "Rotated log, backup saved as %q", bak))
 			l.limit = l.olimit
 			if l.maxNumFiles > 0 {
 				l.logPurge(fname)

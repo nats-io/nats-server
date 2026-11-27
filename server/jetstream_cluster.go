@@ -1458,7 +1458,9 @@ func (js *jetStream) setupMetaGroup() error {
 			// To track possible configuration changes, responsible for an altered value of cfg.Observer,
 			// set extension state to undetermined.
 			ps.domainExt = extUndetermined
-			if err := writePeerState(s.diskIOSemaphore(), storeDir, ps); err != nil {
+			result, err := writePeerState(s.diskIOSemaphore(), storeDir, ps)
+			result.Report(s.Warnf, err)
+			if err != nil {
 				fs.Stop()
 				return err
 			}
@@ -8615,7 +8617,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 				if nb > 0 && ne >= compactNumMin || nb > compactSizeMin {
 					doSnapshot(false)
 				}
-			} else if err != errConsumerClosed {
+			} else if err != errConsumerClosed && err != ErrStoreClosed {
 				s.Errorf("Error applying consumer entries to '%s > %s': %v", ca.Client.serviceAccount(), ca.Name, err)
 				// Encountered an unexpected error, can't continue.
 				o.setWriteErr(err)
@@ -9175,7 +9177,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					return err
 				}
 
-				if err = o.store.Update(state); err != nil && err != ErrStoreOldUpdate {
+				if err = o.store.Update(state); err == ErrStoreClosed {
+					return err
+				} else if err != nil && err != ErrStoreOldUpdate {
 					o.mu.RLock()
 					s, acc, mset, name := o.srv, o.acc, o.mset, o.name
 					o.mu.RUnlock()
@@ -9255,6 +9259,9 @@ func (js *jetStream) applyConsumerMsgOpLocked(o *consumer, buf []byte) (afterUnl
 			return nil, err
 		}
 		err = o.store.UpdateDelivered(dseq, sseq, dc, ts)
+		if err == ErrStoreClosed {
+			return nil, err
+		}
 		o.ldt = time.Now()
 		// Need to send message to the client, since we have quorum to do so now.
 		if pmsg, ok := o.pendingDeliveries[sseq]; ok {
@@ -9282,7 +9289,7 @@ func (js *jetStream) applyConsumerMsgOpLocked(o *consumer, buf []byte) (afterUnl
 			return nil, err
 		}
 		mset, ackAllSeqs, err := o.processReplicatedAckLocked(dseq, sseq, explicit)
-		if err == errConsumerClosed {
+		if err == errConsumerClosed || err == ErrStoreClosed {
 			return nil, err
 		}
 		if mset == nil {
@@ -9432,7 +9439,9 @@ func (o *consumer) processReplicatedAckLocked(dseq, sseq uint64, explicit bool) 
 
 	// Do actual ack update to store.
 	// Always do this to have it recorded.
-	o.store.UpdateAcks(dseq, sseq, explicit)
+	if err := o.store.UpdateAcks(dseq, sseq, explicit); err == ErrStoreClosed {
+		return nil, nil, err
+	}
 
 	mset := o.mset
 	if o.closed || mset == nil {

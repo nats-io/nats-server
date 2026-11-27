@@ -1304,6 +1304,14 @@ var skip = func(t *testing.T) {
 	t.SkipNow()
 }
 
+func RunBasicJetStreamServer(t testing.TB) *Server {
+	opts := DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = t.TempDir()
+	return RunServer(&opts)
+}
+
 func jsClientConnect(t testing.TB, s *Server, opts ...nats.Option) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	nc, err := nats.Connect(s.ClientURL(), opts...)

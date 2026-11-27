@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/sysmem"
 	"github.com/nats-io/nats-server/v2/server/tpm"
@@ -390,10 +391,12 @@ func (s *Server) checkStoreDir(cfg *JetStreamConfig) error {
 				}
 				old := filepath.Join(filepath.Dir(cfg.StoreDir), fi.Name())
 				new := filepath.Join(cfg.StoreDir, fi.Name())
-				s.Noticef("JetStream relocated account %q to %q", old, new)
-				if err := os.Rename(old, new); err != nil {
+				result, err := filerename.Rename(old, new, nil)
+				result.Report(s.Warnf, err)
+				if err != nil {
 					return err
 				}
+				s.Noticef("JetStream relocated account %q to %q", old, new)
 			}
 		}
 	}

@@ -34,6 +34,7 @@ import (
 	"github.com/antithesishq/antithesis-sdk-go/assert"
 
 	"github.com/minio/highwayhash"
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 )
 
 type RaftNode interface {
@@ -476,7 +477,9 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(s.diskIOSemaphore(), cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	result, err := writePeerState(s.diskIOSemaphore(), cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	result.Report(s.Warnf, err)
+	return err
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
@@ -1782,8 +1785,9 @@ func (n *raft) installSnapshot(snap *snapshot) error {
 	sfile := filepath.Join(snapDir, sn)
 
 	n.snapLock.Lock()
-	err := writeFileWithSync(n.dios, sfile, n.encodeSnapshot(snap), defaultFilePerms)
+	result, err := writeFileWithSyncResult(n.dios, sfile, n.encodeSnapshot(snap), defaultFilePerms)
 	n.snapLock.Unlock()
+	result.Report(n.warn, err)
 	if err != nil {
 		// We could set write err here, but if this is a temporary situation, too many open files etc.
 		// we want to retry and snapshots are not fatal.
@@ -1987,8 +1991,9 @@ func (c *checkpoint) InstallSnapshot(data []byte) (uint64, error) {
 	n.snapLock.Lock()
 	// Unlock while writing.
 	n.Unlock()
-	err := writeFileWithSync(n.dios, c.snapFile, encoded, defaultFilePerms)
+	result, err := writeFileWithSyncResult(n.dios, c.snapFile, encoded, defaultFilePerms)
 	n.snapLock.Unlock()
+	result.Report(n.warn, err)
 	n.Lock()
 	// On any failure path, drop the file we just wrote so it doesn't get
 	// picked up by setupLastSnapshot on restart. Skip the remove if it's the
@@ -6039,19 +6044,21 @@ func (n *raft) writePeerState(ps *peerState) {
 	}
 	// Stamp latest and write the peer state file.
 	n.wps = pse
-	if err := writePeerState(n.dios, n.sd, ps); err != nil && !n.isClosed() {
+	result, err := writePeerState(n.dios, n.sd, ps)
+	result.Report(n.warn, err)
+	if err != nil && !n.isClosed() {
 		n.setWriteErrLocked(err)
 		n.warn("Error writing peer state file for %q: %v", n.group, err)
 	}
 }
 
 // Writes out our peer state outside of a specific raft context.
-func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
+func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) (filerename.Result, error) {
 	psf := filepath.Join(sd, peerStateFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
-		return err
+		return filerename.Result{}, err
 	}
-	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
+	return writeFileWithSyncResult(dios, psf, encodePeerState(ps), defaultFilePerms)
 }
 
 func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) {
@@ -6138,12 +6145,12 @@ const (
 )
 
 // Writes out our term & vote outside of a specific raft context.
-func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) error {
+func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) (filerename.Result, error) {
 	psf := filepath.Join(sd, termVoteFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
-		return err
+		return filerename.Result{}, err
 	}
-	return writeFileWithSync(dios, psf, wtv, defaultFilePerms)
+	return writeFileWithSyncResult(dios, psf, wtv, defaultFilePerms)
 }
 
 // readTermVote will read the largest term and who we voted from to stable storage.
@@ -6255,7 +6262,9 @@ func (n *raft) writeTermVote() error {
 	}
 	// Stamp latest and write the term & vote file.
 	n.wtv = b
-	if err := writeTermVote(n.dios, n.sd, n.wtv); err != nil && !n.isClosed() {
+	result, err := writeTermVote(n.dios, n.sd, n.wtv)
+	result.Report(n.warn, err)
+	if err != nil && !n.isClosed() {
 		// Clear wtv since we failed.
 		n.wtv = nil
 		n.setWriteErrLocked(err)

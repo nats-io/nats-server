@@ -1,4 +1,5 @@
 // Copyright 2022-2026 The NATS Authors
+// Copyright 2026 JEMES contributors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -12974,4 +12975,125 @@ func TestJetStreamClusterR1StreamWriteErrFailsHealthz(t *testing.T) {
 	hs := sl.healthz(nil)
 	require_Equal(t, hs.StatusCode, 503)
 	require_Contains(t, hs.Error, "'$G > TEST'", "stream write error", "mock write error")
+}
+
+// Only the Raft transport is replaced; monitorConsumer consumes its usual
+// queue, applies to a real file consumer store and reports applied indexes.
+type closeTestConsumerNode struct {
+	RaftNode
+	queue    *ipQueue[*CommittedEntry]
+	quit     chan struct{}
+	applied  []uint64
+	observer bool
+}
+
+func (n *closeTestConsumerNode) ApplyQ() *ipQueue[*CommittedEntry] { return n.queue }
+func (n *closeTestConsumerNode) QuitC() <-chan struct{}            { return n.quit }
+func (n *closeTestConsumerNode) LeadChangeC() <-chan leadChange    { return nil }
+func (n *closeTestConsumerNode) Group() string                     { return "CLOSE" }
+func (n *closeTestConsumerNode) Stop()                             {}
+func (n *closeTestConsumerNode) StepDown(...string) error          { return nil }
+func (n *closeTestConsumerNode) SetObserver(value bool)            { n.observer = value }
+func (n *closeTestConsumerNode) Applied(index uint64) (uint64, uint64) {
+	n.applied = append(n.applied, index)
+	return 0, 0
+}
+
+type closeTestConsumerStore struct {
+	ConsumerStore
+	entered, resume chan struct{}
+	ioErr           error
+}
+
+func (s *closeTestConsumerStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) error {
+	switch sseq {
+	case 2:
+		close(s.entered)
+		<-s.resume
+	case 9:
+		return s.ioErr
+	}
+	return s.ConsumerStore.UpdateDelivered(dseq, sseq, dc, ts)
+}
+
+func TestJetStreamClusterConsumerMonitorCloseDuringApply(t *testing.T) {
+	srv := &Server{}
+	log := &captureErrorLogger{errCh: make(chan string, 10)}
+	srv.SetLogger(log, false, false)
+	node := &closeTestConsumerNode{queue: newIPQueue[*CommittedEntry](srv, "apply"), quit: make(chan struct{})}
+	js := &jetStream{srv: srv, cluster: &jetStreamCluster{meta: node}}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "S", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+	cfg := ConsumerConfig{AckPolicy: AckExplicit}
+	cs, err := fs.ConsumerStore("C", time.Now(), &cfg)
+	require_NoError(t, err)
+	store := &closeTestConsumerStore{cs, make(chan struct{}), make(chan struct{}), errors.New("injected consumer disk I/O failure")}
+	unblock := sync.OnceFunc(func() { close(store.resume) })
+	out := &jsOutQ{newIPQueue[*jsPubMsg](srv, "out")}
+	o := &consumer{js: js, srv: srv, node: node, store: store, name: "C", cfg: cfg,
+		acc: &Account{Name: "A"}, mset: &stream{store: fs}, outq: out,
+		replies: map[uint64]string{2: "reply"}, pendingDeliveries: map[uint64]*jsPubMsg{2: {dsubj: "delivery", StoreMsg: StoreMsg{seq: 2}}},
+	}
+	ca := &consumerAssignment{Name: "C", Stream: "S", Client: &ClientInfo{Account: "A"}}
+	delivered := func(seq uint64) *Entry {
+		buf := binary.AppendUvarint([]byte{byte(updateDeliveredOp)}, seq)
+		buf = binary.AppendUvarint(buf, seq)
+		buf = binary.AppendUvarint(buf, 1)
+		return newEntry(EntryNormal, binary.AppendVarint(buf, 1))
+	}
+	// One live update, three operations racing closure, then an independent
+	// unexpected error. A second op in the same commit detects a swallowed error.
+	node.queue.push(newCommittedEntry(1, []*Entry{delivered(1)}))
+	node.queue.push(newCommittedEntry(2, []*Entry{delivered(2)}))
+	node.queue.push(newCommittedEntry(3, []*Entry{newEntry(EntryNormal, []byte{byte(updateAcksOp), 2, 2})}))
+	node.queue.push(newCommittedEntry(4, []*Entry{
+		newEntry(EntrySnapshot, encodeConsumerState(&ConsumerState{})),
+		newEntry(EntryNormal, append([]byte{byte(addPendingRequest)}, "after-closed"...)),
+	}))
+	node.queue.push(newCommittedEntry(5, []*Entry{delivered(9)}))
+
+	done := make(chan struct{})
+	srv.grWG.Add(1)
+	go func() {
+		defer close(done)
+		js.monitorConsumer(o, ca)
+	}()
+	defer func() {
+		unblock()
+		close(node.quit)
+		<-done
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consumer monitor did not reach the second delivery")
+	}
+	require_NoError(t, cs.Stop())
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("consumer monitor did not handle the later unexpected error")
+	}
+	if !slices.Equal(node.applied, []uint64{1}) {
+		t.Fatalf("expected only live commit 1 applied, got %v", node.applied)
+	}
+	require_Equal(t, out.len(), 0)
+	require_Equal(t, len(o.pendingDeliveries), 1)
+	require_Equal(t, o.replies[2], "reply")
+	require_Equal(t, len(o.prm), 0)
+	require_Error(t, o.getWriteErr(), store.ioErr)
+	require_True(t, node.observer)
+	// The later unexpected error must retain both monitor and critical-store
+	// diagnostics. None of the three closed commits may emit either.
+	close(log.errCh)
+	var count int
+	for line := range log.errCh {
+		count++
+		if !strings.Contains(line, store.ioErr.Error()) {
+			t.Fatalf("unexpected shutdown diagnostic: %s", line)
+		}
+	}
+	require_Equal(t, count, 2)
 }

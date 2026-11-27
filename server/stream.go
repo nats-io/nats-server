@@ -35,6 +35,7 @@ import (
 
 	"github.com/antithesishq/antithesis-sdk-go/assert"
 	"github.com/klauspost/compress/s2"
+	"github.com/nats-io/nats-server/v2/internal/filerename"
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nuid"
 )
@@ -8885,12 +8886,18 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		mset.stopMonitoring()
 	}
 
+	var consumerErr error
+	var firstFailedConsumer string
+	var failedConsumers int
 	for _, o := range obs {
 		if !o.isClosed() {
 			// Third flag says do not broadcast a signal.
-			// TODO(dlc) - If we have an err here we don't want to stop
-			// but should we log?
-			o.stopWithFlags(deleteFlag, deleteFlag, false, advisory)
+			if err := o.stopWithFlags(deleteFlag, deleteFlag, false, advisory); err != nil {
+				if consumerErr == nil {
+					consumerErr, firstFailedConsumer = err, o.name
+				}
+				failedConsumers++
+			}
 			if !isShuttingDown {
 				o.stopMonitoring()
 			}
@@ -8970,23 +8977,31 @@ func (mset *stream) stop(deleteFlag, advisory bool) error {
 		sysc.closeConnection(ClientClosed)
 	}
 
+	var storeErr error
 	if deleteFlag {
 		// cleanup directories after the stream
 		if store != nil {
-			// Ignore errors.
-			store.Delete(false)
+			storeErr = store.Delete(false)
 		} else {
 			accDir := filepath.Join(js.config.StoreDir, accName)
 			streamDir := filepath.Join(accDir, streamsDir)
-			os.RemoveAll(filepath.Join(streamDir, name))
+			storeErr = os.RemoveAll(filepath.Join(streamDir, name))
 		}
 		// Release any resources.
 		js.releaseStreamResources(&mset.cfg)
 	} else if store != nil {
-		// Ignore errors.
-		store.Stop()
+		storeErr = store.Stop()
 	}
 
+	// Logical removal already completed. Report storage cleanup failures to the
+	// operator without telling a client to retry deletion of a removed stream.
+	if storeErr == ErrStoreClosed {
+		storeErr = nil
+	}
+	if consumerErr != nil || storeErr != nil {
+		mset.srv.Errorf("JetStream stream '%s > %s' finished cleanup with storage errors (delete=%t, failed_consumers=%d, first_consumer=%q): %v",
+			accName, name, deleteFlag, failedConsumers, firstFailedConsumer, errors.Join(consumerErr, storeErr))
+	}
 	return nil
 }
 
@@ -9648,7 +9663,9 @@ func (a *Account) RestoreStream(ncfg *StreamConfig, r io.Reader) (*stream, error
 		return nil, err
 	}
 	// Move into new location.
-	if err := os.Rename(sdir, ndir); err != nil {
+	result, err := filerename.Rename(sdir, ndir, nil)
+	result.Report(s.Warnf, err)
+	if err != nil {
 		return nil, err
 	}
 

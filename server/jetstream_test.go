@@ -133,14 +133,6 @@ func TestJetStreamBasicNilConfig(t *testing.T) {
 	}
 }
 
-func RunBasicJetStreamServer(t testing.TB) *Server {
-	opts := DefaultTestOptions
-	opts.Port = -1
-	opts.JetStream = true
-	opts.StoreDir = t.TempDir()
-	return RunServer(&opts)
-}
-
 func RunJetStreamServerOnPort(port int, sd string) *Server {
 	opts := DefaultTestOptions
 	opts.Port = port

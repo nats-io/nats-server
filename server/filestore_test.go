@@ -821,6 +821,62 @@ func TestFileStorePurge(t *testing.T) {
 	})
 }
 
+func TestFileStorePurgeRecoveryBeforeBlockPromotion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cipher StoreCipher
+	}{
+		{"plaintext", NoCipher},
+		{"promoted-key", AES},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fcfg := FileStoreConfig{StoreDir: t.TempDir(), Cipher: tc.cipher, SyncAlways: true}
+			cfg := StreamConfig{Name: "S", Storage: FileStorage}
+			created := time.Now()
+			fs, err := newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			for i := 1; i <= 4; i++ {
+				_, _, err := fs.StoreMsg("foo", nil, []byte{byte(i)}, 0)
+				require_NoError(t, err)
+			}
+			staging := filepath.Join(fcfg.StoreDir, newMsgDir)
+			prep := filepath.Join(staging, purgePrepDir)
+			require_NoError(t, os.MkdirAll(prep, defaultDirPerms))
+			// Interrupt the purge after preparing its tombstone, before promoting the block.
+			func() {
+				fs.mu.Lock()
+				defer fs.mu.Unlock()
+				mb, err := fs.preparePurgeBlock(prep, fs.lmb.index+1, fs.state.LastSeq)
+				require_NoError(t, err)
+				if tc.cipher == AES {
+					require_NoError(t, os.Rename(mb.kfn, filepath.Join(staging, filepath.Base(mb.kfn))))
+				}
+			}()
+			require_NoError(t, fs.stop(false, false))
+
+			fs, err = newFileStoreWithCreated(fcfg, cfg, created, prf(&fcfg), nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+			_, err = os.Stat(staging)
+			require_True(t, os.IsNotExist(err))
+			state := fs.State()
+			require_Equal(t, state.Msgs, uint64(4))
+			require_Equal(t, state.FirstSeq, uint64(1))
+			require_Equal(t, state.LastSeq, uint64(4))
+			for seq := uint64(1); seq <= 4; seq++ {
+				msg, err := fs.LoadMsg(seq, nil)
+				require_NoError(t, err)
+				require_True(t, bytes.Equal(msg.msg, []byte{byte(seq)}))
+			}
+			next, _, err := fs.StoreMsg("foo", nil, []byte("next"), 0)
+			require_NoError(t, err)
+			require_Equal(t, next, uint64(5))
+		})
+	}
+}
+
 func TestFileStoreEncryptedPurgeRecoveryAfterKeyRename(t *testing.T) {
 	fcfg := FileStoreConfig{
 		StoreDir:    t.TempDir(),
@@ -3236,7 +3292,7 @@ func TestFileStoreConsumerFlusher(t *testing.T) {
 	})
 }
 
-func TestFileStoreConsumerOutdatedStateWriteKeepsDirty(t *testing.T) {
+func TestFileStoreConsumerStaleSnapshotWritesLatestState(t *testing.T) {
 	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -3250,9 +3306,11 @@ func TestFileStoreConsumerOutdatedStateWriteKeepsDirty(t *testing.T) {
 	ts := time.Now().UnixNano()
 	require_NoError(t, o.UpdateDelivered(1, 1, 1, ts))
 	checkFor(t, time.Second, time.Millisecond, func() error {
+		oc.writeMu.Lock()
+		defer oc.writeMu.Unlock()
 		oc.mu.Lock()
 		defer oc.mu.Unlock()
-		if oc.dirty || oc.writing {
+		if oc.dirty {
 			return fmt.Errorf("Not flushed yet")
 		}
 		return nil
@@ -3264,18 +3322,15 @@ func TestFileStoreConsumerOutdatedStateWriteKeepsDirty(t *testing.T) {
 	require_NoError(t, o.UpdateDelivered(2, 2, 1, ts))
 	require_NoError(t, oc.writeState(buf))
 
-	// The last update must still be written when stopping.
-	require_NoError(t, o.Stop())
-	o, err = fs.ConsumerStore("o22", time.Time{}, cfg)
+	// The latest state is already durable before Stop can flush it.
+	buf, err = os.ReadFile(oc.ifn)
 	require_NoError(t, err)
-	defer o.Stop()
-
-	state, err := o.State()
+	state, err := decodeConsumerState(buf)
 	require_NoError(t, err)
 	require_Equal(t, state.Delivered.Consumer, 2)
 }
 
-func TestFileStoreConsumerSkippedStateWriteKicksFlusher(t *testing.T) {
+func TestFileStoreConsumerStartingStateWaitsForWriter(t *testing.T) {
 	fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Storage: FileStorage})
 	require_NoError(t, err)
 	defer fs.Stop()
@@ -3286,30 +3341,36 @@ func TestFileStoreConsumerSkippedStateWriteKicksFlusher(t *testing.T) {
 	defer o.Stop()
 	oc := o.(*consumerFileStore)
 
-	// Pretend another write is in flight, so this one is skipped.
-	oc.mu.Lock()
-	oc.writing = true
-	oc.mu.Unlock()
-	require_NoError(t, o.SetStarting(5))
-	oc.mu.Lock()
-	oc.writing = false
-	oc.mu.Unlock()
+	// Hold the writer as an in-flight flush would. SetStarting must persist the
+	// current state before returning, even without a later update or stop.
+	done := make(chan error, 1)
+	func() {
+		oc.writeMu.Lock()
+		defer oc.writeMu.Unlock()
+		go func() { done <- o.SetStarting(5) }()
+		checkFor(t, time.Second, time.Millisecond, func() error {
+			oc.mu.Lock()
+			defer oc.mu.Unlock()
+			if oc.state.AckFloor.Stream != 5 {
+				return fmt.Errorf("starting position not set")
+			}
+			return nil
+		})
+		select {
+		case err := <-done:
+			t.Fatalf("SetStarting returned while the writer was held: %v", err)
+		default:
+		}
+	}()
+	require_NoError(t, <-done)
 
-	// The flusher must write the skipped state afterward, without another update or a stop.
-	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
-		buf, err := os.ReadFile(oc.ifn)
-		if err != nil {
-			return err
-		}
-		state, err := decodeConsumerState(buf)
-		if err != nil {
-			return err
-		}
-		if state.Delivered.Stream != 5 || state.AckFloor.Stream != 5 {
-			return fmt.Errorf("Skipped state not written yet: %+v", state)
-		}
-		return nil
-	})
+	// The new starting position is durable while the consumer is still running.
+	buf, err := os.ReadFile(oc.ifn)
+	require_NoError(t, err)
+	state, err := decodeConsumerState(buf)
+	require_NoError(t, err)
+	require_Equal(t, state.Delivered.Stream, uint64(5))
+	require_Equal(t, state.AckFloor.Stream, uint64(5))
 }
 
 func TestFileStoreConsumerDeliveredUpdates(t *testing.T) {
