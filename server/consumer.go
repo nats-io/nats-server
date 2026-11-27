@@ -2841,7 +2841,9 @@ func configsEqualSansDelivery(a, b ConsumerConfig) bool {
 func (o *consumer) sendAckReply(subj string) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	o.outq.sendMsg(subj, nil)
+	if !o.closed && o.outq != nil {
+		o.outq.sendMsg(subj, nil)
+	}
 }
 
 type jsAckMsg struct {
@@ -2929,7 +2931,14 @@ func (o *consumer) processAck(subject, reply string, hdr int, rmsg []byte) {
 
 	// Ack the ack if requested.
 	if len(reply) > 0 && !skipAckReply {
-		o.sendAckReply(reply)
+		o.mu.RLock()
+		sf, ok := o.store.(interface{ WaitForFlush(func()) })
+		o.mu.RUnlock()
+		if ok {
+			sf.WaitForFlush(func() { o.sendAckReply(reply) })
+		} else {
+			o.sendAckReply(reply)
+		}
 	}
 }
 
@@ -3258,8 +3267,19 @@ func (o *consumer) updateAcks(dseq, sseq uint64, reply string, explicit bool) {
 	} else if o.store != nil {
 		o.store.UpdateAcks(dseq, sseq, explicit)
 		if reply != _EMPTY_ {
-			// Already locked so send direct.
-			o.outq.sendMsg(reply, nil)
+			if sf, ok := o.store.(interface{ WaitForFlush(func()) }); ok {
+				// The callback can run inline while the consumer lock is held,
+				// so it must not take that lock again. Capture the queue now.
+				outq := o.outq
+				sf.WaitForFlush(func() {
+					if outq != nil {
+						outq.sendMsg(reply, nil)
+					}
+				})
+			} else {
+				// Already locked so send direct.
+				o.outq.sendMsg(reply, nil)
+			}
 		}
 	}
 	// Update activity.

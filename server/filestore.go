@@ -13908,22 +13908,23 @@ func deleteBlockContentsEqual(a, b DeleteBlock) bool {
 ////////////////////////////////////////////////////////////////////////////////
 
 type consumerFileStore struct {
-	mu      sync.Mutex
-	fs      *fileStore
-	cfg     *FileConsumerInfo
-	prf     keyGen
-	aek     cipher.AEAD
-	name    string
-	odir    string
-	ifn     string
-	hh      *highwayhash.Digest64
-	state   ConsumerState
-	fch     chan struct{}
-	qch     chan struct{}
-	flusher bool
-	writing bool
-	dirty   bool
-	closed  bool
+	mu       sync.Mutex
+	fs       *fileStore
+	cfg      *FileConsumerInfo
+	prf      keyGen
+	aek      cipher.AEAD
+	name     string
+	odir     string
+	ifn      string
+	hh       *highwayhash.Digest64
+	state    ConsumerState
+	fch      chan struct{}
+	qch      chan struct{}
+	flushCbs []func()
+	flusher  bool
+	writing  bool
+	dirty    bool
+	closed   bool
 }
 
 func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *ConsumerConfig) (ConsumerStore, error) {
@@ -14168,6 +14169,32 @@ func (o *consumerFileStore) inFlusher() bool {
 	return o.flusher
 }
 
+// WaitForFlush registers cb to be invoked once the current consumer state has
+// been written to disk, or immediately if no flush is needed or pending.
+func (o *consumerFileStore) WaitForFlush(cb func()) {
+	if cb == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return
+	}
+	if !o.dirty && !o.writing && len(o.flushCbs) == 0 {
+		o.mu.Unlock()
+		cb()
+		return
+	}
+	o.flushCbs = append(o.flushCbs, cb)
+	if o.fch != nil {
+		select {
+		case o.fch <- struct{}{}:
+		default:
+		}
+	}
+	o.mu.Unlock()
+}
+
 // flushLoop watches for consumer updates and the quit channel.
 func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 
@@ -14193,34 +14220,71 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 		dt.Reset(addWait)
 	}
 
+	hasFlushCbs := func() bool {
+		o.mu.Lock()
+		has := len(o.flushCbs) > 0
+		o.mu.Unlock()
+		return has
+	}
+
+	var skipWait bool
 	for {
-		select {
-		case <-fch:
-			if ts := time.Since(lastWrite); ts < minTime {
-				setDelayTimer(minTime - ts)
+		if !skipWait {
+			select {
+			case <-fch:
+			case <-qch:
+				return
+			}
+		}
+		skipWait = false
+
+		if ts := time.Since(lastWrite); ts < minTime && !hasFlushCbs() {
+			setDelayTimer(minTime - ts)
+		waitLoop:
+			for {
 				select {
 				case <-dt.C:
+					break waitLoop
+				case <-fch:
+					if hasFlushCbs() {
+						break waitLoop
+					}
 				case <-qch:
 					return
 				}
 			}
-			o.mu.Lock()
-			if o.closed {
-				o.mu.Unlock()
-				return
-			}
-			buf, err := o.encodeState()
-			if err != nil {
-				o.mu.Unlock()
-				return
-			}
-			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeStateLocked(buf, true); err == nil {
-				lastWrite = time.Now()
-			}
+		}
+		o.mu.Lock()
+		if o.closed {
 			o.mu.Unlock()
-		case <-qch:
 			return
+		}
+		if o.writing {
+			o.mu.Unlock()
+			continue
+		}
+		cbs := o.flushCbs
+		o.flushCbs = nil
+		buf, err := o.encodeState()
+		if err != nil {
+			o.flushCbs = append(cbs, o.flushCbs...)
+			o.mu.Unlock()
+			return
+		}
+		// TODO(dlc) - if we error should start failing upwards.
+		err = o.writeStateLocked(buf, true)
+		if err == nil {
+			lastWrite = time.Now()
+			skipWait = len(o.flushCbs) > 0
+		} else {
+			o.flushCbs = append(cbs, o.flushCbs...)
+		}
+		o.mu.Unlock()
+
+		if err == nil {
+			for _, cb := range cbs {
+				cb()
+			}
 		}
 	}
 }
@@ -14654,6 +14718,12 @@ func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 		o.dirty = true
 	}
 	o.writing = false
+	if len(o.flushCbs) > 0 && o.fch != nil {
+		select {
+		case o.fch <- struct{}{}:
+		default:
+		}
+	}
 	return err
 }
 
