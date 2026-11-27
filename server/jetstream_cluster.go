@@ -5194,7 +5194,7 @@ func (js *jetStream) switchStreamWriteMode(mset *stream, sa *streamAssignment, n
 		js.mu.RUnlock()
 		// The desired state was dropped, for example by an old meta leader, revert back to replicated.
 		if !mset.IsClustered() {
-			if err := js.switchStreamToReplicated(mset, n, leaderTerm, true); err != nil {
+			if err := js.switchStreamToReplicated(mset, n, leaderTerm, true, apply); err != nil {
 				if errors.Is(err, ErrStoreClosed) {
 					return mstat(MigrationStatusUnavailable, "shutting down"), nil
 				}
@@ -5212,10 +5212,11 @@ func (js *jetStream) switchStreamWriteMode(mset *stream, sa *streamAssignment, n
 	// A snapshot is required. Automatically sends a snapshot for a R1 scaleup.
 	// Also when growing from one after a restart, our store can hold writes our log doesn't.
 	if (growing && (local || !n.SnapshotInCurrentTerm())) || (!local && n.NeedSnapshot()) {
-		if err := js.switchStreamToReplicated(mset, n, leaderTerm, local || (growing && !n.NeedSnapshot())); err != nil {
-			if errors.Is(err, ErrStoreClosed) {
-				return mstat(MigrationStatusUnavailable, "shutting down"), nil
-			}
+		if err := js.switchStreamToReplicated(mset, n, leaderTerm, local || (growing && !n.NeedSnapshot()), apply); err == errMonitorExit {
+			return nil, err
+		} else if errors.Is(err, ErrStoreClosed) || err == errStreamClosed {
+			return mstat(MigrationStatusUnavailable, "shutting down"), nil
+		} else if err != nil {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err), nil
 		}
 	} else if !growing && replicas == 1 && onlyPeer && !n.MembershipChangeInProgress() {
@@ -5495,16 +5496,8 @@ func (js *jetStream) switchStreamToLocal(mset *stream, n RaftNode, term uint64, 
 	mset.writeMu.Lock()
 	defer mset.writeMu.Unlock()
 	// This is bounded, since we're the only member and nothing new is proposed while writes are held.
-	for {
-		// Stop if we lost leadership, proposals of our term could still be committed later.
-		if drained, derr := n.LogDrained(term); derr != nil {
-			return derr
-		} else if drained {
-			break
-		}
-		if err = apply(); err != nil {
-			return err
-		}
+	if err = mset.waitForLogDrained(n, term, apply); err != nil {
+		return err
 	}
 	// Sync and snapshot the store so recovery doesn't truncate local writes when replaying the log.
 	if err = mset.flushForScaleDown(); err != nil {
@@ -5530,11 +5523,34 @@ func (js *jetStream) switchStreamToLocal(mset *stream, n RaftNode, term uint64, 
 	return nil
 }
 
+// waitForLogDrained applies the log until everything proposed in our term was committed and processed.
+// Writes should be held, so nothing new is proposed meanwhile.
+func (mset *stream) waitForLogDrained(n RaftNode, term uint64, apply func() error) error {
+	for {
+		// Stop if we lost leadership, proposals of our term could still be committed later.
+		if drained, err := n.LogDrained(term); err != nil {
+			return err
+		} else if drained {
+			return nil
+		}
+		if err := apply(); err != nil {
+			return err
+		}
+	}
+}
+
 // switchStreamToReplicated snapshots the store and switches writes to go through the log.
 // If our store can hold writes the log doesn't, the snapshot is sent through the log so all peers catch up to them.
-func (js *jetStream) switchStreamToReplicated(mset *stream, n RaftNode, term uint64, send bool) error {
+func (js *jetStream) switchStreamToReplicated(mset *stream, n RaftNode, term uint64, send bool, apply func() error) error {
 	mset.writeMu.Lock()
 	defer mset.writeMu.Unlock()
+	// A sent snapshot is applied after everything in the log, so it must include all of it.
+	// This is bounded, since we only send when growing as the only member, and nothing new is proposed while writes are held.
+	if send && mset.IsClustered() {
+		if err := mset.waitForLogDrained(n, term, apply); err != nil {
+			return err
+		}
+	}
 	if err := mset.flushAllPending(); err != nil {
 		return err
 	}
@@ -8609,7 +8625,7 @@ func (js *jetStream) monitorConsumer(o *consumer, ca *consumerAssignment) {
 					}
 				}
 			}
-			if err := js.applyConsumerEntries(o, ce, isLeader); err == nil {
+			if err := js.applyConsumerEntries(o, ce); err == nil {
 				var ne, nb uint64
 				// We can't guarantee writes are flushed while we're shutting down. Just rely on replay during recovery.
 				if !js.isShuttingDown() {
@@ -8769,7 +8785,7 @@ func (js *jetStream) switchConsumerWriteMode(o *consumer, ca *consumerAssignment
 		js.mu.RUnlock()
 		// The desired state was dropped, for example by an old meta leader, revert back to replicated.
 		if !o.IsClustered() {
-			if err := js.switchConsumerToReplicated(o, n, leaderTerm, true); err != nil {
+			if err := js.switchConsumerToReplicated(o, n, leaderTerm, true, apply); err != nil {
 				if errors.Is(err, ErrStoreClosed) {
 					return mstat(MigrationStatusUnavailable, "shutting down"), nil
 				}
@@ -8792,10 +8808,11 @@ func (js *jetStream) switchConsumerWriteMode(o *consumer, ca *consumerAssignment
 	// A snapshot is required. Automatically sends a snapshot for a R1 scaleup.
 	// Also when growing from one after a restart, our store can hold writes our log doesn't.
 	if (growing && (local || !n.SnapshotInCurrentTerm())) || (!local && n.NeedSnapshot()) {
-		if err := js.switchConsumerToReplicated(o, n, leaderTerm, local || (growing && !n.NeedSnapshot())); err != nil {
-			if errors.Is(err, ErrStoreClosed) {
-				return mstat(MigrationStatusUnavailable, "shutting down"), nil
-			}
+		if err := js.switchConsumerToReplicated(o, n, leaderTerm, local || (growing && !n.NeedSnapshot()), apply); err == errMonitorExit {
+			return nil, err
+		} else if errors.Is(err, ErrStoreClosed) || err == errConsumerClosed {
+			return mstat(MigrationStatusUnavailable, "shutting down"), nil
+		} else if err != nil {
 			return mstat(MigrationStatusSnapshot, "waiting to install snapshot").withErr(err), nil
 		}
 	} else if !growing && replicas == 1 && onlyPeer && !n.MembershipChangeInProgress() {
@@ -9019,22 +9036,10 @@ func (js *jetStream) switchConsumerToLocal(o *consumer, n RaftNode, term uint64,
 		}
 		o.mu.Unlock()
 	}()
-	// Wait for the proposals being forwarded and the log to be drained.
 	// This is bounded, since we're the only member and nothing new is proposed while updates are queued.
-	for {
-		// Stop if we lost leadership, proposals of our term could still be committed later.
-		drained, derr := n.LogDrained(term)
-		if derr != nil {
-			o.mu.Unlock()
-			return derr
-		} else if drained && o.forwarding == 0 {
-			break
-		}
+	if err = o.waitForLogDrained(n, term, apply); err != nil {
 		o.mu.Unlock()
-		if err = apply(); err != nil {
-			return err
-		}
-		o.mu.Lock()
+		return err
 	}
 	// Our node was deleted or replaced by an assignment update meanwhile.
 	// Queued updates were never replicated, so they must not be applied locally.
@@ -9077,11 +9082,49 @@ func (js *jetStream) switchConsumerToLocal(o *consumer, n RaftNode, term uint64,
 	return err
 }
 
+// waitForLogDrained applies the log until everything proposed in our term was committed and processed.
+// Updates should be kept queued, so nothing new is proposed meanwhile.
+// Lock should be held, it's released while applying.
+func (o *consumer) waitForLogDrained(n RaftNode, term uint64, apply func() error) error {
+	for {
+		// Stop if we lost leadership, proposals of our term could still be committed later.
+		if drained, err := n.LogDrained(term); err != nil {
+			return err
+		} else if drained && o.forwarding == 0 {
+			return nil
+		}
+		o.mu.Unlock()
+		err := apply()
+		o.mu.Lock()
+		if err != nil {
+			return err
+		}
+	}
+}
+
 // switchConsumerToReplicated snapshots the consumer's state and switches updates to go through the log.
 // If our state can hold updates the log doesn't, the snapshot is sent through the log so all peers catch up to them.
-func (js *jetStream) switchConsumerToReplicated(o *consumer, n RaftNode, term uint64, send bool) error {
+func (js *jetStream) switchConsumerToReplicated(o *consumer, n RaftNode, term uint64, send bool, apply func() error) error {
 	o.mu.Lock()
 	wasReplicated := o.isClustered()
+	// A sent snapshot is applied after everything in the log, so it must include all of it.
+	// This is bounded, since we only send when growing as the only member, and nothing new is proposed while updates are queued.
+	if send && wasReplicated {
+		o.switching = true
+		err := o.waitForLogDrained(n, term, apply)
+		// Updates queued meanwhile are proposed once we release the lock, so after the snapshot.
+		o.switching = false
+		if o.phead != nil && o.pch != nil {
+			select {
+			case o.pch <- struct{}{}:
+			default:
+			}
+		}
+		if err != nil {
+			o.mu.Unlock()
+			return err
+		}
+	}
 	var err error
 	if o.node != n || n.IsDeleted() {
 		// Our node was deleted or replaced by an assignment update meanwhile.
@@ -9158,7 +9201,7 @@ func (o *consumer) isMigrating() bool {
 	return false
 }
 
-func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLeader bool) error {
+func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error {
 	for _, e := range ce.Entries {
 		// Ignore if lower-level catchup is started.
 		// We don't need to optimize during this, all entries are handled as normal.
@@ -9167,35 +9210,33 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 		}
 
 		if e.Type == EntrySnapshot {
-			if !isLeader {
-				// No-op needed?
-				state, err := decodeConsumerState(e.Data)
-				if err != nil {
-					if mset, node := o.streamAndNode(); mset != nil && node != nil {
-						s := js.srv
-						s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
-							mset.account(), mset.name(), o, node.Group())
-					}
-					return err
+			// Always apply, an older snapshot is ignored by the store.
+			state, err := decodeConsumerState(e.Data)
+			if err != nil {
+				if mset, node := o.streamAndNode(); mset != nil && node != nil {
+					s := js.srv
+					s.Errorf("JetStream cluster could not decode consumer snapshot for '%s > %s > %s' [%s]",
+						mset.account(), mset.name(), o, node.Group())
 				}
+				return err
+			}
 
-				if err = o.store.Update(state); err != nil && err != ErrStoreOldUpdate {
-					o.mu.RLock()
-					s, acc, mset, name := o.srv, o.acc, o.mset, o.name
-					o.mu.RUnlock()
-					if s != nil && mset != nil {
-						s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
-					}
+			if err = o.store.Update(state); err != nil && err != ErrStoreOldUpdate {
+				o.mu.RLock()
+				s, acc, mset, name := o.srv, o.acc, o.mset, o.name
+				o.mu.RUnlock()
+				if s != nil && mset != nil {
+					s.Warnf("Consumer '%s > %s > %s' error on store update from snapshot entry: %v", acc, mset.name(), name, err)
 				}
-				// Check our interest state if applicable.
-				if mset := o.getStream(); mset != nil {
-					var ss StreamState
-					mset.store.FastState(&ss)
-					// We used to register preacks here if our ack floor was higher than the last sequence.
-					// Now when streams catch up they properly call checkInterestState() and periodically run this as well.
-					// If our states drift this could have allocated lots of pre-acks.
-					o.checkStateForInterestStream(&ss)
-				}
+			}
+			// Check our interest state if applicable.
+			if mset := o.getStream(); mset != nil {
+				var ss StreamState
+				mset.store.FastState(&ss)
+				// We used to register preacks here if our ack floor was higher than the last sequence.
+				// Now when streams catch up they properly call checkInterestState() and periodically run this as well.
+				// If our states drift this could have allocated lots of pre-acks.
+				o.checkStateForInterestStream(&ss)
 			}
 
 		} else if e.Type == EntryRemovePeer {

@@ -356,7 +356,8 @@ func (ms *memStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, tt
 	if ms.scheduling != nil {
 		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
 			ms.scheduling.add(seq, subj, schedule.UnixNano())
-		} else if getMessageScheduler(hdr) == _EMPTY_ {
+		} else {
+			// Any other message replaces the schedule, also one a schedule produced.
 			ms.scheduling.removeSubject(subj)
 		}
 
@@ -1568,16 +1569,7 @@ func (ms *memStore) runMsgScheduling() {
 	}
 	ms.scheduling.running = true
 
-	scheduledMsgs := ms.scheduling.getScheduledMessages(
-		func(seq uint64, smv *StoreMsg) *StoreMsg {
-			sm, _ := ms.loadMsgLocked(seq, smv, false)
-			return sm
-		},
-		func(subj string, smv *StoreMsg) *StoreMsg {
-			sm, _ := ms.loadLastLocked(subj, smv)
-			return sm
-		},
-	)
+	scheduledMsgs := ms.scheduling.getScheduledMessages(ms.loadLastLocked)
 	if len(scheduledMsgs) > 0 {
 		ms.mu.Unlock()
 		for _, msg := range scheduledMsgs {

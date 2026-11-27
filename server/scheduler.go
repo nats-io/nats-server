@@ -159,17 +159,27 @@ func (ms *MsgScheduling) resetTimer() {
 	}
 }
 
-func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *StoreMsg) *StoreMsg, loadLast func(subj string, smv *StoreMsg) *StoreMsg) []*inMsg {
+func (ms *MsgScheduling) getScheduledMessages(loadLast func(subj string, smv *StoreMsg) (*StoreMsg, error)) []*inMsg {
 	var (
 		smv    StoreMsg
 		srcSmv StoreMsg
 		sm     *StoreMsg
 		msgs   []*inMsg
 	)
+	// Other errors, like failing to read from disk, don't mean the message is gone.
+	gone := func(err error) bool { return err == ErrStoreMsgNotFound || err == errDeletedMsg }
 	ms.ttls.ExpireTasks(func(seq uint64, ts int64) bool {
-		// Need to grab the message for the specified sequence, and check
-		// if it hasn't been removed in the meantime.
-		sm = loadMsg(seq, &smv)
+		// The last message on the subject holds the schedule.
+		sm = nil
+		if subj, ok := ms.seqToSubj[seq]; ok {
+			var err error
+			if sm, err = loadLast(subj, &smv); err != nil && !gone(err) {
+				// Keep the schedule and retry later.
+				return false
+			} else if sm != nil && sm.seq != seq {
+				sm = nil
+			}
+		}
 		if sm != nil {
 			// If already inflight, don't duplicate a scheduled message. The stream could
 			// be replicated and the scheduled message could take some time to propagate.
@@ -207,7 +217,11 @@ func (ms *MsgScheduling) getScheduledMessages(loadMsg func(seq uint64, smv *Stor
 			source := getMessageScheduleSource(sm.hdr)
 			if source != _EMPTY_ {
 				// Fall back to the scheduled message's own content if the source has no last message.
-				if srcSm := loadLast(source, &srcSmv); srcSm != nil {
+				srcSm, err := loadLast(source, &srcSmv)
+				if err != nil && !gone(err) {
+					// Retry later, rather than sending the wrong content.
+					return false
+				} else if srcSm != nil {
 					sm = srcSm
 				}
 			}

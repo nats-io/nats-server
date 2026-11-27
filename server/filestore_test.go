@@ -2408,6 +2408,231 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 	})
 }
 
+func TestFileStoreRebuildStateRewritesCompressedBlock(t *testing.T) {
+	for _, test := range []struct {
+		title string
+		bad   int // Index of the corrupt record.
+		lost  []uint64
+	}{
+		{title: "Second", bad: 1, lost: []uint64{2, 3}},
+		// No record is left, so the block is written empty.
+		{title: "First", bad: 0, lost: []uint64{1, 2, 3}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(
+				FileStoreConfig{StoreDir: t.TempDir(), Compression: S2Compression},
+				StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+			for range 3 {
+				_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+				require_NoError(t, err)
+			}
+
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			fs.mu.RUnlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			_, err = mb.flushPendingMsgsLocked()
+			require_NoError(t, err)
+			buf, err := mb.loadBlock(nil)
+			require_NoError(t, err)
+
+			// Corrupt the record's subject and store the block compressed.
+			// Every record has the same length.
+			rl := msgHdrSize + len("foo") + len("bar") + recordHashSize
+			buf[test.bad*rl+msgHdrSize] ^= 1
+			cbuf, err := S2Compression.Compress(buf)
+			require_NoError(t, err)
+			meta := &CompressionInfo{Algorithm: S2Compression, OriginalSize: uint64(len(buf))}
+			cbuf = append(meta.MarshalMetadata(), cbuf...)
+			require_NoError(t, os.WriteFile(mb.mfn, cbuf, defaultFilePerms))
+
+			// The offset of the bad record is into the decompressed block, so the block is rewritten with the records before it.
+			ld, _, err := mb.rebuildStateLocked()
+			require_NoError(t, err)
+			require_NotNil(t, ld)
+			require_True(t, slices.Equal(ld.Msgs, test.lost))
+			got, err := os.ReadFile(mb.mfn)
+			require_NoError(t, err)
+			got, alg, err := mb.decode(got)
+			require_NoError(t, err)
+			if test.bad > 0 {
+				require_Equal(t, alg, S2Compression)
+			}
+			require_True(t, bytes.Equal(got, buf[:test.bad*rl]))
+		})
+	}
+}
+
+// A record corrupted before its block was compressed must only lose the records from it onwards.
+func TestFileStoreCorruptRecordKeepsPriorRecords(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fcfg.BlockSize = 256
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		// The first record leaves no records in the block.
+		for _, bad := range []uint64{2, 0} {
+			t.Run(fmt.Sprintf("Record%d", bad), func(t *testing.T) {
+				fcfg.StoreDir = t.TempDir()
+				open := func() *fileStore {
+					fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+					require_NoError(t, err)
+					return fs
+				}
+				fs := open()
+				defer func() { fs.Stop() }()
+				for i := range 5 {
+					_, _, err := fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+					require_NoError(t, err)
+				}
+				fs.mu.RLock()
+				mb := fs.blks[0]
+				fs.mu.RUnlock()
+				require_NoError(t, mb.flushPendingMsgs())
+
+				// Flip a bit of the record's length on disk, the block isn't compressed yet.
+				// A record is 22 header bytes, "foo", "hello-N" and an 8 byte checksum.
+				buf, err := os.ReadFile(mb.mfn)
+				require_NoError(t, err)
+				require_Equal(t, len(buf), 5*40)
+				buf[bad*40+2] ^= 0x10
+				require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
+
+				// Roll to a new block, and compress the old one if configured.
+				for i := 5; fs.numMsgBlocks() < 2; i++ {
+					_, _, err = fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+					require_NoError(t, err)
+				}
+				mb.mu.Lock()
+				require_NoError(t, mb.recompressOnDiskIfNeeded())
+				require_Equal(t, mb.cmp, fcfg.Compression)
+				mb.clearCacheAndOffset()
+				mb.mu.Unlock()
+				// The first message of the next block stays readable.
+				fs.mu.RLock()
+				next := atomic.LoadUint64(&fs.blks[1].first.seq)
+				fs.mu.RUnlock()
+
+				check := func() {
+					t.Helper()
+					for seq := uint64(1); seq <= next; seq++ {
+						sm, err := fs.LoadMsg(seq, nil)
+						if seq <= bad || seq == next {
+							require_NoError(t, err)
+							require_Equal(t, string(sm.msg), fmt.Sprintf("hello-%d", seq-1))
+						} else {
+							require_Error(t, err, ErrStoreMsgNotFound)
+						}
+					}
+				}
+				check()
+				// Loading again uses the rewritten block.
+				mb.mu.Lock()
+				mb.clearCacheAndOffset()
+				mb.mu.Unlock()
+				check()
+
+				// Also after a restart, with and without the stream state file.
+				require_NoError(t, fs.Stop())
+				fs = open()
+				check()
+				require_NoError(t, fs.Stop())
+				require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+				fs = open()
+				check()
+			})
+		}
+	})
+}
+
+// Messages stored after the last block was truncated at a corrupt record must stay readable.
+func TestFileStoreCorruptLastBlockThenWrite(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		cfg := StreamConfig{Name: "zzz", Subjects: []string{"foo"}, Storage: FileStorage}
+		// The first record leaves an empty block, at startup or while running.
+		for _, bad := range []int{2, 0} {
+			for _, startup := range []bool{false, true} {
+				t.Run(fmt.Sprintf("Record%d-Startup=%v", bad, startup), func(t *testing.T) {
+					fcfg.StoreDir = t.TempDir()
+					open := func() *fileStore {
+						fs, err := newFileStoreWithCreated(fcfg, cfg, time.Now(), prf(&fcfg), nil)
+						require_NoError(t, err)
+						return fs
+					}
+					fs := open()
+					defer func() { fs.Stop() }()
+					for i := range 5 {
+						_, _, err := fs.StoreMsg("foo", nil, fmt.Appendf(nil, "hello-%d", i), 0)
+						require_NoError(t, err)
+					}
+					fs.mu.RLock()
+					mb := fs.lmb
+					fs.mu.RUnlock()
+					require_NoError(t, mb.flushPendingMsgs())
+					mfn := mb.mfn
+					if startup {
+						require_NoError(t, fs.Stop())
+					}
+
+					// Flip a bit of the record's length, the cipher keeps it in place.
+					// A record is 22 header bytes, "foo", "hello-N" and an 8 byte checksum.
+					buf, err := os.ReadFile(mfn)
+					require_NoError(t, err)
+					require_Equal(t, len(buf), 5*40)
+					buf[bad*40+2] ^= 0x10
+					require_NoError(t, os.WriteFile(mfn, buf, defaultFilePerms))
+
+					if startup {
+						// Recovering without the stream state file truncates the block.
+						require_NoError(t, os.Remove(filepath.Join(fcfg.StoreDir, msgDir, streamStreamStateFile)))
+						fs = open()
+					} else {
+						// Loading the block truncates it.
+						mb.mu.Lock()
+						mb.clearCacheAndOffset()
+						mb.mu.Unlock()
+						_, _ = fs.LoadMsg(1, nil)
+					}
+					// The stream's state is rebuilt in the background.
+					checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+						if msgs := fs.State().Msgs; msgs != uint64(bad) {
+							return fmt.Errorf("expected %d msgs, got %d", bad, msgs)
+						}
+						return nil
+					})
+
+					seqs := make([]uint64, 3)
+					for i := range seqs {
+						seqs[i], _, err = fs.StoreMsg("foo", nil, fmt.Appendf(nil, "new-%d", i), 0)
+						require_NoError(t, err)
+					}
+					check := func() {
+						t.Helper()
+						for i, seq := range seqs {
+							sm, err := fs.LoadMsg(seq, nil)
+							require_NoError(t, err)
+							require_Equal(t, string(sm.msg), fmt.Sprintf("new-%d", i))
+						}
+					}
+					// From disk, and after a restart.
+					fs.mu.RLock()
+					lmb := fs.lmb
+					fs.mu.RUnlock()
+					require_NoError(t, lmb.flushPendingMsgs())
+					lmb.mu.Lock()
+					lmb.clearCacheAndOffset()
+					lmb.mu.Unlock()
+					check()
+					require_NoError(t, fs.Stop())
+					fs = open()
+					check()
+				})
+			}
+		}
+	})
+}
+
 func TestFileStoreSnapshot(t *testing.T) {
 	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
 		subj, msg := "foo", []byte("Hello Snappy!")
@@ -3603,6 +3828,26 @@ func TestFileStoreStreamDeleteDirNotEmpty(t *testing.T) {
 	})
 }
 
+func TestFileStoreStreamDeleteWhileEarlierDeletePending(t *testing.T) {
+	testFileStoreAllPermutations(t, func(t *testing.T, fcfg FileStoreConfig) {
+		fs, err := newFileStoreWithCreated(fcfg, StreamConfig{Name: "zzz", Storage: FileStorage}, time.Now(), prf(&fcfg), nil)
+		require_NoError(t, err)
+		defer fs.Stop()
+		_, _, err = fs.StoreMsg("foo", nil, []byte("Hello World"), 0)
+		require_NoError(t, err)
+
+		// An earlier delete of the same name can still be removing its directory.
+		pending := filepath.Join(filepath.Dir(fcfg.StoreDir), tsep+filepath.Base(fcfg.StoreDir))
+		require_NoError(t, os.MkdirAll(pending, defaultDirPerms))
+		require_NoError(t, os.WriteFile(filepath.Join(pending, "old"), []byte("OK"), defaultFilePerms))
+
+		// The data must not be left behind for a stream recreated with this name.
+		require_NoError(t, fs.Delete(false))
+		_, err = os.Stat(fcfg.StoreDir)
+		require_True(t, os.IsNotExist(err))
+	})
+}
+
 func TestFileStoreConsumerPerf(t *testing.T) {
 	// Comment out to run, holding place for now.
 	t.SkipNow()
@@ -3739,6 +3984,33 @@ func TestFileStoreStreamFailToRollBug(t *testing.T) {
 			t.Fatalf("Expected block to be <= 512, got %d", blkSize)
 		}
 	})
+}
+
+func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
+	// A valid header with ack floor and delivered sequences.
+	header := func() []byte {
+		b := []byte{magic, 2}
+		for range 4 {
+			b = binary.AppendUvarint(b, 1)
+		}
+		return b
+	}
+	for _, test := range []struct {
+		title string
+		buf   []byte
+	}{
+		// Would otherwise allocate for a huge number of pending entries.
+		{title: "Pending", buf: binary.AppendUvarint(header(), 1<<62)},
+		// Would otherwise allocate and loop for a huge number of redelivered entries.
+		{title: "Redelivered", buf: binary.AppendUvarint(append(header(), 0), 1<<62)},
+		// The second redelivered entry is cut off.
+		{title: "RedeliveredShort", buf: append(binary.AppendUvarint(append(header(), 0), 2), 1, 1, 1, 0x80)},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			_, err := decodeConsumerState(test.buf)
+			require_Error(t, err, errCorruptState)
+		})
+	}
 }
 
 // We had a case where a consumer state had a redelivered record that had seq of 0.
@@ -13135,6 +13407,142 @@ func TestFileStoreMessageScheduleRecovered(t *testing.T) {
 	})
 }
 
+func TestFileStoreMessageScheduleRecoveredAfterFire(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		restore func(fn string, stale []byte)
+	}{
+		// The state was last written before the schedule fired, like after an unclean shutdown.
+		{title: "Outdated", restore: func(fn string, stale []byte) { require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms)) }},
+		{title: "Missing", restore: func(fn string, _ []byte) { require_NoError(t, os.Remove(fn)) }},
+		// Without the stream state, the blocks are indexed again to find the schedules.
+		{title: "OutdatedWithoutStreamState", restore: func(fn string, stale []byte) {
+			require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms))
+			require_NoError(t, os.Remove(filepath.Join(filepath.Dir(fn), streamStreamStateFile)))
+		}},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			dir := t.TempDir()
+			// Small blocks, so the fired message is in a block without the schedule.
+			fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 128}
+			cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true}
+			fs, err := newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			hdr := genHeader(nil, JSSchedulePattern, "@every 1h")
+			hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+			_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+			require_NoError(t, err)
+			require_NoError(t, fs.Stop())
+
+			fn := filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)
+			stale, err := os.ReadFile(fn)
+			require_NoError(t, err)
+
+			// The fired message moves the schedule to its next time.
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			next := time.Now().Add(2 * time.Hour).UTC()
+			fired := genHeader(nil, JSScheduler, "foo.schedule")
+			fired = genHeader(fired, JSScheduleNext, next.Format(time.RFC3339Nano))
+			_, _, err = fs.StoreMsg("foo.target", fired, nil, 0)
+			require_NoError(t, err)
+			require_True(t, fs.numMsgBlocks() > 1)
+			require_NoError(t, fs.Stop())
+
+			test.restore(fn, stale)
+			fs, err = newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			defer fs.Stop()
+			fs.mu.RLock()
+			defer fs.mu.RUnlock()
+			require_Equal(t, fs.scheduling.schedules["foo.schedule"].ts, next.UnixNano())
+		})
+	}
+}
+
+func TestFileStoreMessageScheduleReplacedAfterRecovery(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	dir := t.TempDir()
+	// Small blocks, so the replacing message is in a block without schedules.
+	fcfg := FileStoreConfig{StoreDir: dir, BlockSize: 128, srv: s}
+	cfg := StreamConfig{Name: "TEST", Subjects: []string{"foo.*"}, Storage: FileStorage, AllowMsgSchedules: true}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	schedule := time.Now().Add(time.Second).Format(time.RFC3339Nano)
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", schedule))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	_, _, err = fs.StoreMsg("foo.schedule", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	fn := filepath.Join(dir, msgDir, msgSchedulingStreamStateFile)
+	stale, err := os.ReadFile(fn)
+	require_NoError(t, err)
+
+	// A plain message replaces the schedule.
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo.schedule", nil, []byte("replaced"), 0)
+	require_NoError(t, err)
+	require_True(t, fs.numMsgBlocks() > 1)
+	require_NoError(t, fs.Stop())
+
+	// The state was last written before the schedule was replaced, like after an unclean shutdown.
+	require_NoError(t, os.WriteFile(fn, stale, defaultFilePerms))
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	ch := make(chan *inMsg, 1)
+	fs.mu.Lock()
+	fs.pmsgcb = func(im *inMsg) { ch <- im }
+	fs.mu.Unlock()
+
+	// The replaced schedule doesn't fire, and is removed.
+	require_NoChanRead(t, ch, 2*time.Second)
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	_, ok := fs.scheduling.schedules["foo.schedule"]
+	require_False(t, ok)
+}
+
+func TestFileStoreMessageScheduleKeptOnLoadError(t *testing.T) {
+	hdr := genHeader(nil, JSSchedulePattern, fmt.Sprintf("@at %s", time.Now().Format(time.RFC3339Nano)))
+	hdr = genHeader(hdr, JSScheduleTarget, "foo.target")
+	hdr = genHeader(hdr, JSScheduleSource, "foo.source")
+	errIO := errors.New("i/o error")
+
+	for _, test := range []struct {
+		title    string
+		schedErr error
+		srcErr   error
+		kept     bool
+	}{
+		{title: "ScheduleLoadError", schedErr: errIO, kept: true},
+		{title: "SourceLoadError", srcErr: errIO, kept: true},
+		{title: "ScheduleNotFound", schedErr: ErrStoreMsgNotFound},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			ms := newMsgScheduling(func() {})
+			ms.add(1, "foo.schedule", time.Now().Add(-time.Second).UnixNano())
+			msgs := ms.getScheduledMessages(func(subj string, smv *StoreMsg) (*StoreMsg, error) {
+				if subj == "foo.schedule" {
+					if test.schedErr != nil {
+						return nil, test.schedErr
+					}
+					return &StoreMsg{subj: subj, hdr: hdr, seq: 1}, nil
+				}
+				return nil, test.srcErr
+			})
+			require_Len(t, len(msgs), 0)
+			_, ok := ms.schedules["foo.schedule"]
+			require_Equal(t, ok, test.kept)
+			require_False(t, ms.isInflight("foo.schedule"))
+		})
+	}
+}
+
 func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	now := time.Now()
@@ -17443,7 +17851,8 @@ func TestFileStoreHasTTLAndScheduleHeaders(t *testing.T) {
 		t.Helper()
 		hasTTL, hasSchedule := hasTTLAndScheduleHeaders(hdr)
 		require_Equal(t, hasTTL, bytes.Contains(hdr, []byte("\r\n"+JSMessageTTL+":")))
-		require_Equal(t, hasSchedule, bytes.Contains(hdr, []byte("\r\n"+JSSchedulePattern+":")))
+		// Any key starting with Nats-Schedule counts, to include Nats-Scheduler and Nats-Schedule-Next.
+		require_Equal(t, hasSchedule, bytes.Contains(hdr, []byte("\r\n"+JSSchedulePattern)))
 	}
 	for i, hdr := range []string{
 		"",

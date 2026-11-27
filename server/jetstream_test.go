@@ -25157,7 +25157,7 @@ func TestJetStreamScheduledMessageNotDeactivated(t *testing.T) {
 	}
 }
 
-func TestJetStreamScheduledMessageDeliveryPreservesTargetSchedule(t *testing.T) {
+func TestJetStreamScheduledMessageDeliveryReplacesTargetSchedule(t *testing.T) {
 	for _, storageType := range []StorageType{FileStorage, MemoryStorage} {
 		t.Run(storageType.String(), func(t *testing.T) {
 			s := RunBasicJetStreamServer(t)
@@ -25185,26 +25185,29 @@ func TestJetStreamScheduledMessageDeliveryPreservesTargetSchedule(t *testing.T) 
 			_, err = js.PublishMsg(mA)
 			require_NoError(t, err)
 
-			// Independent schedule on foo.B fires later and delivers onto foo.C.
-			// Storing the fired delivery from foo.A onto foo.B must not tear
-			// down foo.B's own schedule.
+			// Schedule on foo.B would fire later and deliver onto foo.C.
 			mB := nats.NewMsg("foo.B")
 			mB.Header.Set("Nats-Schedule", delay(2*time.Second))
 			mB.Header.Set("Nats-Schedule-Target", "foo.C")
 			_, err = js.PublishMsg(mB)
 			require_NoError(t, err)
+			firesAt := time.Now().Add(2 * time.Second)
 
-			// Wait for the foo.A schedule to fire onto foo.B.
+			// Wait for the foo.A schedule to deliver onto foo.B.
 			checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
-				_, err = js.GetLastMsg("TEST", "foo.B")
-				return err
+				rsm, err := js.GetLastMsg("TEST", "foo.B")
+				if err != nil {
+					return err
+				} else if scheduler := rsm.Header.Get(JSScheduler); scheduler != "foo.A" {
+					return fmt.Errorf("expected delivery from foo.A, got scheduler %q", scheduler)
+				}
+				return nil
 			})
 
-			// foo.B's schedule must still fire onto foo.C.
-			checkFor(t, 4*time.Second, 200*time.Millisecond, func() error {
-				_, err = js.GetLastMsg("TEST", "foo.C")
-				return err
-			})
+			// The delivery is now the last message on foo.B, so it replaced foo.B's schedule.
+			time.Sleep(time.Until(firesAt.Add(time.Second)))
+			_, err = js.GetLastMsg("TEST", "foo.C")
+			require_Error(t, err, nats.ErrMsgNotFound)
 		})
 	}
 }

@@ -52,6 +52,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/gsl"
 	"github.com/nats-io/nats-server/v2/server/stree"
 	"github.com/nats-io/nats-server/v2/server/thw"
+	"github.com/nats-io/nuid"
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -1261,10 +1262,8 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 	mdir := filepath.Join(fs.fcfg.StoreDir, msgDir)
 	mb.mfn = filepath.Join(mdir, fmt.Sprintf(blkScan, index))
 
-	if mb.hh == nil {
-		key := sha256.Sum256(fs.hashKeyForBlock(index))
-		mb.hh, _ = highwayhash.NewDigest64(key[:])
-	}
+	key := sha256.Sum256(fs.hashKeyForBlock(index))
+	mb.hh, _ = highwayhash.NewDigest64(key[:])
 	return mb
 }
 
@@ -1800,9 +1799,20 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	var le = binary.LittleEndian
 
-	// There are cases where we're not allowed to truncate, like for an encrypted or compressed
-	// block since the index will be the decrypted and decompressed index.
+	// There are cases where we're not allowed to truncate, like when converting the block's cipher.
 	truncate := func(index uint32) error {
+		// The index is into the decrypted and decompressed block, so rewrite it with the records before it.
+		// That also restarts the block's keystream at its new end.
+		if mb.cmp != NoCompression || mb.bek != nil {
+			// An empty block can't be compressed, it's written empty.
+			if err := mb.atomicOverwriteFile(buf[:index], mb.cmp != NoCompression && index > 0); err != nil {
+				return err
+			}
+			if index >= checksumSize {
+				copy(mb.lchk[0:], buf[index-checksumSize:index])
+			}
+			return nil
+		}
 		var fd *os.File
 		if mb.mfd != nil {
 			fd = mb.mfd
@@ -1901,27 +1911,25 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		// Check for checksum failures before additional processing.
 		data := buf[index+msgHdrSize : index+rl]
 		subj := data[:slen]
-		if hh := mb.hh; hh != nil {
-			hh.Reset()
-			hh.Write(hdr[4:20])
-			hh.Write(subj)
-			if hasHeaders {
-				hh.Write(data[slen+4 : dlen-recordHashSize])
-			} else {
-				hh.Write(data[slen : dlen-recordHashSize])
-			}
-			checksum := hh.Sum(hb[:0])
-			if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
-				err = errBadMsg{mb.mfn, "invalid checksum"}
-				if allowTruncate {
-					if err = truncate(index); err != nil {
-						return nil, nil, err
-					}
-				}
-				return gatherLost(lbuf - index), tombstones, err
-			}
-			copy(mb.lchk[0:], checksum)
+		mb.hh.Reset()
+		mb.hh.Write(hdr[4:20])
+		mb.hh.Write(subj)
+		if hasHeaders {
+			mb.hh.Write(data[slen+4 : dlen-recordHashSize])
+		} else {
+			mb.hh.Write(data[slen : dlen-recordHashSize])
 		}
+		checksum := mb.hh.Sum(hb[:0])
+		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
+			err = errBadMsg{mb.mfn, "invalid checksum"}
+			if allowTruncate {
+				if err = truncate(index); err != nil {
+					return nil, nil, err
+				}
+			}
+			return gatherLost(lbuf - index), tombstones, err
+		}
+		copy(mb.lchk[0:], checksum)
 
 		// Grab our sequence and timestamp.
 		seq := le.Uint64(hdr[4:])
@@ -2575,12 +2583,6 @@ func (fs *fileStore) recoverPerMessageState() error {
 						fs.ttls.Add(seq, int64(expires))
 					}
 				}
-				if schedRecover && seq >= schedSeq {
-					if schedule, apiErr := nextMessageSchedule(msg.hdr, msg.ts); apiErr == nil && !schedule.IsZero() {
-						// Copy the subject, as it's stored in the scheduling maps and the backing cache could be reused in the meantime.
-						fs.scheduling.init(seq, copyString(msg.subj), schedule.UnixNano())
-					}
-				}
 				if sourcesRecover && seq >= sourcesSeq {
 					if ss := sliceHeader(JSStreamSource, msg.hdr); len(ss) > 0 {
 						streamName, iName, sseq, ident := streamAndSeq(bytesToString(ss))
@@ -2597,6 +2599,10 @@ func (fs *fileStore) recoverPerMessageState() error {
 						}
 					}
 				}
+			}
+			// Apply every message like when it was stored, a fired schedule then keeps its next time.
+			if schedRecover && seq >= schedSeq {
+				fs.trackMsgSchedule(seq, msg.subj, msg.hdr, msg.ts)
 			}
 			mb.finishedWithCache()
 			mb.mu.Unlock()
@@ -5502,6 +5508,31 @@ func (fs *fileStore) genEncryptionKeysForBlock(mb *msgBlock) error {
 	return nil
 }
 
+// Applies a stored message to the message scheduling state, when storing or recovering it.
+// Returns whether it's a schedule or a message the schedule produced.
+// Lock should be held.
+func (fs *fileStore) trackMsgSchedule(seq uint64, subj string, hdr []byte, ts int64) bool {
+	var tracked bool
+	if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
+		// Copy the subject, as it's kept and could point into a reused cache.
+		fs.scheduling.add(seq, copyString(subj), schedule.UnixNano())
+		tracked = true
+	} else {
+		// Any other message replaces the schedule, also one a schedule produced.
+		fs.scheduling.removeSubject(subj)
+	}
+
+	// Check for a repeating schedule and update such that it triggers again.
+	if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
+		scheduler := getMessageScheduler(hdr)
+		if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
+			fs.scheduling.update(scheduler, next.UnixNano())
+			tracked = true
+		}
+	}
+	return tracked
+}
+
 // Stores a raw message with expected sequence number and timestamp.
 // Lock should be held.
 func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, ttl int64, discardNewCheck bool) (err error) {
@@ -5684,23 +5715,10 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 	}
 
 	// Message scheduling.
-	if fs.scheduling != nil {
-		if schedule, apiErr := nextMessageSchedule(hdr, ts); apiErr == nil && !schedule.IsZero() {
-			fs.scheduling.add(seq, subj, schedule.UnixNano())
-			fs.lmb.mu.Lock()
-			fs.lmb.schedules++
-			fs.lmb.mu.Unlock()
-		} else if getMessageScheduler(hdr) == _EMPTY_ {
-			fs.scheduling.removeSubject(subj)
-		}
-
-		// Check for a repeating schedule and update such that it triggers again.
-		if scheduleNext := bytesToString(sliceHeader(JSScheduleNext, hdr)); scheduleNext != _EMPTY_ && scheduleNext != JSScheduleNextPurge {
-			scheduler := getMessageScheduler(hdr)
-			if next, err := time.Parse(time.RFC3339Nano, scheduleNext); err == nil && scheduler != _EMPTY_ {
-				fs.scheduling.update(scheduler, next.UnixNano())
-			}
-		}
+	if fs.scheduling != nil && fs.trackMsgSchedule(seq, subj, hdr, ts) {
+		fs.lmb.mu.Lock()
+		fs.lmb.schedules++
+		fs.lmb.mu.Unlock()
 	}
 
 	// Track sources.
@@ -7778,16 +7796,7 @@ func (fs *fileStore) runMsgScheduling() {
 	}
 	fs.scheduling.running = true
 
-	scheduledMsgs := fs.scheduling.getScheduledMessages(
-		func(seq uint64, smv *StoreMsg) *StoreMsg {
-			sm, _ := fs.msgForSeqLocked(seq, smv, false)
-			return sm
-		},
-		func(subj string, smv *StoreMsg) *StoreMsg {
-			sm, _ := fs.loadLastLocked(subj, smv)
-			return sm
-		},
-	)
+	scheduledMsgs := fs.scheduling.getScheduledMessages(fs.loadLastLocked)
 	if len(scheduledMsgs) > 0 {
 		fs.mu.Unlock()
 		for _, msg := range scheduledMsgs {
@@ -8437,13 +8446,16 @@ func (mb *msgBlock) decompressIfNeeded(buf []byte) ([]byte, error) {
 
 // Lock should be held.
 func (mb *msgBlock) encryptOrDecryptIfNeeded(buf []byte) error {
-	if mb.bek != nil && len(buf) > 0 {
+	if mb.bek != nil {
+		// Always reset the keystream, so it continues at the end of buf, even if the block is empty.
 		bek, err := genBlockEncryptionKey(mb.fs.fcfg.Cipher, mb.seed, mb.nonce)
 		if err != nil {
 			return err
 		}
 		mb.bek = bek
-		mb.bek.XORKeyStream(buf, buf)
+		if len(buf) > 0 {
+			mb.bek.XORKeyStream(buf, buf)
+		}
 	}
 	return nil
 }
@@ -8800,7 +8812,8 @@ func (fs *fileStore) selectMsgBlockForStart(minTime time.Time) *msgBlock {
 var (
 	natsHeaderKeyPrefix = []byte("Nats-")
 	ttlHeaderKey        = []byte(JSMessageTTL + ":")
-	scheduleHeaderKey   = []byte(JSSchedulePattern + ":")
+	// Covers both schedules and the messages they produce, which carry Nats-Scheduler and Nats-Schedule-Next.
+	scheduleHeaderKey = []byte(JSSchedulePattern)
 )
 
 // hasTTLAndScheduleHeaders reports whether hdr has a Nats-TTL or Nats-Schedule key.
@@ -12641,7 +12654,8 @@ func (fs *fileStore) Delete(inline bool) error {
 		return err
 	}
 	// Now move into different directory with "." prefix.
-	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir))
+	// Unique, an earlier delete of the same name may still be removing its directory.
+	ndir := filepath.Join(filepath.Dir(fs.fcfg.StoreDir), tsep+filepath.Base(fs.fcfg.StoreDir)+tsep+nuid.Next())
 	if err := os.Rename(fs.fcfg.StoreDir, ndir); err != nil {
 		return err
 	}
@@ -14935,6 +14949,10 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 
 	// We have additional stuff.
 	if numPending := readLen(); numPending > 0 {
+		// Each entry takes at least two bytes, so a larger count is corrupt.
+		if numPending > uint64(len(buf)-bi)/2 {
+			return nil, errCorruptState
+		}
 		mints := readTimeStamp()
 		state.Pending = make(map[uint64]*Pending, numPending)
 		for i := 0; i < int(numPending); i++ {
@@ -14969,9 +14987,17 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 
 	// We have redelivered entries here.
 	if numRedelivered := readLen(); numRedelivered > 0 {
+		// Each entry takes at least two bytes, so a larger count is corrupt.
+		if numRedelivered > uint64(len(buf)-bi)/2 {
+			return nil, errCorruptState
+		}
 		state.Redelivered = make(map[uint64]uint64, numRedelivered)
 		for i := 0; i < int(numRedelivered); i++ {
-			if seq, n := readSeq(), readCount(); seq > 0 && n > 0 {
+			seq, n := readSeq(), readCount()
+			if bi == -1 {
+				return nil, errCorruptState
+			}
+			if seq > 0 && n > 0 {
 				// Adjust seq back.
 				seq += state.AckFloor.Stream
 				state.Redelivered[seq] = n
