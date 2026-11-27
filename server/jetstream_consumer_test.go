@@ -15145,3 +15145,75 @@ func TestJetStreamConsumerLookupNotBlockedByStreamLock(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, ci.Name, "CONSUMER")
 }
+
+func TestJetStreamConsumerAckSyncPersistedOnDisk(t *testing.T) {
+	for _, rp := range []nats.RetentionPolicy{nats.LimitsPolicy, nats.WorkQueuePolicy} {
+		t.Run(rp.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			streamName := "TEST_" + rp.String()
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:      streamName,
+				Subjects:  []string{"foo"},
+				Retention: rp,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < 6; i++ {
+				_, err = js.Publish("foo", []byte("msg"))
+				require_NoError(t, err)
+			}
+
+			sub, err := js.PullSubscribe("foo", "dur")
+			require_NoError(t, err)
+
+			mset, err := s.GlobalAccount().lookupStream(streamName)
+			require_NoError(t, err)
+			o := mset.lookupConsumer("dur")
+			require_NotNil(t, o)
+			cfs := o.store.(*consumerFileStore)
+
+			// First AckSync updates lastWrite so subsequent acks hit the 100ms flush window.
+			msgs, err := sub.Fetch(1, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_NoError(t, msgs[0].AckSync())
+
+			// Concurrent AckSyncs must all wait until the consumer state is written to disk.
+			msgs, err = sub.Fetch(4, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			var wg sync.WaitGroup
+			for _, m := range msgs {
+				wg.Add(1)
+				go func(msg *nats.Msg) {
+					defer wg.Done()
+					require_NoError(t, msg.AckSync())
+				}(m)
+			}
+			wg.Wait()
+
+			buf, err := os.ReadFile(cfs.ifn)
+			require_NoError(t, err)
+			state, err := decodeConsumerState(buf)
+			require_NoError(t, err)
+			require_Equal(t, state.AckFloor.Stream, uint64(5))
+			require_Equal(t, len(state.Pending), 0)
+
+			// Synchronous Term must also persist to disk before replying.
+			msgs, err = sub.Fetch(1, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			_, err = nc.Request(msgs[0].Reply, AckTerm, 2*time.Second)
+			require_NoError(t, err)
+
+			buf, err = os.ReadFile(cfs.ifn)
+			require_NoError(t, err)
+			state, err = decodeConsumerState(buf)
+			require_NoError(t, err)
+			require_Equal(t, state.AckFloor.Stream, uint64(6))
+			require_Equal(t, len(state.Pending), 0)
+		})
+	}
+}
