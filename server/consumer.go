@@ -5171,7 +5171,7 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 		return nil, 0, errMaxAckPending
 	}
 
-	if o.hasSkipListPending() {
+	for o.hasSkipListPending() {
 		seq := o.lss.seqs[0]
 		if len(o.lss.seqs) == 1 {
 			o.sseq = o.lss.resume
@@ -5188,6 +5188,9 @@ func (o *consumer) getNextMsg() (*jsPubMsg, uint64, error) {
 			pmsg = nil
 		}
 		o.sseq++
+		if err == ErrStoreMsgNotFound || err == errDeletedMsg {
+			continue
+		}
 		return pmsg, 1, err
 	}
 
