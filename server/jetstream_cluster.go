@@ -1695,6 +1695,10 @@ func (ru *recoveryUpdates) removeConsumer(ca *consumerAssignment) {
 		ru.removeConsumers[skey][key] = ca
 	}
 	if consumers, ok := ru.updateConsumers[skey]; ok {
+		// A stale removal of an earlier consumer must not drop its recreate, like processConsumerRemoval ignores it.
+		if nca, ok := consumers[key]; ok && !nca.Created.Equal(ca.Created) && (nca.Group == nil || ca.Group == nil || nca.Group.Name != ca.Group.Name) {
+			return
+		}
 		delete(consumers, key)
 	}
 }
