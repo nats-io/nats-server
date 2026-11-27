@@ -1651,14 +1651,15 @@ func TestSublistMatchWithEmptyTokens(t *testing.T) {
 		{"no cache", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sl := NewSublist(true)
+			sl := NewSublist(test.cache)
 			sub1 := newSub(">")
 			sub2 := newQSub(">", "queue")
 			sl.Insert(sub1)
 			sl.Insert(sub2)
 
-			for _, subj := range []string{".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
+			for _, subj := range []string{"", ".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
 				t.Run(subj, func(t *testing.T) {
+					require_False(t, sl.HasInterest(subj))
 					r := sl.Match(subj)
 					verifyLen(r.psubs, 0, t)
 					verifyQLen(r.qsubs, 0, t)

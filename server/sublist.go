@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/nats-io/nats-server/v2/internal/subject"
 )
 
 // Sublist is a routing mechanism to handle subject distribution and
@@ -597,21 +599,10 @@ func (s *Sublist) match(subject string, doLock bool, doCopyOnCache bool) *Sublis
 	}
 
 	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			if i-start == 0 {
-				return emptyResult
-			}
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	if start >= len(subject) {
+	tokens := tokenizeSubjectIntoSliceNoEmpty(tsa[:0], subject)
+	if tokens == nil {
 		return emptyResult
 	}
-	tokens = append(tokens, subject[start:])
 
 	// FIXME(dlc) - Make shared pool between sublist and client readLoop?
 	result := &SublistResult{}
@@ -683,21 +674,10 @@ func (s *Sublist) hasInterest(subject string, doLock bool, np, nq *int) bool {
 	}
 
 	tsa := [32]string{}
-	tokens := tsa[:0]
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			if i-start == 0 {
-				return false
-			}
-			tokens = append(tokens, subject[start:i])
-			start = i + 1
-		}
-	}
-	if start >= len(subject) {
+	tokens := tokenizeSubjectIntoSliceNoEmpty(tsa[:0], subject)
+	if tokens == nil {
 		return false
 	}
-	tokens = append(tokens, subject[start:])
 
 	if doLock {
 		s.RLock()
@@ -1485,17 +1465,12 @@ func tokenAt(subject string, index uint8) string {
 	return _EMPTY_
 }
 
-// use similar to append. meaning, the updated slice will be returned
-func tokenizeSubjectIntoSlice(tts []string, subject string) []string {
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == btsep {
-			tts = append(tts, subject[start:i])
-			start = i + 1
-		}
-	}
-	tts = append(tts, subject[start:])
-	return tts
+func tokenizeSubjectIntoSlice(tts []string, subj string) []string {
+	return subject.Tokenize(tts, subj)
+}
+
+func tokenizeSubjectIntoSliceNoEmpty(tts []string, subj string) []string {
+	return subject.TokenizeNoEmpty(tts, subj)
 }
 
 // SubjectMatchesFilter returns true if the subject matches the provided

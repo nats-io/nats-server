@@ -170,9 +170,11 @@ func TestGenericSublistRemoveWithWildcardsAsLiterals(t *testing.T) {
 func TestGenericSublistMatchWithEmptyTokens(t *testing.T) {
 	s := NewSublist[struct{}]()
 	require_NoError(t, s.Insert(">", struct{}{}))
-	for _, subject := range []string{".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
+	for _, subject := range []string{"", ".foo", "..foo", "foo..", "foo.", "foo..bar", "foo...bar"} {
 		t.Run(subject, func(t *testing.T) {
 			require_Matches(t, s, subject, 0)
+			require_False(t, s.HasInterest(subject))
+			require_Equal(t, s.NumInterest(subject), 0)
 		})
 	}
 }
