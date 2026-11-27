@@ -4365,6 +4365,192 @@ func benchConnectClose(b *testing.B, s *Server, accounts int) {
 	}
 }
 
+// accConnsUpdate takes no server lock, so it can run while Shutdown clears the
+// eventing state it reads. This hammers it, and connects and closes clients,
+// while the server shuts down: the race detector must stay quiet, nothing may
+// panic, and no account may be left with its connection heartbeat timer armed,
+// since a timer that nothing stops keeps the account, and the server, reachable.
+func TestSystemAccountAccConnsUpdateDuringShutdown(t *testing.T) {
+	const accounts = 4
+	for i := 0; i < 20; i++ {
+		s := runServerWithAccounts(t, accounts)
+
+		var accs []*Account
+		var nconns []*nats.Conn
+		for j := 0; j < accounts; j++ {
+			a, err := s.LookupAccount(fmt.Sprintf("A%d", j))
+			require_NoError(t, err)
+			accs = append(accs, a)
+			// A connected client makes the account's heartbeat timer arm.
+			nc, err := nats.Connect(s.ClientURL(), nats.UserInfo(fmt.Sprintf("u%d", j), "p"), nats.NoReconnect())
+			require_NoError(t, err)
+			nconns = append(nconns, nc)
+		}
+
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+		for _, a := range accs {
+			for k := 0; k < 2; k++ {
+				wg.Add(1)
+				go func(a *Account) {
+					defer wg.Done()
+					for {
+						select {
+						case <-stop:
+							return
+						default:
+							s.accConnsUpdate(a)
+						}
+					}
+				}(a)
+			}
+		}
+		// Let the hammering get going, then shut down underneath it.
+		time.Sleep(10 * time.Millisecond)
+		s.Shutdown()
+		time.Sleep(10 * time.Millisecond)
+		close(stop)
+		wg.Wait()
+		for _, nc := range nconns {
+			nc.Close()
+		}
+		// One more call after everything is done must be a no-op.
+		for _, a := range accs {
+			s.accConnsUpdate(a)
+		}
+		for _, a := range accs {
+			a.mu.RLock()
+			armed := a.ctmr != nil
+			a.mu.RUnlock()
+			if armed {
+				t.Fatalf("Account %q still has its connections timer after shutdown", a.Name)
+			}
+		}
+		s.WaitForShutdown()
+	}
+}
+
+// A leafnode connection is counted in its account like a client, and its
+// removal during shutdown calls accConnsUpdate too. Same checks as above, with
+// leafnodes connected to the hub that is shutting down.
+func TestSystemAccountAccConnsUpdateLeafNodeShutdown(t *testing.T) {
+	for i := 0; i < 3; i++ {
+		t.Run(fmt.Sprintf("iteration=%d", i), func(t *testing.T) {
+			hub, ho := RunServerWithConfig(createConfFile(t, []byte(`
+				host: 127.0.0.1
+				port: -1
+				system_account: SYS
+				leafnodes { listen: 127.0.0.1:-1 }
+				accounts: {
+					SYS: {users: [{user: s, password: s}]}
+					A: {users: [{user: u, password: p}]}
+					B: {users: [{user: v, password: p}]}
+				}
+			`)))
+
+			var spokes []*Server
+			for _, user := range []string{"u", "v"} {
+				spoke, _ := RunServerWithConfig(createConfFile(t, []byte(fmt.Sprintf(`
+					host: 127.0.0.1
+					port: -1
+					leafnodes {
+						remotes: [{url: "nats://%s:p@127.0.0.1:%d"}]
+					}
+				`, user, ho.LeafNode.Port))))
+				spokes = append(spokes, spoke)
+				checkLeafNodeConnected(t, spoke)
+			}
+			defer func() {
+				for _, spoke := range spokes {
+					spoke.Shutdown()
+				}
+			}()
+
+			var accs []*Account
+			for _, name := range []string{"A", "B"} {
+				a, err := hub.LookupAccount(name)
+				require_NoError(t, err)
+				require_True(t, a.NumLeafNodes() > 0)
+				accs = append(accs, a)
+			}
+
+			var wg sync.WaitGroup
+			stop := make(chan struct{})
+			for _, a := range accs {
+				for k := 0; k < 2; k++ {
+					wg.Add(1)
+					go func(a *Account) {
+						defer wg.Done()
+						for {
+							select {
+							case <-stop:
+								return
+							default:
+								hub.accConnsUpdate(a)
+							}
+						}
+					}(a)
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+			hub.Shutdown()
+			time.Sleep(10 * time.Millisecond)
+			close(stop)
+			wg.Wait()
+			for _, a := range accs {
+				hub.accConnsUpdate(a)
+			}
+			for _, a := range accs {
+				a.mu.RLock()
+				armed := a.ctmr != nil
+				a.mu.RUnlock()
+				if armed {
+					t.Fatalf("Account %q still has its connections timer after shutdown", a.Name)
+				}
+			}
+			hub.WaitForShutdown()
+		})
+	}
+}
+
+// A call that loaded the system send queue before shutdown can reach the account
+// after clearEventing. That empties a.clients but not a.sysclients, so an account
+// with internal clients, such as the system account, would count below zero and
+// arm its connections timer with nothing left to clear it.
+func TestSystemAccountAccConnsUpdateStaleQueueAfterShutdown(t *testing.T) {
+	s := runServerWithAccounts(t, 2)
+	defer s.Shutdown()
+
+	var accs []*Account
+	s.accounts.Range(func(_, v any) bool {
+		accs = append(accs, v.(*Account))
+		return true
+	})
+	sysAcc := s.SystemAccount()
+	require_True(t, sysAcc != nil)
+	sysAcc.mu.RLock()
+	sysclients := sysAcc.sysclients
+	sysAcc.mu.RUnlock()
+	require_True(t, sysclients > 0)
+
+	// What a racing caller holds: the queue, loaded before shutdown nils it.
+	sendQ := s.sysSendq.Load()
+	require_True(t, sendQ != nil)
+
+	s.Shutdown()
+	s.WaitForShutdown()
+
+	for _, a := range accs {
+		s.pushAccConnsUpdate(a, sendQ, "stale.queue.test")
+		a.mu.RLock()
+		armed := a.ctmr != nil
+		a.mu.RUnlock()
+		if armed {
+			t.Fatalf("Account %q has its connections timer armed after shutdown", a.Name)
+		}
+	}
+}
+
 func BenchmarkConnectCloseParallel(b *testing.B) {
 	for _, accounts := range []int{1, 16} {
 		b.Run(fmt.Sprintf("accounts=%d", accounts), func(b *testing.B) {

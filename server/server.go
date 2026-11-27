@@ -191,6 +191,7 @@ type Server struct {
 	gacc                *Account
 	sys                 *internal
 	sysAcc              atomic.Pointer[Account]
+	sysSendq            atomic.Pointer[ipQueue[*pubMsg]] // mirrors s.sys.sendq, for readers that do not take the server lock
 	js                  atomic.Pointer[jetStream]
 	dios                *diskIOSemaphore
 	isMetaLeader        atomic.Bool
@@ -1906,6 +1907,7 @@ func (s *Server) setSystemAccount(acc *Account) error {
 		orphMax: 5 * eventsHBInterval,
 		chkOrph: 3 * eventsHBInterval,
 	}
+	s.sysSendq.Store(s.sys.sendq)
 	recvq, recvqp := s.sys.recvq, s.sys.recvqp
 	s.sys.wg.Add(1)
 	s.mu.Unlock()

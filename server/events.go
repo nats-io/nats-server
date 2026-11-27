@@ -702,6 +702,7 @@ func (s *Server) sendShutdownEvent() {
 	sendq := s.sys.sendq
 	// Stop any more messages from queueing up.
 	s.sys.sendq = nil
+	s.sysSendq.Store(nil)
 	// Unhook all msgHandlers. Normal client cleanup will deal with subs, etc.
 	s.sys.replies = nil
 	// Send to the internal queue and mark as last.
@@ -1954,6 +1955,7 @@ func (s *Server) shutdownEventing() {
 		return true
 	})
 	// Turn everything off here.
+	s.sysSendq.Store(nil)
 	s.sys = nil
 }
 
@@ -2483,13 +2485,30 @@ func (s *Server) sendAccConnsUpdate(a *Account, subj ...string) {
 	if !s.eventsEnabled() || a == nil {
 		return
 	}
-	sendQ := s.sys.sendq
+	s.pushAccConnsUpdate(a, s.sys.sendq, subj...)
+}
+
+// pushAccConnsUpdate builds the account's connection event and queues it on
+// sendQ, which must be the system send queue as the caller saw it. It does not
+// need the server lock: it takes no server state, only the account lock. A call
+// that races with shutdown at worst queues an event nobody will send. It must
+// not leave a.ctmr armed, because nothing would clear it once the queue is gone.
+// Shutdown clears the queue pointer before clearEventing takes a.mu, so checking
+// the pointer again under a.mu tells whether cleanup has already run. The count
+// cannot be relied on for that: clearEventing empties a.clients but not
+// a.sysclients, so an account with internal clients, such as the system account,
+// counts below zero afterwards, and a nonzero count arms the timer.
+func (s *Server) pushAccConnsUpdate(a *Account, sendQ *ipQueue[*pubMsg], subj ...string) {
 	if sendQ == nil {
 		return
 	}
 	// Build event with account name and number of local clients and leafnodes.
 	eid := s.nextEventID()
 	a.mu.Lock()
+	if s.sysSendq.Load() != sendQ {
+		a.mu.Unlock()
+		return
+	}
 	stat := a.statz()
 	m := AccountNumConns{
 		TypedEvent: TypedEvent{
@@ -2579,18 +2598,20 @@ func (a *Account) statz() *AccountStat {
 // number of active connections, or during a heartbeat.
 // We will not send for $G.
 func (s *Server) accConnsUpdate(a *Account) {
-	// A read lock is enough: this only reads s.sys (to check that events are
-	// enabled and to get the send queue) and s.gacc (to skip $G). The account's
-	// own state is guarded by a.mu, event ids by eventIdsMu, and the queue by
-	// its own lock.
+	// No server lock: the only server state needed is the system send queue,
+	// which s.sysSendq mirrors (it is nil when events are off or shut down), and
+	// $G is skipped by name. The account's own state is guarded by a.mu, event
+	// ids by eventIdsMu, and the queue by its own lock.
 	// This is called for every client added to or removed from an account, so
-	// holding the server lock exclusively here made concurrent connects queue up.
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.eventsEnabled() || a == nil || a == s.gacc {
+	// taking the server lock here made concurrent connects queue up.
+	if a == nil || a.Name == globalAccountName {
 		return
 	}
-	s.sendAccConnsUpdate(a, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
+	sendQ := s.sysSendq.Load()
+	if sendQ == nil {
+		return
+	}
+	s.pushAccConnsUpdate(a, sendQ, fmt.Sprintf(accConnsEventSubjOld, a.Name), fmt.Sprintf(accConnsEventSubjNew, a.Name))
 }
 
 func (s *Server) nextEventID() string {
