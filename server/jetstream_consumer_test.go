@@ -15145,3 +15145,156 @@ func TestJetStreamConsumerLookupNotBlockedByStreamLock(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, ci.Name, "CONSUMER")
 }
+
+// A deliver-last-per-subject consumer snapshots the last sequence of each subject when it
+// is created. If some of those messages are removed before they are delivered, e.g. by a
+// purge of deleted KV keys, delivery must skip them rather than stalling on each one until
+// the next new message or heartbeat wakes the consumer.
+func TestJetStreamConsumerLastPerSubjectSkipsRemovedSkipListEntries(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:              "KV",
+				Subjects:          []string{"kv.>"},
+				Storage:           st,
+				MaxMsgsPerSubject: 5,
+			})
+			require_NoError(t, err)
+
+			// Interleave kept and purged subjects so that purged entries sit between
+			// kept ones in the consumer's skip list.
+			const n = 20
+			for i := 0; i < n; i++ {
+				_, err = js.Publish(fmt.Sprintf("kv.keep.%d", i), []byte("ok"))
+				require_NoError(t, err)
+				_, err = js.Publish(fmt.Sprintf("kv.gone.%d", i), []byte("ok"))
+				require_NoError(t, err)
+			}
+
+			// A pull consumer delivers nothing until it is fetched from, so the skip
+			// list is built now and the purge below happens before any delivery.
+			_, err = js.AddConsumer("KV", &nats.ConsumerConfig{
+				Durable:       "C",
+				DeliverPolicy: nats.DeliverLastPerSubjectPolicy,
+				FilterSubject: "kv.>",
+				AckPolicy:     nats.AckNonePolicy,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < n; i++ {
+				require_NoError(t, js.PurgeStream("KV", &nats.StreamPurgeRequest{Subject: fmt.Sprintf("kv.gone.%d", i)}))
+			}
+
+			sub, err := js.PullSubscribe("kv.>", "C", nats.Bind("KV", "C"))
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			// No new messages are published and the consumer has no heartbeat, so
+			// without skipping removed entries this fetch only returns the first one.
+			msgs, err := sub.Fetch(n, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), n)
+			for i, m := range msgs {
+				require_Equal(t, m.Subject, fmt.Sprintf("kv.keep.%d", i))
+			}
+		})
+	}
+}
+
+// Like the test above, but with the skip list ending in removed entries, so it's exhausted
+// by skipping rather than by a delivery. The consumer must still move past the end of the
+// skip list and deliver new messages as normal.
+func TestJetStreamConsumerLastPerSubjectSkipListEndsInRemovedEntries(t *testing.T) {
+	for _, st := range []nats.StorageType{nats.FileStorage, nats.MemoryStorage} {
+		t.Run(st.String(), func(t *testing.T) {
+			s := RunBasicJetStreamServer(t)
+			defer s.Shutdown()
+
+			nc, js := jsClientConnect(t, s)
+			defer nc.Close()
+
+			_, err := js.AddStream(&nats.StreamConfig{
+				Name:              "KV",
+				Subjects:          []string{"kv.>"},
+				Storage:           st,
+				MaxMsgsPerSubject: 5,
+			})
+			require_NoError(t, err)
+
+			// The purged subjects are written last, so they're at the end of the skip list.
+			const keep, gone = 10, 5
+			for i := 0; i < keep; i++ {
+				_, err = js.Publish(fmt.Sprintf("kv.keep.%d", i), []byte("ok"))
+				require_NoError(t, err)
+			}
+			for i := 0; i < gone; i++ {
+				_, err = js.Publish(fmt.Sprintf("kv.gone.%d", i), []byte("ok"))
+				require_NoError(t, err)
+			}
+			si, err := js.StreamInfo("KV")
+			require_NoError(t, err)
+			lastSeq := si.State.LastSeq
+
+			_, err = js.AddConsumer("KV", &nats.ConsumerConfig{
+				Durable:       "C",
+				DeliverPolicy: nats.DeliverLastPerSubjectPolicy,
+				FilterSubject: "kv.>",
+				AckPolicy:     nats.AckNonePolicy,
+			})
+			require_NoError(t, err)
+
+			for i := 0; i < gone; i++ {
+				require_NoError(t, js.PurgeStream("KV", &nats.StreamPurgeRequest{Subject: fmt.Sprintf("kv.gone.%d", i)}))
+			}
+
+			sub, err := js.PullSubscribe("kv.>", "C", nats.Bind("KV", "C"))
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			// Ask for one more than is left, so the request is still open when the consumer
+			// reaches the removed entries at the end of the skip list.
+			msgs, err := sub.Fetch(keep+1, nats.MaxWait(time.Second))
+			if err != nil && !errors.Is(err, nats.ErrTimeout) {
+				require_NoError(t, err)
+			}
+			require_Len(t, len(msgs), keep)
+			for i, m := range msgs {
+				require_Equal(t, m.Subject, fmt.Sprintf("kv.keep.%d", i))
+			}
+
+			// The skip list is used up and the consumer has moved past the last message
+			// that existed when it was created.
+			acc, err := s.lookupAccount(globalAccountName)
+			require_NoError(t, err)
+			mset, err := acc.lookupStream("KV")
+			require_NoError(t, err)
+			o := mset.lookupConsumer("C")
+			require_NotNil(t, o)
+			checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if o.hasSkipListPending() {
+					return fmt.Errorf("skip list still has %d entries", len(o.lss.seqs))
+				}
+				if o.sseq != lastSeq+1 {
+					return fmt.Errorf("expected sseq %d, got %d", lastSeq+1, o.sseq)
+				}
+				return nil
+			})
+
+			// The next publish is delivered.
+			_, err = js.Publish("kv.new", []byte("ok"))
+			require_NoError(t, err)
+			msgs, err = sub.Fetch(1, nats.MaxWait(2*time.Second))
+			require_NoError(t, err)
+			require_Len(t, len(msgs), 1)
+			require_Equal(t, msgs[0].Subject, "kv.new")
+		})
+	}
+}
