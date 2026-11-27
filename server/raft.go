@@ -362,6 +362,10 @@ type RaftConfig struct {
 	Managed  bool
 	Observer bool
 
+	// The initial peers of a managed group, which has no peer state file.
+	// Set when bootstrapping, the snapshot and log take precedence when recovering.
+	initPeers *peerState
+
 	// Recovering must be set for a Raft group that's recovering after a restart, or if it's
 	// first seen after a catchup from another server. If a server recovers with an empty log,
 	// we know to protect against data loss.
@@ -477,12 +481,27 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 	tmpfile.Close()
 	os.Remove(tmpfile.Name())
 
-	return writePeerState(s.diskIOSemaphore(), cfg.Store, &peerState{knownPeers, expected, extUndetermined})
+	ps := &peerState{knownPeers, expected, extUndetermined}
+	// Managed groups don't use a peer state file, their peers come from the assignment.
+	if cfg.Managed {
+		cfg.initPeers = ps
+		return nil
+	}
+	return writePeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name, ps)
 }
 
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, rerr error) {
 	restorePeerState := func(n *raft) error {
+		// Managed groups start from the peers they were bootstrapped with.
+		if cfg.Managed {
+			if cfg.initPeers == nil {
+				return errNoPeerState
+			}
+			n.processPeerState(cfg.initPeers)
+			n.extSt = cfg.initPeers.domainExt
+			return nil
+		}
 		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 		if err != nil {
 			return err
@@ -497,6 +516,10 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 
 	if cfg == nil {
 		return nil, errNilCfg
+	}
+	// Remove a peer state file an older server left, a downgrade then starts from the assignment.
+	if cfg.Managed {
+		_ = os.Remove(filepath.Join(cfg.Store, peerStateFile))
 	}
 	s.mu.RLock()
 	if s.sys == nil {
@@ -2833,6 +2856,7 @@ func (n *raft) Reset() {
 	n.writeTermVote()
 
 	// Persist the cleared peer state so a restart picks up the reset.
+	// Managed groups don't persist it, they restart from their assigned peers.
 	n.writePeerState(n.currentPeerStateLocked())
 }
 
@@ -4190,7 +4214,8 @@ func (n *raft) applyCommit(index uint64) error {
 	if ae == nil {
 		var err error
 		if ae, err = n.loadEntry(index); err != nil {
-			if err != ErrStoreClosed && err != ErrStoreEOF {
+			// Entries up to pindex must be stored, EOF then means the log was truncated underneath us.
+			if err != ErrStoreClosed && (err != ErrStoreEOF || index <= n.pindex) {
 				n.warn("Got an error loading %d index: %v - will reset", index, err)
 				if n.State() == Leader {
 					n.stepdownLocked(n.selectNextLeader())
@@ -6045,25 +6070,35 @@ const peerStateFile = "peers.idx"
 
 // Lock should be held.
 func (n *raft) writePeerState(ps *peerState) {
+	// Managed groups don't use a peer state file, their peers come from the assignment.
+	if n.managed {
+		return
+	}
 	pse := encodePeerState(ps)
 	if bytes.Equal(n.wps, pse) {
 		return
 	}
 	// Stamp latest and write the peer state file.
 	n.wps = pse
-	if err := writePeerState(n.dios, n.sd, ps); err != nil && !n.isClosed() {
+	if err := writePeerState(n.dios, n.sd, n.group, ps); err != nil && !n.isClosed() {
 		n.setWriteErrLocked(err)
 		n.warn("Error writing peer state file for %q: %v", n.group, err)
 	}
 }
 
 // Writes out our peer state outside of a specific raft context.
-func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
+// The group's name is the key for the checksum.
+func writePeerState(dios *diskIOSemaphore, sd, group string, ps *peerState) error {
 	psf := filepath.Join(sd, peerStateFile)
 	if _, err := os.Stat(psf); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
+	buf := make([]byte, 0, peerStateHdrLen+peerStateBufSize(ps)+checksumSize)
+	buf = append(buf, peerStateMagic[:]...)
+	buf = append(buf, peerStateVersion)
+	buf = append(buf, encodePeerState(ps)...)
+	buf = appendStateChecksum(buf, stateChecksumKey(group))
+	return writeFileWithSync(dios, psf, buf, defaultFilePerms)
 }
 
 // The group's name is the key for the checksum.
@@ -6311,11 +6346,13 @@ func (n *raft) writeTermVote() error {
 		return n.werr
 	}
 
-	var buf [termVoteLen]byte
+	var buf [termVoteFileLen]byte
+	copy(buf[:], termVoteMagic[:])
+	buf[2] = termVoteVersion
 	le := binary.LittleEndian
-	le.PutUint64(buf[0:], n.term)
-	copy(buf[8:], n.vote)
-	b := buf[:8+len(n.vote)]
+	le.PutUint64(buf[termVoteHdrLen:], n.term)
+	copy(buf[termVoteHdrLen+termLen:], n.vote)
+	b := appendStateChecksum(buf[:termVoteHdrLen+termVoteLen], stateChecksumKey(n.group))
 
 	// If the term and vote hasn't changed then don't rewrite to disk.
 	if bytes.Equal(n.wtv, b) {

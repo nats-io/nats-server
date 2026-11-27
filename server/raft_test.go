@@ -231,6 +231,19 @@ func TestNRGPeerStateFileVersion1(t *testing.T) {
 	t.Run("Corruption", func(t *testing.T) {
 		requireCorruptionRejected(t, file("TEST"), func(b []byte) (*peerState, error) { return decodePeerStateFile(b, key) })
 	})
+
+	// We write exactly the format with a header and checksum.
+	t.Run("Write", func(t *testing.T) {
+		dios := newDiskIOSemaphore(1)
+		sd := t.TempDir()
+		require_NoError(t, writePeerState(dios, sd, "TEST", ps))
+		buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, file("TEST")))
+		dps, err := readPeerState(dios, sd, "TEST")
+		require_NoError(t, err)
+		require_True(t, reflect.DeepEqual(dps, ps))
+	})
 }
 
 func TestNRGPeerStateDecodeTruncated(t *testing.T) {
@@ -4906,6 +4919,68 @@ func TestNRGTruncateOnStartup(t *testing.T) {
 	require_Equal(t, state.FirstSeq, 1)
 	require_Equal(t, state.LastSeq, 1)
 	require_Equal(t, state.NumDeleted, 0)
+}
+
+func TestNRGApplyCommitResetsWALWhenEntriesMissing(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0]
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	defer func() {
+		n.Stop()
+		n.WaitForStop()
+	}()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	for i := range uint64(3) {
+		esm := encodeStreamMsgAllowCompress(fmt.Sprintf("subj-%d", i), _EMPTY_, nil, nil, 0, 0, false)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, pterm: min(i, 1), pindex: i, entries: entries}), n.aesub)
+	}
+	require_Equal(t, n.pindex, 3)
+
+	// Corrupt the second entry's record length on disk, the entries have the same length.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	require_NoError(t, mb.flushPendingMsgs())
+	buf, err := os.ReadFile(mb.mfn)
+	require_NoError(t, err)
+	require_Equal(t, len(buf)%3, 0)
+	buf[len(buf)/3+2] ^= 0x10
+	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
+	mb.mu.Lock()
+	mb.clearCacheAndOffset()
+	mb.mu.Unlock()
+
+	// Loading the block truncates it at the corrupt entry, underneath us.
+	n.Lock()
+	n.pae = make(map[uint64]*appendEntry)
+	_, err = n.loadEntry(1)
+	n.Unlock()
+	require_NoError(t, err)
+	// The store's state is rebuilt in the background.
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if state := n.wal.State(); state.LastSeq != 1 {
+			return fmt.Errorf("expected last seq 1, got %d", state.LastSeq)
+		}
+		return nil
+	})
+	require_Equal(t, n.pindex, 3)
+
+	// Applying the missing entries must reset the WAL, instead of stalling at the first one.
+	n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3}), n.aesub)
+	require_Equal(t, n.pindex, 0)
+	state := n.wal.State()
+	require_Equal(t, state.Msgs, 0)
 }
 
 func TestNRGIgnoresCorruptCommitFile(t *testing.T) {
@@ -11672,6 +11747,17 @@ func TestNRGTermVoteFileChecksum(t *testing.T) {
 		requireCorruptionRejected(t, withChecksum(n.group, 5, nats0), readTAV, termLen, termVoteLen)
 	})
 
+	// We write exactly the format with a checksum.
+	t.Run("Write", func(t *testing.T) {
+		n.Lock()
+		n.term, n.vote = 7, nats0
+		require_NoError(t, n.writeTermVote())
+		n.Unlock()
+		buf, err := os.ReadFile(tav)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, withChecksum(n.group, 7, nats0)))
+	})
+
 	s := c.servers[0]
 	bootstrapped := func(t *testing.T, name string) *RaftConfig {
 		t.Helper()
@@ -11699,6 +11785,74 @@ func TestNRGTermVoteFileChecksum(t *testing.T) {
 		_, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
 		require_Error(t, err)
 	})
+}
+
+func TestNRGManagedGroupHasNoPeerStateFile(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	cfg := &nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3}
+	_, err := js.AddStream(cfg)
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	// The membership is the assigned one, without a peer state file. Returns that file's path.
+	requireAssigned := func(s *Server) string {
+		t.Helper()
+		c.waitOnStreamCurrent(s, globalAccountName, "TEST")
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		rn := mset.raftNode().(*raft)
+		var peers []string
+		for _, p := range rn.Peers() {
+			peers = append(peers, p.ID)
+		}
+		s.getJetStream().mu.RLock()
+		assigned := slices.Clone(mset.streamAssignment().Group.Peers)
+		s.getJetStream().mu.RUnlock()
+		require_Equal(t, rn.ClusterSize(), len(assigned))
+		require_True(t, slices.Equal(slices.Sorted(slices.Values(peers)), slices.Sorted(slices.Values(assigned))))
+		psf := filepath.Join(rn.sd, peerStateFile)
+		_, err = os.Stat(psf)
+		require_True(t, os.IsNotExist(err))
+		return psf
+	}
+	s := c.randomNonStreamLeader(globalAccountName, "TEST")
+	psf := requireAssigned(s)
+
+	// A valid file an older server left is removed on restart, so a downgrade starts from the assignment.
+	s.Shutdown()
+	stale := encodePeerState(&peerState{knownPeers: []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee"}, clusterSize: 5})
+	require_NoError(t, os.WriteFile(psf, stale, defaultFilePerms))
+	requireAssigned(c.restartServer(s))
+
+	// After scaling down and up again, a restarted follower recovers the membership without it.
+	for _, replicas := range []int{1, 3} {
+		cfg.Replicas = replicas
+		_, err = js.UpdateStream(cfg)
+		require_NoError(t, err)
+		checkFor(t, 10*time.Second, 200*time.Millisecond, func() error {
+			si, err := js.StreamInfo("TEST")
+			if err != nil {
+				return err
+			}
+			if len(si.Cluster.Replicas) != replicas-1 {
+				return fmt.Errorf("expected %d replicas, got %d", replicas-1, len(si.Cluster.Replicas))
+			}
+			for _, r := range si.Cluster.Replicas {
+				if !r.Current {
+					return fmt.Errorf("replica %s not current", r.Name)
+				}
+			}
+			return nil
+		})
+	}
+	s = c.randomNonStreamLeader(globalAccountName, "TEST")
+	s.Shutdown()
+	requireAssigned(c.restartServer(s))
 }
 
 func TestNRGStepDownPrefersCaughtUpPeer(t *testing.T) {

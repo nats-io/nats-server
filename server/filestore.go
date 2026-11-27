@@ -259,6 +259,7 @@ type msgBlock struct {
 	lsts        int64
 	llseq       uint64
 	hh          *highwayhash.Digest64
+	hkey        []byte // Key of hh, for one-shot record checksums.
 	ecache      elastic.Pointer[cache]
 	cache       *cache
 	cloads      uint64
@@ -1264,6 +1265,7 @@ func (fs *fileStore) initMsgBlock(index uint32) *msgBlock {
 
 	key := sha256.Sum256(fs.hashKeyForBlock(index))
 	mb.hh, _ = highwayhash.NewDigest64(key[:])
+	mb.hkey = key[:]
 	return mb
 }
 
@@ -1856,7 +1858,6 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 	// To detect gaps from compaction, and to ensure the sequence keeps moving up.
 	var last uint64
-	var hb [highwayhash.Size64]byte
 
 	updateLast := func(seq uint64, ts int64) {
 		// The sequence needs to only ever move up.
@@ -1909,10 +1910,8 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		}
 
 		// Check for checksum failures before additional processing.
-		data := buf[index+msgHdrSize : index+rl]
-		hashRecord(mb.hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
-		checksum := mb.hh.Sum(hb[:0])
-		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
+		rec, checksum := buf[index:index+rl-recordHashSize], buf[index+rl-recordHashSize:index+rl]
+		if hashRecord(mb.hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
 			err = errBadMsg{mb.mfn, "invalid checksum"}
 			if allowTruncate {
 				if err = truncate(index); err != nil {
@@ -5418,7 +5417,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
-	mb.hh = hh
+	mb.hh, mb.hkey = hh, key[:]
 
 	fs.dios.acquire()
 	mfd, err := os.OpenFile(mb.mfn, os.O_CREATE|os.O_RDWR, defaultFilePerms)
@@ -6556,7 +6555,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 			}
 		}
 		// Grab record info, but use the pre-computed record length.
-		ri, _, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
+		ri, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 		if err != nil {
 			finishedWithCache()
 			mb.mu.Unlock()
@@ -6919,24 +6918,23 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 
 // Grab info from a slot.
 // Lock should be held.
-func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
+func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, error) {
 	switch {
 	case mb.cache == nil: // Shouldn't be possible, but check it anyway.
-		return 0, 0, false, errNoCache
+		return 0, 0, errNoCache
 	case slot < 0:
 		mb.fs.warn("Partial cache: offset slot index %d is less zero", slot)
-		return 0, 0, false, errPartialCache
+		return 0, 0, errPartialCache
 	case slot >= len(mb.cache.idx):
 		mb.fs.warn("Partial cache: offset slot index %d is greater than index len %d", slot, len(mb.cache.idx))
-		return 0, 0, false, errPartialCache
+		return 0, 0, errPartialCache
 	}
 
-	bi := mb.cache.idx[slot]
-	ri, hashChecked := (bi &^ cbit), (bi&cbit) != 0
+	ri := mb.cache.idx[slot]
 
 	// If this is a deleted slot return here.
-	if bi == dbit {
-		return 0, 0, false, errDeletedMsg
+	if ri == dbit {
+		return 0, 0, errDeletedMsg
 	}
 
 	// Determine record length
@@ -6944,7 +6942,7 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 	// Need to account for dbit markers in idx.
 	// So we will walk until we find valid idx slot to calculate rl.
 	for i := 1; slot+i < len(mb.cache.idx); i++ {
-		ni := mb.cache.idx[slot+i] &^ cbit
+		ni := mb.cache.idx[slot+i]
 		if ni == dbit {
 			continue
 		}
@@ -6957,9 +6955,9 @@ func (mb *msgBlock) slotInfo(slot int) (uint32, uint32, bool, error) {
 		rl = uint32(len(mb.cache.buf)) - ri
 	}
 	if rl < msgHdrSize {
-		return 0, 0, false, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
+		return 0, 0, errBadMsg{mb.mfn, fmt.Sprintf("length too short for slot %d", slot)}
 	}
-	return uint32(ri), rl, hashChecked, nil
+	return uint32(ri), rl, nil
 }
 
 func (fs *fileStore) isClosed() bool {
@@ -7077,7 +7075,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	var le = binary.LittleEndian
 	var hdr [msgHdrSize]byte
 
-	le.PutUint32(hdr[0:], uint32(rl))
+	// The checksum covers the whole record, like any other.
+	le.PutUint32(hdr[0:], uint32(rl)|rbit)
 	le.PutUint64(hdr[4:], seq|ebit)
 	le.PutUint64(hdr[12:], 0)
 	le.PutUint16(hdr[20:], 0)
@@ -7095,14 +7094,8 @@ func (mb *msgBlock) eraseMsg(seq uint64, ri, rl int, isLastBlock bool) error {
 	b.Write(hdr[:])
 	b.Write(data)
 
-	// Calculate hash.
-	mb.hh.Reset()
-	mb.hh.Write(hdr[4:20])
-	mb.hh.Write(data)
-	var hb [highwayhash.Size64]byte
-	checksum := mb.hh.Sum(hb[:0])
-	// Write to msg record.
-	b.Write(checksum)
+	// Calculate hash and write it to the msg record.
+	b.Write(le.AppendUint64(nil, hashRecord(mb.hh, mb.hkey, b.Bytes(), 0, false, true)))
 
 	// Update both cache and disk.
 	nbytes := b.Bytes()
@@ -7131,7 +7124,7 @@ func (mb *msgBlock) truncate(tseq uint64, ts int64) (nmsgs, nbytes uint64, err e
 	defer mb.finishedWithCache()
 
 	// Calculate new eof using slot info from our new last sm.
-	ri, rl, _, err := mb.slotInfo(int(tseq - mb.cache.fseq))
+	ri, rl, err := mb.slotInfo(int(tseq - mb.cache.fseq))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -8008,13 +8001,15 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 
 	var le = binary.LittleEndian
 
-	l := uint32(rl)
+	// The checksum also covers the subject and header lengths.
+	l := uint32(rl) | rbit
 	hasHeaders := len(mhdr) > 0
 	if hasHeaders {
 		l |= hbit
 	}
 
 	// Reserve space for the header on the underlying buffer.
+	start := len(mb.cache.buf)
 	mb.cache.buf = append(mb.cache.buf, make([]byte, msgHdrSize)...)
 	hdr := mb.cache.buf[len(mb.cache.buf)-msgHdrSize : len(mb.cache.buf)]
 	le.PutUint32(hdr[0:], l)
@@ -8034,15 +8029,8 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 	mb.cache.buf = append(mb.cache.buf, msg...)
 
 	// Calculate hash.
-	mb.hh.Reset()
-	mb.hh.Write(hdr[4:20])
-	mb.hh.Write(stringToBytes(subj))
-	if hasHeaders {
-		mb.hh.Write(mhdr)
-	}
-	mb.hh.Write(msg)
-	checksum := mb.hh.Sum(mb.lchk[:0:highwayhash.Size64])
-	copy(mb.lchk[0:], checksum)
+	le.PutUint64(mb.lchk[:], hashRecord(mb.hh, mb.hkey, mb.cache.buf[start:], len(subj), hasHeaders, true))
+	checksum := mb.lchk[:]
 
 	// Update write through cache.
 	// Write to msg record.
@@ -8065,7 +8053,7 @@ func (mb *msgBlock) writeMsgRecordLocked(rl, seq uint64, subj string, mhdr, msg 
 			}
 		}
 		// Write index
-		if mb.cache.idx = append(mb.cache.idx, uint32(index)|cbit); len(mb.cache.idx) == 1 {
+		if mb.cache.idx = append(mb.cache.idx, uint32(index)); len(mb.cache.idx) == 1 {
 			mb.cache.fseq = seq
 		}
 	} else {
@@ -8898,7 +8886,7 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		seq = le.Uint64(hdr[4:])
 
-		hasHeaders := rl&hbit != 0
+		hasHeaders, record := rl&hbit != 0, rl&rbit != 0
 		// Clear any headers or record bit that could be set.
 		rl &^= hbit | rbit
 		shlen := slen
@@ -8911,6 +8899,12 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			mb.fs.warn("indexCacheBuf corrupt record state in %s: dlen %d slen %d index %d rl %d lbuf %d", mb.mfn, dlen, slen, index, rl, lbuf)
 			// This means something is off.
 			// TODO(dlc) - Add into bad list?
+			return errCorruptState
+		}
+		// Verify the record before using its sequence, subject or headers.
+		rec, checksum := buf[index:index+rl-recordHashSize], buf[index+rl-recordHashSize:index+rl]
+		if hashRecord(mb.hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
+			mb.fs.warn("indexCacheBuf invalid checksum in %s: index %d", mb.mfn, index)
 			return errCorruptState
 		}
 
@@ -8935,8 +8929,6 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 			index += rl
 			continue
 		}
-		// We defer checksum checks to individual msg cache lookups to amortorize costs and
-		// not introduce latency for first message from a newly loaded block.
 		if seq >= mbFirstSeq {
 			last = seq
 
@@ -9448,8 +9440,6 @@ func (e errBadMsg) Error() string {
 }
 
 const (
-	// "Checksum bit" is used in "mb.cache.idx" for marking messages that have had their checksums checked.
-	cbit = 1 << 31
 	// "Delete bit" is used in "mb.cache.idx" to mark an index as deleted and non-existent.
 	dbit = 1 << 30
 	// "Header bit" is used in "rl" to signal a message record with headers.
@@ -9462,24 +9452,25 @@ const (
 	tbit = 1 << 62
 )
 
-// hashRecord hashes a message record for its checksum.
-// The data is everything after the record header, up to the checksum.
-func hashRecord(hh *highwayhash.Digest64, hdr, data []byte, slen int, hasHeaders, record bool) {
-	hh.Reset()
+// hashRecord returns the checksum of a message record, using hh or its key.
+// The record is everything up to the checksum.
+func hashRecord(hh *highwayhash.Digest64, key, rec []byte, slen int, hasHeaders, record bool) uint64 {
 	// The whole record, including its length, flags, subject length and header length.
+	// It's contiguous, so a one-shot hash avoids the digest's overhead.
 	if record {
-		hh.Write(hdr)
-		hh.Write(data)
-		return
+		return highwayhash.Sum64(rec, key)
 	}
 	// Older records only cover the sequence, timestamp, subject, headers and message.
-	hh.Write(hdr[4:20])
+	data := rec[msgHdrSize:]
+	hh.Reset()
+	hh.Write(rec[4:20])
 	hh.Write(data[:slen])
 	if hasHeaders {
 		hh.Write(data[slen+4:])
 	} else {
 		hh.Write(data[slen:])
 	}
+	return hh.Sum64()
 }
 
 // Will do a lookup from cache.
@@ -9550,7 +9541,7 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 		return nil, errPartialCache
 	}
 
-	bi, _, hashChecked, err := mb.slotInfo(int(seq - mb.cache.fseq))
+	bi, _, err := mb.slotInfo(int(seq - mb.cache.fseq))
 	if err != nil {
 		return nil, err
 	}
@@ -9565,14 +9556,8 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	}
 	buf := mb.cache.buf[li:]
 
-	// We use the high bit to denote we have already checked the checksum.
-	var hh *highwayhash.Digest64
-	if !hashChecked {
-		hh = mb.hh // This will force the hash check in msgFromBuf.
-	}
-
-	// Parse from the raw buffer.
-	fsm, err := mb.msgFromBufEx(buf, sm, hh, doCopy)
+	// Parse from the raw buffer, its checksum was verified when it was loaded or written.
+	fsm, err := mb.msgFromBufEx(buf, sm, nil, doCopy)
 	if err != nil || fsm == nil {
 		return nil, err
 	}
@@ -9585,11 +9570,6 @@ func (mb *msgBlock) cacheLookupEx(seq uint64, sm *StoreMsg, doCopy bool) (*Store
 	if seq != fsm.seq { // See TestFileStoreInvalidIndexesRebuilt.
 		mb.clearCacheAndOffset()
 		return nil, fmt.Errorf("sequence numbers for cache load did not match, %d vs %d", seq, fsm.seq)
-	}
-
-	// Clear the check bit here after we know all is good.
-	if !hashChecked {
-		mb.cache.idx[seq-mb.cache.fseq] = (bi | cbit)
 	}
 
 	return fsm, nil
@@ -9707,9 +9687,8 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
 	if hh != nil {
-		hashRecord(hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
-		var hb [highwayhash.Size64]byte
-		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
+		rec, checksum := buf[:int(rl)-recordHashSize], buf[int(rl)-recordHashSize:rl]
+		if hashRecord(hh, mb.hkey, rec, slen, hasHeaders, record) != le.Uint64(checksum) {
 			return nil, errBadMsg{mb.mfn, "invalid checksum"}
 		}
 	}
@@ -11437,7 +11416,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		// This will be optimistic only, so don't continue if we encounter any errors here.
 		if smb.rbytes > compactMinimum && smb.bytes*2 < smb.rbytes {
 			var moff uint32
-			moff, _, _, err = smb.slotInfo(int(atomic.LoadUint64(&smb.first.seq) - smb.cache.fseq))
+			moff, _, err = smb.slotInfo(int(atomic.LoadUint64(&smb.first.seq) - smb.cache.fseq))
 			if err != nil {
 				smb.mu.Unlock()
 				return purged, bytes, err
@@ -12322,7 +12301,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 			fseq = mbFseq
 		}
 		for slot := startSlot; slot < len(mb.cache.idx); slot++ {
-			bi := mb.cache.idx[slot] &^ cbit
+			bi := mb.cache.idx[slot]
 			if bi == dbit {
 				// delete marker so skip.
 				continue
@@ -12363,7 +12342,7 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 			lseq = mbLseq
 		}
 		for slot := endSlot; slot >= startSlot; slot-- {
-			bi := mb.cache.idx[slot] &^ cbit
+			bi := mb.cache.idx[slot]
 			if bi == dbit {
 				// delete marker so skip.
 				continue
@@ -13028,7 +13007,7 @@ func (fs *fileStore) writeTTLState() error {
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, ttlStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the TTLs are valid.
-	buf := fs.ttls.Encode(fs.state.LastSeq + 1)
+	buf := fs.ttls.Encode(fs.state.LastSeq+1, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
@@ -13042,7 +13021,7 @@ func (fs *fileStore) writeMsgSchedulingState() error {
 	}
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, msgSchedulingStreamStateFile)
 	// Must be lseq+1 to identify up to which sequence the schedules are valid.
-	buf := fs.scheduling.encode(fs.state.LastSeq + 1)
+	buf := fs.scheduling.encode(fs.state.LastSeq+1, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
@@ -13073,8 +13052,8 @@ func (fs *fileStore) writeSourcesState() error {
 		sz += uint64(uvarintLen(uint64(len(source)))) + uint64(len(source)) + binary.MaxVarintLen64 +
 			uint64(uvarintLen(uint64(len(ss.Ident)))) + uint64(len(ss.Ident))
 	}
-	buf := make([]byte, 0, sourcesHeaderLen+sz)
-	buf = append(buf, 1)                                 // Magic version
+	buf := make([]byte, 0, sourcesHeaderLen+sz+checksumSize)
+	buf = append(buf, 2)                                 // Magic version
 	buf = binary.LittleEndian.AppendUint64(buf, count)   // Entry count
 	buf = binary.LittleEndian.AppendUint64(buf, highSeq) // Stamp
 	for source, ss := range fs.sources {
@@ -13084,6 +13063,7 @@ func (fs *fileStore) writeSourcesState() error {
 		buf = binary.AppendUvarint(buf, uint64(len(ss.Ident)))
 		buf = append(buf, ss.Ident...)
 	}
+	buf = appendStateChecksum(buf, stateChecksumKey(fs.cfg.Name))
 	fs.mu.RUnlock()
 
 	return fs.writeFileWithOptionalSync(fn, buf, defaultFilePerms)
@@ -13527,7 +13507,7 @@ func (fs *fileStore) streamSnapshot(w io.WriteCloser, includeConsumers bool, err
 		if writeFile(filepath.Join(odirPre, JetStreamMetaFileSum), sum) != nil {
 			return
 		}
-		writeFile(filepath.Join(odirPre, consumerState), state)
+		writeFile(filepath.Join(odirPre, consumerState), encodeConsumerStateFile(state, o.skey))
 	}
 }
 
@@ -14170,6 +14150,11 @@ func (o *consumerFileStore) convertCipher() error {
 	if err != nil {
 		return err
 	}
+	// Re-encoded below, as writing adds the checksum again.
+	state, err := decodeConsumerState(buf, o.skey)
+	if err != nil {
+		return err
+	}
 
 	// Since we are here we recovered our old state.
 	// Now write our meta, which will generate the new keys with the new cipher.
@@ -14178,7 +14163,7 @@ func (o *consumerFileStore) convertCipher() error {
 	}
 
 	// Now write out or state with the new cipher.
-	return o.writeState(buf)
+	return o.writeState(encodeConsumerState(state))
 }
 
 // Kick flusher for this consumer.
@@ -14653,6 +14638,13 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 	return o.aek.Seal(nonce, nonce, buf, nil), nil
 }
 
+// Returns the state file contents for the encoded state, with a flagged version and checksum.
+// It updates buf in place, so it must be a buffer that's not used elsewhere.
+func encodeConsumerStateFile(buf, key []byte) []byte {
+	buf[1] |= consumerStateChecksummed
+	return appendStateChecksum(buf, key)
+}
+
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -14674,6 +14666,9 @@ func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 		}
 		return nil
 	}
+
+	// The file holds a flagged version, with a checksum.
+	buf = encodeConsumerStateFile(buf, o.skey)
 
 	// Check on encryption.
 	if o.aek != nil {
@@ -15086,6 +15081,8 @@ func (o *consumerFileStore) Stop() error {
 	if o.dirty {
 		// Make sure to write this out..
 		if buf, err = o.encodeState(); err == nil && len(buf) > 0 {
+			// The file holds a flagged version, with a checksum.
+			buf = encodeConsumerStateFile(buf, o.skey)
 			if o.aek != nil {
 				if buf, err = o.encryptState(buf); err != nil {
 					o.mu.Unlock()

@@ -1465,7 +1465,7 @@ func (js *jetStream) setupMetaGroup() error {
 			// To track possible configuration changes, responsible for an altered value of cfg.Observer,
 			// set extension state to undetermined.
 			ps.domainExt = extUndetermined
-			if err := writePeerState(s.diskIOSemaphore(), storeDir, ps); err != nil {
+			if err := writePeerState(s.diskIOSemaphore(), storeDir, defaultMetaGroupName, ps); err != nil {
 				fs.Stop()
 				return err
 			}
@@ -4152,8 +4152,11 @@ retry:
 
 		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Managed: true, Recovering: recovering, ScaleUp: rgScaleUp}
 
-		if _, err := readPeerState(s.diskIOSemaphore(), storeDir, rgName); err != nil {
-			s.bootstrapRaftNode(cfg, rgPeers, true)
+		// Managed groups start from the assigned peers, the snapshot and log take precedence when recovering.
+		if err := s.bootstrapRaftNode(cfg, rgPeers, true); err != nil {
+			s.Warnf("Error bootstrapping raft group: %v", err)
+			store.Stop()
+			return nil, err
 		}
 
 		n, err := s.startRaftNode(accName, cfg, labels)

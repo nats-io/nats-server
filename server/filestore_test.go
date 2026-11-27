@@ -50,6 +50,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server/ats"
 	"github.com/nats-io/nats-server/v2/server/avl"
 	"github.com/nats-io/nats-server/v2/server/gsl"
+	"github.com/nats-io/nats-server/v2/server/thw"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nuid"
 )
@@ -1722,6 +1723,57 @@ func TestFileStoreBitRot(t *testing.T) {
 	})
 }
 
+func TestFileStoreEraseMsgChecksumCoversWholeRecord(t *testing.T) {
+	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	for range 2 {
+		_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+		require_NoError(t, err)
+	}
+	_, err = fs.EraseMsg(1)
+	require_NoError(t, err)
+
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	// Unlocks even if a check fails, so stopping the store doesn't hang.
+	func() {
+		mb.mu.Lock()
+		defer mb.mu.Unlock()
+		_, err := mb.flushPendingMsgsLocked()
+		require_NoError(t, err)
+		buf, err := mb.loadBlock(nil)
+		require_NoError(t, err)
+
+		// The erased record is written with the record bit.
+		rl := binary.LittleEndian.Uint32(buf[0:])
+		require_True(t, rl&rbit != 0)
+		rec := buf[:rl&^(hbit|rbit)]
+		var sm StoreMsg
+		_, err = mb.msgFromBufNoCopy(rec, &sm, mb.hh)
+		require_NoError(t, err)
+
+		// A subject length moved into its random payload is caught too.
+		rec[20] = 1
+		_, err = mb.msgFromBufNoCopy(rec, &sm, mb.hh)
+		require_Error(t, err)
+	}()
+
+	// After a restart the erased message stays gone, and the block still loads.
+	require_NoError(t, fs.Stop())
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	defer fs.Stop()
+	_, err = fs.LoadMsg(1, nil)
+	require_Error(t, err, ErrStoreMsgNotFound, errDeletedMsg)
+	lsm, err := fs.LoadMsg(2, nil)
+	require_NoError(t, err)
+	require_Equal(t, string(lsm.msg), "bar")
+}
+
 func TestFileStoreEraseMsg(t *testing.T) {
 	// Just do no encryption, etc.
 	fcfg := FileStoreConfig{StoreDir: t.TempDir()}
@@ -2377,22 +2429,20 @@ func TestFileStoreInvalidIndexesRebuilt(t *testing.T) {
 		require_NoError(t, fs.FlushAllPending())
 
 		// Now we're going to mangle the in-memory cache by changing
-		// the sequence number of the first message. We also need to
-		// trick the cache into believing the hash is already validated
-		// so we don't fail on that. This is specifically testing the
-		// seq != fsm.seq condition.
+		// the sequence number of the first message. The checksum was
+		// already verified when loading, so this is specifically testing
+		// the seq != fsm.seq condition.
 		mb := fs.selectMsgBlock(1)
 		require_NotNil(t, mb)
 		require_NoError(t, mb.loadMsgs())
 		require_True(t, mb.cacheAlreadyLoaded())
-		ri, rl, _, err := mb.slotInfo(0)
+		ri, rl, err := mb.slotInfo(0)
 		require_NoError(t, err)
 		require_NotNil(t, mb.cache)
 		require_NotNil(t, mb.cache.buf)
 		slot := mb.cache.buf[ri : ri+rl]
 		require_Equal(t, binary.LittleEndian.Uint64(slot[4:]), 1)
 		binary.LittleEndian.PutUint64(slot[4:], 12345)
-		mb.cache.idx[0] = (mb.cache.idx[0] | cbit)
 
 		// Expect an error on the first instance and for cacheLookupEx
 		// to discard the cache.
@@ -2713,6 +2763,19 @@ func TestFileStoreSnapshot(t *testing.T) {
 					t.Fatalf("Error writing file[%s]: %v", fpath, err)
 				}
 				fd.Close()
+			}
+
+			// Consumer state is copied like the other files, as a state file with a checksum.
+			ofns, err := filepath.Glob(filepath.Join(rstoreDir, consumerDir, "*", consumerState))
+			require_NoError(t, err)
+			require_Len(t, len(ofns), 2)
+			for _, fn := range ofns {
+				buf, err := os.ReadFile(fn)
+				require_NoError(t, err)
+				require_Equal(t, buf[1], 2|consumerStateChecksummed)
+				key := stateChecksumKey(scfg.Name + "/" + filepath.Base(filepath.Dir(fn)))
+				_, err = decodeConsumerState(buf, key)
+				require_NoError(t, err)
 			}
 
 			fcfg.StoreDir = rstoreDir
@@ -4095,6 +4158,63 @@ func TestFileStoreConsumerStateFileChecksum(t *testing.T) {
 		_, err := reload(t, append(encodeConsumerState(state), 0))
 		require_Error(t, err, errCorruptState)
 	})
+
+	// Pending timestamps are encoded relative to the current second, which can tick between writes.
+	// Without them the encoding is the same every time, so the bytes can be compared.
+	acked := &ConsumerState{Delivered: state.Delivered, AckFloor: SequencePair{Consumer: 22, Stream: 22}}
+	ackedFile := func() []byte {
+		b := encodeConsumerState(acked)
+		b[1] |= consumerStateChecksummed
+		return appendStateChecksum(b, key)
+	}
+
+	// We write exactly the flagged version, with a checksum.
+	t.Run("Write", func(t *testing.T) {
+		// Start without the state the previous subtests left.
+		require_NoError(t, os.Remove(fn))
+		o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		require_NoError(t, o.Update(acked))
+		require_NoError(t, o.Stop())
+		buf, err := os.ReadFile(fn)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(buf, ackedFile()))
+	})
+
+	// Plaintext state is encrypted once encryption is enabled, and keeps its checksum.
+	t.Run("Encrypted", func(t *testing.T) {
+		efcfg := FileStoreConfig{StoreDir: t.TempDir()}
+		scfg := StreamConfig{Name: "zzz", Storage: FileStorage}
+		efs, err := newFileStore(efcfg, scfg)
+		require_NoError(t, err)
+		o, err := efs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		require_NoError(t, o.Update(acked))
+		require_NoError(t, o.Stop())
+		require_NoError(t, efs.Stop())
+
+		efcfg.Cipher = ChaCha
+		efs, err = newFileStoreWithCreated(efcfg, scfg, time.Now(), prf(&efcfg), nil)
+		require_NoError(t, err)
+		defer efs.Stop()
+		o, err = efs.ConsumerStore("o22", time.Time{}, ccfg)
+		require_NoError(t, err)
+		defer o.Stop()
+		cs, err := o.State()
+		require_NoError(t, err)
+		require_Equal(t, cs.Delivered, acked.Delivered)
+		require_Equal(t, cs.AckFloor, acked.AckFloor)
+
+		// Decrypted, the file holds exactly the flagged version.
+		buf, err := os.ReadFile(filepath.Join(efcfg.StoreDir, consumerDir, "o22", consumerState))
+		require_NoError(t, err)
+		aek := o.(*consumerFileStore).aek
+		require_NotNil(t, aek)
+		ns := aek.NonceSize()
+		plain, err := aek.Open(nil, buf[:ns], buf[ns:], nil)
+		require_NoError(t, err)
+		require_True(t, bytes.Equal(plain, ackedFile()))
+	})
 }
 
 func TestFileStoreStateChecksum(t *testing.T) {
@@ -4120,6 +4240,47 @@ func TestFileStoreStateChecksum(t *testing.T) {
 	requireCorruptionRejected(t, b, func(b []byte) ([]byte, error) { return verifyStateChecksum(b, key) })
 	_, err = verifyStateChecksum(b[:checksumSize-1], key)
 	require_Error(t, err, io.ErrShortBuffer)
+
+	// TTL state computes the same checksum by itself.
+	_, err = verifyStateChecksum(thw.NewHashWheel().Encode(1, key), key)
+	require_NoError(t, err)
+}
+
+func TestFileStoreIndexCacheBufVerifiesChecksums(t *testing.T) {
+	for _, test := range []struct {
+		title   string
+		corrupt func(rec []byte)
+	}{
+		// A changed subject would otherwise end up in the per-subject state.
+		{title: "Subject", corrupt: func(rec []byte) { rec[msgHdrSize] ^= 1 }},
+		// A huge sequence would otherwise allocate an index slot for every sequence up to it.
+		{title: "Sequence", corrupt: func(rec []byte) { rec[4+5] ^= 1 }},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			fs, err := newFileStore(FileStoreConfig{StoreDir: t.TempDir()}, StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage})
+			require_NoError(t, err)
+			defer fs.Stop()
+			for range 3 {
+				_, _, err = fs.StoreMsg("foo", nil, []byte("bar"), 0)
+				require_NoError(t, err)
+			}
+
+			fs.mu.RLock()
+			mb := fs.blks[0]
+			fs.mu.RUnlock()
+			mb.mu.Lock()
+			defer mb.mu.Unlock()
+			_, err = mb.flushPendingMsgsLocked()
+			require_NoError(t, err)
+			buf, err := mb.loadBlock(nil)
+			require_NoError(t, err)
+
+			// Corrupt the second record.
+			rl := binary.LittleEndian.Uint32(buf[0:]) &^ (hbit | rbit)
+			test.corrupt(buf[rl:])
+			require_Error(t, mb.indexCacheBuf(buf), errCorruptState)
+		})
+	}
 }
 
 func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
@@ -4155,6 +4316,7 @@ func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
 			require_NoError(t, err)
 			rl, slen := le.Uint32(buf[0:]), int(le.Uint16(buf[20:]))
 			hasHeaders := rl&hbit != 0
+			require_True(t, rl&rbit != 0)
 			rl &^= hbit | rbit
 
 			// Rewrite the record with or without the record bit.
@@ -4168,8 +4330,7 @@ func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
 				} else {
 					le.PutUint32(buf[0:], le.Uint32(buf[0:])&^rbit)
 				}
-				hashRecord(hh, buf[:msgHdrSize], buf[msgHdrSize:rl-recordHashSize], slen, hasHeaders, record)
-				copy(buf[rl-recordHashSize:rl], hh.Sum(nil))
+				le.PutUint64(buf[rl-recordHashSize:rl], hashRecord(hh, key[:], buf[:rl-recordHashSize], slen, hasHeaders, record))
 				require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
 			}
 			load := func() (*StoreMsg, error) {
@@ -13730,7 +13891,7 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 		ms.add(uint64(seq), subj, ts)
 	}
 
-	b := ms.encode(12345)
+	b := ms.encode(12345, stateChecksumKey("TEST"))
 	require_True(t, len(b) > 17) // Bigger than just the header
 
 	nms := newMsgScheduling(func() {})
@@ -13753,19 +13914,15 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	}
 }
 
-// Newer servers write version 2, the version 1 encoding followed by a checksum.
-func encodeMsgSchedulingVersion2(ms *MsgScheduling, highSeq uint64, key []byte) []byte {
-	b := ms.encode(highSeq)
-	b[0] = 2
-	return appendStateChecksum(b, key)
-}
-
-func TestFileStoreMessageScheduleDecodeVersion2(t *testing.T) {
+func TestFileStoreMessageScheduleDecodeVersion1(t *testing.T) {
 	ms := newMsgScheduling(func() {})
 	ts := time.Now().Add(time.Second).UnixNano()
 	ms.add(1, "foo", ts)
 
-	b := encodeMsgSchedulingVersion2(ms, 12345, stateChecksumKey("TEST"))
+	// Version 1 is the same encoding without the trailing checksum.
+	b := ms.encode(12345, stateChecksumKey("TEST"))
+	b[0] = 1
+	b = b[:len(b)-checksumSize]
 
 	nms := newMsgScheduling(func() {})
 	stamp, err := nms.decode(b, stateChecksumKey("TEST"))
@@ -13773,6 +13930,49 @@ func TestFileStoreMessageScheduleDecodeVersion2(t *testing.T) {
 	require_Equal(t, stamp, 12345)
 	require_Equal(t, nms.seqToSubj[1], "foo")
 	require_Equal(t, nms.ttls.GetNextExpiration(math.MaxInt64), ts)
+}
+
+func TestFileStoreRecoverCorruptTTLAndScheduleState(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{Name: "zzz", Storage: FileStorage, Subjects: []string{">"}, AllowMsgTTL: true, AllowMsgSchedules: true}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := genHeader(nil, JSMessageTTL, "1h")
+	hdr = genHeader(hdr, JSSchedulePattern, fmt.Sprintf("@at %s", time.Now().Add(time.Hour).Format(time.RFC3339)))
+	_, _, err = fs.StoreMsg("foo", hdr, nil, 3600)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	// Clear the entry count of both state files, index.db stays valid.
+	// Without the checksum they'd be read as empty and up to date.
+	files := []string{ttlStreamStateFile, msgSchedulingStreamStateFile}
+	for _, name := range files {
+		fn := filepath.Join(dir, msgDir, name)
+		buf, err := os.ReadFile(fn)
+		require_NoError(t, err)
+		clear(buf[1:9])
+		require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+	}
+
+	// The state is recovered from the messages instead.
+	fs, err = newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	fs.mu.RLock()
+	ttls, schedules := fs.ttls.Count(), len(fs.scheduling.schedules)
+	fs.mu.RUnlock()
+	require_Equal(t, ttls, 1)
+	require_Equal(t, schedules, 1)
+
+	// And written again with a valid checksum.
+	require_NoError(t, fs.Stop())
+	key := stateChecksumKey(cfg.Name)
+	for _, name := range files {
+		buf, err := os.ReadFile(filepath.Join(dir, msgDir, name))
+		require_NoError(t, err)
+		_, err = verifyStateChecksum(buf, key)
+		require_NoError(t, err)
+	}
 }
 
 func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
@@ -13793,13 +13993,9 @@ func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
 		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: ErrMsgScheduleInvalidVersion},
 		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
-		{title: "BadChecksum", buf: func() []byte {
-			b := encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("TEST"))
-			b[9]++
-			return b
-		}(), err: errStateChecksumMismatch},
+		{title: "BadChecksum", buf: func() []byte { b := newMsgScheduling(func() {}).encode(1, stateChecksumKey("TEST")); b[9]++; return b }(), err: errStateChecksumMismatch},
 		// Valid, but encoded for another stream.
-		{title: "WrongKey", buf: encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("OTHER")), err: errStateChecksumMismatch},
+		{title: "WrongKey", buf: newMsgScheduling(func() {}).encode(1, stateChecksumKey("OTHER")), err: errStateChecksumMismatch},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtSubjLen", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Claims one entry, has the subject length but the subject bytes are missing.
@@ -13877,12 +14073,12 @@ func TestFileStoreSourcesStateChecksum(t *testing.T) {
 	require_NoError(t, fs.Stop())
 
 	fn := filepath.Join(dir, sourcesStreamStateFile)
-	// The state is written as version 1, without a checksum.
-	v1, err := os.ReadFile(fn)
+	// The state is written as version 2, with a checksum.
+	v2, err := os.ReadFile(fn)
 	require_NoError(t, err)
-	require_Equal(t, v1[0], 1)
-	// Newer servers write version 2, the version 1 encoding followed by a checksum.
-	v2 := appendStateChecksum(append([]byte{2}, v1[1:]...), stateChecksumKey("SOURCE"))
+	require_Equal(t, v2[0], 2)
+	// Version 1 is the same encoding without the trailing checksum.
+	v1 := append([]byte{1}, v2[1:len(v2)-checksumSize]...)
 
 	// The stamp and every source.
 	type decoded struct {
@@ -18211,9 +18407,13 @@ func TestFileStoreIndexCacheBufCountsTTLAndScheduleHeaders(t *testing.T) {
 	buf, err := os.ReadFile(mb.mfn)
 	require_NoError(t, err)
 	le := binary.LittleEndian
-	second := le.Uint32(buf) &^ hbit
+	second := le.Uint32(buf) &^ (hbit | rbit)
 	slen := uint32(le.Uint16(buf[second+20:]))
 	le.PutUint32(buf[second+msgHdrSize+slen:], math.MaxUint32)
+	// Reseal it, so the checksum passes and only the header length is wrong.
+	rl := le.Uint32(buf[second:]) &^ (hbit | rbit)
+	rec := buf[second : second+rl-recordHashSize]
+	le.PutUint64(buf[second+rl-recordHashSize:], hashRecord(mb.hh, mb.hkey, rec, int(slen), true, true))
 	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
 	mb.clearCacheAndOffset()
 	require_NoError(t, mb.loadMsgsWithLock())
@@ -20375,8 +20575,7 @@ func TestFileStoreMixedRecordFormats(t *testing.T) {
 			rec := buf[index : index+rlen]
 			le.PutUint32(rec, rl^rbit)
 			slen := int(le.Uint16(rec[20:]))
-			hashRecord(hh, rec[:msgHdrSize], rec[msgHdrSize:rlen-recordHashSize], slen, hasHeaders, record)
-			copy(rec[rlen-recordHashSize:], hh.Sum(nil))
+			le.PutUint64(rec[rlen-recordHashSize:], hashRecord(hh, key[:], rec[:rlen-recordHashSize], slen, hasHeaders, record))
 			resealed++
 		}
 		index += rlen
@@ -20419,14 +20618,14 @@ func TestFileStoreMessageScheduleDecodeRejectsCorruption(t *testing.T) {
 		schedules map[string]*MsgSchedule
 	}
 	key := stateChecksumKey("TEST")
-	requireCorruptionRejected(t, encodeMsgSchedulingVersion2(ms, 12345, key), func(b []byte) (decoded, error) {
+	requireCorruptionRejected(t, ms.encode(12345, key), func(b []byte) (decoded, error) {
 		nms := newMsgScheduling(func() {})
 		stamp, err := nms.decode(b, key)
 		return decoded{stamp, nms.schedules}, err
 	})
 
 	// Read as version 1, the checksum is left after the entries.
-	b := encodeMsgSchedulingVersion2(ms, 12345, key)
+	b := ms.encode(12345, key)
 	b[0] = 1
 	_, err := newMsgScheduling(func() {}).decode(b, key)
 	require_Error(t, err, errCorruptState)
