@@ -4921,6 +4921,68 @@ func TestNRGTruncateOnStartup(t *testing.T) {
 	require_Equal(t, state.NumDeleted, 0)
 }
 
+func TestNRGApplyCommitResetsWALWhenEntriesMissing(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	s := c.servers[0]
+	defer c.shutdown()
+
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: storeDir, BlockSize: defaultMediumBlockSize, AsyncFlush: false, srv: s}
+	fs, err := newFileStore(fcfg, StreamConfig{Name: "RAFT", Storage: FileStorage})
+	require_NoError(t, err)
+	cfg := &RaftConfig{Name: "TEST", Store: storeDir, Log: fs}
+	require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
+	n, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+	require_NoError(t, err)
+	defer func() {
+		n.Stop()
+		n.WaitForStop()
+	}()
+
+	nats0 := "S1Nunr6R" // "nats-0"
+	for i := range uint64(3) {
+		esm := encodeStreamMsgAllowCompress(fmt.Sprintf("subj-%d", i), _EMPTY_, nil, nil, 0, 0, false)
+		entries := []*Entry{newEntry(EntryNormal, esm)}
+		n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, pterm: min(i, 1), pindex: i, entries: entries}), n.aesub)
+	}
+	require_Equal(t, n.pindex, 3)
+
+	// Corrupt the second entry's record length on disk, the entries have the same length.
+	fs.mu.RLock()
+	mb := fs.blks[0]
+	fs.mu.RUnlock()
+	require_NoError(t, mb.flushPendingMsgs())
+	buf, err := os.ReadFile(mb.mfn)
+	require_NoError(t, err)
+	require_Equal(t, len(buf)%3, 0)
+	buf[len(buf)/3+2] ^= 0x10
+	require_NoError(t, os.WriteFile(mb.mfn, buf, defaultFilePerms))
+	mb.mu.Lock()
+	mb.clearCacheAndOffset()
+	mb.mu.Unlock()
+
+	// Loading the block truncates it at the corrupt entry, underneath us.
+	n.Lock()
+	n.pae = make(map[uint64]*appendEntry)
+	_, err = n.loadEntry(1)
+	n.Unlock()
+	require_NoError(t, err)
+	// The store's state is rebuilt in the background.
+	checkFor(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if state := n.wal.State(); state.LastSeq != 1 {
+			return fmt.Errorf("expected last seq 1, got %d", state.LastSeq)
+		}
+		return nil
+	})
+	require_Equal(t, n.pindex, 3)
+
+	// Applying the missing entries must reset the WAL, instead of stalling at the first one.
+	n.processAppendEntry(encode(t, &appendEntry{leader: nats0, term: 1, commit: 3, pterm: 1, pindex: 3}), n.aesub)
+	require_Equal(t, n.pindex, 0)
+	state := n.wal.State()
+	require_Equal(t, state.Msgs, 0)
+}
+
 func TestNRGIgnoresCorruptCommitFile(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	s := c.servers[0] // RunBasicJetStreamServer not available

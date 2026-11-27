@@ -4214,7 +4214,8 @@ func (n *raft) applyCommit(index uint64) error {
 	if ae == nil {
 		var err error
 		if ae, err = n.loadEntry(index); err != nil {
-			if err != ErrStoreClosed && err != ErrStoreEOF {
+			// Entries up to pindex must be stored, EOF then means the log was truncated underneath us.
+			if err != ErrStoreClosed && (err != ErrStoreEOF || index <= n.pindex) {
 				n.warn("Got an error loading %d index: %v - will reset", index, err)
 				if n.State() == Leader {
 					n.stepdownLocked(n.selectNextLeader())
