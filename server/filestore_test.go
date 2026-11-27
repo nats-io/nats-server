@@ -19642,3 +19642,216 @@ func TestFileStoreLogBackedFollowsWriteMode(t *testing.T) {
 		})
 	})
 }
+
+func TestFileStoreKeyRotationAEKAndConsumers(t *testing.T) {
+	for _, cipher := range []StoreCipher{ChaCha, AES} {
+		t.Run(cipher.String(), func(t *testing.T) {
+			storeDir := t.TempDir()
+			fcfg := FileStoreConfig{
+				StoreDir:  storeDir,
+				BlockSize: 1024,
+				Cipher:    cipher,
+			}
+			cfg := StreamConfig{
+				Name:     "TEST",
+				Subjects: []string{"foo"},
+				Storage:  FileStorage,
+			}
+			created := time.Now().UTC()
+
+			key1 := func(context []byte) ([]byte, error) {
+				h := sha256.Sum256(append([]byte("first-key:"), context...))
+				return h[:], nil
+			}
+			key2 := func(context []byte) ([]byte, error) {
+				h := sha256.Sum256(append([]byte("second-key:"), context...))
+				return h[:], nil
+			}
+
+			// Boot 1: create stream with multiple blocks and two consumers (one with state, one without).
+			fs, err := newFileStoreWithCreated(fcfg, cfg, created, key1, nil)
+			require_NoError(t, err)
+
+			const numMsgs = 20
+			payload := bytes.Repeat([]byte("X"), 256)
+			for i := 1; i <= numMsgs; i++ {
+				seq, _, err := fs.StoreMsg("foo", nil, payload, 0)
+				require_NoError(t, err)
+				require_Equal(t, seq, uint64(i))
+			}
+
+			fs.mu.RLock()
+			numBlocks := len(fs.blks)
+			fs.mu.RUnlock()
+			require_True(t, numBlocks > 1)
+
+			c1Cfg := &ConsumerConfig{Durable: "c1", AckPolicy: AckExplicit}
+			c1, err := fs.ConsumerStore("c1", created, c1Cfg)
+			require_NoError(t, err)
+			ts := time.Now().UnixNano()
+			for i := uint64(1); i <= 5; i++ {
+				require_NoError(t, c1.UpdateDelivered(i, i, 1, ts))
+			}
+			for i := uint64(1); i <= 3; i++ {
+				require_NoError(t, c1.UpdateAcks(i, i, true))
+			}
+
+			c2Cfg := &ConsumerConfig{Durable: "c2", AckPolicy: AckExplicit}
+			_, err = fs.ConsumerStore("c2", created, c2Cfg)
+			require_NoError(t, err)
+
+			require_NoError(t, fs.Stop())
+
+			// Boot 2: rotate to key2 with prev_encryption_key = key1.
+			// Do not read any messages from the stream; recoverAEK and consumers must re-key on startup.
+			fs, err = newFileStoreWithCreated(fcfg, cfg, created, key2, key1)
+			require_NoError(t, err)
+
+			c1, err = fs.ConsumerStore("c1", created, c1Cfg)
+			require_NoError(t, err)
+			c1State, err := c1.State()
+			require_NoError(t, err)
+			require_Equal(t, c1State.Delivered.Stream, uint64(5))
+			require_Equal(t, c1State.AckFloor.Stream, uint64(3))
+
+			_, err = fs.ConsumerStore("c2", created, c2Cfg)
+			require_NoError(t, err)
+
+			require_NoError(t, fs.Stop())
+
+			// Boot 3: start with only key2 (no old key). Stream AEK and consumers must be preserved.
+			fs, err = newFileStoreWithCreated(fcfg, cfg, created, key2, nil)
+			require_NoError(t, err)
+			defer fs.Stop()
+
+			require_Equal(t, fs.State().Msgs, uint64(numMsgs))
+
+			c1, err = fs.ConsumerStore("c1", created, c1Cfg)
+			require_NoError(t, err)
+			c1State, err = c1.State()
+			require_NoError(t, err)
+			require_Equal(t, c1State.Delivered.Stream, uint64(5))
+			require_Equal(t, c1State.AckFloor.Stream, uint64(3))
+
+			_, err = fs.ConsumerStore("c2", created, c2Cfg)
+			require_NoError(t, err)
+		})
+	}
+}
+
+func TestFileStoreRecoverMsgsPreservesBlocksWithOldKey(t *testing.T) {
+	storeDir := t.TempDir()
+	fcfg := FileStoreConfig{
+		StoreDir: storeDir,
+		Cipher:   AES,
+	}
+	cfg := StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  FileStorage,
+	}
+	created := time.Now().UTC()
+
+	key1 := func(context []byte) ([]byte, error) {
+		h := sha256.Sum256(append([]byte("first-key:"), context...))
+		return h[:], nil
+	}
+	key2 := func(context []byte) ([]byte, error) {
+		h := sha256.Sum256(append([]byte("second-key:"), context...))
+		return h[:], nil
+	}
+
+	fs, err := newFileStoreWithCreated(fcfg, cfg, created, key1, nil)
+	require_NoError(t, err)
+	_, _, err = fs.StoreMsg("foo", nil, []byte("payload"), 0)
+	require_NoError(t, err)
+	fs.mu.RLock()
+	blkFile := fs.blks[0].mfn
+	keyFile := fs.blks[0].kfn
+	fs.mu.RUnlock()
+	require_NoError(t, fs.Stop())
+
+	// Force recoverMsgs() and corrupt the block key file so neither key can open it.
+	require_NoError(t, os.Remove(filepath.Join(storeDir, msgDir, streamStreamStateFile)))
+	require_NoError(t, os.WriteFile(keyFile, bytes.Repeat([]byte{0xAA}, minBlkKeySize), defaultFilePerms))
+
+	_, err = newFileStoreWithCreated(fcfg, cfg, created, key2, key1)
+	require_Error(t, err)
+
+	// Block file must still exist on disk when prev_encryption_key is configured.
+	_, statErr := os.Stat(blkFile)
+	require_NoError(t, statErr)
+}
+
+func TestFileStoreServerKeyRotationWithConsumers(t *testing.T) {
+	storeDir := t.TempDir()
+	makeConf := func(key, prevKey string) string {
+		if prevKey != _EMPTY_ {
+			return createConfFile(t, []byte(fmt.Sprintf(`
+				server_name: S1
+				listen: 127.0.0.1:-1
+				jetstream: {
+					store_dir: %q,
+					encryption_key: %q,
+					prev_encryption_key: %q,
+					cipher: aes
+				}
+			`, storeDir, key, prevKey)))
+		}
+		return createConfFile(t, []byte(fmt.Sprintf(`
+			server_name: S1
+			listen: 127.0.0.1:-1
+			jetstream: {
+				store_dir: %q,
+				encryption_key: %q,
+				cipher: aes
+			}
+		`, storeDir, key)))
+	}
+
+	// Boot 1: create stream with multiple blocks and a durable consumer with acked messages.
+	s, _ := RunServerWithConfig(makeConf("first-secret-key", _EMPTY_))
+	nc, js := jsClientConnect(t, s)
+
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:     "TEST",
+		Subjects: []string{"foo"},
+		Storage:  nats.FileStorage,
+	})
+	require_NoError(t, err)
+
+	const numMsgs = 40
+	payload := bytes.Repeat([]byte("A"), 64*1024)
+	for i := 0; i < numMsgs; i++ {
+		_, err := js.Publish("foo", payload)
+		require_NoError(t, err)
+	}
+
+	sub, err := js.PullSubscribe("foo", "dur")
+	require_NoError(t, err)
+	msgs := fetchMsgs(t, sub, 10, 5*time.Second)
+	for _, m := range msgs {
+		require_NoError(t, m.AckSync())
+	}
+
+	nc.Close()
+	s.Shutdown()
+
+	// Boot 2: rotate key with prev_encryption_key, without reading any messages.
+	s, _ = RunServerWithConfig(makeConf("second-secret-key", "first-secret-key"))
+	s.Shutdown()
+
+	// Boot 3: start with only the new key. The stream metadata and consumer must survive.
+	s, _ = RunServerWithConfig(makeConf("second-secret-key", _EMPTY_))
+	defer s.Shutdown()
+	nc, js = jsClientConnect(t, s)
+	defer nc.Close()
+
+	si, err := js.StreamInfo("TEST")
+	require_NoError(t, err)
+	require_Equal(t, si.State.Msgs, uint64(numMsgs))
+
+	ci, err := js.ConsumerInfo("TEST", "dur")
+	require_NoError(t, err)
+	require_Equal(t, ci.AckFloor.Stream, uint64(10))
+}
