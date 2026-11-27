@@ -2284,3 +2284,57 @@ func TestIterComplexTree(t *testing.T) {
 	})
 	require_Equal(t, count, 20)
 }
+
+func TestSubjectTreeMatchUntilBounded(t *testing.T) {
+	var nilTree *SubjectTree[int]
+	completed, exceeded := nilTree.MatchUntilBounded(b("a.>"), 10, func([]byte, *int) bool { return true })
+	require_True(t, completed)
+	require_False(t, exceeded)
+
+	st := NewSubjectTree[int]()
+	completed, exceeded = st.MatchUntilBounded(b("a.>"), 0, func([]byte, *int) bool { return true })
+	require_False(t, completed)
+	require_True(t, exceeded)
+
+	for i := 0; i < 200; i++ {
+		st.Insert([]byte(fmt.Sprintf("a.%d.b.%d.c", i%20, i)), i)
+	}
+
+	// Sufficient budget visits all matching leaves cleanly.
+	var matches int
+	completed, exceeded = st.MatchUntilBounded(b("a.*.b.42.c"), 1000, func(_ []byte, val *int) bool {
+		matches++
+		require_Equal(t, *val, 42)
+		return true
+	})
+	require_True(t, completed)
+	require_False(t, exceeded)
+	require_Equal(t, matches, 1)
+
+	// Callback returning false stops early without reporting budget exceeded.
+	matches = 0
+	completed, exceeded = st.MatchUntilBounded(b("a.>"), 1000, func(_ []byte, _ *int) bool {
+		matches++
+		return matches < 3
+	})
+	require_False(t, completed)
+	require_False(t, exceeded)
+	require_Equal(t, matches, 3)
+
+	// Tight node budget aborts wide wildcard walk and reports budgetExceeded=true.
+	matches = 0
+	completed, exceeded = st.MatchUntilBounded(b("a.*.b.*.nomatch"), 5, func(_ []byte, _ *int) bool {
+		matches++
+		return true
+	})
+	require_False(t, completed)
+	require_True(t, exceeded)
+	require_Equal(t, matches, 0)
+
+	// Terminal PWC branch also enforces node budget across leaf/child checks.
+	completed, exceeded = st.MatchUntilBounded(b("a.0.b.*"), 2, func(_ []byte, _ *int) bool {
+		return true
+	})
+	require_False(t, completed)
+	require_True(t, exceeded)
+}

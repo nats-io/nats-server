@@ -125,7 +125,7 @@ func (t *SubjectTree[T]) Match(filter []byte, cb func(subject []byte, val *T)) {
 	var raw [32][]byte
 	parts := genParts(filter, raw[:0])
 	var _pre [256]byte
-	t.match(t.root, parts, _pre[:0], func(subject []byte, val *T) bool {
+	t.match(t.root, parts, _pre[:0], nil, func(subject []byte, val *T) bool {
 		cb(subject, val)
 		return true
 	})
@@ -143,7 +143,28 @@ func (t *SubjectTree[T]) MatchUntil(filter []byte, cb func(subject []byte, val *
 	var raw [32][]byte
 	parts := genParts(filter, raw[:0])
 	var _pre [256]byte
-	return t.match(t.root, parts, _pre[:0], cb)
+	return t.match(t.root, parts, _pre[:0], nil, cb)
+}
+
+// MatchUntilBounded is like MatchUntil, but aborts the walk if more than maxNodes
+// tree nodes are visited before matching completes.
+// Returns (completed, budgetExceeded).
+func (t *SubjectTree[T]) MatchUntilBounded(filter []byte, maxNodes int, cb func(subject []byte, val *T) bool) (bool, bool) {
+	if maxNodes <= 0 {
+		return false, true
+	}
+	if t == nil || t.root == nil || len(filter) == 0 || cb == nil {
+		return true, false
+	}
+	var raw [32][]byte
+	parts := genParts(filter, raw[:0])
+	var _pre [256]byte
+	rem := maxNodes
+	completed := t.match(t.root, parts, _pre[:0], &rem, cb)
+	if rem < 0 {
+		return false, true
+	}
+	return completed, false
 }
 
 // IterOrdered will walk all entries in the SubjectTree lexicographically. The callback can return false to terminate the walk.
@@ -314,7 +335,7 @@ func (t *SubjectTree[T]) delete(np *node, subject []byte, si int) (*T, bool) {
 // Internal function which can be called recursively to match all leaf nodes to a given filter subject which
 // once here has been decomposed to parts. These parts only care about wildcards, both pwc and fwc.
 // Returns false if the callback requested to stop matching.
-func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subject []byte, val *T) bool) bool {
+func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, rem *int, cb func(subject []byte, val *T) bool) bool {
 	// Capture if we are sitting on a terminal fwc.
 	var hasFWC bool
 	if lp := len(parts); lp > 0 && isFWCPart(parts[lp-1]) {
@@ -322,6 +343,12 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 	}
 
 	for n != nil {
+		if rem != nil {
+			*rem--
+			if *rem < 0 {
+				return false
+			}
+		}
 		nparts, matched := matchParts(parts, n.path())
 		// Check if we did not match.
 		if !matched {
@@ -361,6 +388,12 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 					continue
 				}
 				if cn.isLeaf() {
+					if rem != nil {
+						*rem--
+						if *rem < 0 {
+							return false
+						}
+					}
 					ln := cn.(*leaf[T])
 					if len(ln.suffix) == 0 {
 						if !cb(append(pre, ln.suffix...), &ln.value) {
@@ -373,7 +406,12 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 					}
 				} else if hasTermPWC {
 					// We have terminal pwc so call into match again with the child node.
-					if !t.match(cn, nparts, pre, cb) {
+					if !t.match(cn, nparts, pre, rem, cb) {
+						return false
+					}
+				} else if rem != nil {
+					*rem--
+					if *rem < 0 {
 						return false
 					}
 				}
@@ -396,7 +434,7 @@ func (t *SubjectTree[T]) match(n node, parts [][]byte, pre []byte, cb func(subje
 			// to see if we match further down.
 			for _, cn := range n.children() {
 				if cn != nil {
-					if !t.match(cn, nparts, pre, cb) {
+					if !t.match(cn, nparts, pre, rem, cb) {
 						return false
 					}
 				}
