@@ -2054,6 +2054,43 @@ func TestAccountTrackLatencyRemoteLeaks(t *testing.T) {
 	})
 }
 
+func TestAccountServiceExportResponseThresholdTimerStoppedOnShutdown(t *testing.T) {
+	conf := createConfFile(t, []byte(`
+		listen: 127.0.0.1:-1
+		accounts {
+			A { users = [{user: a, password: a}], exports = [{service: "svc"}] }
+			B { users = [{user: b, password: b}], imports = [{service: {account: A, subject: "svc"}}] }
+		}
+	`))
+	s, _ := RunServerWithConfig(conf)
+	defer s.Shutdown()
+
+	ncA := natsConnect(t, s.ClientURL(), nats.UserInfo("a", "a"))
+	defer ncA.Close()
+	natsSub(t, ncA, "svc", func(m *nats.Msg) { m.Respond([]byte("ok")) })
+	natsFlush(t, ncA)
+
+	ncB := natsConnect(t, s.ClientURL(), nats.UserInfo("b", "b"))
+	defer ncB.Close()
+	_, err := ncB.Request("svc", nil, time.Second)
+	require_NoError(t, err)
+
+	acc, err := s.LookupAccount("A")
+	require_NoError(t, err)
+	rtmrSet := func() bool {
+		acc.mu.RLock()
+		defer acc.mu.RUnlock()
+		return acc.exports.services["svc"].rtmr != nil
+	}
+	// The request armed the timer, which runs for the response threshold.
+	require_True(t, rtmrSet())
+
+	// A timer left running holds the account, and through it the server,
+	// until it fires.
+	s.Shutdown()
+	require_False(t, rtmrSet())
+}
+
 func TestCrossAccountServiceResponseTypes(t *testing.T) {
 	s, fooAcc, barAcc := simpleAccountServer(t)
 	defer s.Shutdown()
@@ -3416,6 +3453,66 @@ func BenchmarkNewRouteReply(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		g.newServiceReply(false)
+	}
+}
+
+// A reply prefix must not be handed out before the wildcard subscription
+// for service import responses is registered, otherwise replies published
+// to it are dropped.
+func TestAccountNewServiceReplyWaitsForSubscription(t *testing.T) {
+	opts := defaultServerOptions
+	s := New(&opts)
+	a, err := s.RegisterAccount("SVC_REPLY")
+	require_NoError(t, err)
+
+	a.mu.Lock()
+	require_True(t, a.siReply == nil)
+	ic := a.internalClient()
+	a.mu.Unlock()
+	require_NotNil(t, ic)
+
+	// Block the first caller while it registers the subscription.
+	ic.mu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			ic.mu.Unlock()
+		}
+	}()
+
+	replies := make(chan []byte, 2)
+	go func() { replies <- a.newServiceReply(false) }()
+
+	// Wait for the first caller to have created the prefix.
+	checkFor(t, 2*time.Second, 5*time.Millisecond, func() error {
+		a.mu.RLock()
+		defer a.mu.RUnlock()
+		if a.siReply == nil {
+			return fmt.Errorf("reply prefix not created yet")
+		}
+		return nil
+	})
+
+	// A second caller must wait, the subscription is not registered yet.
+	go func() { replies <- a.newServiceReply(false) }()
+	select {
+	case r := <-replies:
+		t.Fatalf("Got reply %q before the subscription was registered", r)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	ic.mu.Unlock()
+	unlocked = true
+
+	for i := 0; i < 2; i++ {
+		select {
+		case r := <-replies:
+			if res := a.sl.Match(string(r)); len(res.psubs) == 0 {
+				t.Fatalf("No subscription for reply %q", r)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timed out waiting for replies")
+		}
 	}
 }
 

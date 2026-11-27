@@ -1695,6 +1695,10 @@ func (ru *recoveryUpdates) removeConsumer(ca *consumerAssignment) {
 		ru.removeConsumers[skey][key] = ca
 	}
 	if consumers, ok := ru.updateConsumers[skey]; ok {
+		// A stale removal of an earlier consumer must not drop its recreate, like processConsumerRemoval ignores it.
+		if nca, ok := consumers[key]; ok && !nca.Created.Equal(ca.Created) && (nca.Group == nil || ca.Group == nil || nca.Group.Name != ca.Group.Name) {
+			return
+		}
 		delete(consumers, key)
 	}
 }
@@ -7301,10 +7305,9 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					o.outq.send(pmsg)
 					delete(o.pendingDeliveries, sseq)
 
-					// Might need to send a request timeout after sending the last replicated delivery.
+					// Send any deferred pull status after the last replicated delivery.
 					if wd, ok := o.waitingDeliveries[dsubj]; ok && wd.seq == seq {
-						if wd.pn > 0 || wd.pb > 0 {
-							hdr := fmt.Appendf(nil, "NATS/1.0 408 Request Timeout\r\n%s: %d\r\n%s: %d\r\n\r\n", JSPullRequestPendingMsgs, wd.pn, JSPullRequestPendingBytes, wd.pb)
+						for _, hdr := range wd.hdrs {
 							o.outq.send(newJSPubMsg(dsubj, _EMPTY_, _EMPTY_, hdr, nil, nil, 0))
 						}
 						wd.recycle()
@@ -7316,7 +7319,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					panic(err.Error())
 				}
 			case updateAcksOp:
-				dseq, sseq, err := decodeAckUpdate(buf[1:])
+				dseq, sseq, explicit, err := decodeAckUpdate(buf[1:])
 				if err != nil {
 					if mset, node := o.streamAndNode(); mset != nil && node != nil {
 						s := js.srv
@@ -7325,7 +7328,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 					}
 					panic(err.Error())
 				}
-				if err := o.processReplicatedAck(dseq, sseq); err == errConsumerClosed {
+				if err := o.processReplicatedAck(dseq, sseq, explicit); err == errConsumerClosed {
 					return err
 				}
 			case updateSkipOp:
@@ -7431,13 +7434,15 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry, isLea
 
 var errConsumerClosed = errors.New("consumer closed")
 
-func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
+func (o *consumer) processReplicatedAck(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	// Update activity.
 	o.lat = time.Now()
 
 	var ackAllSeqs []uint64
-	if o.retention != LimitsPolicy && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
+	// An explicit ack is scoped to the message itself, so it does not collect
+	// the messages below it even under AckAll.
+	if !explicit && o.retention != LimitsPolicy && (o.cfg.AckPolicy == AckAll || o.cfg.AckPolicy == AckFlowControl) {
 		// Always use the store state, as o.asflr is skipped ahead already.
 		// Capture before updating store, which clears the pending below.
 		state, err := o.store.BorrowState()
@@ -7457,7 +7462,7 @@ func (o *consumer) processReplicatedAck(dseq, sseq uint64) error {
 
 	// Do actual ack update to store.
 	// Always do this to have it recorded.
-	o.store.UpdateAcks(dseq, sseq)
+	o.store.UpdateAcks(dseq, sseq, explicit)
 
 	mset := o.mset
 	if o.closed || mset == nil {
@@ -7494,16 +7499,22 @@ var errBadDeliveredUpdate = errors.New("jetstream cluster bad replicated deliver
 var errBadSkipUpdate = errors.New("jetstream cluster bad replicated skip update")
 var errBadResetUpdate = errors.New("jetstream cluster bad replicated reset update")
 
-func decodeAckUpdate(buf []byte) (dseq, sseq uint64, err error) {
+func decodeAckUpdate(buf []byte) (dseq, sseq uint64, explicit bool, err error) {
 	var bi, n int
 	if dseq, n = binary.Uvarint(buf); n <= 0 {
-		return 0, 0, errBadAckUpdate
+		return 0, 0, false, errBadAckUpdate
 	}
 	bi += n
 	if sseq, n = binary.Uvarint(buf[bi:]); n <= 0 {
-		return 0, 0, errBadAckUpdate
+		return 0, 0, false, errBadAckUpdate
 	}
-	return dseq, sseq, nil
+	bi += n
+	// Optional trailing byte marks this ack as explicit. Versions that predate
+	// it stop after the two sequences and apply regular ack semantics.
+	if bi < len(buf) && buf[bi] == 1 {
+		explicit = true
+	}
+	return dseq, sseq, explicit, nil
 }
 
 func decodeDeliveredUpdate(buf []byte) (dseq, sseq, dc uint64, ts int64, err error) {
@@ -10649,7 +10660,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 	canRespond := !mset.cfg.NoAck && len(reply) > 0
 	name, stype := mset.cfg.Name, mset.cfg.Storage
 	discard, discardNewPer, maxMsgs, maxMsgsPer, maxBytes := mset.cfg.Discard, mset.cfg.DiscardNewPer, mset.cfg.MaxMsgs, mset.cfg.MaxMsgsPer, mset.cfg.MaxBytes
-	s, js, jsa, st, r, tierName, outq, node, term := mset.srv, mset.js, mset.jsa, mset.cfg.Storage, mset.cfg.Replicas, mset.tier, mset.outq, mset.node, mset.term
+	s, js, jsa, r, tierName, outq, node, term := mset.srv, mset.js, mset.jsa, mset.cfg.Replicas, mset.tier, mset.outq, mset.node, mset.term
 	maxMsgSize, lseq := int(mset.cfg.MaxMsgSize), mset.lseq
 	isLeader, isSealed, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules := mset.isLeader(), mset.cfg.Sealed, mset.cfg.AllowRollup, mset.cfg.DenyPurge, mset.cfg.AllowMsgTTL, mset.cfg.AllowMsgCounter, mset.cfg.AllowMsgSchedules
 
@@ -10711,21 +10722,6 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		return NewJSInsufficientResourcesError()
 	}
 
-	// Check here pre-emptively if we have exceeded our account limits.
-	if exceeded, err := jsa.wouldExceedLimits(st, tierName, r, csubject, hdr, msg); exceeded {
-		if err == nil {
-			err = NewJSAccountResourcesExceededError()
-		}
-		s.RateLimitWarnf("JetStream account limits exceeded for '%s': %s", jsa.acc().GetName(), err.Error())
-		if canRespond {
-			var resp = &JSPubAckResponse{PubAck: &PubAck{Stream: name}}
-			resp.Error = err
-			response, _ = json.Marshal(resp)
-			outq.send(newJSPubMsg(reply, _EMPTY_, _EMPTY_, nil, response, nil, 0))
-		}
-		return err
-	}
-
 	// Check msgSize if we have a limit set there. Again this works if it goes through but better to be pre-emptive.
 	// Subtract to prevent against overflows.
 	if maxMsgSize >= 0 && (len(hdr) > maxMsgSize || len(msg) > maxMsgSize-len(hdr)) {
@@ -10755,7 +10751,7 @@ func (mset *stream) processClusteredInboundMsg(subject, reply string, hdr, msg [
 		err    error
 	)
 	diff := &batchStagedDiff{}
-	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, sourced, name, jsa, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
+	if hdr, msg, dseq, apiErr, err = checkMsgHeadersPreClusteredProposal(diff, mset, csubject, subject, hdr, msg, sourced, name, jsa, tierName, r, allowRollup, denyPurge, allowTTL, allowMsgCounter, allowMsgSchedules, discard, discardNewPer, maxMsgSize, maxMsgs, maxMsgsPer, maxBytes); err != nil {
 		mset.clMu.Unlock()
 		if err == errMsgIdDuplicate && dseq > 0 {
 			var buf [256]byte
@@ -11088,6 +11084,10 @@ func (mset *stream) processSnapshot(snap *StreamReplicatedState, index uint64) (
 		for _, o := range mset.consumers {
 			o.mu.Lock()
 			o.streamNumPending()
+			// Caught up messages aren't signaled, so wake a leader that's waiting to deliver.
+			if o.isLeader() && ((o.isPushMode() && o.active) || (o.isPullMode() && !o.waiting.isEmpty())) {
+				o.signalNewMessages()
+			}
 			o.mu.Unlock()
 		}
 		mset.mu.Unlock()

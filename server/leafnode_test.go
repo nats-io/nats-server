@@ -14671,3 +14671,61 @@ func TestLeafNodeConnectInfoNotDelayedBySendingSubs(t *testing.T) {
 	require_NoError(t, err)
 	require_True(t, strings.Contains(string(l), `"connect_info":true`))
 }
+
+func TestLeafNodeCompressionReconnectAfterWriteError(t *testing.T) {
+	for _, mode := range []string{
+		// Fails flushing the INFO that negotiates compression.
+		CompressionS2Auto,
+		// Fails in the writeLoop, as a baseline.
+		CompressionOff,
+	} {
+		t.Run(mode, func(t *testing.T) {
+			o := DefaultOptions()
+			o.LeafNode.Host = "127.0.0.1"
+			o.LeafNode.Port = -1
+			o.LeafNode.Compression.Mode = mode
+			s := RunServer(o)
+			defer s.Shutdown()
+
+			u, err := url.Parse(fmt.Sprintf("nats://127.0.0.1:%d", o.LeafNode.Port))
+			require_NoError(t, err)
+
+			lo := DefaultOptions()
+			lo.Cluster.Name = "LN"
+			lo.LeafNode.ReconnectInterval = 50 * time.Millisecond
+			lo.LeafNode.Remotes = []*RemoteLeafOpts{{URLs: []*url.URL{u}, Compression: CompressionOpts{Mode: mode}}}
+			lo.LeafNode.dialer = failFirstWriteDialer()
+			ln := RunServer(lo)
+			defer ln.Shutdown()
+
+			// The first connection failed, so this requires a reconnect.
+			checkLeafNodeConnected(t, ln)
+			checkLeafNodeConnected(t, s)
+		})
+	}
+}
+
+// failFirstWriteDialer fails the first write on the first connection only.
+func failFirstWriteDialer() netDialer {
+	var wrapped atomic.Bool
+	return func(network, address string, timeout time.Duration) (net.Conn, error) {
+		nc, err := natsDialTimeout(network, address, timeout)
+		if err != nil || !wrapped.CompareAndSwap(false, true) {
+			return nc, err
+		}
+		return &failFirstWriteConn{Conn: nc}, nil
+	}
+}
+
+type failFirstWriteConn struct {
+	net.Conn
+	failed atomic.Bool
+}
+
+func (c *failFirstWriteConn) Write(b []byte) (int, error) {
+	if c.failed.CompareAndSwap(false, true) {
+		c.Conn.Close()
+		return 0, fmt.Errorf("broken pipe")
+	}
+	return c.Conn.Write(b)
+}

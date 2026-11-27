@@ -3774,6 +3774,103 @@ func TestJetStreamConsumerAckFloorFill(t *testing.T) {
 	}
 }
 
+func TestJetStreamConsumerAckFloorStreamGap(t *testing.T) {
+	t.Run("ShortRemainingRange", func(t *testing.T) {
+		pending := map[uint64]*Pending{
+			9:  {Sequence: 1},
+			14: {Sequence: 3},
+			15: {Sequence: 4},
+		}
+		seq, p := nextPending(pending, 10, 15)
+		require_Equal(t, seq, uint64(14))
+		require_Equal(t, p, pending[14])
+	})
+
+	for _, test := range []struct {
+		name string
+		next uint64
+		last uint64
+	}{
+		{name: "Adjacent", next: 2, last: 1 << 50},
+		{name: "Dense", next: 3, last: 4},
+		{name: "Filtered", next: 3, last: 1 << 50},
+		{name: "Sparse", next: 1 << 50, last: 1<<50 + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pending := map[uint64]*Pending{
+				test.next: {Sequence: 3},
+				test.last: {Sequence: 4},
+			}
+			want := SequencePair{Consumer: 2, Stream: test.next - 1}
+
+			o := &consumer{dseq: 5, sseq: test.last + 1, pending: pending}
+			o.mu.Lock()
+			o.moveAckFloor(1, 1)
+			o.mu.Unlock()
+			require_Equal(t, SequencePair{Consumer: o.adflr, Stream: o.asflr}, want)
+
+			cfg := ConsumerConfig{AckPolicy: AckExplicit}
+			state := ConsumerState{
+				Delivered: SequencePair{Consumer: 4, Stream: test.last},
+				Pending:   pending,
+			}
+
+			pending[1] = &Pending{Sequence: 1}
+			mem := &consumerMemStore{cfg: cfg, state: state}
+			require_NoError(t, mem.UpdateAcks(1, 1, true))
+			require_Equal(t, mem.state.AckFloor, want)
+
+			pending[1] = &Pending{Sequence: 1}
+			file := &consumerFileStore{cfg: &FileConsumerInfo{ConsumerConfig: cfg}, state: state}
+			require_NoError(t, file.UpdateAcks(1, 1, true))
+			require_Equal(t, file.state.AckFloor, want)
+		})
+	}
+}
+
+func BenchmarkJetStreamConsumerAckFloorScan(b *testing.B) {
+	const pendingCount, acked = 1000, 1000
+	for _, scenario := range []struct {
+		name       string
+		first      uint64
+		last       uint64
+		spacing    uint64
+		searchLast uint64
+	}{
+		{name: "Adjacent", first: 1, last: 99901, spacing: 100},
+		{name: "ShortGap", first: 10, last: 99910, spacing: 100},
+		{name: "AtBudget", first: 1000, last: 100900, spacing: 100},
+		{name: "ShortRemainingGap", first: 1100, last: 1500, spacing: 2},
+		{name: "BeyondBudget", first: 10000, last: 109900, spacing: 100},
+		{name: "NoMatch", first: 10000, last: 109900, spacing: 100, searchLast: 9999},
+		{name: "MillionGap/Match", first: 1_000_000, last: 1_099_900, spacing: 100},
+		{name: "MillionGap/NoMatch", first: 1_000_001, last: 1_099_901, spacing: 100, searchLast: 1_000_000},
+		{name: "HundredMillionGap/Match", first: 100_000_000, last: 100_099_900, spacing: 100},
+		{name: "HundredMillionGap/NoMatch", first: 100_000_001, last: 100_099_901, spacing: 100, searchLast: 100_000_000},
+	} {
+		b.Run(scenario.name, func(b *testing.B) {
+			pending := make(map[uint64]*Pending, pendingCount)
+			p := &Pending{Sequence: 2}
+			for i := range uint64(pendingCount) {
+				seq := scenario.first + scenario.spacing*i
+				if seq <= scenario.last {
+					pending[acked+seq] = p
+				} else {
+					// Keep the rest of the pending entries below the search range.
+					pending[i] = p
+				}
+			}
+			last := scenario.last
+			if scenario.searchLast != 0 {
+				last = scenario.searchLast
+			}
+			for b.Loop() {
+				nextPending(pending, acked, acked+last)
+			}
+		})
+	}
+}
+
 func TestJetStreamConsumerAckAck(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -8021,65 +8118,74 @@ func TestJetStreamConsumerAckFloorWithExpired(t *testing.T) {
 	require_True(t, ci.NumRedelivered == 0)
 }
 
-func TestJetStreamConsumerIsFiltered(t *testing.T) {
+func TestJetStreamConsumerNeedAckFallbackWithFilter(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
-	acc := s.GlobalAccount()
 
-	tests := []struct {
-		name           string
-		streamSubjects []string
-		filters        []string
-		isFiltered     bool
-	}{
-		{
-			name:           "single_subject",
-			streamSubjects: []string{"one"},
-			filters:        []string{"one"},
-			isFiltered:     false,
-		},
-		{
-			name:           "single_subject_filtered",
-			streamSubjects: []string{"one.>"},
-			filters:        []string{"one.filter"},
-			isFiltered:     true,
-		},
-		{
-			name:           "multi_subject_non_filtered",
-			streamSubjects: []string{"multi", "foo", "bar.>"},
-			filters:        []string{"multi", "bar.>", "foo"},
-			isFiltered:     false,
-		},
-		{
-			name:           "multi_subject_filtered_wc",
-			streamSubjects: []string{"events", "data"},
-			filters:        []string{"data"},
-			isFiltered:     true,
-		},
-		{
-			name:           "multi_subject_filtered",
-			streamSubjects: []string{"machines", "floors"},
-			filters:        []string{"machines"},
-			isFiltered:     true,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mset, err := acc.addStream(&StreamConfig{
-				Name:     test.name,
-				Subjects: test.streamSubjects,
-			})
-			require_NoError(t, err)
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo", "bar"},
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", FilterSubject: "foo", AckPolicy: AckExplicit})
+	require_NoError(t, err)
 
-			o, err := mset.addConsumer(&ConsumerConfig{
-				FilterSubjects: test.filters,
-				Durable:        test.name,
-			})
-			require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+	_, _, err = mset.store.StoreMsg("bar", nil, nil, 0)
+	require_NoError(t, err)
 
-			require_True(t, o.isFiltered() == test.isFiltered)
-		})
-	}
+	// A follower whose consumer state can't be loaded falls back to its in-memory ack floor.
+	require_NoError(t, o.setLeader(false, 0))
+	require_NoError(t, o.store.Stop())
+
+	// The matching message is still needed, the other one isn't.
+	subj := _EMPTY_
+	require_True(t, o.needAck(1, &subj))
+	subj = _EMPTY_
+	require_False(t, o.needAck(2, &subj))
+}
+
+type subjectForSeqErrStore struct {
+	StreamStore
+	err error
+}
+
+func (s *subjectForSeqErrStore) SubjectForSeq(seq uint64) (string, error) {
+	return _EMPTY_, s.err
+}
+
+func TestJetStreamConsumerNeedAckSubjectLookupError(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.globalAccount().addStream(&StreamConfig{
+		Name:      "TEST",
+		Subjects:  []string{"foo"},
+		Retention: InterestPolicy,
+	})
+	require_NoError(t, err)
+	o, err := mset.addConsumer(&ConsumerConfig{Durable: "CONSUMER", FilterSubject: "foo", AckPolicy: AckExplicit})
+	require_NoError(t, err)
+
+	_, _, err = mset.store.StoreMsg("foo", nil, nil, 0)
+	require_NoError(t, err)
+
+	es := &subjectForSeqErrStore{StreamStore: mset.store}
+	mset.mu.Lock()
+	mset.store = es
+	mset.mu.Unlock()
+
+	// The message can't be read, so we can't tell if it matches and must keep it.
+	es.err = errors.New("read failed")
+	subj := _EMPTY_
+	require_True(t, o.needAck(1, &subj))
+
+	// The message is gone, so it's not needed.
+	es.err = ErrStoreMsgNotFound
+	subj = _EMPTY_
+	require_False(t, o.needAck(1, &subj))
 }
 
 func TestJetStreamConsumerWithFormattingSymbol(t *testing.T) {
@@ -10239,6 +10345,146 @@ func TestJetStreamConsumerPullTimeout(t *testing.T) {
 	})
 }
 
+func TestJetStreamConsumerReplicatedPullStatusOrder(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name: "TEST", Replicas: 3, Storage: nats.MemoryStorage,
+	})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{
+		Durable: "C", Replicas: 3, AckPolicy: nats.AckExplicitPolicy,
+	})
+	require_NoError(t, err)
+	data := bytes.Repeat([]byte("x"), 200)
+	for range 3 {
+		_, err := js.Publish("TEST", data)
+		require_NoError(t, err)
+	}
+
+	cl := c.consumerLeader(globalAccountName, "TEST", "C")
+	mset, err := cl.globalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+	o := mset.lookupConsumer("C")
+	require_NotNil(t, o)
+
+	for _, test := range []struct {
+		description string
+		status      string
+		batch       int
+		maxBytes    int
+		noWait      bool
+		expires     time.Duration
+	}{
+		{"Batch Completed", "409", 1, 10_000, true, 2 * time.Second},
+		{"Message Size Exceeds MaxBytes", "409", 10, 300, true, 2 * time.Second},
+		{"Request Timeout", "408", 2, 0, false, 200 * time.Millisecond},
+	} {
+		t.Run(test.description, func(t *testing.T) {
+			reply := nc.NewInbox()
+			sub, err := nc.SubscribeSync(reply)
+			require_NoError(t, err)
+			defer sub.Unsubscribe()
+
+			req, err := json.Marshal(JSApiConsumerGetNextRequest{
+				Batch: test.batch, MaxBytes: test.maxBytes, Expires: test.expires, NoWait: test.noWait,
+			})
+			require_NoError(t, err)
+
+			node := o.node.(*raft)
+			node.Lock()
+			var resumeOnce sync.Once
+			resumeProposals := func() { resumeOnce.Do(node.Unlock) }
+			defer resumeProposals()
+
+			require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), reply, req))
+
+			checkFor(t, time.Second, 10*time.Millisecond, func() error {
+				o.mu.RLock()
+				defer o.mu.RUnlock()
+				if o.waitingDeliveries[reply] == nil || o.waiting.len() != 0 {
+					return errors.New("pull request has not finished queueing")
+				}
+				return nil
+			})
+			_, err = sub.NextMsg(100 * time.Millisecond)
+			require_Error(t, err, nats.ErrTimeout)
+
+			resumeProposals()
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Description"), "")
+			require_Equal(t, string(msg.Data), string(data))
+			status, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, status.Header.Get("Status"), test.status)
+			require_Equal(t, status.Header.Get("Description"), test.description)
+		})
+	}
+
+	// Two pull requests on the same reply subject, each ending with a status.
+	t.Run("Shared Reply", func(t *testing.T) {
+		for range 2 {
+			_, err := js.Publish("TEST", data)
+			require_NoError(t, err)
+		}
+
+		reply := nc.NewInbox()
+		sub, err := nc.SubscribeSync(reply)
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+
+		node := o.node.(*raft)
+		node.Lock()
+		var resumeOnce sync.Once
+		resumeProposals := func() { resumeOnce.Do(node.Unlock) }
+		defer resumeProposals()
+
+		for _, r := range []JSApiConsumerGetNextRequest{
+			{Batch: 1, MaxBytes: 10_000, Expires: 2 * time.Second},
+			{Batch: 2, Expires: 200 * time.Millisecond},
+		} {
+			req, err := json.Marshal(r)
+			require_NoError(t, err)
+			require_NoError(t, nc.PublishRequest(fmt.Sprintf(JSApiRequestNextT, "TEST", "C"), reply, req))
+		}
+
+		checkFor(t, time.Second, 10*time.Millisecond, func() error {
+			o.mu.RLock()
+			defer o.mu.RUnlock()
+			if wd := o.waitingDeliveries[reply]; wd == nil || len(wd.hdrs) != 2 {
+				return errors.New("pull statuses have not finished queueing")
+			}
+			return nil
+		})
+		_, err = sub.NextMsg(100 * time.Millisecond)
+		require_Error(t, err, nats.ErrTimeout)
+
+		resumeProposals()
+		for range 2 {
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Description"), "")
+			require_Equal(t, string(msg.Data), string(data))
+		}
+		for _, expected := range []struct {
+			status      string
+			description string
+		}{
+			{"409", "Batch Completed"},
+			{"408", "Request Timeout"},
+		} {
+			status, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, status.Header.Get("Status"), expected.status)
+			require_Equal(t, status.Header.Get("Description"), expected.description)
+		}
+	})
+}
+
 func TestJetStreamConsumerPullMaxBytes(t *testing.T) {
 	s := RunBasicJetStreamServer(t)
 	defer s.Shutdown()
@@ -11334,6 +11580,34 @@ func TestJetStreamConsumerMaxDeliverUnderflow(t *testing.T) {
 	maxdc = o.maxdc
 	o.mu.RUnlock()
 	require_Equal(t, maxdc, 0)
+}
+
+func TestJetStreamConsumerMaxDeliverAdvisoryWithoutAnotherPull(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	const maxDeliver = 3
+	sub, err := js.PullSubscribe("foo", "C", nats.BindStream("TEST"), nats.MaxDeliver(maxDeliver), nats.AckWait(50*time.Millisecond))
+	require_NoError(t, err)
+	advisories := natsSubSync(t, nc, JSAdvisoryConsumerMaxDeliveryExceedPre+".TEST.C")
+
+	fetchMsgs(t, sub, maxDeliver, 2*time.Second)
+	msg := natsNexMsg(t, advisories, 2*time.Second)
+	var adv JSConsumerDeliveryExceededAdvisory
+	require_NoError(t, json.Unmarshal(msg.Data, &adv))
+	require_Equal(t, adv.Deliveries, uint64(maxDeliver))
+
+	info, err := sub.ConsumerInfo()
+	require_NoError(t, err)
+	require_Equal(t, info.NumAckPending, 0)
 }
 
 func TestJetStreamConsumerMaxDeliverAdvisoryCount(t *testing.T) {
@@ -12582,8 +12856,17 @@ func TestJetStreamConsumerAckFlowControlBasics(t *testing.T) {
 		require_Error(t, err, NewJSConsumerAckFCRequiresFCError())
 
 		cfg.FlowControl = true
+		hbErr := NewJSStreamInvalidConfigError(fmt.Errorf("flow control ack policy heartbeat needs to be between 1s and 1m0s"))
 		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
-		require_Error(t, err, NewJSStreamInvalidConfigError(fmt.Errorf("flow control ack policy heartbeat needs to be 1s")))
+		require_Error(t, err, hbErr)
+
+		cfg.Heartbeat = 500 * time.Millisecond
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, hbErr)
+
+		cfg.Heartbeat = time.Minute + time.Second
+		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
+		require_Error(t, err, hbErr)
 
 		cfg.Heartbeat = time.Second
 		_, err = jsConsumerCreate(t, nc, "TEST", cfg, true)
@@ -12613,6 +12896,176 @@ func TestJetStreamConsumerAckFlowControlBasics(t *testing.T) {
 		t.Run(fmt.Sprintf("R%d", replicas), func(t *testing.T) {
 			test(replicas)
 		})
+	}
+}
+
+func TestJetStreamConsumerAckFlowControlEndOfBurst(t *testing.T) {
+	test := func(t *testing.T, eosDelay time.Duration) {
+		old := ackFlowControlEOSDelay
+		ackFlowControlEOSDelay = eosDelay
+		defer func() { ackFlowControlEOSDelay = old }()
+
+		s := RunBasicJetStreamServer(t)
+		defer s.Shutdown()
+
+		nc, js := jsClientConnect(t, s)
+		defer nc.Close()
+
+		_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+		require_NoError(t, err)
+
+		sub, err := nc.SubscribeSync("deliver")
+		require_NoError(t, err)
+		defer sub.Unsubscribe()
+		require_NoError(t, nc.Flush())
+
+		_, err = jsConsumerCreate(t, nc, "TEST", ConsumerConfig{
+			Durable:        "CONSUMER",
+			DeliverSubject: "deliver",
+			AckPolicy:      AckFlowControl,
+		}, false)
+		require_NoError(t, err)
+
+		for range 3 {
+			_, err = js.Publish("foo", nil)
+			require_NoError(t, err)
+		}
+		for range 3 {
+			msg, err := sub.NextMsg(time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Status"), _EMPTY_)
+		}
+
+		next := func() *nats.Msg {
+			t.Helper()
+			msg, err := sub.NextMsg(2 * time.Second)
+			require_NoError(t, err)
+			require_Equal(t, msg.Header.Get("Status"), "100")
+			return msg
+		}
+
+		var fc *nats.Msg
+		if eosDelay >= time.Second {
+			// The idle heartbeat sends the flow control, so must not report being stalled on it.
+			msg := next()
+			require_Equal(t, msg.Header.Get("Description"), "Idle Heartbeat")
+			require_Equal(t, msg.Header.Get(JSConsumerStalled), _EMPTY_)
+			fc = next()
+			require_Equal(t, fc.Header.Get("Description"), "FlowControl Request")
+		} else {
+			// Flow control is sent before the idle heartbeat, and we don't reply to it yet.
+			fc = next()
+			require_Equal(t, fc.Header.Get("Description"), "FlowControl Request")
+			start := time.Now()
+
+			// Only a full heartbeat later we should be reported as stalled.
+			msg := next()
+			require_Equal(t, msg.Header.Get("Description"), "Idle Heartbeat")
+			require_Equal(t, msg.Header.Get(JSConsumerStalled), fc.Reply)
+			if elapsed := time.Since(start); elapsed < 800*time.Millisecond {
+				t.Fatalf("Expected stalled heartbeat a full interval after flow control, got %v", elapsed)
+			}
+		}
+
+		// Replying to the flow control acknowledges the burst.
+		reply := nats.NewMsg(fc.Reply)
+		reply.Header.Set(JSLastConsumerSeq, "3")
+		reply.Header.Set(JSLastStreamSeq, "3")
+		require_NoError(t, nc.PublishMsg(reply))
+
+		mset, err := s.globalAccount().lookupStream("TEST")
+		require_NoError(t, err)
+		o := mset.lookupConsumer("CONSUMER")
+		require_NotNil(t, o)
+		checkFor(t, 2*time.Second, 50*time.Millisecond, func() error {
+			ci := o.info()
+			if ci.AckFloor.Stream != 3 || ci.NumAckPending != 0 {
+				return fmt.Errorf("expected ack floor 3 and no pending, got %d and %d", ci.AckFloor.Stream, ci.NumAckPending)
+			}
+			return nil
+		})
+	}
+
+	t.Run("Default", func(t *testing.T) { test(t, time.Second) })
+	t.Run("BeforeHeartbeat", func(t *testing.T) { test(t, 600*time.Millisecond) })
+}
+
+func TestJetStreamDurableStreamSourceHeartbeat(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := jsStreamCreate(t, nc, &StreamConfig{Name: "O", Subjects: []string{"foo"}, Storage: FileStorage})
+	require_NoError(t, err)
+
+	hb := 20 * time.Second
+	for _, name := range []string{"M", "S"} {
+		ci, err := jsConsumerCreate(t, nc, "O", ConsumerConfig{
+			Durable:        name,
+			DeliverSubject: fmt.Sprintf("deliver.%s", name),
+			AckPolicy:      AckFlowControl,
+			Heartbeat:      hb,
+		}, false)
+		require_NoError(t, err)
+		require_Equal(t, ci.Heartbeat, hb)
+	}
+
+	_, err = js.Publish("foo", nil)
+	require_NoError(t, err)
+
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "M",
+		Mirror:  &StreamSource{Name: "O", Consumer: &StreamConsumerSource{Name: "M", DeliverSubject: "deliver.M"}},
+		Storage: FileStorage,
+	})
+	require_NoError(t, err)
+	_, err = jsStreamCreate(t, nc, &StreamConfig{
+		Name:    "S",
+		Sources: []*StreamSource{{Name: "O", Consumer: &StreamConsumerSource{Name: "S", DeliverSubject: "deliver.S"}}},
+		Storage: FileStorage,
+	})
+	require_NoError(t, err)
+
+	// Wait for the first message to have been sourced.
+	for _, stream := range []string{"M", "S"} {
+		checkFor(t, 2*time.Second, 200*time.Millisecond, func() error {
+			_, err := js.GetMsg(stream, 1)
+			return err
+		})
+	}
+
+	acc := s.globalAccount()
+	mirror, err := acc.lookupStream("M")
+	require_NoError(t, err)
+	source, err := acc.lookupStream("S")
+	require_NoError(t, err)
+
+	source.mu.RLock()
+	var ssi *sourceInfo
+	for _, si := range source.sources {
+		ssi = si
+	}
+	source.mu.RUnlock()
+	require_NotNil(t, ssi)
+
+	for _, tc := range []struct {
+		mset *stream
+		si   *sourceInfo
+	}{
+		{mirror, mirror.mirror},
+		{source, ssi},
+	} {
+		tc.mset.mu.Lock()
+		require_Equal(t, tc.si.hb, hb)
+		// The stalled threshold is derived from the heartbeat, not the health check interval.
+		tc.si.last.Store(time.Now().Add(-2 * sourceHealthCheckInterval).UnixNano())
+		require_False(t, tc.si.isStalled())
+		tc.si.last.Store(time.Now().Add(-sourceStalledHeartbeats*hb - time.Second).UnixNano())
+		require_True(t, tc.si.isStalled())
+		tc.si.last.Store(time.Now().UnixNano())
+		tc.mset.mu.Unlock()
 	}
 }
 
@@ -14569,4 +15022,49 @@ func BenchmarkJetStreamConsumerRedeliveryQueue(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A stream writer can hold the stream lock while it waits on the store (for
+// example on a cold block read from disk). Consumer lookups, and with them
+// consumer info requests and consumer removal from the meta layer, must not
+// queue behind it.
+func TestJetStreamConsumerLookupNotBlockedByStreamLock(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	nc, js := jsClientConnect(t, s)
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "CONSUMER", AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+
+	mset, err := s.GlobalAccount().lookupStream("TEST")
+	require_NoError(t, err)
+
+	// Simulate a stream writer stuck while holding the stream lock.
+	mset.mu.Lock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			mset.mu.Unlock()
+		}
+	}
+	defer unlock()
+
+	done := make(chan *consumer, 1)
+	go func() { done <- mset.lookupConsumer("CONSUMER") }()
+	select {
+	case o := <-done:
+		require_True(t, o != nil)
+	case <-time.After(2 * time.Second):
+		unlock()
+		t.Fatalf("lookupConsumer blocked behind the stream lock")
+	}
+
+	ci, err := js.ConsumerInfo("TEST", "CONSUMER", nats.MaxWait(2*time.Second))
+	require_NoError(t, err)
+	require_Equal(t, ci.Name, "CONSUMER")
 }

@@ -10059,7 +10059,7 @@ func TestJetStreamClusterConsumerOnlyDeliverMsgAfterQuorum(t *testing.T) {
 	require_NoError(t, msgs[0].AckSync())
 }
 
-func TestJetStreamClusterConsumerResetPendingDeliveriesOnMaxAckPendingUpdate(t *testing.T) {
+func TestJetStreamClusterConsumerPendingDeliveriesOnMaxAckPendingUpdate(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
 
@@ -10092,8 +10092,11 @@ func TestJetStreamClusterConsumerResetPendingDeliveriesOnMaxAckPendingUpdate(t *
 	o := mset.lookupConsumer("CONSUMER")
 	require_NotNil(t, o)
 
+	const reply = "_INBOX.test"
+	const status = "NATS/1.0 409 Batch Completed\r\n\r\n"
 	o.mu.Lock()
-	o.pendingDeliveries = map[uint64]*jsPubMsg{0: getJSPubMsgFromPool()}
+	o.addReplicatedQueuedMsg(newJSPubMsg(reply, "foo", _EMPTY_, nil, nil, o, 1))
+	o.sendPullStatus(reply, []byte(status))
 	o.mu.Unlock()
 
 	// Increasing does not reset pending deliveries.
@@ -10106,15 +10109,21 @@ func TestJetStreamClusterConsumerResetPendingDeliveriesOnMaxAckPendingUpdate(t *
 	o.mu.Unlock()
 	require_Equal(t, l, 1)
 
-	// Decreasing does reset pending deliveries, so we can shrink the map.
+	// Decreasing shrinks the map while preserving in-flight deliveries and statuses.
 	cfg.MaxAckPending--
 	_, err = js.UpdateConsumer("TEST", cfg)
 	require_NoError(t, err)
 
 	o.mu.Lock()
 	l = len(o.pendingDeliveries)
+	wd := o.waitingDeliveries[reply]
+	var queuedStatus string
+	if wd != nil && len(wd.hdrs) == 1 {
+		queuedStatus = string(wd.hdrs[0])
+	}
 	o.mu.Unlock()
-	require_Equal(t, l, 0)
+	require_Equal(t, l, 1)
+	require_Equal(t, queuedStatus, status)
 }
 
 func TestJetStreamClusterConsumerActiveAfterDidNotDeliverOverRoute(t *testing.T) {

@@ -614,14 +614,6 @@ func (cfg *leafNodeCfg) setConnectDelay(delay time.Duration) {
 	cfg.Unlock()
 }
 
-// leafNodeDialer establishes the TCP connection to a remote leafnode server.
-// It has the same signature as natsDialTimeout(), which is what is used in
-// production. Tests can substitute their own implementation via
-// LeafNodeOpts.dialer in order to observe the resolved dial timeout, or to
-// simulate a slow/unreachable remote, without needing to manipulate the
-// network stack.
-type leafNodeDialer func(network, address string, timeout time.Duration) (net.Conn, error)
-
 // Ensure that non-exported options (used in tests) have
 // been properly set.
 func (s *Server) setLeafNodeNonExportedOptions() {
@@ -1954,6 +1946,12 @@ func (s *Server) negotiateLeafCompression(c *client, didSolicit bool, infoCompre
 		// 0) before proceeding.
 		for c.out.pb > 0 && !c.isClosed() {
 			c.flushOutbound()
+		}
+		// A write error closed the connection, clean up and reconnect.
+		if c.isClosed() {
+			c.mu.Unlock()
+			c.closeConnection(WriteError)
+			return true, nil
 		}
 	}
 	// This is to notify the readLoop that it should switch to a

@@ -327,6 +327,8 @@ const (
 	consumerState = "o.dat"
 	// The suffix that will be given to a new temporary block for compression or when rewriting the full file.
 	blkTmpSuffix = ".tmp"
+	// The suffix of a meta file that is staged until its checksum is written.
+	metaTmpSuffix = ".new"
 	// default cache buffer expiration
 	defaultCacheBufferExpiration = 10 * time.Second
 	// default sync interval
@@ -418,10 +420,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		fcfg.SyncInterval = defaultSyncInterval
 	}
 	dios := fcfg.srv.diskIOSemaphore()
+	syncDirs := fcfg.SyncAlways
 
 	// Check the directory
 	if stat, err := os.Stat(fcfg.StoreDir); os.IsNotExist(err) {
-		if err := os.MkdirAll(fcfg.StoreDir, defaultDirPerms); err != nil {
+		if err := mkdirAllWithOptionalSync(dios, fcfg.StoreDir, defaultDirPerms, syncDirs); err != nil {
 			return nil, fmt.Errorf("could not create storage directory - %v", err)
 		}
 	} else if stat == nil || !stat.IsDir() {
@@ -477,10 +480,10 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 	// Check if this is a new setup.
 	mdir := filepath.Join(fcfg.StoreDir, msgDir)
 	odir := filepath.Join(fcfg.StoreDir, consumerDir)
-	if err := os.MkdirAll(mdir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, mdir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create message storage directory - %v", err)
 	}
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(dios, odir, defaultDirPerms, syncDirs); err != nil {
 		return nil, fmt.Errorf("could not create consumer storage directory - %v", err)
 	}
 
@@ -634,10 +637,11 @@ func newFileStoreWithCreated(fcfg FileStoreConfig, cfg StreamConfig, created tim
 		}
 	}
 
-	// Write our meta data if it does not exist or is zero'd out.
+	// Write our meta data if it does not exist, is zero'd out, or doesn't match its checksum.
 	meta := filepath.Join(fcfg.StoreDir, JetStreamMetaFile)
-	fi, err := os.Stat(meta)
-	if err != nil && os.IsNotExist(err) || fi != nil && fi.Size() == 0 {
+	if match, err := metaFilesMatch(meta, filepath.Join(fcfg.StoreDir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
 		if err := fs.writeStreamMeta(); err != nil {
 			return nil, err
 		}
@@ -957,34 +961,9 @@ func (fs *fileStore) recoverAEK() error {
 	return nil
 }
 
-// Lock should be held.
-func (fs *fileStore) setupAEK() error {
-	if fs.prf != nil && fs.aek == nil {
-		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
-		if err != nil {
-			return err
-		}
-		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		err = fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
-		// Set our aek.
-		fs.aek = key
-	}
-	return nil
-}
-
 // Write out meta and the checksum.
 // Lock should be held.
 func (fs *fileStore) writeStreamMeta() error {
-	if err := fs.setupAEK(); err != nil {
-		return err
-	}
-
 	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
 	if _, err := os.Stat(meta); err != nil && !os.IsNotExist(err) {
 		return err
@@ -993,18 +972,37 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
+
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := fs.aek, false
+	if fs.prf != nil && aek == nil {
+		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name)
+		if err != nil {
+			return err
+		}
+		keyFile := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFileKey)
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
+			return err
+		}
+		aek, stagedKey = key, true
+	}
+
 	// Encrypt if needed.
-	if fs.aek != nil {
-		nonce := make([]byte, fs.aek.NonceSize(), fs.aek.NonceSize()+len(b)+fs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = fs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -1017,7 +1015,75 @@ func (fs *fileStore) writeStreamMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	fs.aek = aek
+	return commitStagedMeta(fs.dios, fs.fcfg.StoreDir, stagedKey, fs.syncAlways.Load())
+}
+
+// commitStagedMeta moves a staged meta.key and meta.inf into place.
+// The key goes first, so a staged key without a staged meta.inf was never committed.
+func commitStagedMeta(dios *diskIOSemaphore, dir string, stagedKey, sync bool) error {
+	if stagedKey {
+		keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+		if err := renameWithOptionalSync(dios, keyFile+metaTmpSuffix, keyFile, sync); err != nil {
+			return err
+		}
+	}
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	return renameWithOptionalSync(dios, meta+metaTmpSuffix, meta, sync)
+}
+
+// recoverStagedMeta finishes or discards a meta.key and meta.inf staged by an interrupted meta write.
+// The staged files were complete if meta.sum was already written for the staged meta.inf.
+func recoverStagedMeta(dios *diskIOSemaphore, dir string, key []byte, sync bool) error {
+	meta := filepath.Join(dir, JetStreamMetaFile)
+	keyFile := filepath.Join(dir, JetStreamMetaFileKey)
+	_, metaErr := os.Stat(meta + metaTmpSuffix)
+	_, keyErr := os.Stat(keyFile + metaTmpSuffix)
+	if os.IsNotExist(metaErr) && os.IsNotExist(keyErr) {
+		return nil
+	} else if keyErr != nil && !os.IsNotExist(keyErr) {
+		return keyErr
+	}
+	if match, err := metaFilesMatch(meta+metaTmpSuffix, filepath.Join(dir, JetStreamMetaFileSum), key); err != nil {
+		return err
+	} else if !match {
+		// Never committed, so discard what was staged.
+		// The meta goes first, so a crash leaves a staged key that is discarded next time.
+		for _, f := range []string{meta + metaTmpSuffix, keyFile + metaTmpSuffix} {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	return commitStagedMeta(dios, dir, keyErr == nil, sync)
+}
+
+// metaFilesMatch returns whether the meta file is non-empty and matches the checksum file.
+// A missing file doesn't match, any other error is returned.
+func metaFilesMatch(meta, sum string, key []byte) (bool, error) {
+	buf, err := os.ReadFile(meta)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	checksum, err := os.ReadFile(sum)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	hh, err := highwayhash.NewDigest64(key)
+	if err != nil {
+		return false, err
+	}
+	hh.Write(buf)
+	var hb [highwayhash.Size64]byte
+	return len(buf) > 0 && hex.EncodeToString(hh.Sum(hb[:0])) == string(checksum), nil
 }
 
 // Pools to recycle the blocks to help with memory pressure.
@@ -1390,10 +1456,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 
 	for _, mb := range fs.blks {
 		mb.mu.RLock()
+		firstWithMsgs := fs.state.Msgs == 0 && mb.msgs > 0
 		fs.state.Msgs += mb.msgs
 		fs.state.Bytes += mb.bytes
 		fseq := atomic.LoadUint64(&mb.first.seq)
-		if fs.state.FirstSeq == 0 || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
+		if fs.state.FirstSeq == 0 || firstWithMsgs || (fseq < fs.state.FirstSeq && mb.first.ts != 0) {
 			fs.state.FirstSeq = fseq
 			if mb.first.ts == 0 {
 				fs.state.FirstTime = time.Time{}
@@ -1403,7 +1470,7 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 		}
 		// Preserve last time, could have erased the last message in one block, and then
 		// have a tombstone with the proper timestamp afterward in another block
-		if lseq := atomic.LoadUint64(&mb.last.seq); lseq >= fs.state.LastSeq {
+		if lseq := atomic.LoadUint64(&mb.last.seq); lseq > fs.state.LastSeq || (lseq == fs.state.LastSeq && mb.last.ts != 0) {
 			fs.state.LastSeq = lseq
 			if mb.last.ts == 0 {
 				fs.state.LastTime = time.Time{}
@@ -1412,6 +1479,11 @@ func (fs *fileStore) rebuildStateLocked(ld *LostStreamData) {
 			}
 		}
 		mb.mu.RUnlock()
+	}
+	// Without messages the first sequence comes after the last, not where an empty block starts.
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
 	}
 }
 
@@ -1471,7 +1543,15 @@ func (mb *msgBlock) convertCipher() error {
 			return err
 		}
 
-		buf, _ := mb.loadBlock(nil)
+		buf, err := mb.loadBlock(nil)
+		if err != nil {
+			return err
+		}
+		// An empty block has nothing to convert, it only needs new keys.
+		if len(buf) == 0 {
+			recycleMsgBlockBuf(buf)
+			return fs.genEncryptionKeysForBlock(mb)
+		}
 		bek.XORKeyStream(buf, buf)
 		// Check for compression, and make sure we can parse with old cipher and key file.
 		if nbuf, err := mb.decompressIfNeeded(buf); err != nil {
@@ -1514,6 +1594,11 @@ func (mb *msgBlock) convertToEncrypted() error {
 	buf, err := mb.loadBlock(nil)
 	if err != nil {
 		return err
+	}
+	// An empty block has nothing to convert.
+	if len(buf) == 0 {
+		recycleMsgBlockBuf(buf)
+		return nil
 	}
 	// Check for compression.
 	if buf, err = mb.decompressIfNeeded(buf); err != nil {
@@ -1600,9 +1685,12 @@ func (mb *msgBlock) rebuildStateLocked() (*LostStreamData, []uint64, error) {
 		return nil, nil, err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return nil, nil, err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 	return mb.rebuildStateFromBufLocked(buf, true)
 }
 
@@ -2126,13 +2214,11 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 			// still exists on disk and report it as lost if not.
 			mb.closed = true
 
-			// Only add in if not empty or the lmb.
+			// Always add, an empty block can still contain tombstones for prior blocks.
+			fs.addMsgBlock(mb)
+			// An empty block holds no messages, so it can't contribute to the tracking state, unless it's the lmb.
 			if mb.msgs > 0 || i == lastIndex {
-				fs.addMsgBlock(mb)
 				updateTrackingState(&mstate, mb)
-			} else {
-				// Mark dirty to cleanup.
-				fs.dirty++
 			}
 		}
 	}
@@ -2207,8 +2293,14 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 
 	var rebuild bool
+	var removed []*msgBlock
 	for _, mb := range fs.blks {
 		if mb.closed {
+			// An empty block that was already removed has nothing to recover, so only drop it.
+			if mb.msgs == 0 && mb != fs.lmb {
+				removed = append(removed, mb)
+				continue
+			}
 			rebuild = true
 			if ld, _, _ := mb.rebuildState(); ld != nil {
 				fs.addLostData(ld)
@@ -2218,6 +2310,10 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 	if rebuild {
 		return errPriorState
+	}
+	// Also marks dirty, so the next full state no longer contains them.
+	for _, mb := range removed {
+		fs.removeMsgBlockFromList(mb)
 	}
 
 	// We check first and last seq and number of msgs and bytes. If there is a difference,
@@ -2575,6 +2671,16 @@ func (fs *fileStore) recoverMsgs() error {
 
 	if len(fs.blks) > 0 {
 		fs.lmb = fs.blks[len(fs.blks)-1]
+		// A compressed block can't be appended to, new records would be written uncompressed.
+		// It ends up as the last block if the one after it was empty and got removed above.
+		fs.lmb.mu.RLock()
+		compressed := fs.lmb.cmp != NoCompression
+		fs.lmb.mu.RUnlock()
+		if compressed {
+			if _, err = fs.newMsgBlockForWrite(); err != nil {
+				return err
+			}
+		}
 	} else if _, err = fs.newMsgBlockForWrite(); err != nil {
 		return err
 	}
@@ -2655,10 +2761,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 			return err
 		}
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 		if err := mb.dirtyCloseWithRemove(true); err != nil {
@@ -2750,7 +2853,7 @@ func (fs *fileStore) expireMsgsOnRecover() error {
 				mb.mu.Unlock()
 				return err
 			}
-			fs.removePerSubject(sm.subj)
+			fs.removePerSubject(sm.subj, 1)
 		}
 		// Make sure we have a proper next first sequence.
 		if needNextFirst {
@@ -3281,6 +3384,10 @@ func (mb *msgBlock) filteredPendingLocked(filter string, wc bool, sseq uint64) (
 	// This means we want all and the starting sequence was before this block.
 	if isAll {
 		if fseq := atomic.LoadUint64(&mb.first.seq); sseq <= fseq {
+			// An empty block has no first or last message.
+			if mb.msgs == 0 {
+				return 0, 0, 0, nil
+			}
 			return mb.msgs, fseq, atomic.LoadUint64(&mb.last.seq), nil
 		}
 	}
@@ -3469,6 +3576,10 @@ func (fs *fileStore) FilteredState(sseq uint64, subj string) (SimpleState, error
 			if l > ss.Last {
 				ss.Last = l
 			}
+		}
+		// When matching all messages the last is the stream's, like when starting from the first sequence.
+		if ss.Msgs > 0 && (subj == _EMPTY_ || subj == fwcs) {
+			ss.Last = lseq
 		}
 	}
 
@@ -3700,6 +3811,7 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 
 		// Hold this outside loop for psim fblk updates when done.
 		i := start + 1
+		var fmb *msgBlock
 		for ; i <= stop; i++ {
 			mb := fs.bim[i]
 			if mb == nil {
@@ -3709,41 +3821,51 @@ func (fs *fileStore) numFilteredPendingWithLast(filter string, last bool, ss *Si
 				return err
 			} else if f > 0 {
 				ss.First = f
+				fmb = mb
 				break
 			}
 		}
 		// Update fblk since fblk was outdated.
 		// We only require read lock here as that is desirable,
 		// so we need to do this in a go routine to acquire write lock.
-		go func() {
-			fs.mu.Lock()
-			defer fs.mu.Unlock()
-			if !wc {
-				if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
-					if i > info.fblk {
-						info.fblk = i
-					}
-				}
-			} else {
-				fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
-					if i > psi.fblk {
-						psi.fblk = i
-					}
-				})
-			}
-		}()
+		if fmb != nil {
+			go fs.updateFirstBlock(filter, wc, i, fmb)
+		}
 	}
 	// Now gather last sequence if asked to do so.
 	if last {
-		if mb = fs.bim[stop]; mb != nil {
-			_, _, l, err := mb.filteredPending(filter, wc, 0)
-			if err != nil {
-				return err
-			}
-			ss.Last = l
+		_, l, err := fs.lastSeqLocked(filter)
+		if err != nil {
+			return err
 		}
+		ss.Last = l
 	}
 	return nil
+}
+
+// updateFirstBlock moves fblk up to index i for subjects matching the filter.
+// mb is the block at index i that holds the first match.
+func (fs *fileStore) updateFirstBlock(filter string, wc bool, i uint32, mb *msgBlock) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	// After a truncate, a new block can reuse index i while an earlier block holds the first match.
+	if fs.bim[i] != mb {
+		return
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(stringToBytes(filter)); ok {
+			if i > info.fblk {
+				info.fblk = i
+			}
+		}
+	} else {
+		fs.psim.Match(stringToBytes(filter), func(subj []byte, psi *psi) {
+			if i > psi.fblk {
+				psi.fblk = i
+			}
+		})
+	}
 }
 
 // SubjectsState returns a map of SimpleState for all matching subjects.
@@ -5011,11 +5133,30 @@ func (mb *msgBlock) finishedWithCache() {
 	}
 }
 
+// compressRolledBlock compresses a block on disk, after we rolled to a new block.
+// Lock should not be held.
+func (fs *fileStore) compressRolledBlock(mb *msgBlock) {
+	// The last block can't be compressed, new records are appended to it uncompressed.
+	// A truncate makes it the last block again, if it didn't need the new block after all.
+	fs.mu.RLock()
+	if mb == fs.lmb {
+		fs.mu.RUnlock()
+		return
+	}
+	mb.mu.Lock()
+	fs.mu.RUnlock()
+	defer mb.mu.Unlock()
+	// Might error, but we can't handle it here anyway.
+	_ = mb.recompressOnDiskIfNeeded()
+}
+
 // This rolls to a new append msg block.
 // Lock should be held.
 func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	index := uint32(1)
 	var rbuf []byte
+	// The previous block, if it should be compressed.
+	var pmb *msgBlock
 
 	if lmb := fs.lmb; lmb != nil {
 		lmb.mu.Lock()
@@ -5047,12 +5188,7 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 		if fs.fcfg.Compression != NoCompression {
 			// We've now reached the end of this message block, if we want
 			// to compress blocks then now's the time to do it.
-			go func() {
-				lmb.mu.Lock()
-				defer lmb.mu.Unlock()
-				// Might error, but we can't handle it here anyway.
-				_ = lmb.recompressOnDiskIfNeeded()
-			}()
+			pmb = lmb
 		}
 	}
 
@@ -5093,6 +5229,18 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 	}
 	mb.mfd = mfd
 
+	// Sync the new block's entry if writes are synced, otherwise the periodic sync covers it.
+	// If encrypted, writing the block's key file below already syncs the directory.
+	if fs.prf == nil && fs.syncAlways.Load() && canFsyncDirectories {
+		fs.dios.acquire()
+		err = syncDir(filepath.Dir(mb.mfn))
+		fs.dios.release()
+		if err != nil {
+			_ = mb.dirtyCloseWithRemove(true)
+			return nil, err
+		}
+	}
+
 	// Check if encryption is enabled.
 	if fs.prf != nil {
 		if err := fs.genEncryptionKeysForBlock(mb); err != nil {
@@ -5108,6 +5256,11 @@ func (fs *fileStore) newMsgBlockForWrite() (*msgBlock, error) {
 
 	// Add to our list of blocks and mark as last.
 	fs.addMsgBlock(mb)
+
+	// Only start compressing once the previous block is no longer the last block.
+	if pmb != nil {
+		go fs.compressRolledBlock(pmb)
+	}
 
 	return mb, nil
 }
@@ -5268,11 +5421,18 @@ func (fs *fileStore) storeRawMsg(subj string, hdr, msg []byte, seq uint64, ts, t
 		if _, err = fs.removeMsgViaLimits(fseq); err != nil && err != ErrStoreMsgNotFound {
 			return err
 		}
+		pseq, prev := fseq, psmc
 		fseq = 0
 		// fs.removeMsgViaLimits releases and re-acquires the lock, need to fetch the state again.
 		if info, _ = fs.psim.Find(stringToBytes(subj)); info != nil {
 			psmc = info.total
 		} else {
+			break
+		}
+		// If nothing was removed, the per-subject state doesn't match what's stored.
+		if psmc >= prev {
+			// Stop here, retrying would never make progress.
+			fs.rateLimitWarn("Could not enforce max messages per subject for %q, subject count unchanged after removing seq %d", subj, pseq)
 			break
 		}
 	}
@@ -5989,16 +6149,16 @@ func (fs *fileStore) EraseMsg(seq uint64) (bool, error) {
 	return fs.removeMsg(seq, true, false, true)
 }
 
-// Convenience function to remove per subject tracking at the filestore level.
+// Convenience function to remove n messages from per subject tracking at the filestore level.
 // Lock should be held.
-func (fs *fileStore) removePerSubject(subj string) uint64 {
-	if len(subj) == 0 || fs.psim == nil {
+func (fs *fileStore) removePerSubject(subj string, n uint64) uint64 {
+	if len(subj) == 0 || fs.psim == nil || n == 0 {
 		return 0
 	}
 	// We do not update sense of fblk here but will do so when we resolve during lookup.
 	bsubj := stringToBytes(subj)
 	if info, ok := fs.psim.Find(bsubj); ok {
-		info.total--
+		info.total -= min(n, info.total)
 		if info.total == 0 {
 			if _, ok = fs.psim.Delete(bsubj); ok {
 				fs.tsl -= len(subj)
@@ -6120,11 +6280,10 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		ttl, _ = getMessageTTL(sm.hdr)
 	}
 
-	// Check if we need to write a deleted record tombstone.
-	// This is for user initiated removes or to hold the first seq
-	// when the last block is empty.
-	// If not via limits and not empty (empty writes tombstone below if last) write tombstone.
-	if !viaLimits && !isEmpty && sm != nil {
+	// Write a tombstone for user initiated removes.
+	// An emptied block is removed instead, which writes a tombstone if needed.
+	// Unless it's kept for its prior tombstones, then the tombstone ensures an outdated index.db is detected.
+	if !viaLimits && sm != nil && (!isEmpty || mb.numPriorTombsLocked() > 0) {
 		mb.mu.Unlock() // Only safe way to checkLastBlock is to unlock here...
 		lmb, err := fs.checkLastBlock(emptyRecordLen)
 		if err != nil {
@@ -6211,7 +6370,7 @@ func (fs *fileStore) removeMsgFromBlock(mb *msgBlock, seq uint64, secure, viaLim
 		mb.mu.Unlock()
 		return false, err
 	}
-	fs.removePerSubject(subj)
+	fs.removePerSubject(subj, 1)
 	if fs.ttls != nil && ttl > 0 {
 		expires := time.Duration(ts) + (time.Second * time.Duration(ttl))
 		fs.ttls.Remove(seq, int64(expires))
@@ -8899,9 +9058,12 @@ checkCache:
 		return err
 	}
 	// Check for compression.
-	if buf, err = mb.decompressIfNeeded(buf); err != nil {
+	var alg StoreCompression
+	if buf, alg, err = mb.decode(buf); err != nil {
 		return err
 	}
+	// Remember how the block is stored on disk, since it isn't recovered otherwise.
+	mb.cmp = alg
 
 	if err := mb.indexCacheBuf(buf); err != nil {
 		if err == errCorruptState {
@@ -9349,7 +9511,7 @@ func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
 	fs.mu.RUnlock()
 	if mb != nil {
 		mb.mu.Lock()
-		sm, _, _ := mb.fetchMsgNoCopyLocked(seq, &smv)
+		sm, _, err := mb.fetchMsgNoCopyLocked(seq, &smv)
 		var subj string
 		if sm != nil {
 			// Copy the subject, as it's used elsewhere, and the backing cache could be reused in the meantime.
@@ -9359,6 +9521,10 @@ func (fs *fileStore) SubjectForSeq(seq uint64) (string, error) {
 		mb.mu.Unlock()
 		if sm != nil {
 			return subj, nil
+		}
+		// A deleted message is not found, other errors mean we couldn't read it.
+		if err != nil && err != errDeletedMsg {
+			return _EMPTY_, err
 		}
 	}
 	return _EMPTY_, ErrStoreMsgNotFound
@@ -9463,10 +9629,65 @@ func (fs *fileStore) lastSeqLocked(subj string) (*msgBlock, uint64, error) {
 		}
 		mb.mu.Unlock()
 		if l > 0 {
+			// The last match is below lblk, since lblk isn't moved down when messages are removed.
+			// We may only hold the read lock, so update in a go routine to acquire the write lock.
+			if i < start {
+				go fs.updateLastBlock(subj, wc, i, mb, fs.lmb.index)
+			}
 			return mb, l, nil
 		}
 	}
 	return nil, 0, nil
+}
+
+// updateLastBlock moves lblk down to index i for subjects matching the filter.
+// mb is the block at index i that holds the last match, and lmbi was the last block's index then.
+func (fs *fileStore) updateLastBlock(filter string, wc bool, i uint32, mb *msgBlock, lmbi uint32) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// The update runs after the scan, so block i could be removed by now.
+	if fs.bim[i] != mb || fs.lmb == nil {
+		return
+	}
+	// Only the last block receives messages, so only it can hold matches stored since.
+	// A truncate can make an earlier block the last one, so check from the lowest of both.
+	bfilter := stringToBytes(filter)
+	for idx := max(min(lmbi, fs.lmb.index), i+1); idx <= fs.lmb.index; idx++ {
+		lmb := fs.bim[idx]
+		if lmb == nil {
+			continue
+		}
+		lmb.mu.Lock()
+		// Don't load subject state while holding the write lock.
+		if lmb.fss == nil {
+			lmb.mu.Unlock()
+			return
+		}
+		var found bool
+		if !wc {
+			_, found = lmb.fss.Find(bfilter)
+		} else {
+			lmb.fss.MatchUntil(bfilter, func(_ []byte, _ *SimpleState) bool {
+				found = true
+				return false
+			})
+		}
+		lmb.mu.Unlock()
+		if found {
+			return
+		}
+	}
+	if !wc {
+		if info, ok := fs.psim.Find(bfilter); ok && info.lblk > i {
+			info.lblk = i
+		}
+	} else {
+		fs.psim.Match(bfilter, func(_ []byte, psi *psi) {
+			if psi.lblk > i {
+				psi.lblk = i
+			}
+		})
+	}
 }
 
 // LoadLastMsg will return the last message we have that matches a given subject.
@@ -9978,7 +10199,7 @@ func (fs *fileStore) State() StreamState {
 	state.NumSubjects = fs.numSubjects()
 	state.Deleted = nil // make sure.
 
-	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 {
+	if numDeleted := int((state.LastSeq - state.FirstSeq + 1) - state.Msgs); numDeleted > 0 && state.FirstSeq > 0 {
 		state.Deleted = make([]uint64, 0, numDeleted)
 		cur := fs.state.FirstSeq
 
@@ -10409,7 +10630,7 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					fs.mu.Unlock()
 					return purged, err
 				}
-				nrg = fs.removePerSubject(sm.subj)
+				nrg = fs.removePerSubject(sm.subj, 1)
 
 				// Track tombstones we need to write.
 				tombs = append(tombs, msgId{sm.seq, sm.ts})
@@ -10422,7 +10643,10 @@ func (fs *fileStore) PurgeEx(subject string, sequence, keep uint64) (purged uint
 					mb.selectNextFirst()
 					if mb.isEmpty() {
 						// Since we are removing this block don't need to write tombstones.
-						tombs = tombs[:te]
+						// Unless it's kept for its prior tombstones, then they ensure an outdated index.db is detected.
+						if mb.numPriorTombsLocked() == 0 {
+							tombs = tombs[:te]
+						}
 						if err = fs.removeMsgBlock(mb); err != nil {
 							mb.mu.Unlock()
 							fs.mu.Unlock()
@@ -10801,10 +11025,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 			return 0, 0, err
 		}
 		mb.fss.IterOrdered(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for i := uint64(0); i < ss.Msgs; i++ {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 		// Now close.
@@ -10818,6 +11039,7 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 
 	var smv StoreMsg
 	var tombs []msgId
+	var isEmpty bool
 
 	smb.mu.Lock()
 	if atomic.LoadUint64(&smb.first.seq) == seq {
@@ -10862,13 +11084,13 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 				smb.mu.Unlock()
 				return purged, bytes, err
 			}
-			fs.removePerSubject(sm.subj)
+			fs.removePerSubject(sm.subj, 1)
 			tombs = append(tombs, msgId{sm.seq, sm.ts})
 		}
 	}
 
 	// Check if empty after processing, could happen if tail of messages are all deleted.
-	if isEmpty := smb.msgs == 0; isEmpty {
+	if isEmpty = smb.msgs == 0; isEmpty {
 		// Only remove if not the last block.
 		if smb != fs.lmb {
 			if err = smb.dirtyCloseWithRemove(true); err != nil {
@@ -10879,11 +11101,11 @@ func (fs *fileStore) compactLocked(seq uint64) (purged, bytes uint64, err error)
 		} else {
 			// Make sure to sync changes.
 			smb.needSync = true
+			// Move past the removed messages, otherwise they're seen as live when the block is reloaded.
+			smb.dmap.Empty()
+			atomic.StoreUint64(&smb.first.seq, atomic.LoadUint64(&smb.last.seq)+1)
+			smb.first.ts = 0
 		}
-		// Update fs first here as well.
-		fs.state.FirstSeq = atomic.LoadUint64(&smb.last.seq) + 1
-		fs.state.FirstTime = time.Time{}
-
 	} else {
 		// Make sure to sync changes.
 		smb.needSync = true
@@ -10996,6 +11218,13 @@ SKIP:
 		}
 	}
 
+	// The selected block has no messages left, so the first message is in a later block.
+	if isEmpty {
+		if err = fs.selectNextFirst(); err != nil {
+			return purged, bytes, err
+		}
+	}
+
 	// Update top level accounting.
 	if purged > fs.state.Msgs {
 		purged = fs.state.Msgs
@@ -11083,6 +11312,13 @@ func (mb *msgBlock) tombs() []msgId {
 // Return all active tombstones in this msgBlock.
 // Write lock should be held.
 func (mb *msgBlock) tombsLocked() []msgId {
+	return mb.tombsAfterLocked(0)
+}
+
+// Return the active tombstones in this msgBlock stored after the message with the given sequence.
+// Returns all if the sequence is zero.
+// Write lock should be held.
+func (mb *msgBlock) tombsAfterLocked(after uint64) []msgId {
 	if mb.cacheNotLoaded() {
 		if err := mb.loadMsgsWithLock(); err != nil {
 			return nil
@@ -11093,6 +11329,15 @@ func (mb *msgBlock) tombsLocked() []msgId {
 	var tombs []msgId
 	var le = binary.LittleEndian
 	buf := mb.cache.buf
+	var cut uint32
+	if after != 0 {
+		// Match truncate's cut, which also retains trailing tombstones in this slot.
+		ri, rl, _, err := mb.slotInfo(int(after - mb.cache.fseq))
+		if err != nil {
+			return nil
+		}
+		cut = ri + rl
+	}
 
 	for index, lbuf := uint32(0), uint32(len(buf)); index < lbuf; {
 		if index+msgHdrSize > lbuf {
@@ -11104,8 +11349,10 @@ func (mb *msgBlock) tombsLocked() []msgId {
 		rl &^= hbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
-			ts := int64(le.Uint64(hdr[12:]))
-			tombs = append(tombs, msgId{seq &^ tbit, ts})
+			if index >= cut {
+				ts := int64(le.Uint64(hdr[12:]))
+				tombs = append(tombs, msgId{seq &^ tbit, ts})
+			}
 		}
 		// Advance to next record.
 		index += rl
@@ -11295,6 +11542,22 @@ func (fs *fileStore) Truncate(seq uint64) (rerr error) {
 		}
 	}
 
+	// The selected block is cut after its last message, losing the tombstones stored after it.
+	// Need to store those as well if they're for messages before the truncated sequence.
+	if smb != nil && !removeSmb {
+		smb.mu.Lock()
+		tombs := smb.tombsAfterLocked(seq)
+		smb.mu.Unlock()
+		for _, tomb := range tombs {
+			if tomb.seq < seq {
+				if err = fs.writeTombstone(tomb.seq, tomb.ts); err != nil {
+					fs.mu.Unlock()
+					return err
+				}
+			}
+		}
+	}
+
 	hasWrittenTombstones := len(tmb.tombs()) > 0
 	if smb != nil {
 		smb.mu.Lock()
@@ -11382,6 +11645,10 @@ SKIP:
 		bytes = fs.state.Bytes
 	}
 	fs.state.Bytes -= bytes
+	if fs.state.Msgs == 0 {
+		fs.state.FirstSeq = fs.state.LastSeq + 1
+		fs.state.FirstTime = time.Time{}
+	}
 
 	// Reset our subject lookup info.
 	if err = fs.resetGlobalPerSubjectInfo(); err != nil {
@@ -11468,15 +11735,35 @@ func (fs *fileStore) removeMsgBlock(mb *msgBlock) error {
 		}
 		mb.mu.Lock()
 	} else if lseq == fs.state.LastSeq {
+		// An empty block also ends at the last sequence, but the message can still be stored before it.
+		// The first block ending at the last sequence is the only one that could store it.
+		var stored bool
+		i, _ := slices.BinarySearchFunc(fs.blks, lseq, func(omb *msgBlock, seq uint64) int {
+			return cmp.Compare(atomic.LoadUint64(&omb.last.seq), seq)
+		})
+		if i < len(fs.blks) && fs.blks[i] != mb {
+			pmb := fs.blks[i]
+			pmb.mu.RLock()
+			stored = lseq >= atomic.LoadUint64(&pmb.first.seq) && !pmb.dmap.Exists(lseq)
+			pmb.mu.RUnlock()
+		}
 		// Need to write a tombstone for the last sequence if we're removing the block containing it.
-		if err := fs.writeTombstone(lseq, lts); err != nil {
-			return err
+		if !stored {
+			if err := fs.writeTombstone(lseq, lts); err != nil {
+				return err
+			}
 		}
 	}
 	// Only delete message block after (potentially) writing a tombstone.
 	// But only if it doesn't contain any tombstones for prior blocks.
 	if mb.numPriorTombsLocked() > 0 {
-		return nil
+		// The block is kept, but callers assume it's removed and don't write tombstones for its messages.
+		// Mark it empty and compact, so only the tombstones remain on disk.
+		mb.msgs, mb.bytes = 0, 0
+		mb.dmap.Empty()
+		atomic.StoreUint64(&mb.first.seq, lseq+1)
+		mb.first.ts = 0
+		return mb.compact()
 	}
 	return fs.forceRemoveMsgBlock(mb)
 }
@@ -11502,10 +11789,7 @@ func (fs *fileStore) purgeMsgBlock(mb *msgBlock, agg *storeUpdateAgg) error {
 		return err
 	} else if mb.fss != nil {
 		mb.fss.IterFast(func(bsubj []byte, ss *SimpleState) bool {
-			subj := bytesToString(bsubj)
-			for range ss.Msgs {
-				fs.removePerSubject(subj)
-			}
+			fs.removePerSubject(bytesToString(bsubj), ss.Msgs)
 			return true
 		})
 	}
@@ -11691,7 +11975,12 @@ func (mb *msgBlock) recalculateForSubj(subj string, ss *SimpleState) error {
 	if endSlot < 0 {
 		endSlot = 0
 	}
-	if endSlot >= len(mb.cache.idx) || startSlot > endSlot {
+	// The last can be beyond what's indexed, so only scan up to there.
+	// Compacting drops removed messages at the end of the block.
+	if endSlot >= len(mb.cache.idx) {
+		endSlot = len(mb.cache.idx) - 1
+	}
+	if startSlot > endSlot {
 		return nil
 	}
 
@@ -12030,7 +12319,12 @@ func (fs *fileStore) Delete(inline bool) error {
 	}
 
 	// Make sure we will not try to recover if killed before removal below completes.
-	if err := os.Remove(filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)); err != nil {
+	// The staged meta goes first, otherwise recovery could still apply it.
+	meta := filepath.Join(fs.fcfg.StoreDir, JetStreamMetaFile)
+	if err := os.Remove(meta + metaTmpSuffix); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(meta); err != nil {
 		return err
 	}
 	// Now move into different directory with "." prefix.
@@ -12168,7 +12462,11 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		// Re-acquire temporarily as write lock to set up AEK.
 		fs.mu.RUnlock()
 		fs.mu.Lock()
-		err := fs.setupAEK()
+		var err error
+		// A new key also needs meta.inf rewritten, so writeStreamMeta stages both.
+		if fs.aek == nil {
+			err = fs.writeStreamMeta()
+		}
 		fs.mu.Unlock()
 		if err != nil {
 			return err
@@ -12282,7 +12580,10 @@ func (fs *fileStore) _writeFullState(force bool) error {
 			mb.ensureLastChecksumLoaded()
 			copy(lchk[0:], mb.lchk[:])
 		}
-		updateTrackingState(&mstate, mb)
+		// An empty block holds no messages, so it can't contribute to the tracking state, unless it's the lmb.
+		if mb.msgs > 0 || mb == fs.lmb {
+			updateTrackingState(&mstate, mb)
+		}
 		mb.mu.RUnlock()
 	}
 	if dmapTotalLen > 0 {
@@ -13085,10 +13386,13 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 	}
 
 	odir := filepath.Join(fs.fcfg.StoreDir, consumerDir, name)
-	if err := os.MkdirAll(odir, defaultDirPerms); err != nil {
+	if err := mkdirAllWithOptionalSync(fs.dios, odir, defaultDirPerms, fs.syncAlways.Load()); err != nil {
 		return nil, fmt.Errorf("could not create consumer directory - %v", err)
 	}
 	csi := &FileConsumerInfo{Name: name, Created: created, ConsumerConfig: *cfg}
+	fs.mu.RLock()
+	sname := fs.cfg.Name
+	fs.mu.RUnlock()
 	o := &consumerFileStore{
 		fs:   fs,
 		cfg:  csi,
@@ -13097,7 +13401,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		odir: odir,
 		ifn:  filepath.Join(odir, consumerState),
 	}
-	key := sha256.Sum256([]byte(fs.cfg.Name + "/" + name))
+	key := sha256.Sum256([]byte(sname + "/" + name))
 	hh, err := highwayhash.NewDigest64(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("could not create hash: %v", err)
@@ -13111,7 +13415,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 				return nil, errBadKeySize
 			}
 			// Recover key encryption key.
-			rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+			rb, err := fs.prf([]byte(sname + tsep + o.name))
 			if err != nil {
 				return nil, err
 			}
@@ -13181,6 +13485,16 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		}
 	}
 
+	// Rewrite our meta data if it's zero'd out or doesn't match its checksum.
+	// This is done after a plaintext conversion, which relies on the key file not existing yet.
+	if match, err := metaFilesMatch(meta, filepath.Join(odir, JetStreamMetaFileSum), key[:]); err != nil {
+		return nil, err
+	} else if !match {
+		if err := o.writeConsumerMeta(); err != nil {
+			return nil, err
+		}
+	}
+
 	// Create channels to control our flush go routine.
 	o.fch = make(chan struct{}, 1)
 	o.qch = make(chan struct{})
@@ -13211,7 +13525,10 @@ func (o *consumerFileStore) convertCipher() error {
 		return errBadKeySize
 	}
 	// Recover key encryption key.
-	rb, err := fs.prf([]byte(fs.cfg.Name + tsep + o.name))
+	fs.mu.RLock()
+	sname := fs.cfg.Name
+	fs.mu.RUnlock()
+	rb, err := fs.prf([]byte(sname + tsep + o.name))
 	if err != nil {
 		return err
 	}
@@ -13331,14 +13648,15 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 				return
 			}
 			buf, err := o.encodeState()
-			o.mu.Unlock()
 			if err != nil {
+				o.mu.Unlock()
 				return
 			}
 			// TODO(dlc) - if we error should start failing upwards.
-			if err := o.writeState(buf); err == nil {
+			if err := o.writeStateLocked(buf, true); err == nil {
 				lastWrite = time.Now()
 			}
+			o.mu.Unlock()
 		case <-qch:
 			return
 		}
@@ -13348,11 +13666,11 @@ func (o *consumerFileStore) flushLoop(fch, qch chan struct{}) {
 // SetStarting sets our starting stream sequence.
 func (o *consumerFileStore) SetStarting(sseq uint64) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered.Stream = sseq
 	o.state.AckFloor.Stream = sseq
 	buf := encodeConsumerState(&o.state)
-	o.mu.Unlock()
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // UpdateStarting updates our starting stream sequence.
@@ -13462,7 +13780,7 @@ func (o *consumerFileStore) UpdateDelivered(dseq, sseq, dc uint64, ts int64) err
 }
 
 // UpdateAcks is called whenever a consumer with explicit ack or ack all acks a message.
-func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
+func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64, explicit bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -13499,7 +13817,7 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 	// Done with the consistency checks, we'll always kick for below updates.
 	kick = true
 
-	if ackAll {
+	if !explicit && ackAll {
 		// Use the original delivery sequence.
 		if p := o.state.Pending[sseq]; dseq > p.Sequence && p.Sequence > 0 {
 			dseq = p.Sequence
@@ -13545,14 +13863,9 @@ func (o *consumerFileStore) UpdateAcks(dseq, sseq uint64) error {
 		o.state.AckFloor.Stream = sseq
 
 		if o.state.Delivered.Consumer > dseq {
-			for ss := sseq + 1; ss <= o.state.Delivered.Stream; ss++ {
-				if p, ok := o.state.Pending[ss]; ok {
-					if p.Sequence > 0 {
-						o.state.AckFloor.Consumer = p.Sequence - 1
-						o.state.AckFloor.Stream = ss - 1
-					}
-					break
-				}
+			if ss, p := nextPending(o.state.Pending, sseq, o.state.Delivered.Stream); p != nil && p.Sequence > 0 {
+				o.state.AckFloor.Consumer = p.Sequence - 1
+				o.state.AckFloor.Stream = ss - 1
 			}
 		}
 	}
@@ -13693,16 +14006,16 @@ func (o *consumerFileStore) ForceUpdate(state *ConsumerState) error {
 
 	// Replace our state.
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.state.Delivered = state.Delivered
 	o.state.AckFloor = state.AckFloor
 	o.state.Pending = pending
 	o.state.Redelivered = redelivered
 	buf, err := o.encodeState()
-	o.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return o.writeState(buf)
+	return o.writeStateLocked(buf, true)
 }
 
 // Will encrypt the state with our asset key. Will be a no-op if encryption not enabled.
@@ -13723,14 +14036,23 @@ func (o *consumerFileStore) encryptState(buf []byte) ([]byte, error) {
 
 func (o *consumerFileStore) writeState(buf []byte) error {
 	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.writeStateLocked(buf, false)
+}
+
+// If current, buf is the state as of now.
+// Lock should be held, it's released while writing the file.
+func (o *consumerFileStore) writeStateLocked(buf []byte, current bool) error {
 	// Don't write after being stopped or deleted, otherwise we could recreate the state file.
 	if o.closed {
-		o.mu.Unlock()
 		return ErrStoreClosed
 	}
 	// Check if we have the index file open.
 	if o.writing || len(buf) == 0 {
-		o.mu.Unlock()
+		// Skipped because of another write. Kick the flusher so this state still gets written.
+		if len(buf) > 0 {
+			o.kickFlusher()
+		}
 		return nil
 	}
 
@@ -13738,13 +14060,16 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 	if o.aek != nil {
 		var err error
 		if buf, err = o.encryptState(buf); err != nil {
-			o.mu.Unlock()
 			return err
 		}
 	}
 
 	o.writing = true
-	o.dirty = false
+	// Only the current state leaves nothing more to write.
+	// An older one could miss an update made since it was encoded.
+	if current {
+		o.dirty = false
+	}
 	ifn := o.ifn
 	o.mu.Unlock()
 
@@ -13756,8 +14081,6 @@ func (o *consumerFileStore) writeState(buf []byte) error {
 		o.dirty = true
 	}
 	o.writing = false
-	o.mu.Unlock()
-
 	return err
 }
 
@@ -13781,21 +14104,23 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 
-	if cfs.prf != nil && cfs.aek == nil {
+	// Generate our key if encrypted and we don't have one yet.
+	// Stage it like meta.inf, since the current meta.inf may still need the current key.
+	aek, stagedKey := cfs.aek, false
+	if cfs.prf != nil && aek == nil {
 		fs := cfs.fs
-		key, _, _, encrypted, err := fs.genEncryptionKeys(fs.cfg.Name + tsep + cfs.name)
+		fs.mu.RLock()
+		sname := fs.cfg.Name
+		fs.mu.RUnlock()
+		key, _, _, encrypted, err := fs.genEncryptionKeys(sname + tsep + cfs.name)
 		if err != nil {
 			return err
 		}
-		cfs.aek = key
 		keyFile := filepath.Join(cfs.odir, JetStreamMetaFileKey)
-		if _, err := os.Stat(keyFile); err != nil && !os.IsNotExist(err) {
+		if err = fs.writeFileWithOptionalSync(keyFile+metaTmpSuffix, encrypted, defaultFilePerms); err != nil {
 			return err
 		}
-		err = cfs.fs.writeFileWithOptionalSync(keyFile, encrypted, defaultFilePerms)
-		if err != nil {
-			return err
-		}
+		aek, stagedKey = key, true
 	}
 
 	b, err := json.Marshal(cfs.cfg)
@@ -13803,17 +14128,20 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 		return err
 	}
 	// Encrypt if needed.
-	if cfs.aek != nil {
-		nonce := make([]byte, cfs.aek.NonceSize(), cfs.aek.NonceSize()+len(b)+cfs.aek.Overhead())
+	if aek != nil {
+		nonce := make([]byte, aek.NonceSize(), aek.NonceSize()+len(b)+aek.Overhead())
 		if n, err := rand.Read(nonce); err != nil {
 			return err
 		} else if n != len(nonce) {
 			return fmt.Errorf("not enough nonce bytes read (%d != %d)", n, len(nonce))
 		}
-		b = cfs.aek.Seal(nonce, nonce, b, nil)
+		b = aek.Seal(nonce, nonce, b, nil)
 	}
 
-	err = cfs.fs.writeFileWithOptionalSync(meta, b, defaultFilePerms)
+	// Stage meta.inf until meta.sum is written, so a crash can't leave them out of sync.
+	// After a crash, recoverStagedMeta finishes or discards it.
+	tmp := meta + metaTmpSuffix
+	err = cfs.fs.writeFileWithOptionalSync(tmp, b, defaultFilePerms)
 	if err != nil {
 		return err
 	}
@@ -13827,7 +14155,9 @@ func (cfs *consumerFileStore) writeConsumerMeta() error {
 	if err != nil {
 		return err
 	}
-	return nil
+	// The new key is in use once meta.sum is written, since recovery will commit it.
+	cfs.aek = aek
+	return commitStagedMeta(cfs.fs.dios, cfs.odir, stagedKey, cfs.fs.syncAlways.Load())
 }
 
 // Consumer version.
@@ -14320,6 +14650,19 @@ func (fs *fileStore) writeFileWithOptionalSync(name string, data []byte, perm fs
 	return writeAtomically(fs.dios, name, data, perm, fs.syncAlways.Load())
 }
 
+// renameWithOptionalSync renames from to to, and flushes the directory metadata if sync is set.
+func renameWithOptionalSync(dios *diskIOSemaphore, from, to string, sync bool) error {
+	dios.acquire()
+	defer dios.release()
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	if sync && canFsyncDirectories {
+		return syncDir(filepath.Dir(to))
+	}
+	return nil
+}
+
 func writeFileWithSync(dios *diskIOSemaphore, name string, data []byte, perm fs.FileMode) error {
 	return writeAtomically(dios, name, data, perm, true)
 }
@@ -14387,6 +14730,42 @@ func (fs *fileStore) syncFileAndDir(name string) error {
 	}
 	if canFsyncDirectories {
 		if err = syncDir(filepath.Dir(name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mkdirAllWithOptionalSync creates dir and any missing parents.
+// If sync is set, the parent of each new directory is synced, so the new entries survive a crash.
+func mkdirAllWithOptionalSync(dios *diskIOSemaphore, dir string, perm fs.FileMode, sync bool) error {
+	// Collect the directories MkdirAll will create, since only their parents need a sync.
+	var missing []string
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	dios.acquire()
+	defer dios.release()
+	if err := os.MkdirAll(dir, perm); err != nil {
+		return err
+	}
+	if !sync || !canFsyncDirectories {
+		return nil
+	}
+	for _, d := range missing {
+		if err := syncDir(filepath.Dir(d)); err != nil {
+			// Remove the new directories, deepest first, so a retry creates and syncs them again.
+			for _, d := range missing {
+				_ = os.Remove(d)
+			}
 			return err
 		}
 	}

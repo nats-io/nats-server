@@ -6047,3 +6047,33 @@ func TestRouteLogsRemoteURL(t *testing.T) {
 	s2.Shutdown()
 	checkNoticeNotContains(t, l, remoteURLLogUser, remoteURLLogPassword)
 }
+
+func TestRouteCompressionReconnectAfterWriteError(t *testing.T) {
+	for _, mode := range []string{
+		// Fails in the readLoop's compression INFO flush.
+		CompressionS2Fast,
+		// Fails in the writeLoop, as a baseline.
+		CompressionOff,
+	} {
+		t.Run(mode, func(t *testing.T) {
+			o1 := DefaultOptions()
+			o1.Cluster.PoolSize = -1
+			o1.Cluster.Compression.Mode = mode
+			s1 := RunServer(o1)
+			defer s1.Shutdown()
+
+			o2 := DefaultOptions()
+			o2.Cluster.PoolSize = -1
+			o2.Cluster.Compression.Mode = mode
+			// Start the writeLoop late so the readLoop flushes first.
+			o2.Cluster.writeLoopDelay = 250 * time.Millisecond
+			o2.Cluster.dialer = failFirstWriteDialer()
+			o2.Routes = RoutesFromStr(fmt.Sprintf("nats://127.0.0.1:%d", o1.Cluster.Port))
+			s2 := RunServer(o2)
+			defer s2.Shutdown()
+
+			// The first connection failed, so this requires a reconnect.
+			checkClusterFormed(t, s1, s2)
+		})
+	}
+}

@@ -4479,6 +4479,99 @@ func TestJetStreamClusterMetaSnapshotConsumerDeleteConsistency(t *testing.T) {
 	})
 }
 
+func TestJetStreamClusterMetaRecoveryStaleConsumerRemovalKeepsRecreate(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	scfg := &nats.StreamConfig{Name: "TEST", Replicas: 1}
+	_, err := js.AddStream(scfg)
+	require_NoError(t, err)
+
+	ccfg := &nats.ConsumerConfig{Name: "consumer", Replicas: 1}
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+
+	sl := c.streamLeader(globalAccountName, "TEST")
+	mjs := sl.getJetStream()
+	assignment := func() *consumerAssignment {
+		mjs.mu.RLock()
+		defer mjs.mu.RUnlock()
+		ca := mjs.consumerAssignment(globalAccountName, "TEST", "consumer")
+		require_NotNil(t, ca)
+		return ca.clone()
+	}
+	oca := assignment()
+
+	// Get the snapshot before recreating the consumer, so we can recover through the recreate.
+	snap, _, _, err := mjs.metaSnapshot()
+	require_NoError(t, err)
+
+	require_NoError(t, js.DeleteConsumer("TEST", "consumer"))
+	_, err = js.AddConsumer("TEST", ccfg)
+	require_NoError(t, err)
+	nca := assignment()
+	require_NotEqual(t, oca.Group.Name, nca.Group.Name)
+
+	// Remove the stream so we can recover fresh.
+	require_NoError(t, js.DeleteStream("TEST"))
+	nc.Close()
+
+	ru := &recoveryUpdates{
+		removeStreams:   make(map[string]*streamAssignment),
+		removeConsumers: make(map[string]map[string]*consumerAssignment),
+		addStreams:      make(map[string]*streamAssignment),
+		updateStreams:   make(map[string]*streamAssignment),
+		updateConsumers: make(map[string]map[string]*consumerAssignment),
+	}
+
+	// Simulate recovering:
+	// - snapshot with a stream and consumer
+	// - normal entry deleting the consumer
+	// - normal entry recreating the consumer with the same name
+	// - normal entry deleting the earlier consumer again, a retry from a server that still ran it
+	// This should result in the recreated consumer, like for servers applying the entries one by one.
+	mjs.mu.Lock()
+	mjs.metaRecovering = true
+	mjs.mu.Unlock()
+	_, _, err = mjs.applyMetaEntries([]*Entry{
+		newEntry(EntrySnapshot, snap),
+		newEntry(EntryNormal, encodeDeleteConsumerAssignment(oca)),
+		newEntry(EntryNormal, encodeAddConsumerAssignment(nca)),
+		newEntry(EntryNormal, encodeDeleteConsumerAssignment(oca)),
+	}, ru)
+	require_NoError(t, err)
+
+	// Recovery should contain the stream create, the consumer delete and the recreated consumer.
+	require_Len(t, len(ru.addStreams), 1)
+	require_Len(t, len(ru.removeConsumers), 1)
+	require_Len(t, len(ru.updateConsumers), 1)
+	staged := ru.updateConsumers[nca.streamRecoveryKey()][nca.recoveryKey()]
+	require_NotNil(t, staged)
+	require_Equal(t, staged.Group.Name, nca.Group.Name)
+
+	// Process those updates, in the order recovery completes.
+	for _, cas := range ru.removeConsumers {
+		for _, ca := range cas {
+			mjs.processConsumerRemoval(ca)
+		}
+	}
+	for _, sa := range ru.addStreams {
+		mjs.processStreamAssignment(sa)
+	}
+	for _, cas := range ru.updateConsumers {
+		for _, ca := range cas {
+			mjs.processConsumerAssignment(ca)
+		}
+	}
+	mjs.clearMetaRecovering()
+
+	ca := assignment()
+	require_Equal(t, ca.Group.Name, nca.Group.Name)
+}
+
 func TestJetStreamClusterMetaSnapshotDecodeError(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R3S", 3)
 	defer c.shutdown()
@@ -8603,11 +8696,22 @@ func TestJetStreamClusterDecodeUpdatesRejectMalformed(t *testing.T) {
 	t.Run("AckUpdate", func(t *testing.T) {
 		valid := binary.AppendUvarint(nil, 10)
 		valid = binary.AppendUvarint(valid, 20)
-		if _, _, err := decodeAckUpdate(valid); err != nil {
+		if _, _, explicit, err := decodeAckUpdate(valid); err != nil {
 			t.Fatalf("expected valid ack update to decode, got %v", err)
+		} else if explicit {
+			t.Fatalf("expected explicit to default to false")
+		}
+		// An optional trailing byte marks the update as explicit.
+		marked := binary.AppendUvarint(nil, 10)
+		marked = binary.AppendUvarint(marked, 20)
+		marked = append(marked, 1)
+		if _, _, explicit, err := decodeAckUpdate(marked); err != nil {
+			t.Fatalf("expected valid explicit ack update to decode, got %v", err)
+		} else if !explicit {
+			t.Fatalf("expected trailing byte to decode as explicit")
 		}
 		for _, buf := range [][]byte{nil, valid[:1]} {
-			if _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
+			if _, _, _, err := decodeAckUpdate(buf); err != errBadAckUpdate {
 				t.Fatalf("expected errBadAckUpdate for %v, got %v", buf, err)
 			}
 		}
@@ -9200,6 +9304,98 @@ func TestJetStreamClusterConsumerInfoWithUncommittedCreate(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, meta.Sequence.Stream, ack.Sequence)
 	require_NoError(t, msgs[0].AckSync())
+}
+
+func TestJetStreamClusterConsumerInfoAppliedWithoutRaftNode(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "R3S", 3)
+	defer c.shutdown()
+
+	nc, js := jsClientConnect(t, c.randomServer())
+	defer nc.Close()
+
+	_, err := js.AddStream(&nats.StreamConfig{Name: "TEST", Subjects: []string{"foo"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = js.AddConsumer("TEST", &nats.ConsumerConfig{Durable: "C", AckPolicy: nats.AckExplicitPolicy, Replicas: 3})
+	require_NoError(t, err)
+	c.waitOnConsumerLeader(globalAccountName, "TEST", "C")
+
+	// The consumer leader is moved to a meta follower, so both the meta leader and a follower are tested.
+	ml := c.leader()
+	var cl, mf *Server
+	for _, s := range c.servers {
+		if s == ml {
+			continue
+		}
+		if cl == nil {
+			cl = s
+		} else {
+			mf = s
+		}
+	}
+	c.stepDownConsumerLeader(nc, globalAccountName, "TEST", "C", cl)
+
+	for _, s := range []*Server{ml, mf} {
+		t.Run(s.Name(), func(t *testing.T) {
+			sjs := s.getJetStream()
+			mset, err := s.globalAccount().lookupStream("TEST")
+			require_NoError(t, err)
+			var ca *consumerAssignment
+			checkFor(t, 2*time.Second, 100*time.Millisecond, func() error {
+				if o := mset.lookupConsumer("C"); o == nil || o.raftNode() == nil || !o.isMonitorRunning() {
+					return errors.New("consumer not running")
+				}
+				sjs.mu.RLock()
+				defer sjs.mu.RUnlock()
+				if ca = sjs.consumerAssignment(globalAccountName, "TEST", "C"); ca == nil || ca.Group == nil || ca.Group.node == nil {
+					return errors.New("consumer assignment or node not ready")
+				}
+				return nil
+			})
+
+			// Simulate the consumer's node not being created yet, like when recovering.
+			sjs.mu.Lock()
+			node := ca.Group.node
+			ca.Group.node = nil
+			sjs.mu.Unlock()
+			defer func() {
+				sjs.mu.Lock()
+				ca.Group.node = node
+				sjs.mu.Unlock()
+			}()
+
+			snc, sjsc := jsClientConnect(t, s)
+			defer snc.Close()
+
+			// Audit advisories contain all responses, while the client only gets the first.
+			auditSub, err := snc.SubscribeSync(JSAuditAdvisory)
+			require_NoError(t, err)
+			defer auditSub.Drain()
+			require_NoError(t, snc.Flush())
+
+			ci, err := sjsc.ConsumerInfo("TEST", "C")
+			require_NoError(t, err)
+			require_Equal(t, ci.Name, "C")
+
+			// The consumer exists, so the server without its node must not report it as not found.
+			for {
+				msg, err := auditSub.NextMsg(3 * errRespDelay)
+				if err == nats.ErrTimeout {
+					break
+				}
+				require_NoError(t, err)
+				var audit JSAPIAudit
+				require_NoError(t, json.Unmarshal(msg.Data, &audit))
+				if audit.Server != s.Name() || audit.Subject != fmt.Sprintf(JSApiConsumerInfoT, "TEST", "C") {
+					continue
+				}
+				var resp JSApiConsumerInfoResponse
+				require_NoError(t, json.Unmarshal([]byte(audit.Response), &resp))
+				if resp.Error != nil {
+					require_NotEqual(t, resp.Error.ErrCode, uint16(JSConsumerNotFoundErr))
+				}
+			}
+		})
+	}
 }
 
 func TestJetStreamClusterConsumerInfoWithInflightConsumerDelete(t *testing.T) {

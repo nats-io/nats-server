@@ -3924,3 +3924,145 @@ func TestNoRaceFileStoreWeakCacheGCRecyclesBuf(t *testing.T) {
 		expectNotRecycled(t, arr)
 	})
 }
+
+func TestNoRaceNoDroppedMsgOnSubCloseForRouteOrLeafDelivery(t *testing.T) {
+	// The bug really impacted only delivery to leafnodes because sub.close()
+	// was invoked only when processing LEAF unsub protocols, however, setting
+	// up the test with route delivery too since the code to delivery to routes
+	// and leafnodes is common, so this will make sure that the bug does not
+	// appear for routes in the future.
+	tmpl := `
+		listen: "127.0.0.1:-1"
+		server_name: "%s"
+		cluster {
+			name: "local"
+			listen: "127.0.0.1:-1"
+			%s
+		}
+		leafnodes {
+			listen: "127.0.0.1:-1"
+		}
+	`
+	conf1 := createConfFile(t, fmt.Appendf(nil, tmpl, "A", _EMPTY_))
+	s1, o1 := RunServerWithConfig(conf1)
+	defer s1.Shutdown()
+
+	conf2 := createConfFile(t, fmt.Appendf(nil, tmpl, "B",
+		fmt.Sprintf("routes: [\"nats://127.0.0.1:%d\"]", o1.Cluster.Port)))
+	s2, _ := RunServerWithConfig(conf2)
+	defer s2.Shutdown()
+
+	checkClusterFormed(t, s1, s2)
+
+	tmpl = `
+		listen: "127.0.0.1:-1"
+		server_name: "LEAF"
+		leafnodes {
+			listen: "127.0.0.1:-1"
+			remotes: [{url: "nats://127.0.0.1:%d"}]
+		}
+	`
+	conf3 := createConfFile(t, fmt.Appendf(nil, tmpl, o1.LeafNode.Port))
+	s3, _ := RunServerWithConfig(conf3)
+	defer s3.Shutdown()
+
+	checkLeafNodeConnected(t, s1)
+	checkLeafNodeConnected(t, s3)
+
+	var (
+		qs2Count atomic.Int32
+		qs3Count atomic.Int32
+		last     atomic.Int32
+	)
+
+	keepTab := func(m *nats.Msg, count *atomic.Int32) {
+		if len(m.Data) == 0 {
+			last.Add(1)
+		} else {
+			(*count).Add(1)
+		}
+	}
+
+	nc2 := natsConnect(t, s2.ClientURL())
+	defer nc2.Close()
+	qsub := natsQueueSub(t, nc2, "foo", "q2", func(m *nats.Msg) {
+		keepTab(m, &qs2Count)
+	})
+	qsub.SetPendingLimits(-1, -1)
+	natsSubSync(t, nc2, "s2.interest")
+	natsFlush(t, nc2)
+
+	nc3 := natsConnect(t, s3.ClientURL())
+	defer nc3.Close()
+	qsub = natsQueueSub(t, nc3, "foo", "q3", func(m *nats.Msg) {
+		keepTab(m, &qs3Count)
+	})
+	qsub.SetPendingLimits(-1, -1)
+	natsSubSync(t, nc3, "s3.interest")
+	natsFlush(t, nc3)
+
+	checkSubInterest(t, s1, globalAccountName, "s2.interest", time.Second)
+	checkSubInterest(t, s1, globalAccountName, "s3.interest", time.Second)
+
+	nc1 := natsConnect(t, s1.ClientURL())
+	defer nc1.Close()
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	closeCh := make(chan struct{})
+	createCloseQSub := func(nc *nats.Conn, qn string) {
+		defer wg.Done()
+		for {
+			select {
+			case <-closeCh:
+				nc.Flush()
+				return
+			default:
+				qsub := natsQueueSub(t, nc, "foo", qn, func(_ *nats.Msg) {})
+				qsub.Drain()
+			}
+		}
+	}
+	go createCloseQSub(nc2, "q2_2")
+	go createCloseQSub(nc3, "q3_2")
+
+	time.Sleep(50 * time.Millisecond)
+
+	const total = 10000
+	for range total {
+		nc1.Publish("foo", []byte("hello"))
+		natsFlush(t, nc1)
+	}
+
+	close(closeCh)
+	wg.Wait()
+
+	acc := s1.globalAccount()
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		r := acc.sl.Match("foo")
+		if len(r.qsubs) > 2 {
+			return errors.New("remote queues still registered")
+		}
+		return nil
+	})
+
+	natsPub(t, nc1, "foo", nil)
+	checkFor(t, time.Second, 15*time.Millisecond, func() error {
+		if n := int(last.Load()); n != 2 {
+			return fmt.Errorf("Only %v out of 2 subscriptions have received the last message", n)
+		}
+		return nil
+	})
+
+	check := func(count *atomic.Int32) {
+		t.Helper()
+		checkFor(t, time.Second, 15*time.Millisecond, func() error {
+			if n := int((*count).Load()); n != total {
+				return fmt.Errorf("Expecting %v messages, got %v", total, n)
+			}
+			return nil
+		})
+	}
+	check(&qs2Count)
+	check(&qs3Count)
+}

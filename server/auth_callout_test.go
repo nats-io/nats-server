@@ -39,7 +39,7 @@ import (
 )
 
 // Helper function to decode an auth request.
-func decodeAuthRequest(t *testing.T, ejwt []byte) (string, *jwt.ServerID, *jwt.ClientInformation, *jwt.ConnectOptions, *jwt.ClientTLS) {
+func decodeAuthRequest(t testing.TB, ejwt []byte) (string, *jwt.ServerID, *jwt.ClientInformation, *jwt.ConnectOptions, *jwt.ClientTLS) {
 	t.Helper()
 	ac, err := jwt.DecodeAuthorizationRequestClaims(string(ejwt))
 	require_NoError(t, err)
@@ -119,7 +119,7 @@ const (
 	authCalloutIssuerSK   = "SAAE46BB675HKZKSVJEUZAKKWIV6BJJO6XYE46Z3ZHO7TCI647M3V42IJE"
 )
 
-func serviceResponse(t *testing.T, userID string, serverID string, uJwt string, errMsg string, expires time.Duration) []byte {
+func serviceResponse(t testing.TB, userID string, serverID string, uJwt string, errMsg string, expires time.Duration) []byte {
 	cr := jwt.NewAuthorizationResponseClaims(userID)
 	cr.Audience = serverID
 	cr.Error = errMsg
@@ -151,7 +151,7 @@ func newScopedRole(t *testing.T, role string, pub []string, sub []string, allowR
 }
 
 // Will create a signed user jwt as an authorized user.
-func createAuthUser(t *testing.T, user, name, account, issuerAccount string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
+func createAuthUser(t testing.TB, user, name, account, issuerAccount string, akp nkeys.KeyPair, expires time.Duration, limits *jwt.UserPermissionLimits) string {
 	t.Helper()
 
 	if akp == nil {
@@ -5112,4 +5112,194 @@ func TestAuthCalloutOnlyFirstReplyHandled(t *testing.T) {
 
 	// The service's connection must not be blocked by its ignored replies.
 	require_NoError(t, at.authClient.FlushTimeout(time.Second))
+}
+
+// Connects, authenticates through the auth callout and closes clients from many
+// goroutines, each as a user "u<i>" that the callout maps to the account "A<i>".
+// The callout service is a set of queue subscribers on one connection, like a
+// real service that answers several requests at once. The clients are in memory
+// (net.Pipe), so a long run does not use up the ephemeral ports.
+func BenchmarkAuthCalloutConnectCloseParallel(b *testing.B) {
+	const workers = 16
+	for _, accounts := range []int{1, 16} {
+		b.Run(fmt.Sprintf("accounts=%d", accounts), func(b *testing.B) {
+			var conf strings.Builder
+			conf.WriteString(`
+				listen: "127.0.0.1:-1"
+				server_name: B
+				system_account: SYS
+				accounts {
+					SYS {}
+					AUTH { users [ {user: "auth", password: "pwd"} ] }
+			`)
+			for i := 0; i < accounts; i++ {
+				fmt.Fprintf(&conf, "\t\t\t\tA%d {}\n", i)
+			}
+			conf.WriteString(`
+				}
+				authorization {
+					timeout: 10s
+					auth_callout {
+						issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+						account: AUTH
+						auth_users: [ auth ]
+					}
+				}
+			`)
+			s, _ := RunServerWithConfig(createConfFile(b, []byte(conf.String())))
+			defer s.Shutdown()
+
+			handler := func(m *nats.Msg) {
+				user, si, _, opts, _ := decodeAuthRequest(b, m.Data)
+				ujwt := createAuthUser(b, user, _EMPTY_, "A"+strings.TrimPrefix(opts.Username, "u"), _EMPTY_, nil, 0, nil)
+				m.Respond(serviceResponse(b, user, si.ID, ujwt, _EMPTY_, 0))
+			}
+			svc := natsConnect(b, s.ClientURL(), nats.UserInfo("auth", "pwd"))
+			defer svc.Close()
+			for range workers {
+				_, err := svc.QueueSubscribe(AuthCalloutSubject, "auth", handler)
+				require_NoError(b, err)
+			}
+			require_NoError(b, svc.Flush())
+
+			benchConnectClose(b, s, accounts)
+		})
+	}
+}
+
+// BenchmarkAuthCalloutWebSocketBurst models a connection storm: each iteration
+// is a burst of `burst` WebSocket clients that all start connecting at the same
+// moment, authenticate through the auth callout into named accounts, and close.
+// ns/op is the length of one burst. It also reports the median and 99th
+// percentile of the time one client spends in nats.Connect (TCP, WebSocket
+// upgrade, CONNECT, callout round trip, PONG).
+//
+// Unlike BenchmarkAuthCalloutConnectCloseParallel, the clients are real TCP
+// WebSocket connections, so each connection also takes the server paths of
+// createWSClient, not only the CONNECT processing and the callout.
+func BenchmarkAuthCalloutWebSocketBurst(b *testing.B) {
+	const workers = 16
+	for _, accounts := range []int{1, 16} {
+		for _, burst := range []int{200, 800} {
+			b.Run(fmt.Sprintf("accounts=%d/burst=%d", accounts, burst), func(b *testing.B) {
+				var conf strings.Builder
+				conf.WriteString(`
+					listen: "127.0.0.1:-1"
+					server_name: B
+					system_account: SYS
+					websocket { listen: "127.0.0.1:-1", no_tls: true }
+					accounts {
+						SYS {}
+						AUTH { users [ {user: "auth", password: "pwd"} ] }
+				`)
+				for i := 0; i < accounts; i++ {
+					fmt.Fprintf(&conf, "\t\t\t\t\tA%d {}\n", i)
+				}
+				conf.WriteString(`
+					}
+					authorization {
+						timeout: 10s
+						auth_callout {
+							issuer: "ABJHLOVMPA4CI6R5KLNGOB4GSLNIY7IOUPAJC4YFNDLQVIOBYQGUWVLA"
+							account: AUTH
+							auth_users: [ auth ]
+						}
+					}
+				`)
+				s, _ := RunServerWithConfig(createConfFile(b, []byte(conf.String())))
+				defer s.Shutdown()
+
+				handler := func(m *nats.Msg) {
+					user, si, _, opts, _ := decodeAuthRequest(b, m.Data)
+					ujwt := createAuthUser(b, user, _EMPTY_, "A"+strings.TrimPrefix(opts.Username, "u"), _EMPTY_, nil, 0, nil)
+					m.Respond(serviceResponse(b, user, si.ID, ujwt, _EMPTY_, 0))
+				}
+				svc := natsConnect(b, s.ClientURL(), nats.UserInfo("auth", "pwd"))
+				defer svc.Close()
+				for range workers {
+					_, err := svc.QueueSubscribe(AuthCalloutSubject, "auth", handler)
+					require_NoError(b, err)
+				}
+				require_NoError(b, svc.Flush())
+
+				wsURL := fmt.Sprintf("ws://127.0.0.1:%d", s.getOpts().Websocket.Port)
+				// Close with a reset instead of a graceful close, so that thousands of
+				// short connections do not use up the ephemeral ports in TIME_WAIT.
+				dialer := &lingerDialer{}
+
+				var (
+					lats   = make([]time.Duration, 0, burst*b.N)
+					failed atomic.Int64
+				)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					var (
+						start = make(chan struct{})
+						wg    sync.WaitGroup
+						mu    sync.Mutex
+						local = make([]time.Duration, 0, burst)
+					)
+					wg.Add(burst)
+					for j := 0; j < burst; j++ {
+						go func(user string) {
+							defer wg.Done()
+							<-start
+							t0 := time.Now()
+							nc, err := nats.Connect(wsURL,
+								nats.UserInfo(user, "p"),
+								nats.SetCustomDialer(dialer),
+								nats.NoReconnect(),
+								nats.Timeout(20*time.Second))
+							d := time.Since(t0)
+							if err != nil {
+								failed.Add(1)
+								return
+							}
+							mu.Lock()
+							local = append(local, d)
+							mu.Unlock()
+							nc.Close()
+						}(fmt.Sprintf("u%d", j%accounts))
+					}
+					b.StartTimer()
+					close(start)
+					wg.Wait()
+					b.StopTimer()
+					lats = append(lats, local...)
+					// Let the server finish removing the closed clients, so that bursts
+					// do not overlap.
+					checkFor(b, 20*time.Second, 5*time.Millisecond, func() error {
+						if n := s.NumClients(); n != 1 {
+							return fmt.Errorf("%d clients still connected", n-1)
+						}
+						return nil
+					})
+					b.StartTimer()
+				}
+				b.StopTimer()
+				if f := failed.Load(); f > 0 {
+					b.Fatalf("%d of %d connections failed", f, burst*b.N)
+				}
+				slices.Sort(lats)
+				b.ReportMetric(float64(lats[len(lats)/2].Nanoseconds()), "p50-ns/connect")
+				b.ReportMetric(float64(lats[len(lats)*99/100].Nanoseconds()), "p99-ns/connect")
+			})
+		}
+	}
+}
+
+// lingerDialer dials TCP and makes Close send a reset (SO_LINGER 0).
+type lingerDialer struct{}
+
+func (lingerDialer) Dial(network, address string) (net.Conn, error) {
+	c, err := net.DialTimeout(network, address, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetLinger(0)
+	}
+	return c, nil
 }
