@@ -19,6 +19,8 @@ import (
 	"io"
 	"math"
 	"time"
+
+	"github.com/minio/highwayhash"
 )
 
 // Error for when we can not locate a task for removal or updates.
@@ -27,12 +29,19 @@ var ErrTaskNotFound = errors.New("thw: task not found")
 // Error for when we try to decode a binary-encoded THW with an unknown version number.
 var ErrInvalidVersion = errors.New("thw: encoded version not known")
 
+// Error for when a binary-encoded THW does not match its checksum.
+var ErrInvalidChecksum = errors.New("thw: checksum mismatch")
+
+// Error for when a binary-encoded THW has bytes left after its entries.
+var ErrTrailingData = errors.New("thw: unexpected trailing data")
+
 const (
 	tickDuration = int64(time.Second) // Tick duration in nanoseconds.
 	wheelBits    = 12                 // 2^12 = 4096 slots.
 	wheelSize    = 1 << wheelBits     // Number of slots in the wheel.
 	wheelMask    = wheelSize - 1      // Mask for calculating position.
 	headerLen    = 17                 // 1 byte magic + 2x uint64s
+	checksumLen  = 8                  // Trailing highwayhash, since version 2.
 )
 
 // slot represents a single slot in the wheel.
@@ -216,11 +225,24 @@ func (hw *HashWheel) Encode(highSeq uint64) []byte {
 
 // Decode snapshots a binary-encoded THW and replaces the contents of this
 // THW with them. Returns the high seq number from the snapshot.
-func (hw *HashWheel) Decode(b []byte) (uint64, error) {
+// The key must match the one used to encode.
+func (hw *HashWheel) Decode(b []byte, key []byte) (uint64, error) {
 	if len(b) < headerLen {
 		return 0, io.ErrShortBuffer
 	}
-	if b[0] != 1 {
+	switch b[0] {
+	case 1:
+		// Version 1 has no checksum.
+	case 2:
+		if len(b) < headerLen+checksumLen {
+			return 0, io.ErrShortBuffer
+		}
+		n := len(b) - checksumLen
+		if highwayhash.Sum64(b[:n], key) != binary.LittleEndian.Uint64(b[n:]) {
+			return 0, ErrInvalidChecksum
+		}
+		b = b[:n]
+	default:
 		return 0, ErrInvalidVersion
 	}
 	hw.wheel = make([]*slot, wheelSize)
@@ -239,6 +261,10 @@ func (hw *HashWheel) Decode(b []byte) (uint64, error) {
 		}
 		hw.Add(v, ts)
 		b = b[tn+vn:]
+	}
+	// The entries must fill the buffer exactly, a version 2 file read as version 1 leaves its checksum.
+	if len(b) != 0 {
+		return 0, ErrTrailingData
 	}
 	return stamp, nil
 }

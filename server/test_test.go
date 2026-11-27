@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,33 @@ func require_NoChanRead[T any](t *testing.T, ch chan T, timeout time.Duration) {
 		antithesis.AssertUnreachable(t, "Failed require_NoChanRead check", nil)
 		t.Fatalf("require no read from channel within %v but got something", timeout)
 	case <-time.After(timeout):
+	}
+}
+
+// requireCorruptionRejected flips every bit of valid, and truncates it at every length.
+// None may be misread: each must fail to decode, or decode to the same as valid.
+// Truncations to the allowed lengths are skipped.
+func requireCorruptionRejected[T any](t testing.TB, valid []byte, decode func([]byte) (T, error), allowLens ...int) {
+	t.Helper()
+	want, err := decode(slices.Clone(valid))
+	require_NoError(t, err)
+	misread := func(b []byte) bool {
+		got, err := decode(b)
+		return err == nil && !reflect.DeepEqual(got, want)
+	}
+	for i := range valid {
+		for bit := range 8 {
+			b := slices.Clone(valid)
+			b[i] ^= 1 << bit
+			if misread(b) {
+				t.Fatalf("Flipping bit %d of byte %d is misread", bit, i)
+			}
+		}
+	}
+	for n := range len(valid) {
+		if !slices.Contains(allowLens, n) && misread(slices.Clone(valid[:n])) {
+			t.Fatalf("Truncating to %d bytes is misread", n)
+		}
 	}
 }
 

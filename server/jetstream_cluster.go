@@ -1423,7 +1423,14 @@ func (js *jetStream) setupMetaGroup() error {
 	cfg.Observer = s.canExtendOtherDomain() && s.getOpts().JetStreamExtHint != jsNoExtend
 
 	var bootstrap bool
-	if ps, err := readPeerState(s.diskIOSemaphore(), storeDir); err != nil {
+	ps, err := readPeerState(s.diskIOSemaphore(), storeDir, defaultMetaGroupName)
+	if err != nil && !os.IsNotExist(err) {
+		// Fail like a corrupt snapshot would, bootstrapping would replace our peers.
+		s.Warnf("JetStream cluster could not read peer state: %v", err)
+		fs.Stop()
+		return err
+	}
+	if err != nil {
 		s.Noticef("JetStream cluster bootstrapping")
 		bootstrap = true
 		peers := s.ActivePeers()
@@ -4145,7 +4152,7 @@ retry:
 
 		cfg := &RaftConfig{Name: rgName, Store: storeDir, Log: store, Track: true, Managed: true, Recovering: recovering, ScaleUp: rgScaleUp}
 
-		if _, err := readPeerState(s.diskIOSemaphore(), storeDir); err != nil {
+		if _, err := readPeerState(s.diskIOSemaphore(), storeDir, rgName); err != nil {
 			s.bootstrapRaftNode(cfg, rgPeers, true)
 		}
 
@@ -9211,7 +9218,7 @@ func (js *jetStream) applyConsumerEntries(o *consumer, ce *CommittedEntry) error
 
 		if e.Type == EntrySnapshot {
 			// Always apply, an older snapshot is ignored by the store.
-			state, err := decodeConsumerState(e.Data)
+			state, err := decodeConsumerState(e.Data, nil)
 			if err != nil {
 				if mset, node := o.streamAndNode(); mset != nil && node != nil {
 					s := js.srv

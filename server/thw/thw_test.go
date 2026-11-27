@@ -14,11 +14,17 @@
 package thw
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
+	"maps"
 	"math"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/minio/highwayhash"
 )
 
 func TestHashWheelBasics(t *testing.T) {
@@ -221,7 +227,15 @@ func TestHashWheelStress(t *testing.T) {
 	}
 }
 
+// Newer servers write version 2, the version 1 encoding followed by a checksum.
+func encodeVersion2(hw *HashWheel, highSeq uint64, key []byte) []byte {
+	b := hw.Encode(highSeq)
+	b[0] = 2
+	return binary.LittleEndian.AppendUint64(b, highwayhash.Sum64(b, key))
+}
+
 func TestHashWheelEncodeDecode(t *testing.T) {
+	key := make([]byte, 32)
 	hw := NewHashWheel()
 	now := time.Now()
 
@@ -236,7 +250,7 @@ func TestHashWheelEncodeDecode(t *testing.T) {
 	require_True(t, len(b) > 17) // Bigger than just the header
 
 	nhw := NewHashWheel()
-	stamp, err := nhw.Decode(b)
+	stamp, err := nhw.Decode(b, key)
 	require_NoError(t, err)
 	require_Equal(t, stamp, 12345)
 	require_Equal(t, hw.GetNextExpiration(math.MaxInt64), nhw.GetNextExpiration(math.MaxInt64))
@@ -253,7 +267,24 @@ func TestHashWheelEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestHashWheelDecodeVersion2(t *testing.T) {
+	key := make([]byte, 32)
+	hw := NewHashWheel()
+	expires := time.Now().Add(time.Second).UnixNano()
+	require_NoError(t, hw.Add(1, expires))
+
+	b := encodeVersion2(hw, 12345, key)
+
+	nhw := NewHashWheel()
+	stamp, err := nhw.Decode(b, key)
+	require_NoError(t, err)
+	require_Equal(t, stamp, 12345)
+	require_Equal(t, nhw.Count(), 1)
+	require_Equal(t, nhw.GetNextExpiration(math.MaxInt64), expires)
+}
+
 func TestHashWheelDecodeRejectsMalformed(t *testing.T) {
+	key := make([]byte, 32)
 	// Build a valid header that claims the given number of entries.
 	header := func(count uint64) []byte {
 		b := make([]byte, headerLen)
@@ -269,7 +300,11 @@ func TestHashWheelDecodeRejectsMalformed(t *testing.T) {
 		err   error
 	}{
 		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
-		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: ErrInvalidVersion},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: ErrInvalidVersion},
+		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
+		{title: "BadChecksum", buf: func() []byte { b := encodeVersion2(NewHashWheel(), 1, key); b[9]++; return b }(), err: ErrInvalidChecksum},
+		// Valid, but encoded for another owner.
+		{title: "WrongKey", buf: encodeVersion2(NewHashWheel(), 1, bytes.Repeat([]byte{1}, 32)), err: ErrInvalidChecksum},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtVarints", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Has the timestamp varint but the seq varint is missing.
@@ -277,7 +312,7 @@ func TestHashWheelDecodeRejectsMalformed(t *testing.T) {
 	} {
 		t.Run(test.title, func(t *testing.T) {
 			hw := NewHashWheel()
-			_, err := hw.Decode(test.buf)
+			_, err := hw.Decode(test.buf, key)
 			require_Error(t, err, test.err)
 		})
 	}
@@ -384,4 +419,59 @@ func BenchmarkHashWheel_LargeScale(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		hw.Add(uint64(i+100000), expires[i])
 	}
+}
+
+func TestHashWheelDecodeRejectsCorruption(t *testing.T) {
+	key := make([]byte, 32)
+	hw := NewHashWheel()
+	now := time.Now()
+	require_NoError(t, hw.Add(1, now.Add(time.Second).UnixNano()))
+	require_NoError(t, hw.Add(2, now.Add(time.Hour).UnixNano()))
+	valid := encodeVersion2(hw, 12345, key)
+
+	// The stamp and every sequence with its expiration.
+	type decoded struct {
+		stamp   uint64
+		entries map[uint64]int64
+	}
+	decode := func(b []byte) (decoded, error) {
+		nhw := NewHashWheel()
+		stamp, err := nhw.Decode(b, key)
+		d := decoded{stamp: stamp, entries: make(map[uint64]int64)}
+		for _, s := range nhw.wheel {
+			if s != nil {
+				maps.Copy(d.entries, s.entries)
+			}
+		}
+		return d, err
+	}
+	want, err := decode(slices.Clone(valid))
+	require_NoError(t, err)
+
+	// Flip every bit, and truncate at every length.
+	// None may be misread: each must fail to decode, or decode to the same as valid.
+	misread := func(b []byte) bool {
+		got, err := decode(b)
+		return err == nil && !reflect.DeepEqual(got, want)
+	}
+	for i := range valid {
+		for bit := range 8 {
+			b := slices.Clone(valid)
+			b[i] ^= 1 << bit
+			if misread(b) {
+				t.Fatalf("Flipping bit %d of byte %d is misread", bit, i)
+			}
+		}
+	}
+	for n := range len(valid) {
+		if misread(slices.Clone(valid[:n])) {
+			t.Fatalf("Truncating to %d bytes is misread", n)
+		}
+	}
+
+	// Read as version 1, the checksum is left after the entries.
+	b := slices.Clone(valid)
+	b[0] = 1
+	_, err = decode(b)
+	require_Error(t, err, ErrTrailingData)
 }

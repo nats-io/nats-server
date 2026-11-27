@@ -172,6 +172,67 @@ func TestNRGAppendEntryDecodeTruncatedEntryLength(t *testing.T) {
 	require_Error(t, err, errBadAppendEntry)
 }
 
+func TestNRGPeerStateFileVersion1(t *testing.T) {
+	ps := &peerState{knownPeers: []string{"12345678", "abcdefgh"}, clusterSize: 2, domainExt: extNotExtended}
+	// Newer servers add a header and checksum.
+	file := func(group string) []byte {
+		b := []byte{peerStateMagic[0], peerStateMagic[1], peerStateVersion}
+		b = append(b, encodePeerState(ps)...)
+		return appendStateChecksum(b, stateChecksumKey(group))
+	}
+	key := stateChecksumKey("TEST")
+	enc := encodePeerState(ps)
+
+	t.Run("Read", func(t *testing.T) {
+		dps, err := decodePeerStateFile(file("TEST"), key)
+		require_NoError(t, err)
+		require_True(t, reflect.DeepEqual(dps, ps))
+	})
+
+	// Older servers wrote no header or checksum, the oldest also no domain extension.
+	t.Run("Legacy", func(t *testing.T) {
+		for _, legacy := range [][]byte{enc, enc[:len(enc)-2]} {
+			dps, err := decodePeerStateFile(legacy, key)
+			require_NoError(t, err)
+			require_Equal(t, dps.clusterSize, 2)
+			require_Equal(t, len(dps.knownPeers), 2)
+		}
+	})
+
+	// Their state fills the file exactly, anything else is corrupt.
+	t.Run("LegacyTrailing", func(t *testing.T) {
+		_, err := decodePeerStateFile(append(enc, 0), key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// Newer files always have the domain extension, so they can't leave it out.
+	t.Run("NoDomainExt", func(t *testing.T) {
+		b := []byte{peerStateMagic[0], peerStateMagic[1], peerStateVersion}
+		b = append(b, enc[:len(enc)-2]...)
+		b = appendStateChecksum(b, key)
+		_, err := decodePeerStateFile(b, key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// The peer state of another group fails the checksum.
+	t.Run("OtherGroup", func(t *testing.T) {
+		_, err := decodePeerStateFile(file("OTHER"), key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	t.Run("UnknownVersion", func(t *testing.T) {
+		unknown := file("TEST")
+		unknown[2]++
+		_, err := decodePeerStateFile(unknown, key)
+		require_Error(t, err, errCorruptPeers)
+	})
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, file("TEST"), func(b []byte) (*peerState, error) { return decodePeerStateFile(b, key) })
+	})
+}
+
 func TestNRGPeerStateDecodeTruncated(t *testing.T) {
 	ps := &peerState{knownPeers: []string{"12345678", "abcdefgh"}, clusterSize: 2}
 	buf := encodePeerState(ps)
@@ -848,16 +909,19 @@ func TestNRGInvalidTAVDoesntPanic(t *testing.T) {
 	leader := rg.waitOnLeader()
 	require_NotNil(t, leader)
 
-	// Mangle the TAV file to a short length (less than uint64).
+	// Stop the node first, so it can't overwrite the mangled file.
 	tav := filepath.Join(leader.node().(*raft).sd, termVoteFile)
+	leader.stop()
+
+	// Mangle the TAV file to a short length (less than uint64).
 	require_NoError(t, os.WriteFile(tav, []byte{1, 2, 3, 4}, 0644))
 
-	// Restart the node.
-	leader.stop()
-	leader.restart()
+	// Restart the node. Before the fix, a crash would have happened here.
+	// It now refuses to start, since its term and vote were lost.
+	require_Error(t, leader.(*stateAdder).tryRestart(), errCorruptTermVote)
 
-	// Before the fix, a crash would have happened before this point.
-	c.waitOnAllCurrent()
+	// The rest of the group carries on.
+	rg.waitOnLeader()
 }
 
 func TestNRGInitFailureReleasesResources(t *testing.T) {
@@ -8900,7 +8964,7 @@ func TestNRGBootstrapExpectedClusterSize(t *testing.T) {
 			// allPeersKnown=false forces the estimate path.
 			require_NoError(t, s.bootstrapRaftNode(cfg, nil, false))
 
-			ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
+			ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 			require_NoError(t, err)
 			require_Equal(t, ps.clusterSize, test.expected)
 		})
@@ -10154,7 +10218,7 @@ func TestNRGMembershipChangeTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 3)
 	require_Equal(t, n.qn, 2)
-	ps, err := readPeerState(n.dios, n.sd)
+	ps, err := readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_True(t, slices.Contains(ps.knownPeers, peer))
 	require_Equal(t, ps.clusterSize, 3)
@@ -10186,7 +10250,7 @@ func TestNRGMembershipChangeTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 2)
 	require_Equal(t, n.qn, 2)
-	ps, err = readPeerState(n.dios, n.sd)
+	ps, err = readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_False(t, slices.Contains(ps.knownPeers, peer))
 	require_Equal(t, ps.clusterSize, 2)
@@ -10228,7 +10292,7 @@ func TestNRGPeerStateTakesEffectOnStoreNotCommit(t *testing.T) {
 	require_True(t, ok)
 	require_Equal(t, n.csz, 3)
 	require_Equal(t, n.qn, 2)
-	ps, err := readPeerState(n.dios, n.sd)
+	ps, err := readPeerState(n.dios, n.sd, n.group)
 	require_NoError(t, err)
 	require_True(t, slices.Contains(ps.knownPeers, peer))
 
@@ -11531,6 +11595,110 @@ func TestNRGVoteRequestPersistsNewTerm(t *testing.T) {
 	require_NoError(t, err)
 	require_Equal(t, term, 2)
 	require_Equal(t, voted, noVote)
+}
+
+func TestNRGTermVoteFileChecksum(t *testing.T) {
+	n, c := initSingleMemRaftNodeWithCluster(t)
+	defer c.shutdown()
+	tav := filepath.Join(n.sd, termVoteFile)
+	nats0 := "S1Nunr6R" // "nats-0"
+
+	type termVote struct {
+		term uint64
+		vote string
+	}
+	readTAV := func(b []byte) (termVote, error) {
+		t.Helper()
+		require_NoError(t, os.WriteFile(tav, b, defaultFilePerms))
+		term, vote, err := n.readTermVote()
+		return termVote{term, vote}, err
+	}
+
+	// Newer servers add a header and checksum, and pad an empty vote with zeros.
+	withChecksum := func(group string, term uint64, vote string) []byte {
+		var buf [termVoteFileLen]byte
+		copy(buf[:], termVoteMagic[:])
+		buf[2] = termVoteVersion
+		binary.LittleEndian.PutUint64(buf[termVoteHdrLen:], term)
+		copy(buf[termVoteHdrLen+termLen:], vote)
+		return appendStateChecksum(buf[:termVoteHdrLen+termVoteLen], stateChecksumKey(group))
+	}
+	legacy := append(binary.LittleEndian.AppendUint64(nil, 5), nats0...)
+
+	// Older servers wrote no checksum, and left out an empty vote.
+	t.Run("Legacy", func(t *testing.T) {
+		for _, test := range []struct {
+			buf  []byte
+			vote string
+		}{{legacy, nats0}, {legacy[:termLen], noVote}} {
+			tv, err := readTAV(test.buf)
+			require_NoError(t, err)
+			require_Equal(t, tv, termVote{5, test.vote})
+		}
+	})
+
+	t.Run("Checksummed", func(t *testing.T) {
+		for _, vote := range []string{nats0, noVote} {
+			tv, err := readTAV(withChecksum(n.group, 5, vote))
+			require_NoError(t, err)
+			require_Equal(t, tv, termVote{5, vote})
+		}
+	})
+
+	// Other lengths can't be trusted, the term or vote could be lost.
+	t.Run("BadLength", func(t *testing.T) {
+		for _, b := range [][]byte{nil, legacy[:4], legacy[:12], append(legacy, 0)} {
+			_, err := readTAV(b)
+			require_Error(t, err, errCorruptTermVote)
+		}
+	})
+
+	// The term and vote of another group fails the checksum.
+	t.Run("OtherGroup", func(t *testing.T) {
+		_, err := readTAV(withChecksum("OTHER", 5, nats0))
+		require_Error(t, err, errCorruptTermVote)
+	})
+
+	t.Run("UnknownVersion", func(t *testing.T) {
+		unknown := withChecksum(n.group, 5, nats0)
+		unknown[2]++
+		_, err := readTAV(unknown)
+		require_Error(t, err, errCorruptTermVote)
+	})
+
+	// No changed or truncated byte is misread.
+	// Cut to a legacy length it reads as legacy, which atomic writes rule out on a working disk.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, withChecksum(n.group, 5, nats0), readTAV, termLen, termVoteLen)
+	})
+
+	s := c.servers[0]
+	bootstrapped := func(t *testing.T, name string) *RaftConfig {
+		t.Helper()
+		ms, err := newMemStore(&StreamConfig{Name: name, Storage: MemoryStorage})
+		require_NoError(t, err)
+		cfg := &RaftConfig{Name: name, Store: t.TempDir(), Log: ms}
+		require_NoError(t, s.bootstrapRaftNode(cfg, []string{s.sys.shash[:idLen]}, true))
+		return cfg
+	}
+
+	// The node refuses to start, it could otherwise vote twice in the same term.
+	t.Run("RefusesStart", func(t *testing.T) {
+		cfg := bootstrapped(t, "TEST2")
+		corrupt := withChecksum(cfg.Name, 5, nats0)
+		corrupt[termVoteHdrLen]++
+		require_NoError(t, os.WriteFile(filepath.Join(cfg.Store, termVoteFile), corrupt, defaultFilePerms))
+		_, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+		require_Error(t, err, errCorruptTermVote)
+	})
+
+	// The same goes for a term and vote file that can't be read.
+	t.Run("Unreadable", func(t *testing.T) {
+		cfg := bootstrapped(t, "TEST3")
+		require_NoError(t, os.Mkdir(filepath.Join(cfg.Store, termVoteFile), defaultDirPerms))
+		_, err := s.initRaftNode(globalAccountName, cfg, pprofLabels{})
+		require_Error(t, err)
+	})
 }
 
 func TestNRGStepDownPrefersCaughtUpPeer(t *testing.T) {

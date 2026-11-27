@@ -1889,9 +1889,9 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 
-		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		hasHeaders, record := rl&hbit != 0, rl&rbit != 0
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -1910,15 +1910,7 @@ func (mb *msgBlock) rebuildStateFromBufLocked(buf []byte, allowTruncate bool) (*
 
 		// Check for checksum failures before additional processing.
 		data := buf[index+msgHdrSize : index+rl]
-		subj := data[:slen]
-		mb.hh.Reset()
-		mb.hh.Write(hdr[4:20])
-		mb.hh.Write(subj)
-		if hasHeaders {
-			mb.hh.Write(data[slen+4 : dlen-recordHashSize])
-		} else {
-			mb.hh.Write(data[slen : dlen-recordHashSize])
-		}
+		hashRecord(mb.hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
 		checksum := mb.hh.Sum(hb[:0])
 		if !bytes.Equal(checksum, data[len(data)-recordHashSize:]) {
 			err = errBadMsg{mb.mfn, "invalid checksum"}
@@ -2113,12 +2105,7 @@ func (fs *fileStore) recoverFullState() (rerr error) {
 	}
 
 	// The highwayhash will be on the end. Check that it still matches.
-	h := buf[len(buf)-highwayhash.Size64:]
-	buf = buf[:len(buf)-highwayhash.Size64]
-	fs.hh.Reset()
-	fs.hh.Write(buf)
-	var hb [highwayhash.Size64]byte
-	if !bytes.Equal(h, fs.hh.Sum(hb[:0])) {
+	if buf, err = verifyStateChecksum(buf, stateChecksumKey(fs.cfg.Name)); err != nil {
 		_ = os.Remove(fn)
 		fs.warn("Stream state checksum did not match")
 		return errCorruptState
@@ -2629,7 +2616,7 @@ func (fs *fileStore) recoverTTLState() uint64 {
 
 	var ttlseq uint64
 	if err == nil {
-		ttlseq, err = fs.ttls.Decode(buf)
+		ttlseq, err = fs.ttls.Decode(buf, stateChecksumKey(fs.cfg.Name))
 		if err != nil {
 			fs.warn("Error decoding TTL state: %s", err)
 			// Remove the file, and reset collected state (if any).
@@ -2661,7 +2648,7 @@ func (fs *fileStore) recoverMsgSchedulingState() uint64 {
 
 	var schedSeq uint64
 	if err == nil {
-		schedSeq, err = fs.scheduling.decode(buf)
+		schedSeq, err = fs.scheduling.decode(buf, stateChecksumKey(fs.cfg.Name))
 		if err != nil {
 			fs.warn("Error decoding message scheduling state: %s", err)
 			// Remove the file, and reset collected state (if any).
@@ -6807,8 +6794,8 @@ func (mb *msgBlock) compactWithFloor(floor uint64, fsDmap *interiorDeletes) erro
 		hdr := buf[index : index+msgHdrSize]
 		rl, slen := le.Uint32(hdr[0:]), int(le.Uint16(hdr[20:]))
 		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -8912,8 +8899,8 @@ func (mb *msgBlock) indexCacheBuf(buf []byte) error {
 		seq = le.Uint64(hdr[4:])
 
 		hasHeaders := rl&hbit != 0
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		shlen := slen
 		if hasHeaders {
 			shlen += 4
@@ -9467,11 +9454,33 @@ const (
 	dbit = 1 << 30
 	// "Header bit" is used in "rl" to signal a message record with headers.
 	hbit = 1 << 31
+	// "Record bit" is used in "rl" to signal the checksum covers the whole record, including all lengths and flags.
+	rbit = 1 << 30
 	// "Erase bit" is used in "seq" for marking erased messages sequences.
 	ebit = 1 << 63
 	// "Tombstone bit" is used in "seq" for marking tombstone sequences.
 	tbit = 1 << 62
 )
+
+// hashRecord hashes a message record for its checksum.
+// The data is everything after the record header, up to the checksum.
+func hashRecord(hh *highwayhash.Digest64, hdr, data []byte, slen int, hasHeaders, record bool) {
+	hh.Reset()
+	// The whole record, including its length, flags, subject length and header length.
+	if record {
+		hh.Write(hdr)
+		hh.Write(data)
+		return
+	}
+	// Older records only cover the sequence, timestamp, subject, headers and message.
+	hh.Write(hdr[4:20])
+	hh.Write(data[:slen])
+	if hasHeaders {
+		hh.Write(data[slen+4:])
+	} else {
+		hh.Write(data[slen:])
+	}
+}
 
 // Will do a lookup from cache.
 // This will copy the msg from the cache.
@@ -9682,8 +9691,8 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 
 	hdr := buf[:msgHdrSize]
 	rl := le.Uint32(hdr[0:])
-	hasHeaders := rl&hbit != 0
-	rl &^= hbit // clear header bit
+	hasHeaders, record := rl&hbit != 0, rl&rbit != 0
+	rl &^= hbit | rbit // clear header and record bit
 	dlen := int(rl) - msgHdrSize
 	slen := int(le.Uint16(hdr[20:]))
 
@@ -9698,14 +9707,7 @@ func (mb *msgBlock) msgFromBufEx(buf []byte, sm *StoreMsg, hh *highwayhash.Diges
 	data := buf[msgHdrSize : msgHdrSize+dlen]
 	// Do checksum tests here if requested.
 	if hh != nil {
-		hh.Reset()
-		hh.Write(hdr[4:20])
-		hh.Write(data[:slen])
-		if hasHeaders {
-			hh.Write(data[slen+4 : dlen-recordHashSize])
-		} else {
-			hh.Write(data[slen : dlen-recordHashSize])
-		}
+		hashRecord(hh, hdr, data[:dlen-recordHashSize], slen, hasHeaders, record)
 		var hb [highwayhash.Size64]byte
 		if !bytes.Equal(hh.Sum(hb[:0]), data[len(data)-8:]) {
 			return nil, errBadMsg{mb.mfn, "invalid checksum"}
@@ -11649,8 +11651,8 @@ func (mb *msgBlock) tombsAfterLocked(after uint64) []msgId {
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, seq := le.Uint32(hdr[0:]), le.Uint64(hdr[4:])
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			if found {
@@ -11718,8 +11720,8 @@ func (mb *msgBlock) numPriorTombsLocked() int {
 		}
 		hdr := buf[index : index+msgHdrSize]
 		rl, seq := le.Uint32(hdr[0:]), le.Uint64(hdr[4:])
-		// Clear any headers bit that could be set.
-		rl &^= hbit
+		// Clear any headers or record bit that could be set.
+		rl &^= hbit | rbit
 		// Check for tombstones.
 		if seq&tbit != 0 {
 			seq = seq &^ tbit
@@ -12937,12 +12939,7 @@ func (fs *fileStore) _writeFullState(force bool) error {
 
 	fn := filepath.Join(fs.fcfg.StoreDir, msgDir, streamStreamStateFile)
 
-	// Need to have our own hasher here, as under a read lock we can't mutate the
-	// fs.hh safely.
-	key := sha256.Sum256([]byte(fs.cfg.Name))
-	hh, _ := highwayhash.NewDigest64(key[:])
-	hh.Write(buf)
-	buf = hh.Sum(buf)
+	buf = appendStateChecksum(buf, stateChecksumKey(fs.cfg.Name))
 
 	// Snapshot prior dirty count.
 	priorDirty := fs.dirty
@@ -12995,6 +12992,32 @@ func (fs *fileStore) _writeFullState(force bool) error {
 		return sourcesErr
 	}
 	return nil
+}
+
+// Returns the key for a state file checksum, derived from the name of its owner.
+// A file that ends up at another owner then fails its checksum.
+func stateChecksumKey(name string) []byte {
+	key := sha256.Sum256([]byte(name))
+	return key[:]
+}
+
+var errStateChecksumMismatch = errors.New("state checksum mismatch")
+
+// appendStateChecksum appends a checksum over b, using a key from stateChecksumKey.
+func appendStateChecksum(b, key []byte) []byte {
+	return binary.LittleEndian.AppendUint64(b, highwayhash.Sum64(b, key))
+}
+
+// verifyStateChecksum checks the trailing checksum and returns b without it.
+func verifyStateChecksum(b, key []byte) ([]byte, error) {
+	if len(b) < checksumSize {
+		return nil, io.ErrShortBuffer
+	}
+	n := len(b) - checksumSize
+	if highwayhash.Sum64(b[:n], key) != binary.LittleEndian.Uint64(b[n:]) {
+		return nil, errStateChecksumMismatch
+	}
+	return b[:n], nil
 }
 
 func (fs *fileStore) writeTTLState() error {
@@ -13101,7 +13124,18 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 	if len(b) < sourcesHeaderLen {
 		return 0, io.ErrShortBuffer
 	}
-	if b[0] != 1 {
+	switch b[0] {
+	case 1:
+		// Version 1 has no checksum.
+	case 2:
+		if len(b) < sourcesHeaderLen+checksumSize {
+			return 0, io.ErrShortBuffer
+		}
+		var err error
+		if b, err = verifyStateChecksum(b, stateChecksumKey(fs.cfg.Name)); err != nil {
+			return 0, err
+		}
+	default:
 		return 0, errSourcesInvalidVersion
 	}
 
@@ -13136,6 +13170,10 @@ func (fs *fileStore) decodeSourcesState(b []byte) (uint64, error) {
 			return 0, io.ErrUnexpectedEOF
 		}
 		fs.sources[source] = &StreamSourceState{Seq: seq, Ident: ident}
+	}
+	// The entries must fill the buffer exactly, a version 2 file read as version 1 leaves its checksum.
+	if len(b) != 0 {
+		return 0, errCorruptState
 	}
 	return stamp, nil
 }
@@ -13922,6 +13960,7 @@ type consumerFileStore struct {
 	odir    string
 	ifn     string
 	hh      *highwayhash.Digest64
+	skey    []byte // Key for the state file checksum.
 	state   ConsumerState
 	fch     chan struct{}
 	qch     chan struct{}
@@ -13974,6 +14013,8 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 		return nil, fmt.Errorf("could not create hash: %v", err)
 	}
 	o.hh = hh
+	// The state file checksum uses the same key.
+	o.skey = key[:]
 
 	// Check for encryption.
 	if o.prf != nil {
@@ -14035,7 +14076,7 @@ func (fs *fileStore) ConsumerStore(name string, created time.Time, cfg *Consumer
 			}
 			// Redo the state file as well here if we have one and we can tell it was plaintext.
 			if buf, err := os.ReadFile(o.ifn); err == nil {
-				if _, err := decodeConsumerState(buf); err == nil {
+				if _, err := decodeConsumerState(buf, o.skey); err == nil {
 					state, err := o.encryptState(buf)
 					if err != nil {
 						return nil, err
@@ -14743,7 +14784,7 @@ func checkConsumerHeader(hdr []byte) (uint8, error) {
 	if len(hdr) < 2 || hdr[0] != magic {
 		return 0, errCorruptState
 	}
-	version := hdr[1]
+	version := hdr[1] &^ consumerStateChecksummed
 	switch version {
 	case 1, 2:
 		return version, nil
@@ -14839,7 +14880,7 @@ func (o *consumerFileStore) stateWithCopyLocked(doCopy bool) (*ConsumerState, er
 		}
 	}
 
-	state, err = decodeConsumerState(buf)
+	state, err = decodeConsumerState(buf, o.skey)
 	if err != nil {
 		return nil, err
 	}
@@ -14884,11 +14925,26 @@ func (o *consumerFileStore) loadState() error {
 	}
 }
 
+// Flags the version of a consumer state file, its encoded state is followed by a checksum.
+// Keeps the file's checksum apart from the encoding's version, which is also replicated.
+// It's the version byte's high bit, so encoding versions go up to 127.
+const consumerStateChecksummed = 0x80
+
 // Decode consumer state.
-func decodeConsumerState(buf []byte) (*ConsumerState, error) {
+// The key verifies the checksum of a state file, encoded state elsewhere passes nil.
+func decodeConsumerState(buf, key []byte) (*ConsumerState, error) {
 	version, err := checkConsumerHeader(buf)
 	if err != nil {
 		return nil, err
+	}
+	if buf[1]&consumerStateChecksummed != 0 {
+		// Only a state file has a checksum.
+		if key == nil {
+			return nil, errCorruptState
+		}
+		if buf, err = verifyStateChecksum(buf, key); err != nil {
+			return nil, err
+		}
 	}
 
 	bi := hdrLen
@@ -15005,6 +15061,10 @@ func decodeConsumerState(buf []byte) (*ConsumerState, error) {
 		}
 	}
 
+	// A state file must be filled exactly, older ones have no checksum to catch a truncation.
+	if key != nil && bi != len(buf) {
+		return nil, errCorruptState
+	}
 	return state, nil
 }
 

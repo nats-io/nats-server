@@ -389,6 +389,7 @@ var (
 	errAlreadyLeader     = errors.New("raft: already leader")
 	errNilCfg            = errors.New("raft: no config given")
 	errCorruptPeers      = errors.New("raft: corrupt peer state")
+	errCorruptTermVote   = errors.New("raft: corrupt term and vote")
 	errEntryLoadFailed   = errors.New("raft: could not load entry from WAL")
 	errEntryStoreFailed  = errors.New("raft: could not store entry to WAL")
 	errNodeClosed        = errors.New("raft: node is closed")
@@ -482,7 +483,7 @@ func (s *Server) bootstrapRaftNode(cfg *RaftConfig, knownPeers []string, allPeer
 // initRaftNode will initialize the raft node, to be used by startRaftNode or when testing to not run the Go routine.
 func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabels) (_ *raft, rerr error) {
 	restorePeerState := func(n *raft) error {
-		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store)
+		ps, err := readPeerState(s.diskIOSemaphore(), cfg.Store, cfg.Name)
 		if err != nil {
 			return err
 		}
@@ -571,6 +572,9 @@ func (s *Server) initRaftNode(accName string, cfg *RaftConfig, labels pprofLabel
 	if term, vote, err := n.readTermVote(); err == nil && term > 0 {
 		n.term = term
 		n.vote = vote
+	} else if err != nil && !os.IsNotExist(err) {
+		// Without our term and vote we could vote twice in the same term.
+		return nil, err
 	}
 
 	// Can't recover snapshots if memory based since wal will be reset.
@@ -6062,7 +6066,8 @@ func writePeerState(dios *diskIOSemaphore, sd string, ps *peerState) error {
 	return writeFileWithSync(dios, psf, encodePeerState(ps), defaultFilePerms)
 }
 
-func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) {
+// The group's name is the key for the checksum.
+func readPeerState(dios *diskIOSemaphore, sd, group string) (ps *peerState, err error) {
 	dios.acquire()
 	buf, err := os.ReadFile(filepath.Join(sd, peerStateFile))
 	dios.release()
@@ -6070,8 +6075,44 @@ func readPeerState(dios *diskIOSemaphore, sd string) (ps *peerState, err error) 
 	if err != nil {
 		return nil, err
 	}
-	return decodePeerState(buf)
+	return decodePeerStateFile(buf, stateChecksumKey(group))
 }
+
+// Decodes a peer state file, the key verifies its checksum.
+func decodePeerStateFile(buf, key []byte) (*peerState, error) {
+	// Newer files have a header and checksum, older ones don't.
+	checksummed := len(buf) >= peerStateHdrLen && buf[0] == peerStateMagic[0] && buf[1] == peerStateMagic[1]
+	if checksummed {
+		if buf[2] != peerStateVersion {
+			return nil, errCorruptPeers
+		}
+		b, err := verifyStateChecksum(buf, key)
+		if err != nil {
+			return nil, errCorruptPeers
+		}
+		buf = b[peerStateHdrLen:]
+	}
+	ps, err := decodePeerState(buf)
+	if err != nil {
+		return nil, err
+	}
+	// The peer state fills the file exactly, older files have no checksum to catch a truncation.
+	// The oldest servers didn't write the domain extension.
+	if n := peerStateBufSize(ps); len(buf) != n && (checksummed || len(buf) != n-2) {
+		return nil, errCorruptPeers
+	}
+	return ps, nil
+}
+
+const (
+	// Magic and version, followed by the encoded peer state and a checksum.
+	peerStateHdrLen  = 3
+	peerStateVersion = 1
+)
+
+// "PS" for peer state, marking a file with a header and checksum.
+// An older file would need a cluster size of at least 21328 to start with these bytes.
+var peerStateMagic = [2]byte{'P', 'S'}
 
 const (
 	commitFile = "commit.idx"
@@ -6143,7 +6184,16 @@ const (
 	termVoteFile = "tav.idx"
 	termLen      = 8 // uint64
 	termVoteLen  = idLen + termLen
+	// Magic and version, followed by the term, the vote and a checksum.
+	// The vote is zero-padded if empty.
+	termVoteHdrLen  = 3
+	termVoteVersion = 1
+	termVoteFileLen = termVoteHdrLen + termVoteLen + checksumSize
 )
+
+// "TV" for term and vote, marking a file with a header and checksum.
+// Older files have no header, only their shorter length tells them apart.
+var termVoteMagic = [2]byte{'T', 'V'}
 
 // Writes out our term & vote outside of a specific raft context.
 func writeTermVote(dios *diskIOSemaphore, sd string, wtv []byte) error {
@@ -6164,17 +6214,27 @@ func (n *raft) readTermVote() (term uint64, voted string, err error) {
 	if err != nil {
 		return 0, noVote, err
 	}
-	if len(buf) < termLen {
-		// Not enough bytes for the uint64 below, so avoid a panic.
-		return 0, noVote, nil
-	}
 	le := binary.LittleEndian
-	term = le.Uint64(buf[0:])
-	if len(buf) < termVoteLen {
-		return term, noVote, nil
+	switch len(buf) {
+	case termVoteFileLen:
+		if buf[0] != termVoteMagic[0] || buf[1] != termVoteMagic[1] || buf[2] != termVoteVersion {
+			return 0, noVote, errCorruptTermVote
+		}
+		if buf, err = verifyStateChecksum(buf, stateChecksumKey(n.group)); err != nil {
+			return 0, noVote, errCorruptTermVote
+		}
+		buf = buf[termVoteHdrLen:]
+		return le.Uint64(buf), string(bytes.TrimRight(buf[termLen:], "\x00")), nil
+	case termVoteLen:
+		// Older servers wrote no checksum.
+		return le.Uint64(buf), string(buf[termLen:]), nil
+	case termLen:
+		// Older servers also left out an empty vote.
+		return le.Uint64(buf), noVote, nil
+	default:
+		// The file is always written whole, any other length lost our term or vote.
+		return 0, noVote, errCorruptTermVote
 	}
-	voted = string(buf[8:])
-	return term, voted, nil
 }
 
 // Lock should be held.

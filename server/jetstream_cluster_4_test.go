@@ -4946,7 +4946,7 @@ func TestJetStreamClusterDontInstallSnapshotWhenStoppingConsumer(t *testing.T) {
 	validateConsumerState := func(snap *snapshot) {
 		t.Helper()
 		require_Equal(t, snap.lastIndex, maxApplied)
-		state, err := decodeConsumerState(snap.data)
+		state, err := decodeConsumerState(snap.data, nil)
 		require_NoError(t, err)
 		require_Equal(t, state.Delivered.Consumer, 1)
 		require_Equal(t, state.Delivered.Stream, 1)
@@ -12762,6 +12762,32 @@ func TestJetStreamClusterMetaMonitorNotStartedShutdown(t *testing.T) {
 	}
 }
 
+func TestJetStreamClusterMetaCorruptPeerStateFails(t *testing.T) {
+	o := DefaultTestOptions
+	o.Port = -1
+	o.JetStream = true
+	o.StoreDir = t.TempDir()
+	s := RunServer(&o)
+	defer s.Shutdown()
+
+	// A peer state file whose checksum doesn't match.
+	js := s.getJetStream()
+	sd := filepath.Join(js.config.StoreDir, s.SystemAccount().Name, defaultStoreDirName, defaultMetaGroupName)
+	require_NoError(t, os.MkdirAll(sd, defaultDirPerms))
+	buf := append(peerStateMagic[:], peerStateVersion)
+	buf = append(buf, encodePeerState(&peerState{[]string{"abc"}, 3, extUndetermined})...)
+	buf = appendStateChecksum(buf, stateChecksumKey(defaultMetaGroupName))
+	buf[peerStateHdrLen] ^= 1
+	psf := filepath.Join(sd, peerStateFile)
+	require_NoError(t, os.WriteFile(psf, buf, defaultFilePerms))
+
+	// The meta group fails to start instead of bootstrapping over it.
+	require_Error(t, js.setupMetaGroup(), errCorruptPeers)
+	got, err := os.ReadFile(psf)
+	require_NoError(t, err)
+	require_Equal(t, string(got), string(buf))
+}
+
 func TestJetStreamClusterScaleDownNotBlockedByUnaddedPeer(t *testing.T) {
 	c := createJetStreamClusterExplicit(t, "R4S", 4)
 	defer c.shutdown()
@@ -12848,12 +12874,26 @@ func TestJetStreamClusterMetaGroupStopsWALOnSetupFailure(t *testing.T) {
 			setup: func(t *testing.T, sd string) {
 				psf := filepath.Join(sd, peerStateFile)
 				require_NoError(t, os.Remove(psf))
+				require_NoError(t, os.Mkdir(psf+".tmp", defaultDirPerms))
+			},
+			check: func(t *testing.T, sd string, err error) {
+				var perr *os.PathError
+				require_True(t, errors.As(err, &perr))
+				require_Equal(t, perr.Path, filepath.Join(sd, peerStateFile)+".tmp")
+			},
+		},
+		{
+			// The peer state can't be read.
+			name: "ReadPeerState",
+			setup: func(t *testing.T, sd string) {
+				psf := filepath.Join(sd, peerStateFile)
+				require_NoError(t, os.Remove(psf))
 				require_NoError(t, os.Mkdir(psf, defaultDirPerms))
 			},
 			check: func(t *testing.T, sd string, err error) {
-				var lerr *os.LinkError
-				require_True(t, errors.As(err, &lerr))
-				require_Equal(t, lerr.New, filepath.Join(sd, peerStateFile))
+				var perr *os.PathError
+				require_True(t, errors.As(err, &perr))
+				require_Equal(t, perr.Path, filepath.Join(sd, peerStateFile))
 			},
 		},
 		{
@@ -13165,7 +13205,7 @@ func TestJetStreamClusterSwitchToReplicatedSendsSnapshotAfterDrainingLog(t *test
 	ack := append(binary.AppendUvarint(binary.AppendUvarint([]byte{byte(updateAcksOp)}, 2), 2), 1)
 	state, err := decodeConsumerState(switchWithUncommitted(cn, ack, func(apply func() error) error {
 		return cl.getJetStream().switchConsumerToReplicated(o, cn, cn.Term(), true, apply)
-	}))
+	}), nil)
 	require_NoError(t, err)
 	require_Len(t, len(state.Pending), 2)
 	require_True(t, state.Pending[2] == nil)

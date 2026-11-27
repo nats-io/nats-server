@@ -2961,7 +2961,7 @@ func TestFileStoreConsumerEncodeDecodeRedelivered(t *testing.T) {
 	state.Redelivered = map[uint64]uint64{122: 3, 144: 8}
 	buf := encodeConsumerState(state)
 
-	rstate, err := decodeConsumerState(buf)
+	rstate, err := decodeConsumerState(buf, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -2986,7 +2986,7 @@ func TestFileStoreConsumerEncodeDecodePendingBelowStreamAckFloor(t *testing.T) {
 	}
 	buf := encodeConsumerState(state)
 
-	rstate, err := decodeConsumerState(buf)
+	rstate, err := decodeConsumerState(buf, nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -3573,7 +3573,7 @@ func TestFileStoreConsumerSkippedStateWriteKicksFlusher(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		state, err := decodeConsumerState(buf)
+		state, err := decodeConsumerState(buf, oc.skey)
 		if err != nil {
 			return err
 		}
@@ -4007,7 +4007,7 @@ func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
 		{title: "RedeliveredShort", buf: append(binary.AppendUvarint(append(header(), 0), 2), 1, 1, 1, 0x80)},
 	} {
 		t.Run(test.title, func(t *testing.T) {
-			_, err := decodeConsumerState(test.buf)
+			_, err := decodeConsumerState(test.buf, nil)
 			require_Error(t, err, errCorruptState)
 		})
 	}
@@ -4017,8 +4017,183 @@ func TestFileStoreConsumerStateDecodeRejectsBadCounts(t *testing.T) {
 // This was causing the server to panic.
 func TestFileStoreBadConsumerState(t *testing.T) {
 	bs := []byte("\x16\x02\x01\x01\x03\x02\x01\x98\xf4\x8a\x8a\f\x01\x03\x86\xfa\n\x01\x00\x01")
-	if cs, err := decodeConsumerState(bs); err != nil || cs == nil {
+	if cs, err := decodeConsumerState(bs, nil); err != nil || cs == nil {
 		t.Fatalf("Expected to not throw error, got %v and %+v", err, cs)
+	}
+}
+
+func TestFileStoreConsumerStateFileChecksum(t *testing.T) {
+	dir := t.TempDir()
+	ccfg := &ConsumerConfig{AckPolicy: AckExplicit}
+	fs, err := newFileStore(FileStoreConfig{StoreDir: dir}, StreamConfig{Name: "zzz", Storage: FileStorage})
+	require_NoError(t, err)
+	defer fs.Stop()
+	o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+	require_NoError(t, err)
+	require_NoError(t, o.Stop())
+
+	now := time.Now().UnixNano()
+	state := &ConsumerState{
+		Delivered:   SequencePair{Consumer: 22, Stream: 22},
+		AckFloor:    SequencePair{Consumer: 11, Stream: 11},
+		Pending:     map[uint64]*Pending{15: {Sequence: 15, Timestamp: now}, 18: {Sequence: 18, Timestamp: now}},
+		Redelivered: map[uint64]uint64{15: 2},
+	}
+	key := stateChecksumKey("zzz/o22")
+	// Newer servers flag the version, and follow the encoding with a checksum.
+	file := func(key []byte) []byte {
+		b := encodeConsumerState(state)
+		b[1] |= consumerStateChecksummed
+		return appendStateChecksum(b, key)
+	}
+	fn := filepath.Join(dir, consumerDir, "o22", consumerState)
+	reload := func(t *testing.T, buf []byte) (*ConsumerState, error) {
+		t.Helper()
+		require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+		o, err := fs.ConsumerStore("o22", time.Time{}, ccfg)
+		if err != nil {
+			return nil, err
+		}
+		defer o.Stop()
+		return o.State()
+	}
+	requireState := func(t *testing.T, buf []byte) {
+		t.Helper()
+		cs, err := reload(t, buf)
+		require_NoError(t, err)
+		require_Equal(t, cs.Delivered, state.Delivered)
+		require_Equal(t, cs.AckFloor, state.AckFloor)
+		require_Len(t, len(cs.Pending), len(state.Pending))
+		require_Equal(t, cs.Redelivered[15], 2)
+	}
+
+	t.Run("Read", func(t *testing.T) { requireState(t, file(key)) })
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	// Read without the flag, the checksum is left over and rejected.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, file(key), func(b []byte) (*ConsumerState, error) { return decodeConsumerState(b, key) })
+	})
+
+	// The state of another consumer fails the checksum.
+	t.Run("OtherConsumer", func(t *testing.T) {
+		_, err := reload(t, file(stateChecksumKey("zzz/o33")))
+		require_Error(t, err, errStateChecksumMismatch)
+	})
+
+	// Only a state file has a checksum, other encoded state has no key.
+	t.Run("NilKey", func(t *testing.T) {
+		_, err := decodeConsumerState(file(key), nil)
+		require_Error(t, err, errCorruptState)
+	})
+
+	// Older servers wrote version 2 without a checksum.
+	t.Run("LegacyV2", func(t *testing.T) { requireState(t, encodeConsumerState(state)) })
+
+	// Their state fills the file exactly too, so a changed version byte isn't read as another version.
+	t.Run("LegacyV2Trailing", func(t *testing.T) {
+		_, err := reload(t, append(encodeConsumerState(state), 0))
+		require_Error(t, err, errCorruptState)
+	})
+}
+
+func TestFileStoreStateChecksum(t *testing.T) {
+	key := stateChecksumKey("TEST")
+	b := appendStateChecksum([]byte("state"), key)
+	require_Len(t, len(b), len("state")+checksumSize)
+
+	got, err := verifyStateChecksum(b, key)
+	require_NoError(t, err)
+	require_Equal(t, string(got), "state")
+
+	// It's what index.db always held, a highwayhash digest keyed the same way.
+	hh, err := highwayhash.NewDigest64(key)
+	require_NoError(t, err)
+	hh.Write([]byte("state"))
+	require_True(t, bytes.Equal(b, hh.Sum([]byte("state"))))
+
+	// The checksum of another owner doesn't match.
+	_, err = verifyStateChecksum(b, stateChecksumKey("OTHER"))
+	require_Error(t, err, errStateChecksumMismatch)
+
+	// Neither does changed or truncated state.
+	requireCorruptionRejected(t, b, func(b []byte) ([]byte, error) { return verifyStateChecksum(b, key) })
+	_, err = verifyStateChecksum(b[:checksumSize-1], key)
+	require_Error(t, err, io.ErrShortBuffer)
+}
+
+func TestFileStoreRecordChecksumCoversWholeRecord(t *testing.T) {
+	le := binary.LittleEndian
+	hdr := []byte("NATS/1.0\r\nA: B\r\n\r\n")
+	for _, test := range []struct {
+		title   string
+		hdr     []byte
+		corrupt func(buf []byte, slen int)
+	}{
+		// Moves the boundary between subject and payload.
+		{title: "SubjectLength", corrupt: func(buf []byte, slen int) { le.PutUint16(buf[20:], uint16(slen+1)) }},
+		// Moves the boundary between headers and payload.
+		{title: "HeaderLength", hdr: hdr, corrupt: func(buf []byte, slen int) {
+			hl := msgHdrSize + slen
+			le.PutUint32(buf[hl:], le.Uint32(buf[hl:])-1)
+		}},
+		// Reads the headers as part of the payload.
+		{title: "HeaderBit", hdr: hdr, corrupt: func(buf []byte, _ int) { buf[3] ^= hbit >> 24 }},
+	} {
+		t.Run(test.title, func(t *testing.T) {
+			dir := t.TempDir()
+			fcfg := FileStoreConfig{StoreDir: dir}
+			cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+			fs, err := newFileStore(fcfg, cfg)
+			require_NoError(t, err)
+			_, _, err = fs.StoreMsg("foo", test.hdr, []byte("bar"), 0)
+			require_NoError(t, err)
+			require_NoError(t, fs.Stop())
+
+			fn := filepath.Join(dir, msgDir, "1.blk")
+			buf, err := os.ReadFile(fn)
+			require_NoError(t, err)
+			rl, slen := le.Uint32(buf[0:]), int(le.Uint16(buf[20:]))
+			hasHeaders := rl&hbit != 0
+			rl &^= hbit | rbit
+
+			// Rewrite the record with or without the record bit.
+			key := sha256.Sum256(fs.hashKeyForBlock(1))
+			hh, err := highwayhash.NewDigest64(key[:])
+			require_NoError(t, err)
+			seal := func(record bool) {
+				t.Helper()
+				if record {
+					le.PutUint32(buf[0:], le.Uint32(buf[0:])|rbit)
+				} else {
+					le.PutUint32(buf[0:], le.Uint32(buf[0:])&^rbit)
+				}
+				hashRecord(hh, buf[:msgHdrSize], buf[msgHdrSize:rl-recordHashSize], slen, hasHeaders, record)
+				copy(buf[rl-recordHashSize:rl], hh.Sum(nil))
+				require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+			}
+			load := func() (*StoreMsg, error) {
+				t.Helper()
+				fs, err := newFileStore(fcfg, cfg)
+				require_NoError(t, err)
+				defer fs.Stop()
+				return fs.LoadMsg(1, nil)
+			}
+
+			// Records from older servers don't cover the lengths, but are still read.
+			seal(false)
+			sm, err := load()
+			require_NoError(t, err)
+			require_Equal(t, sm.subj, "foo")
+			require_Equal(t, string(sm.msg), "bar")
+
+			// The changed record still parses, only the checksum catches it.
+			seal(true)
+			test.corrupt(buf, slen)
+			require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+			_, err = load()
+			require_Error(t, err)
+		})
 	}
 }
 
@@ -13559,7 +13734,7 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	require_True(t, len(b) > 17) // Bigger than just the header
 
 	nms := newMsgScheduling(func() {})
-	stamp, err := nms.decode(b)
+	stamp, err := nms.decode(b, stateChecksumKey("TEST"))
 	require_NoError(t, err)
 	require_Equal(t, stamp, 12345)
 	require_Equal(t, ms.ttls.GetNextExpiration(math.MaxInt64), nms.ttls.GetNextExpiration(math.MaxInt64))
@@ -13578,6 +13753,28 @@ func TestFileStoreMessageScheduleEncodeDecode(t *testing.T) {
 	}
 }
 
+// Newer servers write version 2, the version 1 encoding followed by a checksum.
+func encodeMsgSchedulingVersion2(ms *MsgScheduling, highSeq uint64, key []byte) []byte {
+	b := ms.encode(highSeq)
+	b[0] = 2
+	return appendStateChecksum(b, key)
+}
+
+func TestFileStoreMessageScheduleDecodeVersion2(t *testing.T) {
+	ms := newMsgScheduling(func() {})
+	ts := time.Now().Add(time.Second).UnixNano()
+	ms.add(1, "foo", ts)
+
+	b := encodeMsgSchedulingVersion2(ms, 12345, stateChecksumKey("TEST"))
+
+	nms := newMsgScheduling(func() {})
+	stamp, err := nms.decode(b, stateChecksumKey("TEST"))
+	require_NoError(t, err)
+	require_Equal(t, stamp, 12345)
+	require_Equal(t, nms.seqToSubj[1], "foo")
+	require_Equal(t, nms.ttls.GetNextExpiration(math.MaxInt64), ts)
+}
+
 func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 	// Build a valid header that claims a single schedule entry.
 	header := func(count uint64) []byte {
@@ -13594,7 +13791,15 @@ func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 		err   error
 	}{
 		{title: "ShortHeader", buf: make([]byte, headerLen-1), err: io.ErrShortBuffer},
-		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: ErrMsgScheduleInvalidVersion},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: ErrMsgScheduleInvalidVersion},
+		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
+		{title: "BadChecksum", buf: func() []byte {
+			b := encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("TEST"))
+			b[9]++
+			return b
+		}(), err: errStateChecksumMismatch},
+		// Valid, but encoded for another stream.
+		{title: "WrongKey", buf: encodeMsgSchedulingVersion2(newMsgScheduling(func() {}), 1, stateChecksumKey("OTHER")), err: errStateChecksumMismatch},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtSubjLen", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Claims one entry, has the subject length but the subject bytes are missing.
@@ -13606,7 +13811,7 @@ func TestFileStoreMessageScheduleDecodeRejectsMalformed(t *testing.T) {
 	} {
 		t.Run(test.title, func(t *testing.T) {
 			ms := newMsgScheduling(func() {})
-			_, err := ms.decode(test.buf)
+			_, err := ms.decode(test.buf, stateChecksumKey("TEST"))
 			require_Error(t, err, test.err)
 		})
 	}
@@ -13631,7 +13836,8 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 		err   error
 	}{
 		{title: "ShortHeader", buf: make([]byte, sourcesHeaderLen-1), err: io.ErrShortBuffer},
-		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: errSourcesInvalidVersion},
+		{title: "BadVersion", buf: func() []byte { b := header(0); b[0] = 3; return b }(), err: errSourcesInvalidVersion},
+		{title: "ShortChecksum", buf: func() []byte { b := header(0); b[0] = 2; return b }(), err: io.ErrShortBuffer},
 		// Claims one entry but the buffer ends right after the header.
 		{title: "TruncatedAtSourceLen", buf: header(1), err: io.ErrUnexpectedEOF},
 		// Has the source length but the source bytes are missing.
@@ -13642,6 +13848,8 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 		{title: "TruncatedAtIdentLen", buf: append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), err: io.ErrUnexpectedEOF},
 		// Has the identity length but the identity bytes are missing.
 		{title: "TruncatedIdent", buf: append(append(append(append(header(1), uvi(3)...), 'f', 'o', 'o'), uvi(1)...), uvi(5)...), err: io.ErrUnexpectedEOF},
+		// Has a byte left after the entries.
+		{title: "TrailingByte", buf: append(header(0), 0), err: errCorruptState},
 	} {
 		t.Run(test.title, func(t *testing.T) {
 			fs := &fileStore{}
@@ -13649,6 +13857,87 @@ func TestFileStoreSourcesDecodeRejectsMalformed(t *testing.T) {
 			require_Error(t, err, test.err)
 		})
 	}
+}
+
+func TestFileStoreSourcesStateChecksum(t *testing.T) {
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{
+		Name:     "SOURCE",
+		Subjects: []string{"foo.*"},
+		Storage:  FileStorage,
+		Sources:  []*StreamSource{{Name: "ORIGIN"}},
+	}
+
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := genHeader(nil, JSStreamSource, "ORIGIN 5 > > foo.bar IDENTITY1")
+	_, _, err = fs.StoreMsg("foo.bar", hdr, nil, 0)
+	require_NoError(t, err)
+	require_NoError(t, fs.Stop())
+
+	fn := filepath.Join(dir, sourcesStreamStateFile)
+	// The state is written as version 1, without a checksum.
+	v1, err := os.ReadFile(fn)
+	require_NoError(t, err)
+	require_Equal(t, v1[0], 1)
+	// Newer servers write version 2, the version 1 encoding followed by a checksum.
+	v2 := appendStateChecksum(append([]byte{2}, v1[1:]...), stateChecksumKey("SOURCE"))
+
+	// The stamp and every source.
+	type decoded struct {
+		stamp   uint64
+		sources map[string]*StreamSourceState
+	}
+	decode := func(name string, b []byte) (decoded, error) {
+		nfs := &fileStore{cfg: FileStreamInfo{StreamConfig: StreamConfig{Name: name}}}
+		stamp, err := nfs.decodeSourcesState(b)
+		return decoded{stamp, nfs.sources}, err
+	}
+
+	for _, test := range []struct {
+		title string
+		buf   []byte
+	}{{"Version1", v1}, {"Version2", v2}} {
+		t.Run(test.title, func(t *testing.T) {
+			d, err := decode("SOURCE", test.buf)
+			require_NoError(t, err)
+			require_Equal(t, d.sources["ORIGIN > >"].Seq, 5)
+		})
+	}
+
+	// The state of another stream fails the checksum.
+	t.Run("OtherStream", func(t *testing.T) {
+		_, err := decode("OTHER", v2)
+		require_Error(t, err, errStateChecksumMismatch)
+	})
+
+	// No changed or truncated byte is misread, the checksum catches what still decodes.
+	t.Run("Corruption", func(t *testing.T) {
+		requireCorruptionRejected(t, v2, func(b []byte) (decoded, error) { return decode("SOURCE", b) })
+	})
+
+	// Read as version 1, the checksum is left after the entries.
+	t.Run("Downgrade", func(t *testing.T) {
+		b := slices.Clone(v2)
+		b[0] = 1
+		_, err := decode("SOURCE", b)
+		require_Error(t, err, errCorruptState)
+	})
+
+	// A corrupt state is rebuilt from the messages.
+	// Its changed sequence still decodes, only the checksum catches it.
+	t.Run("Rebuilt", func(t *testing.T) {
+		corrupt := slices.Clone(v2)
+		si := bytes.Index(corrupt, []byte("ORIGIN > >")) + len("ORIGIN > >")
+		require_Equal(t, corrupt[si], 5)
+		corrupt[si]++
+		require_NoError(t, os.WriteFile(fn, corrupt, defaultFilePerms))
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+		require_Equal(t, fs.SourcesState()["ORIGIN > >"].Seq, 5)
+	})
 }
 
 func TestFileStoreSourcesRecovery(t *testing.T) {
@@ -20050,4 +20339,95 @@ func TestFileStoreLogBackedFollowsWriteMode(t *testing.T) {
 			return nil
 		})
 	})
+}
+
+// A block can hold records of older servers next to newer ones, after an upgrade or downgrade.
+func TestFileStoreMixedRecordFormats(t *testing.T) {
+	le := binary.LittleEndian
+	dir := t.TempDir()
+	fcfg := FileStoreConfig{StoreDir: dir}
+	cfg := StreamConfig{Name: "zzz", Subjects: []string{">"}, Storage: FileStorage}
+	fs, err := newFileStore(fcfg, cfg)
+	require_NoError(t, err)
+	hdr := []byte("NATS/1.0\r\nA: B\r\n\r\n")
+	for _, h := range [][]byte{nil, hdr, nil, hdr, nil, hdr} {
+		_, _, err = fs.StoreMsg("foo", h, []byte("bar"), 0)
+		require_NoError(t, err)
+	}
+	_, err = fs.EraseMsg(2)
+	require_NoError(t, err)
+	_, err = fs.RemoveMsg(4)
+	require_NoError(t, err)
+	key := sha256.Sum256(fs.hashKeyForBlock(1))
+	require_NoError(t, fs.Stop())
+
+	// Reseal every other record in the other format, except the last one index.db checks.
+	fn := filepath.Join(dir, msgDir, "1.blk")
+	buf, err := os.ReadFile(fn)
+	require_NoError(t, err)
+	hh, err := highwayhash.NewDigest64(key[:])
+	require_NoError(t, err)
+	var resealed int
+	for i, index := 0, uint32(0); index < uint32(len(buf)); i++ {
+		rl := le.Uint32(buf[index:])
+		hasHeaders, record, rlen := rl&hbit != 0, rl&rbit == 0, rl&^(hbit|rbit)
+		if i%2 == 1 && index+rlen < uint32(len(buf)) {
+			rec := buf[index : index+rlen]
+			le.PutUint32(rec, rl^rbit)
+			slen := int(le.Uint16(rec[20:]))
+			hashRecord(hh, rec[:msgHdrSize], rec[msgHdrSize:rlen-recordHashSize], slen, hasHeaders, record)
+			copy(rec[rlen-recordHashSize:], hh.Sum(nil))
+			resealed++
+		}
+		index += rlen
+	}
+	require_True(t, resealed >= 3)
+	require_NoError(t, os.WriteFile(fn, buf, defaultFilePerms))
+
+	check := func() {
+		t.Helper()
+		fs, err := newFileStore(fcfg, cfg)
+		require_NoError(t, err)
+		defer fs.Stop()
+		for seq := uint64(1); seq <= 6; seq++ {
+			sm, err := fs.LoadMsg(seq, nil)
+			if seq == 2 || seq == 4 {
+				require_Error(t, err)
+				continue
+			}
+			require_NoError(t, err)
+			require_Equal(t, sm.subj, "foo")
+			require_Equal(t, string(sm.msg), "bar")
+			require_Equal(t, len(sm.hdr) > 0, seq%2 == 0)
+		}
+	}
+	// Loaded with index.db.
+	check()
+	// Without it, the block is rebuilt from its records.
+	require_NoError(t, os.Remove(filepath.Join(dir, msgDir, streamStreamStateFile)))
+	check()
+}
+
+func TestFileStoreMessageScheduleDecodeRejectsCorruption(t *testing.T) {
+	ms := newMsgScheduling(func() {})
+	ms.add(1, "foo", time.Now().Add(time.Second).UnixNano())
+	ms.add(2, "bar", time.Now().Add(time.Hour).UnixNano())
+
+	// The stamp and every schedule.
+	type decoded struct {
+		stamp     uint64
+		schedules map[string]*MsgSchedule
+	}
+	key := stateChecksumKey("TEST")
+	requireCorruptionRejected(t, encodeMsgSchedulingVersion2(ms, 12345, key), func(b []byte) (decoded, error) {
+		nms := newMsgScheduling(func() {})
+		stamp, err := nms.decode(b, key)
+		return decoded{stamp, nms.schedules}, err
+	})
+
+	// Read as version 1, the checksum is left after the entries.
+	b := encodeMsgSchedulingVersion2(ms, 12345, key)
+	b[0] = 1
+	_, err := newMsgScheduling(func() {}).decode(b, key)
+	require_Error(t, err, errCorruptState)
 }
