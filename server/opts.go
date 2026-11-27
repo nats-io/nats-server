@@ -467,6 +467,9 @@ type Options struct {
 	HTTPPort                   int           `json:"http_port"`
 	HTTPBasePath               string        `json:"http_base_path"`
 	HTTPSPort                  int           `json:"https_port"`
+	// HealthzHost and HealthzPort configure a dedicated, status-only HTTP listener.
+	HealthzHost                string        `json:"healthz_host"`
+	HealthzPort                int           `json:"healthz_port"`
 	AuthTimeout                float64       `json:"auth_timeout"`
 	MaxControlLine             int32         `json:"max_control_line"`
 	MaxPayload                 int32         `json:"max_payload"`
@@ -1318,6 +1321,15 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 		o.HTTPHost = hp.host
 		o.HTTPSPort = hp.port
+	case "healthz":
+		hp, err := parseListen(v)
+		if err != nil {
+			err := &configErr{tk, err.Error()}
+			*errors = append(*errors, err)
+			return
+		}
+		o.HealthzHost = hp.host
+		o.HealthzPort = hp.port
 	case "http_port", "monitor_port":
 		o.HTTPPort = int(v.(int64))
 	case "https_port":
