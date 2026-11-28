@@ -2570,6 +2570,76 @@ func (n *raft) StepDown(preferred ...string) error {
 	return nil
 }
 
+// balanceTransferReadyLocked is deliberately more conservative than StepDown.
+// The caller must hold the Raft lock.
+func (n *raft) balanceTransferReadyLocked() bool {
+	return n.State() == Leader && n.leaderState.Load() && n.peers[n.id] != nil &&
+		n.membChange == nil && n.rescue == nil && !n.observer && !n.scaleUp &&
+		!n.paused && !n.quorumPaused && n.catchup == nil && n.werr == nil && !n.isLeaderOverrun() &&
+		n.processed >= n.commit && n.applied >= n.commit && n.csz > 1 && len(n.peers) == n.csz
+}
+
+// balanceCandidateLocked requires a current voting peer and fresh replication
+// evidence. Unlike the administrative stepdown, there is no fallback.
+func (n *raft) balanceCandidateLocked(peer string) bool {
+	if peer == n.id || n.peers[peer] == nil || !n.isFollowerCaughtUpLocked(peer) ||
+		n.peers[peer].li < n.pindex {
+		return false
+	}
+	si, ok := n.s.nodeToInfo.Load(peer)
+	return ok && si != nil && !si.(nodeInfo).offline && si.(nodeInfo).js
+}
+
+// balanceTransferAllowedLocked validates a transfer without side effects.
+func (n *raft) balanceTransferAllowedLocked(peer string, term uint64, voters []string, minAge time.Duration, expires time.Time) error {
+	if n.term != term || n.s.isShuttingDown() || !n.balanceTransferReadyLocked() {
+		return errNotLeader
+	}
+	if !time.Now().Before(expires) {
+		return errBalanceUnsafe
+	}
+	since := n.leaderSince.Load()
+	if since == nil || time.Since(*since) < minAge || len(voters) != len(n.peers) {
+		return errBalanceUnsafe
+	}
+	// Require all voters live for an optional optimization, not merely quorum.
+	for id, ps := range n.peers {
+		if ps == nil || !slices.Contains(voters, id) {
+			return errBalanceUnsafe
+		}
+		if id != n.id {
+			si, ok := n.s.nodeToInfo.Load(id)
+			if !ok || si == nil || si.(nodeInfo).offline || !si.(nodeInfo).js || !withinLiveWindow(ps.ts) {
+				return errBalanceUnsafe
+			}
+		}
+	}
+	if !n.balanceCandidateLocked(peer) {
+		return errBalanceUnsafe
+	}
+	return nil
+}
+
+// tryBalanceTransfer validates and dispatches in the same Raft critical section.
+// Success means the transfer was initiated, not that the target won the election.
+func (n *raft) tryBalanceTransfer(peer string, term uint64, voters []string, minAge time.Duration, expires time.Time, targetApplied uint64) error {
+	n.Lock()
+	defer n.Unlock()
+	if err := n.balanceTransferAllowedLocked(peer, term, voters, minAge, expires); err != nil {
+		return err
+	}
+	if targetApplied < n.commit {
+		return errBalanceUnsafe
+	}
+	if err := n.sendAppendEntryLocked([]*Entry{newEntry(EntryLeaderTransfer, []byte(peer))}, true); err != nil {
+		return err
+	}
+	n.stepdownLocked(noLeader)
+	return nil
+}
+
+var errBalanceUnsafe = errors.New("raft: unsafe automatic leadership transfer")
+
 // Campaign will have our node start a leadership vote.
 func (n *raft) Campaign() error {
 	n.Lock()

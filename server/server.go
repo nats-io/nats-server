@@ -1171,6 +1171,9 @@ func validatePinnedCerts(pinned PinnedCertSet) error {
 }
 
 func validateOptions(o *Options) error {
+	if err := o.JetStreamLeaderBalance.validate(); err != nil {
+		return err
+	}
 	if o.LameDuckDuration > 0 && o.LameDuckGracePeriod >= o.LameDuckDuration {
 		return fmt.Errorf("lame duck grace period (%v) should be strictly lower than lame duck duration (%v)",
 			o.LameDuckGracePeriod, o.LameDuckDuration)

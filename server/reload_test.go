@@ -8189,3 +8189,22 @@ func TestConfigReloadCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestJetStreamLeaderBalanceReload(t *testing.T) {
+	conf := fmt.Sprintf("port: -1\njetstream {store_dir: %q}", t.TempDir())
+	file := createConfFile(t, []byte(conf))
+	s, _ := RunServerWithConfig(file)
+	defer s.Shutdown()
+	require_False(t, s.getOpts().JetStreamLeaderBalance.Enabled)
+	update := fmt.Sprintf(`port: -1
+jetstream {
+  store_dir: %q
+  leader_balancing {enabled: true, threshold: 0, interval: "2m"}
+}`, s.getOpts().StoreDir)
+	require_NoError(t, os.WriteFile(file, []byte(update), 0666))
+	require_NoError(t, s.Reload())
+	require_Equal(t, s.getOpts().JetStreamLeaderBalance, JSLeaderBalanceOpts{true, 0, 2 * time.Minute})
+	require_NoError(t, os.WriteFile(file, []byte(conf), 0666))
+	require_NoError(t, s.Reload())
+	require_False(t, s.getOpts().JetStreamLeaderBalance.Enabled)
+}

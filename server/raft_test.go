@@ -11641,3 +11641,65 @@ func TestNRGSnapshotInCurrentTermAfterSend(t *testing.T) {
 	n.Unlock()
 	require_False(t, n.SnapshotInCurrentTerm())
 }
+
+func TestNRGConditionalLeaderTransfer(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "CONDITIONAL", 3)
+	defer c.shutdown()
+	rg := c.createMemRaftGroup("Test", 3, newStateAdder)
+	rg.waitOnLeader()
+	leader := rg.leader().(*stateAdder)
+	leader.proposeDelta(1)
+	rg.waitOnTotal(t, 1)
+	n := leader.node().(*raft)
+	target := rg.nonLeader().node().ID()
+	voters := n.PeerNames()
+	term := n.Term()
+	expires := time.Now().Add(time.Minute)
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		n.RLock()
+		defer n.RUnlock()
+		if !n.balanceTransferReadyLocked() || !n.balanceCandidateLocked(target) {
+			return fmt.Errorf("waiting for caught-up follower")
+		}
+		return nil
+	})
+	require_Error(t, n.tryBalanceTransfer(target, term-1, voters, 0, expires, math.MaxUint64), errNotLeader)
+	require_Error(t, n.tryBalanceTransfer("unknown", term, voters, 0, expires, math.MaxUint64), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(n.ID(), term, voters, 0, expires, math.MaxUint64), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(target, term, voters[:2], 0, expires, math.MaxUint64), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(target, term, voters, time.Hour, expires, math.MaxUint64), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(target, term, voters, 0, expires, 0), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(target, term, voters, 0, time.Now().Add(-time.Second), math.MaxUint64), errBalanceUnsafe)
+	require_Error(t, n.tryBalanceTransfer(target, term, []string{n.ID(), target, target}, 0, expires, math.MaxUint64), errBalanceUnsafe)
+	require_True(t, n.Leader())
+	require_Equal(t, n.Term(), term)
+	for _, tc := range []struct {
+		name   string
+		change func() func()
+	}{
+		{"lag", func() func() { ps := n.peers[target]; old := ps.li; ps.li = 0; return func() { ps.li = old } }},
+		{"stale heartbeat", func() func() { ps := n.peers[target]; old := ps.ts; ps.ts = time.Time{}; return func() { ps.ts = old } }},
+		{"membership change", func() func() {
+			old := n.membChange
+			n.membChange = &membChange{peer: target}
+			return func() { n.membChange = old }
+		}},
+		{"quorum paused", func() func() { old := n.quorumPaused; n.quorumPaused = true; return func() { n.quorumPaused = old } }},
+		{"observer", func() func() { old := n.observer; n.observer = true; return func() { n.observer = old } }},
+		{"write error", func() func() { old := n.werr; n.werr = errBalanceUnsafe; return func() { n.werr = old } }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n.Lock()
+			restore := tc.change()
+			err := n.balanceTransferAllowedLocked(target, term, voters, 0, expires)
+			restore()
+			n.Unlock()
+			require_Error(t, err)
+			require_True(t, n.Leader())
+		})
+	}
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		return n.tryBalanceTransfer(target, term, voters, 0, expires, math.MaxUint64)
+	})
+	require_Equal(t, rg.waitOnLeader().node().ID(), target)
+}
