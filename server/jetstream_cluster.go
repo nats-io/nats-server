@@ -16,6 +16,7 @@ package server
 import (
 	"bytes"
 	"cmp"
+	"context"
 	crand "crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -2448,6 +2449,28 @@ func (js *jetStream) monitorCluster(n RaftNode, qch, stopped chan struct{}) {
 		})
 	}
 
+	// Use a separate internal client for local request/reply delivery.
+	js.mu.RLock()
+	var balanceSub *subscription
+	if cc := js.cluster; cc != nil && cc.c != nil {
+		balanceSub, _ = s.systemSubscribe(fmt.Sprintf(leaderBalanceSubject, n.ID()), _EMPTY_, false, cc.c, js.processLeaderBalanceRequest)
+	}
+	js.mu.RUnlock()
+	defer s.sysUnsubscribe(balanceSub)
+	balanceTick := time.NewTicker(time.Second)
+	defer balanceTick.Stop()
+	var balanceCancel context.CancelFunc
+	var balanceDone chan struct{}
+	var balanceTerm uint64
+	var balanceOpts JSLeaderBalanceOpts
+	var balanceNext time.Time
+	defer func() {
+		if balanceCancel != nil {
+			balanceCancel()
+			<-balanceDone
+		}
+	}()
+
 	var ru *recoveryUpdates
 
 	// Make sure to cancel any pending checkForOrphans calls if the
@@ -2569,6 +2592,9 @@ func (js *jetStream) monitorCluster(n RaftNode, qch, stopped chan struct{}) {
 
 		case lc := <-lch:
 			isLeader = lc.isLeader
+			if balanceCancel != nil && (!isLeader || lc.term != balanceTerm) {
+				balanceCancel()
+			}
 			// Process the change.
 			js.processLeaderChange(isLeader, lc.term)
 			if isLeader {
@@ -2576,6 +2602,49 @@ func (js *jetStream) monitorCluster(n RaftNode, qch, stopped chan struct{}) {
 				// Install a snapshot as we become leader.
 				js.checkClusterSize()
 				doSnapshot(false)
+			}
+
+		case <-balanceTick.C:
+			opts := s.getOpts().JetStreamLeaderBalance
+			if balanceDone == nil && !opts.Enabled {
+				balanceNext = time.Time{}
+				continue
+			}
+			term := n.Term()
+			if balanceDone != nil {
+				if !n.Leader() || term != balanceTerm || opts != balanceOpts || !opts.Enabled {
+					balanceCancel()
+				}
+				select {
+				case <-balanceDone:
+					balanceDone, balanceCancel = nil, nil
+				default:
+					continue
+				}
+			}
+			if balanceSub == nil || recovering || !opts.Enabled || !n.Leader() {
+				balanceNext = time.Time{}
+				continue
+			}
+			if balanceNext.IsZero() || term != balanceTerm || opts != balanceOpts {
+				balanceTerm, balanceOpts = term, opts
+				balanceNext = time.Now().Add(opts.Interval)
+				continue
+			}
+			if time.Now().Before(balanceNext) {
+				continue
+			}
+			balanceNext = time.Now().Add(opts.Interval)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			if s.startGoRoutine(func() {
+				defer s.grWG.Done()
+				defer close(done)
+				js.runLeaderBalance(ctx, n, term, opts)
+			}) {
+				balanceCancel, balanceDone = cancel, done
+			} else {
+				cancel()
 			}
 
 		case <-t.C:

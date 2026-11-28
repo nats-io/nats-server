@@ -1721,7 +1721,7 @@ func imposeOrder(value any) error {
 		*OCSPConfig, map[string]string, map[string]bool, JSLimitOpts, StoreCipher, *OCSPResponseCacheConfig, *ProxiesConfig, WriteTimeoutPolicy:
 		// explicitly skipped types
 	case *AuthCallout:
-	case JSTpmOpts:
+	case JSTpmOpts, JSLeaderBalanceOpts:
 	default:
 		// this will fail during unit tests
 		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",
@@ -2035,7 +2035,7 @@ func diffOptions(s *Server, oldOpts, newOpts *Options) ([]option, error) {
 			if new != old {
 				diffOpts = append(diffOpts, &jetStreamServerLimitsOption{newValue: new})
 			}
-		case "jetstreammetacompact", "jetstreammetacompactsize", "jetstreammetacompactsync":
+		case "jetstreammetacompact", "jetstreammetacompactsize", "jetstreammetacompactsync", "jetstreamleaderbalance":
 			// Allowed at runtime but monitorCluster looks at s.opts directly, so no further work needed here.
 		case "jetstreamconcurrentios":
 			// Not reloadable at runtime; preserve the current value while JetStream is disabled,

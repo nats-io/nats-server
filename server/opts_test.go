@@ -4808,3 +4808,33 @@ func TestOptionsRemoteLeafNodeName(t *testing.T) {
 	r2 := &RemoteLeafOpts{URLs: []*url.URL{u1}, LocalAccount: `A", credentials="creds`}
 	require_False(t, r1.name() == r2.name())
 }
+
+func TestJetStreamLeaderBalanceConfig(t *testing.T) {
+	for _, tc := range []struct {
+		config string
+		valid  bool
+		want   JSLeaderBalanceOpts
+	}{
+		{"enabled: true", true, JSLeaderBalanceOpts{true, 30, time.Hour}},
+		{`enabled: false, threshold: 0, interval: "2m"`, true, JSLeaderBalanceOpts{false, 0, 2 * time.Minute}},
+		{"threshold: -1", false, JSLeaderBalanceOpts{}},
+		{"threshold: 101", false, JSLeaderBalanceOpts{}},
+		{"threshold: 1.5", false, JSLeaderBalanceOpts{}},
+		{"enabled: 2", false, JSLeaderBalanceOpts{}},
+		{`interval: "0s"`, false, JSLeaderBalanceOpts{}},
+		{`interval: "10s"`, false, JSLeaderBalanceOpts{}},
+		{"interval: 10", false, JSLeaderBalanceOpts{}},
+		{"unknown: true", false, JSLeaderBalanceOpts{}},
+	} {
+		t.Run(tc.config, func(t *testing.T) {
+			conf := createConfFile(t, []byte("jetstream { leader_balancing {"+tc.config+"} }"))
+			opts, err := ProcessConfigFile(conf)
+			if !tc.valid {
+				require_Error(t, err)
+				return
+			}
+			require_NoError(t, err)
+			require_Equal(t, opts.JetStreamLeaderBalance, tc.want)
+		})
+	}
+}

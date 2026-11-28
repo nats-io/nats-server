@@ -13068,3 +13068,600 @@ func TestJetStreamClusterR1StreamWriteErrFailsHealthz(t *testing.T) {
 	require_Equal(t, hs.StatusCode, 503)
 	require_Contains(t, hs.Error, "'$G > TEST'", "stream write error", "mock write error")
 }
+
+func TestJetStreamLeaderBalancePlanner(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		counts     map[string]int
+		threshold  int
+		imbalanced bool
+	}{
+		{"empty", map[string]int{}, 0, false},
+		{"single", map[string]int{"a": 10}, 0, false},
+		{"equal", map[string]int{"a": 10, "b": 10}, 0, false},
+		{"boundary", map[string]int{"a": 10, "b": 7}, 30, false},
+		{"above", map[string]int{"a": 10, "b": 6}, 30, true},
+		{"zero", map[string]int{"a": 10, "b": 0}, 30, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require_Equal(t, leaderBalanceImbalanced(tc.counts, tc.threshold), tc.imbalanced)
+		})
+	}
+	counts := map[string]int{"a": 5, "b": 2, "c": 0}
+	groups := map[string]leaderBalanceStatus{
+		"g2": {Leader: "a", Candidates: []string{"b", "c"}},
+		"g1": {Leader: "a", Candidates: []string{"c", "b"}},
+		"g3": {Leader: "b", Candidates: []string{"not-a-member"}},
+	}
+	for i := 0; i < 20; i++ {
+		move, ok := selectLeaderBalanceMove(counts, groups)
+		require_True(t, ok)
+		require_Equal(t, move, leaderBalanceMove{"g1", "a", "c"})
+	}
+	_, ok := selectLeaderBalanceMove(map[string]int{"a": 2, "b": 1, "c": 0}, map[string]leaderBalanceStatus{
+		"g1": {Leader: "a", Candidates: []string{"b"}},
+	})
+	require_False(t, ok)
+	_, ok = selectLeaderBalanceMove(counts, nil)
+	require_False(t, ok)
+}
+
+func BenchmarkJetStreamLeaderBalance(b *testing.B) {
+	for _, size := range []int{100, 1000, 5000, 10000, 50000} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			groups := make(map[string]leaderBalanceStatus, size)
+			for i := 0; i < size; i++ {
+				groups[fmt.Sprint(i)] = leaderBalanceStatus{Leader: "a", Candidates: []string{"b", "c"}}
+			}
+			counts := map[string]int{"a": size, "b": 0, "c": 0}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selectLeaderBalanceMove(counts, groups)
+			}
+		})
+	}
+}
+
+func TestJetStreamLeaderBalanceCluster(t *testing.T) {
+	c := createJetStreamClusterExplicit(t, "LB", 3)
+	defer c.shutdown()
+	c.waitOnClusterReady()
+	source := c.leader()
+	nc, jsc := jsClientConnect(t, source)
+	defer nc.Close()
+	_, err := jsc.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"s"}, Replicas: 3})
+	require_NoError(t, err)
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("C%d", i)
+		_, err := jsc.AddConsumer("S", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		c.stepDownConsumerLeader(nc, globalAccountName, "S", name, source)
+	}
+	// Ensure all consumers have replicated delivery and acknowledgement state,
+	// including those initially elected on the preferred server.
+	_, err = jsc.Publish("s", []byte("before"))
+	require_NoError(t, err)
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("C%d", i)
+		sub, err := jsc.PullSubscribe("s", name, nats.Bind("S", name))
+		require_NoError(t, err)
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		require_NoError(t, err)
+		require_Equal(t, string(msgs[0].Data), "before")
+		require_NoError(t, msgs[0].AckSync())
+		require_NoError(t, sub.Unsubscribe())
+	}
+	opts := JSLeaderBalanceOpts{Enabled: true, Threshold: 30, Interval: time.Hour}
+	for _, s := range c.servers {
+		o := s.getOpts().Clone()
+		o.JetStreamLeaderBalance = opts
+		s.setOpts(o)
+	}
+	js := source.getJetStream()
+	meta := js.getMetaGroup()
+	term := meta.Term()
+	req := leaderBalanceRequest{Meta: meta.ID(), Term: term}
+	peers := meta.PeerNames()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	checkFor(t, 8*time.Second, 100*time.Millisecond, func() error {
+		groups, ok := js.leaderBalanceInventory(meta, term)
+		if !ok || len(groups) != 3 {
+			return errors.New("waiting for inventory")
+		}
+		// Age the deliberately concentrated leaders without waiting 30 seconds.
+		for name := range groups {
+			n, ok := source.lookupRaftNode(name).(*raft)
+			if !ok || !n.Leader() {
+				return errors.New("waiting for raft leader")
+			}
+			old := time.Now().Add(-time.Minute)
+			n.leaderSince.Store(&old)
+		}
+		status, ok := js.collectLeaderBalance(ctx, req, groups, peers)
+		if !ok || len(status) != 3 {
+			return errors.New("waiting for complete reports")
+		}
+		for name, st := range status {
+			if len(st.Candidates) != 2 {
+				var details []leaderBalanceStatus
+				for _, server := range c.servers {
+					if n, ok := server.lookupRaftNode(name).(*raft); ok {
+						details = append(details, n.leaderBalanceStatus())
+					}
+				}
+				return fmt.Errorf("waiting for candidates: %+v, assignment: %+v, replicas: %+v", st, groups[name], details)
+			}
+		}
+		return nil
+	})
+	// Source verification must not trust a coordinator's assertion of readiness.
+	groups, ok := js.leaderBalanceInventory(meta, term)
+	require_True(t, ok)
+	for name, g := range groups {
+		n := source.lookupRaftNode(name).(*raft)
+		st := n.leaderBalanceStatus()
+		require_True(t, len(st.Candidates) > 0)
+		target := st.Candidates[0]
+		probe := req
+		probe.Groups = []string{name}
+		r, ok := js.requestLeaderBalance(ctx, target, probe)
+		require_True(t, ok)
+		tr := leaderBalanceTransfer{g, source.NodeName(), target, st.Term, r.proof}
+		transfer := req
+		transfer.Expires = time.Now().Add(time.Second)
+		transfer.MetaIndex = r.MetaIndex
+		transfer.Transfer = &tr
+		_, _, ok = source.leaderBalanceTargetProof(&transfer)
+		require_True(t, ok)
+		for _, mutate := range []func(*leaderBalanceTransfer){
+			func(tr *leaderBalanceTransfer) { tr.TargetProof = nil },
+			func(tr *leaderBalanceTransfer) {
+				tr.TargetProof = &leaderBalanceEnvelope{Payload: tr.TargetProof.Payload, Signature: []byte("bad")}
+			},
+			func(tr *leaderBalanceTransfer) { tr.Term++ },
+			func(tr *leaderBalanceTransfer) { tr.Group.Group = "wrong" },
+			func(tr *leaderBalanceTransfer) { tr.Target = tr.Source },
+		} {
+			bad := tr
+			mutate(&bad)
+			transfer.Transfer = &bad
+			_, _, ok = source.leaderBalanceTargetProof(&transfer)
+			require_False(t, ok)
+		}
+		transfer.Transfer = &tr
+		transfer.Term++
+		_, _, ok = source.leaderBalanceTargetProof(&transfer)
+		require_False(t, ok)
+		transfer.Term = term
+		transfer.MetaIndex++
+		_, _, ok = source.leaderBalanceTargetProof(&transfer)
+		require_False(t, ok)
+		transfer.MetaIndex = r.MetaIndex
+		// A valid signature from the wrong server must not authorize the target.
+		wrongSigner, err := source.signLeaderBalance(&r)
+		require_NoError(t, err)
+		bad := tr
+		bad.TargetProof = wrongSigner
+		transfer.Transfer = &bad
+		_, _, ok = source.leaderBalanceTargetProof(&transfer)
+		require_False(t, ok)
+		// A genuine target signature with an expired readiness report is stale.
+		var targetServer *Server
+		for _, server := range c.servers {
+			if server.NodeName() == target {
+				targetServer = server
+			}
+		}
+		require_NotNil(t, targetServer)
+		expired := r
+		expired.Expires = time.Now().Add(-time.Second)
+		expiredProof, err := targetServer.signLeaderBalance(&expired)
+		require_NoError(t, err)
+		bad.TargetProof = expiredProof
+		_, _, ok = source.leaderBalanceTargetProof(&transfer)
+		require_False(t, ok)
+		// Actually dispatch a signed request lacking a target proof.
+		transfer = req
+		tr.TargetProof = nil
+		transfer.Transfer = &tr
+		invalidCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		_, ok = js.requestLeaderBalance(invalidCtx, source.NodeName(), transfer)
+		cancel()
+		require_False(t, ok)
+		require_True(t, n.Leader())
+		require_Equal(t, n.Term(), st.Term)
+		break
+	}
+	// A server with the feature disabled (or an older binary with no handler)
+	// must prevent a partial inventory from triggering an election.
+	var disabled *Server
+	for _, server := range c.servers {
+		if server != source {
+			disabled = server
+			break
+		}
+	}
+	require_NotNil(t, disabled)
+	disabledOpts := disabled.getOpts().Clone()
+	disabledOpts.JetStreamLeaderBalance.Enabled = false
+	disabled.setOpts(disabledOpts)
+	js.runLeaderBalance(ctx, meta, term, opts)
+	for i := 0; i < 3; i++ {
+		require_Equal(t, c.consumerLeader(globalAccountName, "S", fmt.Sprintf("C%d", i)), source)
+	}
+	enabledOpts := disabledOpts.Clone()
+	enabledOpts.JetStreamLeaderBalance = opts
+	disabled.setOpts(enabledOpts)
+
+	// A signed request for an obsolete metadata term is rejected.
+	staleCtx, staleCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	_, ok = js.requestLeaderBalance(staleCtx, disabled.NodeName(), leaderBalanceRequest{Meta: meta.ID(), Term: term - 1})
+	staleCancel()
+	require_False(t, ok)
+
+	js.runLeaderBalance(ctx, meta, term, opts)
+	counts := map[string]int{}
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("C%d", i)
+		leader := c.consumerLeader(globalAccountName, "S", name)
+		require_NotNil(t, leader)
+		counts[leader.Name()]++
+	}
+	require_Len(t, len(counts), 3)
+	_, err = jsc.Publish("s", []byte("after"))
+	require_NoError(t, err)
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("C%d", i)
+		sub, err := jsc.PullSubscribe("s", name, nats.Bind("S", name))
+		require_NoError(t, err)
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		require_NoError(t, err)
+		require_Equal(t, string(msgs[0].Data), "after")
+		require_NoError(t, msgs[0].AckSync())
+		require_NoError(t, sub.Unsubscribe())
+	}
+}
+
+func TestJetStreamLeaderBalanceMultiAccountPlacement(t *testing.T) {
+	c := createJetStreamClusterWithTemplateAndModHook(t, jsClusterAccountsTempl, "LB5", 5,
+		func(serverName, _, _, conf string) string {
+			tags := "grp:b"
+			switch serverName {
+			case "S-1", "S-2":
+				tags = "grp:a"
+			case "S-3":
+				tags = "grp:a, grp:b"
+			}
+			return fmt.Sprintf("%s\nserver_tags: [%s]", conf, tags)
+		})
+	defer c.shutdown()
+	source := c.serverByName("S-3")
+	preferred := c.serverByName("S-5")
+	checkFor(t, 30*time.Second, 100*time.Millisecond, func() error {
+		ml := c.leader()
+		if ml == preferred {
+			return nil
+		}
+		if ml != nil {
+			meta := ml.getJetStream().getMetaGroup()
+			if withinLiveWindow(meta.LastHeardFromFollower(preferred.NodeName())) {
+				// Manual stepdown may elect another peer. Retry the setup
+				// only after the newly elected leader has heard from our target.
+				if err := meta.StepDown(preferred.NodeName()); err != nil && err != errNotLeader {
+					return err
+				}
+			}
+		}
+		return errors.New("waiting for metadata leader outside first replica set")
+	})
+	ml := c.leader()
+	meta := ml.getJetStream().getMetaGroup()
+	for _, a := range []struct{ account, user, tag string }{{"ONE", "one", "grp:a"}, {"TWO", "two", "grp:b"}} {
+		nc, jsc := jsClientConnect(t, ml, nats.UserInfo(a.user, "p"))
+		defer nc.Close()
+		_, err := jsc.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"s"}, Replicas: 3, Placement: &nats.Placement{Tags: []string{a.tag}}})
+		require_NoError(t, err)
+		_, err = jsc.Publish("s", []byte("data"))
+		require_NoError(t, err)
+		for i := 0; i < 3; i++ {
+			name := fmt.Sprintf("C%d", i)
+			_, err := jsc.AddConsumer("S", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
+			require_NoError(t, err)
+			sub, err := jsc.PullSubscribe("s", name, nats.Bind("S", name))
+			require_NoError(t, err)
+			msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+			require_NoError(t, err)
+			require_NoError(t, msgs[0].AckSync())
+			require_NoError(t, sub.Unsubscribe())
+			c.stepDownConsumerLeader(nc, a.account, "S", name, source)
+		}
+	}
+	js := ml.getJetStream()
+	var groups map[string]leaderBalanceGroup
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		var ok bool
+		groups, ok = js.leaderBalanceInventory(meta, meta.Term())
+		if ok && len(groups) == 6 {
+			return nil
+		}
+		return errors.New("waiting for six assignments")
+	})
+	for name := range groups {
+		n, ok := source.lookupRaftNode(name).(*raft)
+		require_True(t, ok)
+		old := time.Now().Add(-time.Minute)
+		n.leaderSince.Store(&old)
+	}
+	// The scheduler is exercised with an internal test-only interval; config
+	// parsing tests enforce the production minimum of one minute.
+	for _, s := range c.servers {
+		o := s.getOpts().Clone()
+		o.JetStreamLeaderBalance = JSLeaderBalanceOpts{Enabled: true, Threshold: 30, Interval: 2 * time.Second}
+		s.setOpts(o)
+	}
+	checkFor(t, 20*time.Second, 100*time.Millisecond, func() error {
+		counts := map[string]int{}
+		for _, g := range groups {
+			leader := c.consumerLeader(g.Account, g.Stream, g.Consumer)
+			if leader == nil {
+				return errors.New("waiting for consumer election")
+			}
+			if !slices.Contains(g.Voters, leader.NodeName()) {
+				return fmt.Errorf("leader outside assigned placement: %s", leader.Name())
+			}
+			counts[leader.Name()]++
+		}
+		if len(counts) != 5 || counts[source.Name()] > 2 {
+			return fmt.Errorf("waiting for balance: %v", counts)
+		}
+		return nil
+	})
+	// Replica membership must remain unchanged across the scheduled transfers.
+	current, ok := js.leaderBalanceInventory(meta, meta.Term())
+	require_True(t, ok)
+	for name, g := range groups {
+		require_True(t, slices.Equal(g.Voters, current[name].Voters))
+	}
+}
+
+// Exercise real server restarts and metadata leadership changes, including
+// rejection of work from a former coordinator.
+func TestJetStreamLeaderBalanceRollingRestartAndFailover(t *testing.T) {
+	tmpl := strings.Replace(jsClusterTempl, "store_dir:", `leader_balancing: {enabled: true, interval: "60m"}, store_dir:`, 1)
+	c := createJetStreamClusterWithTemplate(t, tmpl, "LBRestart", 3)
+	defer c.shutdown()
+	nc, jsc := jsClientConnect(t, c.leader())
+	defer nc.Close()
+	_, err := jsc.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"s"}, Replicas: 3})
+	require_NoError(t, err)
+	_, err = jsc.Publish("s", []byte("before"))
+	require_NoError(t, err)
+	const numConsumers = 4
+	for i := 0; i < numConsumers; i++ {
+		name := fmt.Sprintf("C%d", i)
+		_, err := jsc.AddConsumer("S", &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
+		require_NoError(t, err)
+		sub, err := jsc.PullSubscribe("s", name, nats.Bind("S", name))
+		require_NoError(t, err)
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		require_NoError(t, err)
+		require_NoError(t, msgs[0].AckSync())
+		require_NoError(t, sub.Unsubscribe())
+	}
+	// Take a follower offline while every consumer has a stable leader.
+	// Quorum remains available but automatic transfers must not be attempted.
+	initial := c.leader()
+	for i := 0; i < numConsumers; i++ {
+		c.stepDownConsumerLeader(nc, globalAccountName, "S", fmt.Sprintf("C%d", i), initial)
+	}
+	offline := c.randomNonConsumerLeader(globalAccountName, "S", "C0")
+	require_NotNil(t, offline)
+	offline.Shutdown()
+	initialJS := initial.getJetStream()
+	initialMeta := initialJS.getMetaGroup()
+	offlineCtx, offlineCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	initialJS.runLeaderBalance(offlineCtx, initialMeta, initialMeta.Term(), initial.getOpts().JetStreamLeaderBalance)
+	offlineCancel()
+	for i := 0; i < numConsumers; i++ {
+		require_Equal(t, c.consumerLeader(globalAccountName, "S", fmt.Sprintf("C%d", i)), initial)
+	}
+	c.restartServer(offline)
+	c.waitOnClusterReady()
+
+	for i := range c.servers {
+		server := c.servers[i]
+		server.Shutdown()
+		c.restartServer(server)
+		c.waitOnClusterReady()
+		for j := 0; j < numConsumers; j++ {
+			c.waitOnConsumerLeader(globalAccountName, "S", fmt.Sprintf("C%d", j))
+		}
+	}
+	source := c.leader()
+	// Rolling restarts do not deterministically produce skew. Concentrate
+	// leadership afterwards to make the balancing assertion repeatable.
+	for i := 0; i < numConsumers; i++ {
+		c.stepDownConsumerLeader(nc, globalAccountName, "S", fmt.Sprintf("C%d", i), source)
+	}
+	js := source.getJetStream()
+	meta := js.getMetaGroup()
+	term := meta.Term()
+	opts := source.getOpts().JetStreamLeaderBalance
+	var groups map[string]leaderBalanceGroup
+	checkFor(t, 10*time.Second, 100*time.Millisecond, func() error {
+		var ok bool
+		groups, ok = js.leaderBalanceInventory(meta, term)
+		if !ok || len(groups) != numConsumers {
+			return errors.New("waiting for recovered assignments")
+		}
+		for name, g := range groups {
+			if !g.Movable {
+				return fmt.Errorf("recovered group is not movable: %+v", g)
+			}
+			n, ok := source.lookupRaftNode(name).(*raft)
+			if !ok || !n.Leader() {
+				return errors.New("waiting for consumer leaders")
+			}
+			old := time.Now().Add(-time.Minute)
+			n.leaderSince.Store(&old)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		st, ok := js.collectLeaderBalance(ctx, leaderBalanceRequest{Meta: meta.ID(), Term: term}, groups, meta.PeerNames())
+		if !ok {
+			return errors.New("waiting for recovered reports")
+		}
+		for _, v := range st {
+			if len(v.Candidates) != 2 {
+				return fmt.Errorf("waiting for eligible followers: %+v", v)
+			}
+		}
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		js.runLeaderBalance(ctx, meta, term, opts)
+	}()
+	checkFor(t, 5*time.Second, 10*time.Millisecond, func() error {
+		for _, g := range groups {
+			if leader := c.consumerLeader(g.Account, g.Stream, g.Consumer); leader != nil && leader != source {
+				return nil
+			}
+		}
+		return errors.New("waiting for first balancing transfer")
+	})
+	require_NoError(t, meta.StepDown())
+	c.waitOnLeader()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old balancing pass did not stop after metadata stepdown")
+	}
+	// The same node may win again, but the old term must still be fenced.
+	ml := c.leader()
+	newJS := ml.getJetStream()
+	newMeta := newJS.getMetaGroup()
+	require_True(t, newMeta.Term() > term)
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		for _, s := range c.servers {
+			n := s.getJetStream().getMetaGroup()
+			if n.Term() != newMeta.Term() || n.GroupLeader() != newMeta.ID() {
+				return errors.New("waiting for metadata convergence")
+			}
+		}
+		return nil
+	})
+	// Old coordinator cannot obtain a report from any converged peer.
+	staleCtx, staleCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	_, ok := js.requestLeaderBalance(staleCtx, ml.NodeName(), leaderBalanceRequest{Meta: meta.ID(), Term: term})
+	staleCancel()
+	require_False(t, ok)
+	require_False(t, js.leaderBalanceCanRun(meta, term, opts))
+
+	// Deletion/recreation must invalidate an assignment snapshot even when
+	// the account, stream and consumer names are identical.
+	var oldGroup leaderBalanceGroup
+	for _, g := range groups {
+		oldGroup = g
+		break
+	}
+	require_NoError(t, jsc.DeleteConsumer(oldGroup.Stream, oldGroup.Consumer))
+	_, err = jsc.AddConsumer(oldGroup.Stream, &nats.ConsumerConfig{Durable: oldGroup.Consumer, AckPolicy: nats.AckExplicitPolicy})
+	require_NoError(t, err)
+	checkFor(t, 5*time.Second, 20*time.Millisecond, func() error {
+		newJS.mu.RLock()
+		defer newJS.mu.RUnlock()
+		ca := newJS.consumerAssignment(oldGroup.Account, oldGroup.Stream, oldGroup.Consumer)
+		if ca == nil || ca.Created.Equal(oldGroup.Created) {
+			return errors.New("waiting for replacement assignment")
+		}
+		_, ok := newJS.leaderBalanceGroupCurrent(oldGroup)
+		if ok {
+			return errors.New("stale assignment was accepted")
+		}
+		return nil
+	})
+	// All original groups that were not recreated preserve their replica set.
+	newGroups, ok := newJS.leaderBalanceInventory(newMeta, newMeta.Term())
+	require_True(t, ok)
+	for name, g := range groups {
+		if name != oldGroup.Group {
+			require_True(t, slices.Equal(newGroups[name].Voters, g.Voters))
+		}
+	}
+	_, err = jsc.Publish("s", []byte("after"))
+	require_NoError(t, err)
+	for i := 0; i < numConsumers; i++ {
+		name := fmt.Sprintf("C%d", i)
+		sub, err := jsc.PullSubscribe("s", name, nats.Bind("S", name))
+		require_NoError(t, err)
+		msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
+		require_NoError(t, err)
+		if name == oldGroup.Consumer && string(msgs[0].Data) == "before" {
+			require_NoError(t, msgs[0].AckSync())
+			msgs, err = sub.Fetch(1, nats.MaxWait(5*time.Second))
+			require_NoError(t, err)
+		}
+		require_Equal(t, string(msgs[0].Data), "after")
+		require_NoError(t, msgs[0].AckSync())
+		require_NoError(t, sub.Unsubscribe())
+	}
+}
+
+func BenchmarkJetStreamLeaderBalanceInventory(b *testing.B) {
+	for _, size := range []int{100, 500} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			c := createJetStreamClusterExplicit(b, "LBInventory", 3)
+			defer c.shutdown()
+			ml := c.leader()
+			nc, jsc := jsClientConnect(b, ml)
+			defer nc.Close()
+			_, err := jsc.AddStream(&nats.StreamConfig{Name: "S", Subjects: []string{"s"}, Replicas: 3, Storage: nats.MemoryStorage})
+			require_NoError(b, err)
+			for i := 0; i < size; i++ {
+				_, err := jsc.AddConsumer("S", &nats.ConsumerConfig{Durable: fmt.Sprintf("C%d", i), AckPolicy: nats.AckExplicitPolicy, MemoryStorage: true})
+				require_NoError(b, err)
+			}
+			for _, server := range c.servers {
+				opts := server.getOpts().Clone()
+				opts.JetStreamLeaderBalance = JSLeaderBalanceOpts{Enabled: true, Threshold: 30, Interval: time.Hour}
+				server.setOpts(opts)
+			}
+			js := ml.getJetStream()
+			meta := js.getMetaGroup()
+			term := meta.Term()
+			var groups map[string]leaderBalanceGroup
+			req := leaderBalanceRequest{Meta: meta.ID(), Term: term}
+			peers := meta.PeerNames()
+			checkFor(b, 30*time.Second, 100*time.Millisecond, func() error {
+				var ok bool
+				groups, ok = js.leaderBalanceInventory(meta, term)
+				if !ok || len(groups) != size {
+					return errors.New("waiting for inventory")
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), leaderBalanceInventoryTTL)
+				defer cancel()
+				status, ok := js.collectLeaderBalance(ctx, req, groups, peers)
+				if !ok || len(status) != size {
+					return errors.New("waiting for consistent live reports")
+				}
+				return nil
+			})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ctx, cancel := context.WithTimeout(context.Background(), leaderBalanceInventoryTTL)
+				status, ok := js.collectLeaderBalance(ctx, req, groups, peers)
+				cancel()
+				require_True(b, ok)
+				require_Len(b, len(status), size)
+			}
+			b.StopTimer()
+		})
+	}
+}

@@ -493,6 +493,7 @@ type Options struct {
 	JetStreamMetaCompact       uint64
 	JetStreamMetaCompactSize   uint64
 	JetStreamMetaCompactSync   bool
+	JetStreamLeaderBalance     JSLeaderBalanceOpts
 	JetStreamConcurrentIOs     int
 	StreamMaxBufferedMsgs      int               `json:"-"`
 	StreamMaxBufferedSize      int64             `json:"-"`
@@ -2820,6 +2821,10 @@ func parseJetStream(v any, opts *Options, errors *[]error, warnings *[]error) er
 					return &configErr{tk, fmt.Sprintf("Expected a parseable size for %q, got %v", mk, mv)}
 				}
 				opts.JetStreamInfoQueueLimit = lim
+			case "leader_balancing":
+				if err := parseJSLeaderBalance(mv, tk, opts); err != nil {
+					return err
+				}
 			case "meta_compact":
 				thres, ok := mv.(int64)
 				if !ok || thres < 0 {
@@ -6142,6 +6147,12 @@ func mergeRoutes(opts, flagOpts *Options) {
 }
 
 func setBaselineOptions(opts *Options) {
+	if opts.JetStreamLeaderBalance.Interval == 0 {
+		opts.JetStreamLeaderBalance.Interval = time.Hour
+		if opts.JetStreamLeaderBalance.Threshold == 0 {
+			opts.JetStreamLeaderBalance.Threshold = 30
+		}
+	}
 	// Setup non-standard Go defaults
 	if opts.Host == _EMPTY_ {
 		opts.Host = DEFAULT_HOST
